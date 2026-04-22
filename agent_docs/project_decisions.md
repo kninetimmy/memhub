@@ -31,3 +31,8 @@ Append-only. Superseding decisions should be added as new dated entries rather t
 
 - `memhub search` uses exact indexed file-path lookups for history queries and SQLite FTS5 over decision text for free-text retrieval.
 - Additional chunk sources can be added later, but the first implementation stays narrow so the router remains explainable and the query-plan tests stay simple.
+
+## 2026-04-22 - README should be refreshed at each milestone completion
+
+- When a milestone or a major milestone slice is completed, update `README.md` so the public project description, current capabilities, and roadmap status reflect the new state of the codebase.
+- Treat README maintenance as part of milestone completion rather than a later cleanup task.
