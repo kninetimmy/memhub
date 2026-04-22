@@ -176,7 +176,7 @@ The current search surface is deliberately smaller than the PRD end-state. It is
 - `propose_fact`
 - `propose_decision`
 
-Proposal tools stage writes in `pending_writes`; they do not write directly to durable `facts` or `decisions`, and they do not replace the later review flow.
+Proposal tools stage writes in `pending_writes`; they do not write directly to durable `facts` or `decisions`, and they do not replace the later review flow. Each staged row now also stores the MCP request/init provenance that `rmcp` exposes today, such as request ID, protocol version, client version, and optional MCP metadata. Prompt/session context remains deferred until the transport surface exposes or requires it.
 
 ### Local-first trust model
 

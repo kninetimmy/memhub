@@ -17,7 +17,7 @@ The binary resolves the nearest ancestor containing `.memhub/`, opens the SQLite
 - MCP server wiring via `rmcp`
 - Schema bootstrap and migration tracking
 - CRUD handlers for facts, decisions, tasks, command history verification, git ingestion, and markdown sync
-- Staged pending-write handling for agent-originated fact and decision proposals
+- Staged pending-write handling for agent-originated fact and decision proposals, including persisted MCP request/init provenance JSON
 - FTS5-backed search chunks for decision text plus exact file-history queries
 - Managed-block generation for `AGENTS.md` and `CLAUDE.md`, with optional auto-sync after writes
 - Stdio MCP tools for status, search, task listing, recent decision listing, latest-command lookup, explicit verified command recording, and staged fact/decision proposals

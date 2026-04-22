@@ -5,13 +5,15 @@ use log::info;
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
 use rmcp::model::{
-    Implementation, InitializeRequestParams, InitializeResult, ServerCapabilities, ServerInfo,
+    Implementation, InitializeRequestParams, InitializeResult, Meta, RequestId, ServerCapabilities,
+    ServerInfo,
 };
 use rmcp::service::RequestContext;
 use rmcp::{
     Json, RoleServer, ServerHandler, ServiceExt, schemars, tool, tool_router, transport::stdio,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::commands;
 use crate::models::{CommandRecord, Decision, SearchResult, StatusSummary, Task};
@@ -131,6 +133,7 @@ impl MemhubServer {
         &self,
         Parameters(params): Parameters<ProposeFactParams>,
         actor: ClientIdentity,
+        provenance_json: String,
     ) -> std::result::Result<Json<ProposeFactToolResponse>, McpError> {
         let id = commands::pending_write::propose_fact(
             &self.start,
@@ -139,6 +142,7 @@ impl MemhubServer {
             &params.rationale,
             &actor.normalized,
             &actor.raw,
+            &provenance_json,
         )
         .map_err(map_tool_error)?;
 
@@ -155,6 +159,7 @@ impl MemhubServer {
         &self,
         Parameters(params): Parameters<ProposeDecisionParams>,
         actor: ClientIdentity,
+        provenance_json: String,
     ) -> std::result::Result<Json<ProposeDecisionToolResponse>, McpError> {
         let id = commands::pending_write::propose_decision(
             &self.start,
@@ -162,6 +167,7 @@ impl MemhubServer {
             &params.rationale,
             &actor.normalized,
             &actor.raw,
+            &provenance_json,
         )
         .map_err(map_tool_error)?;
 
@@ -250,7 +256,8 @@ impl MemhubServer {
         request_context: RequestContext<RoleServer>,
     ) -> std::result::Result<Json<ProposeFactToolResponse>, McpError> {
         let actor = current_client_identity(&request_context);
-        self.propose_fact_impl(params, actor).await
+        let provenance_json = current_pending_write_provenance(&request_context);
+        self.propose_fact_impl(params, actor, provenance_json).await
     }
 
     #[tool(
@@ -263,7 +270,9 @@ impl MemhubServer {
         request_context: RequestContext<RoleServer>,
     ) -> std::result::Result<Json<ProposeDecisionToolResponse>, McpError> {
         let actor = current_client_identity(&request_context);
-        self.propose_decision_impl(params, actor).await
+        let provenance_json = current_pending_write_provenance(&request_context);
+        self.propose_decision_impl(params, actor, provenance_json)
+            .await
     }
 }
 
@@ -288,7 +297,8 @@ impl ServerHandler for MemhubServer {
         let actor = current_client_identity_from_initialize(Some(&request));
         info!(
             "mcp client initialized: normalized={} raw={}",
-            actor.normalized, actor.raw
+            sanitize_for_log(&actor.normalized),
+            sanitize_for_log(&actor.raw),
         );
 
         future::ready(Ok(self.get_info()))
@@ -545,6 +555,17 @@ struct ClientIdentity {
     raw: String,
 }
 
+#[derive(Debug, Serialize)]
+struct PendingWriteProvenance {
+    source: &'static str,
+    request_id: Value,
+    request_meta: Option<Value>,
+    protocol_version: String,
+    client_name: String,
+    client_version: String,
+    initialize_meta: Option<Value>,
+}
+
 fn current_client_identity(request_context: &RequestContext<RoleServer>) -> ClientIdentity {
     current_client_identity_from_initialize(request_context.peer.peer_info())
 }
@@ -552,16 +573,69 @@ fn current_client_identity(request_context: &RequestContext<RoleServer>) -> Clie
 fn current_client_identity_from_initialize(
     peer_info: Option<&InitializeRequestParams>,
 ) -> ClientIdentity {
-    match peer_info.map(|info| info.client_info.name.trim()) {
-        Some(name) if !name.is_empty() => ClientIdentity {
-            normalized: normalize_client_name(name),
-            raw: name.to_string(),
-        },
+    match peer_info {
+        Some(info) => {
+            let raw = info.client_info.name.as_str();
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                ClientIdentity {
+                    normalized: "unknown".to_string(),
+                    raw: raw.to_string(),
+                }
+            } else {
+                ClientIdentity {
+                    normalized: normalize_client_name(trimmed),
+                    raw: raw.to_string(),
+                }
+            }
+        }
         _ => ClientIdentity {
             normalized: "unknown".to_string(),
             raw: "unknown".to_string(),
         },
     }
+}
+
+fn current_pending_write_provenance(request_context: &RequestContext<RoleServer>) -> String {
+    pending_write_provenance_json(
+        &request_context.id,
+        &request_context.meta,
+        request_context.peer.peer_info(),
+    )
+}
+
+fn pending_write_provenance_json(
+    request_id: &RequestId,
+    request_meta: &Meta,
+    peer_info: Option<&InitializeRequestParams>,
+) -> String {
+    let provenance = match peer_info {
+        Some(info) => PendingWriteProvenance {
+            source: "mcp",
+            request_id: request_id.clone().into_json_value(),
+            request_meta: optional_meta_value(Some(request_meta)),
+            protocol_version: info.protocol_version.to_string(),
+            client_name: info.client_info.name.clone(),
+            client_version: info.client_info.version.clone(),
+            initialize_meta: optional_meta_value(info.meta.as_ref()),
+        },
+        None => PendingWriteProvenance {
+            source: "mcp",
+            request_id: request_id.clone().into_json_value(),
+            request_meta: optional_meta_value(Some(request_meta)),
+            protocol_version: "unknown".to_string(),
+            client_name: "unknown".to_string(),
+            client_version: "unknown".to_string(),
+            initialize_meta: None,
+        },
+    };
+
+    serde_json::to_string(&provenance).expect("pending write provenance should serialize")
+}
+
+fn optional_meta_value(meta: Option<&Meta>) -> Option<Value> {
+    meta.filter(|meta| !meta.0.is_empty())
+        .map(|meta| serde_json::to_value(meta).expect("mcp meta should serialize"))
 }
 
 fn normalize_client_name(name: &str) -> String {
@@ -570,6 +644,10 @@ fn normalize_client_name(name: &str) -> String {
         "codex" | "codex-cli" | "openai-codex" => "codex".to_string(),
         other => other.to_string(),
     }
+}
+
+fn sanitize_for_log(value: &str) -> String {
+    value.chars().flat_map(char::escape_default).collect()
 }
 
 fn map_tool_error(err: MemhubError) -> McpError {
@@ -588,7 +666,9 @@ mod tests {
     use super::*;
     use crate::commands::{command, decision, init, status, task};
     use crate::db;
+    use rmcp::model::NumberOrString;
     use rusqlite::params;
+    use serde_json::Value;
     use tempfile::tempdir;
 
     #[test]
@@ -686,6 +766,66 @@ mod tests {
     }
 
     #[test]
+    fn current_client_identity_preserves_exact_raw_name() {
+        let identity =
+            current_client_identity_from_initialize(Some(&InitializeRequestParams::new(
+                Default::default(),
+                Implementation::new(" openai-codex ", "1.2.3"),
+            )));
+
+        assert_eq!(identity.normalized, "codex");
+        assert_eq!(identity.raw, " openai-codex ");
+    }
+
+    #[test]
+    fn sanitize_for_log_escapes_control_characters() {
+        let sanitized = sanitize_for_log("codex\ncli\t\u{7}");
+
+        assert!(!sanitized.contains('\n'));
+        assert!(!sanitized.contains('\t'));
+        assert!(!sanitized.contains('\u{7}'));
+        assert!(sanitized.contains("\\n"));
+        assert!(sanitized.contains("\\t"));
+    }
+
+    #[test]
+    fn pending_write_provenance_captures_available_mcp_context() {
+        let mut initialize = InitializeRequestParams::new(
+            Default::default(),
+            Implementation::new(" openai-codex ", "1.2.3"),
+        )
+        .with_protocol_version(rmcp::model::ProtocolVersion::V_2025_06_18);
+        initialize.meta = Some(Meta(
+            [("workspace".to_string(), Value::String("repo".to_string()))]
+                .into_iter()
+                .collect(),
+        ));
+        let request_meta = Meta(
+            [(
+                "progressToken".to_string(),
+                Value::String("progress-1".to_string()),
+            )]
+            .into_iter()
+            .collect(),
+        );
+
+        let provenance_json = pending_write_provenance_json(
+            &NumberOrString::String("req-7".into()),
+            &request_meta,
+            Some(&initialize),
+        );
+        let provenance: Value = serde_json::from_str(&provenance_json).expect("json");
+
+        assert_eq!(provenance["source"], "mcp");
+        assert_eq!(provenance["request_id"], "req-7");
+        assert_eq!(provenance["request_meta"]["progressToken"], "progress-1");
+        assert_eq!(provenance["protocol_version"], "2025-06-18");
+        assert_eq!(provenance["client_name"], " openai-codex ");
+        assert_eq!(provenance["client_version"], "1.2.3");
+        assert_eq!(provenance["initialize_meta"]["workspace"], "repo");
+    }
+
+    #[test]
     fn mcp_proposal_tools_stage_pending_writes() {
         let temp = tempdir().expect("tempdir");
         init::run(temp.path()).expect("init");
@@ -696,6 +836,23 @@ mod tests {
             .build()
             .expect("runtime");
 
+        let fact_provenance = pending_write_provenance_json(
+            &NumberOrString::String("req-fact".into()),
+            &Meta::default(),
+            Some(&InitializeRequestParams::new(
+                Default::default(),
+                Implementation::new(" openai-codex ", "1.2.3"),
+            )),
+        );
+        let decision_provenance = pending_write_provenance_json(
+            &NumberOrString::String("req-decision".into()),
+            &Meta::default(),
+            Some(&InitializeRequestParams::new(
+                Default::default(),
+                Implementation::new("claude-ai", "2.0.0"),
+            )),
+        );
+
         let fact_result = runtime
             .block_on(server.propose_fact_impl(
                 Parameters(ProposeFactParams {
@@ -705,8 +862,9 @@ mod tests {
                 }),
                 ClientIdentity {
                     normalized: "codex".to_string(),
-                    raw: "openai-codex".to_string(),
+                    raw: " openai-codex ".to_string(),
                 },
+                fact_provenance.clone(),
             ))
             .expect("propose fact");
         let decision_result = runtime
@@ -719,6 +877,7 @@ mod tests {
                     normalized: "claude-code".to_string(),
                     raw: "claude-ai".to_string(),
                 },
+                decision_provenance.clone(),
             ))
             .expect("propose decision");
 
@@ -736,15 +895,23 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("pending count");
-        let staged_fact: (String, String, String, String) = ctx
+        let staged_fact: (String, String, String, String, String) = ctx
             .conn
             .query_row(
-                "SELECT payload_json, rationale, actor, actor_raw
+                "SELECT payload_json, rationale, actor, actor_raw, provenance_json
                  FROM pending_writes
                  WHERE kind = 'fact'
                  LIMIT 1",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )
             .expect("staged fact");
         let staged_decision: String = ctx
@@ -772,7 +939,8 @@ mod tests {
             "Observed in this repo and should be reviewed."
         );
         assert_eq!(staged_fact.2, "codex");
-        assert_eq!(staged_fact.3, "openai-codex");
+        assert_eq!(staged_fact.3, " openai-codex ");
+        assert_eq!(staged_fact.4, fact_provenance);
         assert!(staged_decision.contains("\"title\":\"Keep staged writes narrow\""));
         assert_eq!(durable_fact_count, 0);
         assert_eq!(durable_decision_count, 0);
@@ -790,6 +958,15 @@ mod tests {
             .build()
             .expect("runtime");
 
+        let provenance_json = pending_write_provenance_json(
+            &NumberOrString::Number(7),
+            &Meta::default(),
+            Some(&InitializeRequestParams::new(
+                Default::default(),
+                Implementation::new("codex", "1.0.0"),
+            )),
+        );
+
         runtime
             .block_on(server.propose_fact_impl(
                 Parameters(ProposeFactParams {
@@ -801,6 +978,7 @@ mod tests {
                     normalized: "codex".to_string(),
                     raw: "codex".to_string(),
                 },
+                provenance_json,
             ))
             .expect("propose fact");
 

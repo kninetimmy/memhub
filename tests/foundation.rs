@@ -15,7 +15,7 @@ fn init_creates_memhub_layout_and_gitignore_entry() {
     assert!(
         result
             .migrations_applied
-            .contains(&"0003_pending_writes".to_string())
+            .contains(&"0004_pending_write_provenance".to_string())
     );
 
     let gitignore = fs::read_to_string(temp.path().join(".gitignore")).expect("read gitignore");

@@ -54,3 +54,9 @@ Append-only. Superseding decisions should be added as new dated entries rather t
 - Agent-originated MCP fact and decision writes land in `pending_writes`, not `facts` or `decisions`.
 - `memhub status` and the MCP `status` tool expose pending-write count so staged proposals are visible before a review UX exists.
 - MCP client identity is derived from `clientInfo.name`, normalized for known Codex and Claude Code aliases, and stored alongside the raw observed value.
+
+## 2026-04-22 - Pending-write provenance stores only MCP metadata that exists today
+
+- `pending_writes` now stores MCP provenance as a JSON blob so the schema can remain forward-compatible without pretending prompt or session text is available yet.
+- The stored provenance currently covers MCP request ID, request meta, protocol version, client name/version, and initialize meta where `rmcp` exposes them.
+- Prompt/session review context remains deferred until the transport surface or Milestone 4 review design gives a concrete source for it.
