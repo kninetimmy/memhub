@@ -5,6 +5,7 @@ use rusqlite::{OptionalExtension, params};
 use crate::Result;
 use crate::db;
 use crate::models::Fact;
+use crate::sync_md;
 
 pub fn add(start: &Path, key: &str, value: &str, source: &str) -> Result<(i64, bool)> {
     let mut ctx = db::open_project(start)?;
@@ -45,6 +46,7 @@ pub fn add(start: &Path, key: &str, value: &str, source: &str) -> Result<(i64, b
     )?;
 
     tx.commit()?;
+    sync_md::sync_if_enabled(start)?;
     Ok((row_id, created))
 }
 

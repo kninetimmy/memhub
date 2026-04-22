@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`memhub` is a local-first per-repo memory CLI that aims to give Codex and Claude Code one shared durable source of project context. The current implementation is limited to Milestone 1 and deliberately avoids speculative subsystems.
+`memhub` is a local-first per-repo memory CLI that aims to give Codex and Claude Code one shared durable source of project context. The current implementation now covers the core of Milestone 2 plus the first markdown-sync slice of Milestone 3 while still avoiding speculative subsystems.
 
 ## Stack and Versions
 
@@ -28,7 +28,9 @@
 
 - Project bootstrap resolves or creates `.memhub/` in a repository root.
 - The DB layer applies migrations and maintains a single `projects` row.
-- Command handlers perform real writes for facts, decisions, and tasks, and log those writes to `writes_log`.
+- Command handlers perform real writes for facts, decisions, tasks, explicit command verification, and git ingestion, and log those writes to `writes_log`.
+- Search uses SQLite FTS5 over `chunks` for decision text and exact indexed lookups for file history through `files` and `commit_files`.
+- Markdown sync rewrites only explicit managed sections in `AGENTS.md` and `CLAUDE.md`, and can run explicitly or after writes when `auto_sync_md` is enabled.
 
 ## Security Invariants
 
@@ -43,5 +45,6 @@ Single local CLI process with an embedded SQLite database. No background service
 ## Known Gaps / Out of Scope
 
 - MCP server and markdown sync
-- Git ingestion and search router
+- MCP server
+- Search coverage beyond exact file history plus decision FTS
 - Confidence decay, review queue, export/import, and deny-list enforcement

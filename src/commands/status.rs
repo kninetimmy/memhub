@@ -22,6 +22,9 @@ pub fn run(start: &Path) -> Result<StatusSummary> {
         |row| row.get(0),
     )?;
     let commands: i64 = conn.query_row("SELECT COUNT(*) FROM commands", [], |row| row.get(0))?;
+    let commits: i64 = conn.query_row("SELECT COUNT(*) FROM commits", [], |row| row.get(0))?;
+    let files: i64 = conn.query_row("SELECT COUNT(*) FROM files", [], |row| row.get(0))?;
+    let chunks: i64 = conn.query_row("SELECT COUNT(*) FROM chunks", [], |row| row.get(0))?;
     let writes_logged: i64 =
         conn.query_row("SELECT COUNT(*) FROM writes_log", [], |row| row.get(0))?;
 
@@ -41,6 +44,9 @@ pub fn run(start: &Path) -> Result<StatusSummary> {
         tasks_open,
         tasks_total,
         commands,
+        commits,
+        files,
+        chunks,
         writes_logged,
     })
 }

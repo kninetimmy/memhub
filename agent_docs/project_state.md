@@ -4,19 +4,23 @@ Last updated: 2026-04-21
 
 ## Currently building
 
-Milestone 1 foundation for `memhub`: a real Rust CLI with local SQLite storage, migrations, config, audit logging, and usable commands for facts, decisions, tasks, status, and command verification. The PRD is preserved verbatim in `docs/reference/memhub-prd.md`.
+Milestone 3 has started: the CLI now supports managed-block generation for `AGENTS.md` and `CLAUDE.md` through `memhub sync-md`, while git ingestion and indexed search remain the current retrieval base.
 
 ## Next up
 
-1. Add git ingestion plus indexed search for Milestone 2.
-2. Add MCP and markdown managed-block sync only after the CLI foundation is stable.
+1. Start Milestone 3 with markdown managed-block sync for `AGENTS.md` and `CLAUDE.md`.
+2. Add MCP read/write adapters over the existing CLI services after the markdown sync shape is stable.
+3. Tighten markdown sync backup semantics and decide whether more managed content belongs in the generated block.
 
 ## Last session
 
-2026-04-21 - Added `memhub command verify` so command history can record explicit exit-code outcomes into the existing `commands` table and `writes_log`.
+2026-04-21 - Started Milestone 3 in the working tree by adding `memhub sync-md`, managed-block generation for `AGENTS.md` / `CLAUDE.md`, init-time sync, and optional `auto_sync_md` rewrites after managed-content writes. Verified with `cargo test`.
+
+2026-04-21 - Implemented Milestone 2 core in the working tree by adding `memhub ingest-git`, the `commits` / `files` / `commit_files` / `chunks` schema, FTS-backed `memhub search`, and query-plan-aware tests for exact file-history and decision search. Verified with `cargo test` and `cargo build`.
 
 ## Open questions
 
 - Which Rust MCP crate is the right fit when Milestone 3 starts?
-- Which text sources should seed the first FTS chunk set in Milestone 2?
+- Should Milestone 2 search index facts, tasks, or command history before MCP depends on it?
+- What backup behavior should `sync-md` use before rewriting managed blocks?
 - Should `memhub migrate` remain implicit-on-open or become explicit once external users adopt the tool?

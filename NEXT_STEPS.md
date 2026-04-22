@@ -1,8 +1,8 @@
 # Next Steps
 
-1. Add a real `memhub command record|verify` flow so build/test/run history becomes useful instead of schema-only.
-2. Implement Milestone 2 git ingestion plus a narrow `search` command backed by FTS and indexed lookups.
-3. Implement Milestone 3 markdown managed-block sync and MCP read/write tools without bypassing the write policy.
+1. Finish Milestone 3 markdown sync by tightening managed-block content, backup semantics, and any missing edge-case coverage.
+2. Implement Milestone 3 MCP read/write tools as thin adapters over the existing indexed search and explicit write paths.
+3. Decide whether Milestone 2 search should index more source types before MCP depends on it.
 
 ## GitHub
 

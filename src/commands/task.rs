@@ -2,6 +2,7 @@ use std::path::Path;
 
 use crate::db;
 use crate::models::Task;
+use crate::sync_md;
 use crate::{MemhubError, Result};
 
 pub fn add(start: &Path, title: &str, notes: Option<&str>) -> Result<i64> {
@@ -18,6 +19,7 @@ pub fn add(start: &Path, title: &str, notes: Option<&str>) -> Result<i64> {
     db::log_write(&tx, "cli:user", "tasks", Some(row_id), "insert", "task add")?;
 
     tx.commit()?;
+    sync_md::sync_if_enabled(start)?;
     Ok(row_id)
 }
 
@@ -83,5 +85,6 @@ pub fn done(start: &Path, task_id: i64) -> Result<()> {
     )?;
 
     tx.commit()?;
+    sync_md::sync_if_enabled(start)?;
     Ok(())
 }

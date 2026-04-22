@@ -18,6 +18,18 @@ fn init_creates_memhub_layout_and_gitignore_entry() {
 }
 
 #[test]
+fn init_does_not_duplicate_existing_memhub_gitignore_entry() {
+    let temp = tempdir().expect("tempdir");
+    fs::write(temp.path().join(".gitignore"), "/target/\n/.memhub/\n").expect("seed gitignore");
+
+    let result = init::run(temp.path()).expect("init succeeds");
+    let gitignore = fs::read_to_string(temp.path().join(".gitignore")).expect("read gitignore");
+
+    assert!(!result.gitignore_updated);
+    assert_eq!(gitignore.matches(".memhub/").count(), 1);
+}
+
+#[test]
 fn core_records_are_persisted_and_status_counts_change() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init succeeds");

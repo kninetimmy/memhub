@@ -2,7 +2,7 @@
 
 ## What Exists Now
 
-The current repository implements a single-binary Rust CLI with embedded SQLite migrations. A memhub-managed repo stores runtime state in `.memhub/`, specifically:
+The current repository implements a single-binary Rust CLI with embedded SQLite migrations, git ingestion, and indexed search. A memhub-managed repo stores runtime state in `.memhub/`, specifically:
 
 - `.memhub/project.sqlite` for durable project records
 - `.memhub/config.toml` for per-repo config
@@ -15,9 +15,11 @@ The binary resolves the nearest ancestor containing `.memhub/`, opens the SQLite
 - Config load/save via `serde` and `toml`
 - SQLite access via `rusqlite`
 - Schema bootstrap and migration tracking
-- CRUD handlers for facts, decisions, tasks, and command history verification
+- CRUD handlers for facts, decisions, tasks, command history verification, git ingestion, and markdown sync
+- FTS5-backed search chunks for decision text plus exact file-history queries
+- Managed-block generation for `AGENTS.md` and `CLAUDE.md`, with optional auto-sync after writes
 - Audit logging through `writes_log`
-- Placeholder modules for future MCP and markdown sync work
+- Placeholder module for future MCP work
 
 ## Layout
 
@@ -31,8 +33,7 @@ The binary resolves the nearest ancestor containing `.memhub/`, opens the SQLite
 ## Important Limits
 
 - No MCP server exists yet.
-- No git ingestion or search router exists yet.
-- No markdown managed-block sync exists yet.
+- Search routing is still intentionally narrow: exact file-path history and decision-text FTS only.
 - No confidence decay, review queue, or deny-list enforcement exists yet.
 
 Future docs should describe those pieces only after they are implemented.

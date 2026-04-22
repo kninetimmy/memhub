@@ -18,16 +18,19 @@ Each item should capture scope, affected files, status, and explicit deferrals.
   Notes: Implemented as `memhub command verify` using exit-code recording against the existing `commands` table. Richer verification metadata and automated capture remain deferred.
 
 - `M2-001` - Add git ingestion for commits, files, and commit-file relationships.
-  Status: triaged
+  Status: completed
   Scope: `src/commands/`, `src/db/`, `migrations/`, `docs/architecture/current-architecture.md`
+  Notes: Implemented as `memhub ingest-git` using the git CLI, with schema support for `commits`, `files`, and `commit_files`.
 
 - `M2-002` - Add FTS-backed `memhub search` with indexed query paths only.
-  Status: triaged
+  Status: completed
   Scope: `src/commands/`, `src/db/`, `migrations/`, tests for query plans
+  Notes: Implemented with FTS5-backed decision search plus exact indexed file-history lookups and query-plan tests that guard against full scans on hot tables.
 
 - `M3-001` - Implement markdown managed-block sync for `AGENTS.md` and `CLAUDE.md`.
-  Status: triaged
+  Status: in progress
   Scope: `src/sync_md/`, CLI surface, docs, backup behavior
+  Notes: Core `memhub sync-md` generation is implemented, including init-time sync and optional auto-sync after writes. Backup behavior and any broader managed-content coverage remain open.
 
 - `M3-002` - Implement MCP read/write tools as thin adapters over existing services.
   Status: triaged

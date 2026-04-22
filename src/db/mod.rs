@@ -162,7 +162,10 @@ fn ensure_gitignore(repo_root: &Path) -> Result<bool> {
         String::new()
     };
 
-    if existing.lines().any(|line| line.trim() == entry) {
+    if existing
+        .lines()
+        .any(|line| normalize_gitignore_entry(line) == normalize_gitignore_entry(entry))
+    {
         return Ok(false);
     }
 
@@ -175,6 +178,10 @@ fn ensure_gitignore(repo_root: &Path) -> Result<bool> {
 
     fs::write(gitignore_path, updated)?;
     Ok(true)
+}
+
+fn normalize_gitignore_entry(entry: &str) -> String {
+    entry.trim().trim_matches('/').to_string()
 }
 
 pub fn log_write(

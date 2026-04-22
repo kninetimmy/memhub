@@ -18,6 +18,16 @@ pub struct Cli {
 pub enum TopLevelCommand {
     Init,
     Status,
+    SyncMd,
+    IngestGit {
+        #[arg(long)]
+        since: Option<String>,
+    },
+    Search {
+        query: String,
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+    },
     Fact {
         #[command(subcommand)]
         command: FactCommand,
@@ -176,7 +186,73 @@ pub fn run(cli: Cli) -> Result<()> {
                 summary.tasks_total, summary.tasks_open
             );
             println!("Commands: {}", summary.commands);
+            println!("Commits: {}", summary.commits);
+            println!("Files: {}", summary.files);
+            println!("Search chunks: {}", summary.chunks);
             println!("Writes logged: {}", summary.writes_logged);
+        }
+        TopLevelCommand::SyncMd => {
+            let result = commands::sync_md::run(&cwd)?;
+            if result.updated_files.is_empty() {
+                println!("Managed markdown is already up to date.");
+            } else {
+                println!("Updated managed markdown:");
+                for path in result.updated_files {
+                    println!("  {}", path.display());
+                }
+            }
+        }
+        TopLevelCommand::IngestGit { since } => {
+            let summary = commands::ingest_git::run(&cwd, since.as_deref())?;
+            println!(
+                "Git ingestion complete for {}",
+                summary.since.as_deref().unwrap_or("entire history")
+            );
+            println!("Commits processed: {}", summary.commits_seen);
+            println!("Unique files touched: {}", summary.unique_files_seen);
+            println!(
+                "Commit-file links recorded: {}",
+                summary.commit_file_links_seen
+            );
+        }
+        TopLevelCommand::Search { query, limit } => {
+            let response = commands::search::run(&cwd, &query, limit)?;
+            println!("Matcher: {}", response.matcher);
+
+            if response.results.is_empty() {
+                println!("No matches for '{}'.", response.query);
+            } else {
+                match &response.results[0] {
+                    crate::models::SearchResult::FileHistory(_) => {
+                        for result in response.results {
+                            if let crate::models::SearchResult::FileHistory(hit) = result {
+                                println!(
+                                    "{} {} {} {}\n  {}",
+                                    hit.committed_at,
+                                    hit.change_type,
+                                    hit.commit_sha,
+                                    hit.path,
+                                    hit.message
+                                );
+                            }
+                        }
+                    }
+                    crate::models::SearchResult::Decision(_) => {
+                        for result in response.results {
+                            if let crate::models::SearchResult::Decision(hit) = result {
+                                println!(
+                                    "[{}] {} (score: {:.3}, decided: {})\n  {}",
+                                    hit.decision_id,
+                                    hit.title,
+                                    hit.score,
+                                    hit.decided_at,
+                                    hit.rationale
+                                );
+                            }
+                        }
+                    }
+                }
+            }
         }
         TopLevelCommand::Fact { command } => match command {
             FactCommand::Add { key, value, source } => {

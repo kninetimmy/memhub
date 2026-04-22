@@ -52,6 +52,51 @@ pub struct CommandRecord {
 }
 
 #[derive(Debug)]
+pub struct GitIngestSummary {
+    pub since: Option<String>,
+    pub commits_seen: usize,
+    pub unique_files_seen: usize,
+    pub commit_file_links_seen: usize,
+}
+
+#[derive(Debug)]
+pub struct FileHistoryHit {
+    pub path: String,
+    pub commit_sha: String,
+    pub author: String,
+    pub committed_at: String,
+    pub message: String,
+    pub change_type: String,
+}
+
+#[derive(Debug)]
+pub struct DecisionSearchHit {
+    pub decision_id: i64,
+    pub title: String,
+    pub rationale: String,
+    pub decided_at: String,
+    pub score: f64,
+}
+
+#[derive(Debug)]
+pub enum SearchResult {
+    FileHistory(FileHistoryHit),
+    Decision(DecisionSearchHit),
+}
+
+#[derive(Debug)]
+pub struct SearchResponse {
+    pub matcher: String,
+    pub query: String,
+    pub results: Vec<SearchResult>,
+}
+
+#[derive(Debug)]
+pub struct MarkdownSyncResult {
+    pub updated_files: Vec<PathBuf>,
+}
+
+#[derive(Debug)]
 pub struct StatusSummary {
     pub project_name: String,
     pub repo_root: PathBuf,
@@ -63,5 +108,8 @@ pub struct StatusSummary {
     pub tasks_open: i64,
     pub tasks_total: i64,
     pub commands: i64,
+    pub commits: i64,
+    pub files: i64,
+    pub chunks: i64,
     pub writes_logged: i64,
 }

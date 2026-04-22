@@ -2,12 +2,18 @@ use rusqlite::Connection;
 
 use crate::Result;
 
-pub const LATEST_VERSION: &str = "0001_initial";
+pub const LATEST_VERSION: &str = "0002_git_search";
 
-const MIGRATIONS: &[(&str, &str)] = &[(
-    "0001_initial",
-    include_str!("../../migrations/0001_initial.sql"),
-)];
+const MIGRATIONS: &[(&str, &str)] = &[
+    (
+        "0001_initial",
+        include_str!("../../migrations/0001_initial.sql"),
+    ),
+    (
+        "0002_git_search",
+        include_str!("../../migrations/0002_git_search.sql"),
+    ),
+];
 
 pub fn apply_all(conn: &mut Connection) -> Result<Vec<String>> {
     conn.execute(

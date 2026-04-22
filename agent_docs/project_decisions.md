@@ -26,3 +26,8 @@ Append-only. Superseding decisions should be added as new dated entries rather t
 
 - The CLI records command history through `memhub command verify` instead of adding automated capture or a review queue early.
 - Exit code is the Milestone 1 verification signal for command history in the existing schema; richer verification metadata remains deferred with the broader write-policy work.
+
+## 2026-04-21 - Initial Milestone 2 search indexes decision text plus exact file history
+
+- `memhub search` uses exact indexed file-path lookups for history queries and SQLite FTS5 over decision text for free-text retrieval.
+- Additional chunk sources can be added later, but the first implementation stays narrow so the router remains explainable and the query-plan tests stay simple.

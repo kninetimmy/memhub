@@ -3,8 +3,10 @@ use std::path::Path;
 use rusqlite::params;
 
 use crate::Result;
+use crate::commands::search;
 use crate::db;
 use crate::models::Decision;
+use crate::sync_md;
 
 pub fn add(start: &Path, title: &str, rationale: &str) -> Result<i64> {
     let mut ctx = db::open_project(start)?;
@@ -16,6 +18,7 @@ pub fn add(start: &Path, title: &str, rationale: &str) -> Result<i64> {
         params![title, rationale],
     )?;
     let row_id = tx.last_insert_rowid();
+    search::sync_decision_chunks(&tx)?;
 
     db::log_write(
         &tx,
@@ -27,6 +30,7 @@ pub fn add(start: &Path, title: &str, rationale: &str) -> Result<i64> {
     )?;
 
     tx.commit()?;
+    sync_md::sync_if_enabled(start)?;
     Ok(row_id)
 }
 

@@ -1,6 +1,9 @@
 pub mod command;
 pub mod decision;
 pub mod fact;
+pub mod ingest_git;
 pub mod init;
+pub mod search;
 pub mod status;
+pub mod sync_md;
 pub mod task;
