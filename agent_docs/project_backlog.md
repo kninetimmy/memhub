@@ -12,6 +12,11 @@ Each item should capture scope, affected files, status, and explicit deferrals.
 
 ## Items
 
+- `M1-001` - Add command recording through explicit CLI verification.
+  Status: completed
+  Scope: `src/cli/`, `src/commands/`, `tests/`, continuity docs
+  Notes: Implemented as `memhub command verify` using exit-code recording against the existing `commands` table. Richer verification metadata and automated capture remain deferred.
+
 - `M2-001` - Add git ingestion for commits, files, and commit-file relationships.
   Status: triaged
   Scope: `src/commands/`, `src/db/`, `migrations/`, `docs/architecture/current-architecture.md`

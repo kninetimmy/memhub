@@ -21,3 +21,8 @@ Append-only. Superseding decisions should be added as new dated entries rather t
 
 - An explicit `memhub migrate` command is deferred.
 - This keeps the current scaffold usable while still preserving numbered SQL migrations in the repository.
+
+## 2026-04-21 - Milestone 1 command verification uses explicit exit-code recording
+
+- The CLI records command history through `memhub command verify` instead of adding automated capture or a review queue early.
+- Exit code is the Milestone 1 verification signal for command history in the existing schema; richer verification metadata remains deferred with the broader write-policy work.

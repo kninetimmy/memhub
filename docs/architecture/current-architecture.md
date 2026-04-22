@@ -15,7 +15,7 @@ The binary resolves the nearest ancestor containing `.memhub/`, opens the SQLite
 - Config load/save via `serde` and `toml`
 - SQLite access via `rusqlite`
 - Schema bootstrap and migration tracking
-- CRUD handlers for facts, decisions, and tasks
+- CRUD handlers for facts, decisions, tasks, and command history verification
 - Audit logging through `writes_log`
 - Placeholder modules for future MCP and markdown sync work
 

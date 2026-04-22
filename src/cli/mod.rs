@@ -95,6 +95,34 @@ pub enum TaskCommand {
 #[derive(Debug, Subcommand)]
 pub enum CommandCommand {
     List,
+    Verify {
+        #[arg(value_enum)]
+        kind: CommandKind,
+        cmdline: String,
+        #[arg(long)]
+        exit_code: i64,
+    },
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+pub enum CommandKind {
+    Build,
+    Test,
+    Run,
+    Lint,
+    Other,
+}
+
+impl CommandKind {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Build => "build",
+            Self::Test => "test",
+            Self::Run => "run",
+            Self::Lint => "lint",
+            Self::Other => "other",
+        }
+    }
 }
 
 pub fn run(cli: Cli) -> Result<()> {
@@ -252,6 +280,31 @@ pub fn run(cli: Cli) -> Result<()> {
                             command.fail_count
                         );
                     }
+                }
+            }
+            CommandCommand::Verify {
+                kind,
+                cmdline,
+                exit_code,
+            } => {
+                let kind_name = kind.as_str();
+                let (id, created) =
+                    commands::command::verify(&cwd, kind_name, &cmdline, exit_code)?;
+                if exit_code == 0 {
+                    println!(
+                        "{} command {id}: {} => {}",
+                        if created { "Verified" } else { "Updated" },
+                        kind_name,
+                        cmdline
+                    );
+                } else {
+                    println!(
+                        "{} failed command {id}: {} => {} (exit: {})",
+                        if created { "Recorded" } else { "Updated" },
+                        kind_name,
+                        cmdline,
+                        exit_code
+                    );
                 }
             }
         },

@@ -1,6 +1,6 @@
 use std::fs;
 
-use memhub::commands::{decision, fact, init, status, task};
+use memhub::commands::{command, decision, fact, init, status, task};
 use tempfile::tempdir;
 
 #[test]
@@ -52,4 +52,32 @@ fn core_records_are_persisted_and_status_counts_change() {
     assert_eq!(summary.tasks_total, 1);
     assert_eq!(summary.tasks_open, 0);
     assert!(summary.writes_logged >= 3);
+}
+
+#[test]
+fn command_verify_upserts_history_and_updates_status_counts() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init succeeds");
+
+    let (command_id, created) =
+        command::verify(temp.path(), "build", "cargo build", 0).expect("command verify insert");
+    assert!(created);
+    assert!(command_id > 0);
+
+    let (same_command_id, created) =
+        command::verify(temp.path(), "build", "cargo build", 101).expect("command verify update");
+    assert!(!created);
+    assert_eq!(same_command_id, command_id);
+
+    let commands = command::list(temp.path()).expect("command list");
+    let summary = status::run(temp.path()).expect("status");
+
+    assert_eq!(commands.len(), 1);
+    assert_eq!(commands[0].kind, "build");
+    assert_eq!(commands[0].cmdline, "cargo build");
+    assert_eq!(commands[0].last_exit_code, Some(101));
+    assert_eq!(commands[0].success_count, 1);
+    assert_eq!(commands[0].fail_count, 1);
+    assert_eq!(summary.commands, 1);
+    assert!(summary.writes_logged >= 2);
 }

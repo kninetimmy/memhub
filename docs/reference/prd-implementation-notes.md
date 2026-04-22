@@ -13,7 +13,7 @@ This scaffold targets Milestone 1 from the PRD:
 - Embedded SQL migrations
 - Per-repo config in `.memhub/config.toml`
 - Lean logging and error handling
-- Usable commands for `init`, `status`, `fact`, `decision`, `task`, and `command list`
+- Usable commands for `init`, `status`, `fact`, `decision`, `task`, `command list`, and `command verify`
 - Audit logging for durable writes
 
 ## Explicitly Deferred
@@ -28,7 +28,7 @@ This scaffold targets Milestone 1 from the PRD:
 
 - The schema keeps a `projects` table and `project_id` foreign keys to stay close to the PRD, even though each DB only serves one repo.
 - Migrations run automatically when the CLI opens an initialized project. The explicit `memhub migrate` command is deferred to keep Milestone 1 lean.
-- The `commands` table exists now, but command recording and verification are deferred. `command list` is intentionally read-only in this scaffold.
+- Command history is updated only through the explicit `memhub command verify` path in this scaffold. Richer verification metadata, review policy, and automation remain deferred.
 
 ## Open Decisions To Revisit
 
