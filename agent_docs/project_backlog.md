@@ -33,5 +33,11 @@ Each item should capture scope, affected files, status, and explicit deferrals.
   Notes: Completed by adding strict marker validation, timestamped backups for changed existing markdown files, temp-file replacement writes, richer sync reporting, and regression coverage for failure/no-op/manual-content paths. Broader managed-content coverage remains deferred.
 
 - `M3-002` - Implement MCP read/write tools as thin adapters over existing services.
-  Status: triaged
+  Status: completed
   Scope: `src/mcp/`, write policy wiring, tests
+  Notes: Completed as a narrow stdio MCP slice using the official `rmcp` crate. The server is exposed through `memhub serve` and currently supports status, search, task listing, recent decision listing, latest-command lookup, and explicit verified command recording. Broader agent-originated write policy remains deferred.
+
+- `M3-003` - Expand MCP write-policy boundaries and client identity handling.
+  Status: triaged
+  Scope: `src/mcp/`, write-policy plumbing, continuity docs, tests
+  Notes: Next Milestone 3 slice should add the narrowest safe staged write path for agent-originated facts and decisions, plus observed `clientInfo.name` normalization, without jumping ahead to the full Milestone 4 review queue.

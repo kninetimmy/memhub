@@ -2,7 +2,7 @@
 
 ## Current Scaffold
 
-This repository now covers the Milestone 1 foundation, the core Milestone 2 retrieval path, and the first Milestone 3 markdown sync slice:
+This repository now covers the Milestone 1 foundation, the core Milestone 2 retrieval path, and the shipped markdown sync plus initial MCP slices of Milestone 3:
 
 - Rust CLI scaffold
 - SQLite schema and migrations
@@ -12,6 +12,8 @@ This repository now covers the Milestone 1 foundation, the core Milestone 2 retr
 - Git ingestion into `commits`, `files`, and `commit_files`
 - FTS-backed decision search plus exact indexed file-history lookup
 - Managed-block generation for `AGENTS.md` and `CLAUDE.md`
+- Local stdio MCP server through `memhub serve`
+- Thin MCP tools for status, search, task listing, recent decisions, latest command lookup, and explicit verified command recording
 - Audit logging for writes
 
 ## Milestone 2: Git + Search
@@ -27,7 +29,7 @@ This repository now covers the Milestone 1 foundation, the core Milestone 2 retr
 - Add an MCP server with thin wrappers over read/write services
 - Add explicit markdown managed-block sync for `AGENTS.md` and `CLAUDE.md`
 - Start enforcing write-back policy boundaries for agent-originated data
-- Status: markdown sync core is in the current codebase; MCP is still pending
+- Status: markdown sync and the first stdio MCP slice are in the current codebase; broader agent write-policy work is still pending
 
 ## Milestone 4: Trust and Maintenance
 

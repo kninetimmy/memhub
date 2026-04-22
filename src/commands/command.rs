@@ -32,14 +32,36 @@ pub fn list(start: &Path) -> Result<Vec<CommandRecord>> {
         .map_err(Into::into)
 }
 
-pub fn verify(start: &Path, kind: &str, cmdline: &str, exit_code: i64) -> Result<(i64, bool)> {
-    let kind = kind.trim().to_ascii_lowercase();
-    if kind.is_empty() {
-        return Err(MemhubError::InvalidInput(
-            "command kind cannot be empty".to_string(),
-        ));
-    }
+pub fn latest_by_kind(start: &Path, kind: &str) -> Result<Option<CommandRecord>> {
+    let kind = normalize_kind(kind)?;
+    let ctx = db::open_project(start)?;
 
+    ctx.conn
+        .query_row(
+            "SELECT id, kind, cmdline, last_exit_code, last_run_at, success_count, fail_count
+             FROM commands
+             WHERE project_id = 1 AND kind = ?1
+             ORDER BY last_run_at DESC, id DESC
+             LIMIT 1",
+            [kind.as_str()],
+            |row| {
+                Ok(CommandRecord {
+                    id: row.get(0)?,
+                    kind: row.get(1)?,
+                    cmdline: row.get(2)?,
+                    last_exit_code: row.get(3)?,
+                    last_run_at: row.get(4)?,
+                    success_count: row.get(5)?,
+                    fail_count: row.get(6)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+pub fn verify(start: &Path, kind: &str, cmdline: &str, exit_code: i64) -> Result<(i64, bool)> {
+    let kind = normalize_kind(kind)?;
     let cmdline = cmdline.trim();
     if cmdline.is_empty() {
         return Err(MemhubError::InvalidInput(
@@ -106,4 +128,15 @@ pub fn verify(start: &Path, kind: &str, cmdline: &str, exit_code: i64) -> Result
     tx.commit()?;
     sync_md::sync_if_enabled(start)?;
     Ok((row_id, created))
+}
+
+fn normalize_kind(kind: &str) -> Result<String> {
+    let kind = kind.trim().to_ascii_lowercase();
+    if kind.is_empty() {
+        return Err(MemhubError::InvalidInput(
+            "command kind cannot be empty".to_string(),
+        ));
+    }
+
+    Ok(kind)
 }

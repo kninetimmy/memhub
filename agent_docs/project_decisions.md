@@ -36,3 +36,8 @@ Append-only. Superseding decisions should be added as new dated entries rather t
 
 - When a milestone or a major milestone slice is completed, update `README.md` so the public project description, current capabilities, and roadmap status reflect the new state of the codebase.
 - Treat README maintenance as part of milestone completion rather than a later cleanup task.
+
+## 2026-04-22 - Milestone 3 MCP work uses the official `rmcp` Rust SDK
+
+- `memhub` uses `rmcp` for the first MCP server slice because it is the official Rust SDK and supports the stdio server transport needed for the local-first CLI workflow.
+- The initial MCP surface stays narrow: thin adapters over existing services plus explicit verified command recording, while broader agent-originated write policy remains deferred.

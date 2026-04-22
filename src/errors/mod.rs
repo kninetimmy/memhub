@@ -12,6 +12,8 @@ pub enum MemhubError {
     InvalidManagedMarkdown { path: String, reason: String },
     #[error("{command} failed: {stderr}")]
     ExternalCommand { command: String, stderr: String },
+    #[error("mcp error: {0}")]
+    Mcp(String),
     #[error("feature not implemented yet: {0}")]
     NotImplemented(&'static str),
     #[error(transparent)]

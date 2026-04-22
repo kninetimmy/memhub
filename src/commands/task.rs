@@ -58,6 +58,43 @@ pub fn list(start: &Path, status_filter: Option<&str>) -> Result<Vec<Task>> {
         .map_err(Into::into)
 }
 
+pub fn list_by_status(start: &Path, status: &str, limit: usize) -> Result<Vec<Task>> {
+    if limit == 0 {
+        return Err(MemhubError::InvalidInput(
+            "task list limit must be greater than zero".to_string(),
+        ));
+    }
+
+    let status = status.trim().to_ascii_lowercase();
+    if !matches!(status.as_str(), "open" | "done" | "blocked") {
+        return Err(MemhubError::InvalidInput(format!(
+            "unsupported task status '{status}'"
+        )));
+    }
+
+    let ctx = db::open_project(start)?;
+    let mut stmt = ctx.conn.prepare(
+        "SELECT id, title, status, notes, created_at, updated_at
+         FROM tasks
+         WHERE status = ?1
+         ORDER BY updated_at DESC, id DESC
+         LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![status, limit as i64], |row| {
+        Ok(Task {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            status: row.get(2)?,
+            notes: row.get(3)?,
+            created_at: row.get(4)?,
+            updated_at: row.get(5)?,
+        })
+    })?;
+
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(Into::into)
+}
+
 pub fn done(start: &Path, task_id: i64) -> Result<()> {
     let mut ctx = db::open_project(start)?;
     let tx = ctx.conn.transaction()?;

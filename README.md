@@ -2,18 +2,18 @@
 
 `memhub` is a local-first Rust CLI for durable per-repo project memory shared across Codex and Claude Code. It gives a repository one structured source of truth for facts, decisions, tasks, command history, git-derived context, and managed project-state blocks in `AGENTS.md` and `CLAUDE.md`.
 
-The long-term product direction is a shared memory layer that both agents can read and write through a local interface. The current implementation already provides a usable local database, CLI workflows, git ingestion, indexed search, and markdown sync, while later milestones add the MCP surface and stricter write policy.
+The long-term product direction is a shared memory layer that both agents can read and write through a local interface. The current implementation already provides a usable local database, CLI workflows, git ingestion, indexed search, hardened markdown sync, and a first local MCP server slice, while later milestones add broader write policy and trust tooling.
 
 ## Development Status
 
-`memhub` is in active development and currently sits between Milestone 3 tasks after completing `M3-001`.
+`memhub` is in active development and is currently in Milestone 3 after completing `M3-002`.
 
 Current state:
 
-- Shipped: Milestone 1 foundations, Milestone 2 git ingestion and indexed search, and Milestone 3 markdown managed-block sync
-- Current focus: start `M3-002`, which adds MCP read/write adapters over the existing CLI services
-- Implemented now: local SQLite storage, embedded migrations, per-repo config, audit logging, facts/decisions/tasks/commands CRUD, explicit command verification, git ingestion, indexed search, and managed-block sync for `AGENTS.md` / `CLAUDE.md`
-- Not implemented yet: MCP server, review queue, confidence decay, export/import, deny-list enforcement, and broader search coverage beyond current indexed paths
+- Shipped: Milestone 1 foundations, Milestone 2 git ingestion and indexed search, and Milestone 3 markdown sync plus the first stdio MCP server slice
+- Current focus: broaden Milestone 3 safely without skipping agent write-policy boundaries
+- Implemented now: local SQLite storage, embedded migrations, per-repo config, audit logging, facts/decisions/tasks/commands CRUD, explicit command verification, git ingestion, indexed search, managed-block sync for `AGENTS.md` / `CLAUDE.md`, and `memhub serve` for stdio MCP access
+- Not implemented yet: review queue, confidence decay, export/import, deny-list enforcement, broader agent-originated write paths, and broader search coverage beyond current indexed paths
 
 Milestone status:
 
@@ -21,7 +21,7 @@ Milestone status:
 |-----------|--------|-------|
 | Milestone 1: DB + CLI | Complete | Core repo bootstrap, schema, CRUD, config, logging |
 | Milestone 2: Git + search | Complete | `ingest-git`, FTS-backed decision search, exact file-history lookups |
-| Milestone 3: MCP + markdown sync | Current | Markdown sync is done; MCP adapter work is next |
+| Milestone 3: MCP + markdown sync | Current | Markdown sync and the first MCP adapter slice are shipped; broader write-policy work remains |
 | Milestone 4: Quality | Planned | Review flow, confidence/staleness, export/import, deny-list work |
 | Milestone 5+ | Planned | Speculative future expansions only after separate validation |
 
@@ -44,6 +44,7 @@ The current codebase already supports a practical local workflow:
 - Ingest git history with `memhub ingest-git [--since <ref>]`
 - Search current indexed memory with `memhub search <query>`
 - Regenerate managed blocks in `AGENTS.md` and `CLAUDE.md` with `memhub sync-md`
+- Serve the current repository over stdio MCP with `memhub serve`
 
 ## Install and Quick Start
 
@@ -110,6 +111,12 @@ Refresh managed markdown blocks:
 cargo run -- sync-md
 ```
 
+Start the local stdio MCP server:
+
+```bash
+cargo run -- serve
+```
+
 ## How memhub works
 
 ### Per-repo source of truth
@@ -124,7 +131,7 @@ The project database is the source of truth. Markdown is a synced view, not the 
 
 ### Command flow
 
-Each CLI invocation walks up from the current working directory to find the nearest `.memhub/` ancestor, opens the local SQLite database, applies any pending embedded migrations, and executes the requested command against that local store.
+Each CLI invocation walks up from the current working directory to find the nearest `.memhub/` ancestor, opens the local SQLite database, applies any pending embedded migrations, and executes the requested command against that local store. `memhub serve` uses that same project discovery rule, then exposes the current repository through a local stdio MCP server.
 
 That keeps runtime behavior simple:
 
@@ -132,6 +139,7 @@ That keeps runtime behavior simple:
 - one per-repo database
 - no required network access
 - no background service
+- MCP transport only when explicitly started
 
 ### Managed markdown sync
 
@@ -154,6 +162,19 @@ That keeps runtime behavior simple:
 
 The current search surface is deliberately smaller than the PRD end-state. It is designed to stay fast and predictable while later milestones expand retrieval.
 
+### MCP server
+
+`memhub serve` starts a local stdio MCP server built on the same command and database layer as the CLI. The current tool surface is intentionally narrow:
+
+- `status`
+- `search`
+- `list_tasks`
+- `list_decisions`
+- `get_command`
+- `record_command`
+
+That keeps the first MCP slice useful without pretending the broader write-policy system already exists.
+
 ### Local-first trust model
 
 The product guardrails matter:
@@ -169,7 +190,7 @@ The stricter write-back policy, review flow, and confidence handling described i
 
 ### Current architecture
 
-The current implementation is a single Rust CLI process over an embedded-migration SQLite database.
+The current implementation is a single Rust CLI process over an embedded-migration SQLite database, with an on-demand stdio MCP server layered over the same local services.
 
 ```text
 User or agent
@@ -180,6 +201,7 @@ memhub CLI
     +-- src/commands/     fact, decision, task, command, search, ingest, sync
     +-- src/db/           bootstrap, path discovery, migrations, .gitignore updates
     +-- src/config/       per-repo config model and persistence
+    +-- src/mcp/          stdio MCP server and tool adapters
     +-- src/sync_md/      managed markdown rendering and safe rewrite logic
     |
     +-- SQLite (.memhub/project.sqlite)
@@ -197,14 +219,14 @@ Implemented subsystems today:
 - git ingestion into relational tables
 - FTS5-backed decision search and indexed file-history lookup
 - markdown managed-block generation and sync
+- stdio MCP tools for status, search, task listing, recent decisions, latest command lookup, and explicit verified command recording
 
 ### Planned architecture
 
-The intended product architecture from the PRD adds an MCP layer on top of the same local services so Codex and Claude Code can read and write shared project memory directly. That layer is not implemented yet.
+The intended product architecture from the PRD is now partially implemented: `memhub` has a local stdio MCP layer, but not the full later write-policy and trust model yet.
 
 Planned later architecture includes:
 
-- MCP read/write adapters over the existing services
 - stricter write policy for verified versus proposed writes
 - review queue and confidence handling
 - broader retrieval and quality tooling
@@ -218,7 +240,7 @@ Those pieces should be described as planned only until the implementation lands.
 - `src/config/` - per-repo config model and read/write helpers
 - `src/db/` - path discovery, connection bootstrap, migrations, and `.gitignore` handling
 - `src/models/` - small structs used by the CLI layer
-- `src/mcp/` - placeholder module for future MCP work
+- `src/mcp/` - stdio MCP server and thin tool adapters over existing services
 - `src/sync_md/` - managed markdown rendering and file rewrite logic
 - `migrations/` - embedded SQL schema migrations
 - `docs/reference/` - preserved PRD and implementation notes
@@ -262,11 +284,14 @@ Delivered so far:
 - backup-before-rewrite behavior
 - strict marker validation
 - safer temp-file replacement writes
+- `memhub serve`
+- thin stdio MCP tools for status, search, task listing, recent decisions, latest command lookup, and explicit verified command recording
 
 Next in this milestone:
 
-- `M3-002` MCP read/write adapters over the existing services
-- crate choice validation and service wiring for the local MCP surface
+- broader agent-originated write-policy work
+- client identification and alias normalization
+- possible retrieval expansion if MCP usage proves the current indexed paths are too narrow
 
 ### Milestone 4: Quality
 

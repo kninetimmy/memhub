@@ -2,7 +2,7 @@
 
 ## What Exists Now
 
-The current repository implements a single-binary Rust CLI with embedded SQLite migrations, git ingestion, and indexed search. A memhub-managed repo stores runtime state in `.memhub/`, specifically:
+The current repository implements a single-binary Rust CLI with embedded SQLite migrations, git ingestion, indexed search, hardened markdown sync, and an on-demand stdio MCP server. A memhub-managed repo stores runtime state in `.memhub/`, specifically:
 
 - `.memhub/project.sqlite` for durable project records
 - `.memhub/config.toml` for per-repo config
@@ -14,12 +14,13 @@ The binary resolves the nearest ancestor containing `.memhub/`, opens the SQLite
 - CLI parsing via `clap`
 - Config load/save via `serde` and `toml`
 - SQLite access via `rusqlite`
+- MCP server wiring via `rmcp`
 - Schema bootstrap and migration tracking
 - CRUD handlers for facts, decisions, tasks, command history verification, git ingestion, and markdown sync
 - FTS5-backed search chunks for decision text plus exact file-history queries
 - Managed-block generation for `AGENTS.md` and `CLAUDE.md`, with optional auto-sync after writes
+- Stdio MCP tools for status, search, task listing, recent decision listing, latest-command lookup, and explicit verified command recording
 - Audit logging through `writes_log`
-- Placeholder module for future MCP work
 
 ## Layout
 
@@ -32,8 +33,8 @@ The binary resolves the nearest ancestor containing `.memhub/`, opens the SQLite
 
 ## Important Limits
 
-- No MCP server exists yet.
 - Search routing is still intentionally narrow: exact file-path history and decision-text FTS only.
+- No broad agent-originated write policy exists yet beyond explicit verified command recording.
 - No confidence decay, review queue, or deny-list enforcement exists yet.
 
 Future docs should describe those pieces only after they are implemented.

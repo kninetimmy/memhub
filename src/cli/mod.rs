@@ -19,6 +19,7 @@ pub enum TopLevelCommand {
     Init,
     Status,
     SyncMd,
+    Serve,
     IngestGit {
         #[arg(long)]
         since: Option<String>,
@@ -207,6 +208,9 @@ pub fn run(cli: Cli) -> Result<()> {
                     }
                 }
             }
+        }
+        TopLevelCommand::Serve => {
+            crate::mcp::serve(&cwd)?;
         }
         TopLevelCommand::IngestGit { since } => {
             let summary = commands::ingest_git::run(&cwd, since.as_deref())?;
