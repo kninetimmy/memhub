@@ -1,9 +1,16 @@
+use std::future::{self, Future};
 use std::path::{Path, PathBuf};
 
+use log::info;
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
-use rmcp::model::{Implementation, ServerCapabilities, ServerInfo};
-use rmcp::{Json, ServerHandler, ServiceExt, schemars, tool, tool_router, transport::stdio};
+use rmcp::model::{
+    Implementation, InitializeRequestParams, InitializeResult, ServerCapabilities, ServerInfo,
+};
+use rmcp::service::RequestContext;
+use rmcp::{
+    Json, RoleServer, ServerHandler, ServiceExt, schemars, tool, tool_router, transport::stdio,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::commands;
@@ -119,6 +126,53 @@ impl MemhubServer {
             exit_code: params.exit_code,
         }))
     }
+
+    async fn propose_fact_impl(
+        &self,
+        Parameters(params): Parameters<ProposeFactParams>,
+        actor: ClientIdentity,
+    ) -> std::result::Result<Json<ProposeFactToolResponse>, McpError> {
+        let id = commands::pending_write::propose_fact(
+            &self.start,
+            &params.key,
+            &params.value,
+            &params.rationale,
+            &actor.normalized,
+            &actor.raw,
+        )
+        .map_err(map_tool_error)?;
+
+        Ok(Json(ProposeFactToolResponse {
+            id,
+            status: "pending".to_string(),
+            actor: actor.normalized,
+            actor_raw: actor.raw,
+            key: params.key,
+        }))
+    }
+
+    async fn propose_decision_impl(
+        &self,
+        Parameters(params): Parameters<ProposeDecisionParams>,
+        actor: ClientIdentity,
+    ) -> std::result::Result<Json<ProposeDecisionToolResponse>, McpError> {
+        let id = commands::pending_write::propose_decision(
+            &self.start,
+            &params.title,
+            &params.rationale,
+            &actor.normalized,
+            &actor.raw,
+        )
+        .map_err(map_tool_error)?;
+
+        Ok(Json(ProposeDecisionToolResponse {
+            id,
+            status: "pending".to_string(),
+            actor: actor.normalized,
+            actor_raw: actor.raw,
+            title: params.title,
+        }))
+    }
 }
 
 #[tool_router(router = tool_router)]
@@ -185,6 +239,32 @@ impl MemhubServer {
     ) -> std::result::Result<Json<RecordCommandToolResponse>, McpError> {
         self.record_command_impl(params).await
     }
+
+    #[tool(
+        name = "propose_fact",
+        description = "Stage a proposed fact write for later review instead of writing directly to durable facts."
+    )]
+    async fn propose_fact(
+        &self,
+        params: Parameters<ProposeFactParams>,
+        request_context: RequestContext<RoleServer>,
+    ) -> std::result::Result<Json<ProposeFactToolResponse>, McpError> {
+        let actor = current_client_identity(&request_context);
+        self.propose_fact_impl(params, actor).await
+    }
+
+    #[tool(
+        name = "propose_decision",
+        description = "Stage a proposed decision write for later review instead of writing directly to durable decisions."
+    )]
+    async fn propose_decision(
+        &self,
+        params: Parameters<ProposeDecisionParams>,
+        request_context: RequestContext<RoleServer>,
+    ) -> std::result::Result<Json<ProposeDecisionToolResponse>, McpError> {
+        let actor = current_client_identity(&request_context);
+        self.propose_decision_impl(params, actor).await
+    }
 }
 
 impl ServerHandler for MemhubServer {
@@ -192,8 +272,26 @@ impl ServerHandler for MemhubServer {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("memhub", env!("CARGO_PKG_VERSION")))
             .with_instructions(
-                "Local-first per-repo project memory. Read tools are direct; write support is currently limited to explicit verified command recording.",
+                "Local-first per-repo project memory. Read tools are direct; writes are limited to explicit verified command recording plus staged fact and decision proposals.",
             )
+    }
+
+    fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = std::result::Result<InitializeResult, McpError>> + '_ {
+        if context.peer.peer_info().is_none() {
+            context.peer.set_peer_info(request.clone());
+        }
+
+        let actor = current_client_identity_from_initialize(Some(&request));
+        info!(
+            "mcp client initialized: normalized={} raw={}",
+            actor.normalized, actor.raw
+        );
+
+        future::ready(Ok(self.get_info()))
     }
 }
 
@@ -226,6 +324,19 @@ struct RecordCommandParams {
     exit_code: i64,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct ProposeFactParams {
+    key: String,
+    value: String,
+    rationale: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct ProposeDecisionParams {
+    title: String,
+    rationale: String,
+}
+
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 struct StatusToolResponse {
     project_name: String,
@@ -241,6 +352,7 @@ struct StatusToolResponse {
     commits: i64,
     files: i64,
     chunks: i64,
+    pending_writes: i64,
     writes_logged: i64,
 }
 
@@ -260,6 +372,7 @@ impl From<StatusSummary> for StatusToolResponse {
             commits: value.commits,
             files: value.files,
             chunks: value.chunks,
+            pending_writes: value.pending_writes,
             writes_logged: value.writes_logged,
         }
     }
@@ -408,6 +521,57 @@ struct RecordCommandToolResponse {
     exit_code: i64,
 }
 
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct ProposeFactToolResponse {
+    id: i64,
+    status: String,
+    actor: String,
+    actor_raw: String,
+    key: String,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct ProposeDecisionToolResponse {
+    id: i64,
+    status: String,
+    actor: String,
+    actor_raw: String,
+    title: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ClientIdentity {
+    normalized: String,
+    raw: String,
+}
+
+fn current_client_identity(request_context: &RequestContext<RoleServer>) -> ClientIdentity {
+    current_client_identity_from_initialize(request_context.peer.peer_info())
+}
+
+fn current_client_identity_from_initialize(
+    peer_info: Option<&InitializeRequestParams>,
+) -> ClientIdentity {
+    match peer_info.map(|info| info.client_info.name.trim()) {
+        Some(name) if !name.is_empty() => ClientIdentity {
+            normalized: normalize_client_name(name),
+            raw: name.to_string(),
+        },
+        _ => ClientIdentity {
+            normalized: "unknown".to_string(),
+            raw: "unknown".to_string(),
+        },
+    }
+}
+
+fn normalize_client_name(name: &str) -> String {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "claude-ai" | "claude code" | "claude-code" => "claude-code".to_string(),
+        "codex" | "codex-cli" | "openai-codex" => "codex".to_string(),
+        other => other.to_string(),
+    }
+}
+
 fn map_tool_error(err: MemhubError) -> McpError {
     match err {
         MemhubError::InvalidInput(message)
@@ -422,7 +586,9 @@ fn map_tool_error(err: MemhubError) -> McpError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::{command, decision, init, task};
+    use crate::commands::{command, decision, init, status, task};
+    use crate::db;
+    use rusqlite::params;
     use tempfile::tempdir;
 
     #[test]
@@ -442,6 +608,7 @@ mod tests {
         assert!(!status.0.project_name.is_empty());
         assert_eq!(status.0.tasks_open, 0);
         assert_eq!(status.0.commands, 0);
+        assert_eq!(status.0.pending_writes, 0);
     }
 
     #[test]
@@ -508,5 +675,150 @@ mod tests {
             .expect("command row");
         assert_eq!(stored.cmdline, "cargo test");
         assert_eq!(stored.last_exit_code, Some(0));
+    }
+
+    #[test]
+    fn normalize_client_aliases() {
+        assert_eq!(normalize_client_name("claude-ai"), "claude-code");
+        assert_eq!(normalize_client_name("Claude Code"), "claude-code");
+        assert_eq!(normalize_client_name("openai-codex"), "codex");
+        assert_eq!(normalize_client_name("CustomClient"), "customclient");
+    }
+
+    #[test]
+    fn mcp_proposal_tools_stage_pending_writes() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+
+        let server = MemhubServer::new(temp.path().to_path_buf());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+
+        let fact_result = runtime
+            .block_on(server.propose_fact_impl(
+                Parameters(ProposeFactParams {
+                    key: "build-command".to_string(),
+                    value: "cargo build".to_string(),
+                    rationale: "Observed in this repo and should be reviewed.".to_string(),
+                }),
+                ClientIdentity {
+                    normalized: "codex".to_string(),
+                    raw: "openai-codex".to_string(),
+                },
+            ))
+            .expect("propose fact");
+        let decision_result = runtime
+            .block_on(server.propose_decision_impl(
+                Parameters(ProposeDecisionParams {
+                    title: "Keep staged writes narrow".to_string(),
+                    rationale: "Avoid direct agent writes before review exists.".to_string(),
+                }),
+                ClientIdentity {
+                    normalized: "claude-code".to_string(),
+                    raw: "claude-ai".to_string(),
+                },
+            ))
+            .expect("propose decision");
+
+        assert_eq!(fact_result.0.status, "pending");
+        assert_eq!(fact_result.0.actor, "codex");
+        assert_eq!(decision_result.0.status, "pending");
+        assert_eq!(decision_result.0.actor, "claude-code");
+
+        let ctx = db::open_project(temp.path()).expect("open project");
+        let pending_count: i64 = ctx
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM pending_writes WHERE status = 'pending'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("pending count");
+        let staged_fact: (String, String, String, String) = ctx
+            .conn
+            .query_row(
+                "SELECT payload_json, rationale, actor, actor_raw
+                 FROM pending_writes
+                 WHERE kind = 'fact'
+                 LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("staged fact");
+        let staged_decision: String = ctx
+            .conn
+            .query_row(
+                "SELECT payload_json FROM pending_writes WHERE kind = 'decision' LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("staged decision");
+        let durable_fact_count: i64 = ctx
+            .conn
+            .query_row("SELECT COUNT(*) FROM facts", [], |row| row.get(0))
+            .expect("fact count");
+        let durable_decision_count: i64 = ctx
+            .conn
+            .query_row("SELECT COUNT(*) FROM decisions", [], |row| row.get(0))
+            .expect("decision count");
+        let summary = status::run(temp.path()).expect("status");
+
+        assert_eq!(pending_count, 2);
+        assert!(staged_fact.0.contains("\"key\":\"build-command\""));
+        assert_eq!(
+            staged_fact.1,
+            "Observed in this repo and should be reviewed."
+        );
+        assert_eq!(staged_fact.2, "codex");
+        assert_eq!(staged_fact.3, "openai-codex");
+        assert!(staged_decision.contains("\"title\":\"Keep staged writes narrow\""));
+        assert_eq!(durable_fact_count, 0);
+        assert_eq!(durable_decision_count, 0);
+        assert_eq!(summary.pending_writes, 2);
+    }
+
+    #[test]
+    fn mcp_pending_writes_are_logged() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+
+        let server = MemhubServer::new(temp.path().to_path_buf());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+
+        runtime
+            .block_on(server.propose_fact_impl(
+                Parameters(ProposeFactParams {
+                    key: "lint-command".to_string(),
+                    value: "cargo fmt --check".to_string(),
+                    rationale: "Candidate command for future review.".to_string(),
+                }),
+                ClientIdentity {
+                    normalized: "codex".to_string(),
+                    raw: "codex".to_string(),
+                },
+            ))
+            .expect("propose fact");
+
+        let ctx = db::open_project(temp.path()).expect("open project");
+        let writes_log_row: (String, String) = ctx
+            .conn
+            .query_row(
+                "SELECT actor, reason
+                 FROM writes_log
+                 WHERE table_name = 'pending_writes'
+                 ORDER BY id DESC
+                 LIMIT 1",
+                params![],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("writes log row");
+
+        assert_eq!(writes_log_row.0, "codex");
+        assert_eq!(writes_log_row.1, "mcp propose_fact");
     }
 }

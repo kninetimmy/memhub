@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use crate::Result;
 
-pub const LATEST_VERSION: &str = "0002_git_search";
+pub const LATEST_VERSION: &str = "0003_pending_writes";
 
 const MIGRATIONS: &[(&str, &str)] = &[
     (
@@ -12,6 +12,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "0002_git_search",
         include_str!("../../migrations/0002_git_search.sql"),
+    ),
+    (
+        "0003_pending_writes",
+        include_str!("../../migrations/0003_pending_writes.sql"),
     ),
 ];
 

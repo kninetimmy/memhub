@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`memhub` is a local-first per-repo memory CLI that aims to give Codex and Claude Code one shared durable source of project context. The current implementation now covers the core of Milestone 2 plus the shipped markdown-sync and initial MCP server slices of Milestone 3 while still avoiding speculative subsystems.
+`memhub` is a local-first per-repo memory CLI that aims to give Codex and Claude Code one shared durable source of project context. The current implementation now covers the core of Milestone 2 plus the shipped markdown-sync and narrowed MCP/write-policy slices of Milestone 3 while still avoiding speculative subsystems.
 
 ## Stack and Versions
 
@@ -30,9 +30,9 @@
 
 - Project bootstrap resolves or creates `.memhub/` in a repository root.
 - The DB layer applies migrations and maintains a single `projects` row.
-- Command handlers perform real writes for facts, decisions, tasks, explicit command verification, and git ingestion, and log those writes to `writes_log`.
+- Command handlers perform real writes for facts, decisions, tasks, explicit command verification, git ingestion, and staged pending writes, and log those writes to `writes_log`.
 - Search uses SQLite FTS5 over `chunks` for decision text and exact indexed lookups for file history through `files` and `commit_files`.
-- The MCP layer serves a local stdio server through `memhub serve` and currently exposes thin tool adapters for status, search, task listing, decision listing, latest-command lookup, and explicit verified command recording.
+- The MCP layer serves a local stdio server through `memhub serve` and currently exposes thin tool adapters for status, search, task listing, decision listing, latest-command lookup, explicit verified command recording, and staged fact/decision proposals. It also normalizes client identity from `clientInfo.name` while preserving the raw observed value.
 - Markdown sync rewrites only explicit managed sections in `AGENTS.md` and `CLAUDE.md`, validates that each file has at most one well-formed managed block pair, creates timestamped backups for changed existing files under `.memhub/backups/markdown/`, and uses temp-file replacement writes. It can run explicitly or after writes when `auto_sync_md` is enabled.
 
 ## Security Invariants
@@ -48,5 +48,5 @@ Single local CLI process with an embedded SQLite database plus an on-demand stdi
 ## Known Gaps / Out of Scope
 
 - Search coverage beyond exact file history plus decision FTS
-- Broader agent-originated write policy beyond explicit verified command recording
+- Review/promotion flow for staged agent-originated writes
 - Confidence decay, review queue, export/import, and deny-list enforcement

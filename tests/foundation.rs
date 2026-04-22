@@ -12,6 +12,11 @@ fn init_creates_memhub_layout_and_gitignore_entry() {
 
     assert!(result.db_path.exists());
     assert!(temp.path().join(".memhub").join("config.toml").exists());
+    assert!(
+        result
+            .migrations_applied
+            .contains(&"0003_pending_writes".to_string())
+    );
 
     let gitignore = fs::read_to_string(temp.path().join(".gitignore")).expect("read gitignore");
     assert!(gitignore.contains(".memhub/"));
@@ -63,6 +68,7 @@ fn core_records_are_persisted_and_status_counts_change() {
     assert_eq!(summary.decisions, 1);
     assert_eq!(summary.tasks_total, 1);
     assert_eq!(summary.tasks_open, 0);
+    assert_eq!(summary.pending_writes, 0);
     assert!(summary.writes_logged >= 3);
 }
 
@@ -91,5 +97,6 @@ fn command_verify_upserts_history_and_updates_status_counts() {
     assert_eq!(commands[0].success_count, 1);
     assert_eq!(commands[0].fail_count, 1);
     assert_eq!(summary.commands, 1);
+    assert_eq!(summary.pending_writes, 0);
     assert!(summary.writes_logged >= 2);
 }

@@ -38,6 +38,16 @@ Each item should capture scope, affected files, status, and explicit deferrals.
   Notes: Completed as a narrow stdio MCP slice using the official `rmcp` crate. The server is exposed through `memhub serve` and currently supports status, search, task listing, recent decision listing, latest-command lookup, and explicit verified command recording. Broader agent-originated write policy remains deferred.
 
 - `M3-003` - Expand MCP write-policy boundaries and client identity handling.
-  Status: triaged
+  Status: completed
   Scope: `src/mcp/`, write-policy plumbing, continuity docs, tests
-  Notes: Next Milestone 3 slice should add the narrowest safe staged write path for agent-originated facts and decisions, plus observed `clientInfo.name` normalization, without jumping ahead to the full Milestone 4 review queue.
+  Notes: Completed by adding `pending_writes`, staged MCP `propose_fact` / `propose_decision` tools, status visibility for pending writes, and `clientInfo.name` alias normalization with raw-value preservation. Review and promotion flows remain deferred to Milestone 4.
+
+- `M4-001` - Add portable export/import for repo recovery and machine moves.
+  Status: triaged
+  Scope: `src/cli/`, `src/commands/`, `src/db/`, format docs, tests
+  Notes: Implement `memhub export` / `memhub import` as the supported recovery path using a version-tagged portable format. Import should restore data into the repo-local `.memhub/` layout, reconcile project metadata with the current repo root, run migrations as needed, and regenerate managed markdown after restore.
+
+- `M4-002` - Add recovery-safe missing-DB handling and follow-on init UX.
+  Status: triaged
+  Scope: `src/db/`, `src/commands/`, `src/cli/`, README, tests
+  Notes: If `.memhub/` exists but `project.sqlite` is missing, fail as an explicit recovery case instead of silently creating a fresh database. After `M4-001`, add the narrowest convenience UX around restore entry points without making plain `memhub init` depend on prompts. Ship README backup/restore instructions with this slice.

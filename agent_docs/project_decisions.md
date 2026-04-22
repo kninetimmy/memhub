@@ -41,3 +41,16 @@ Append-only. Superseding decisions should be added as new dated entries rather t
 
 - `memhub` uses `rmcp` for the first MCP server slice because it is the official Rust SDK and supports the stdio server transport needed for the local-first CLI workflow.
 - The initial MCP surface stays narrow: thin adapters over existing services plus explicit verified command recording, while broader agent-originated write policy remains deferred.
+
+## 2026-04-22 - Milestone 4 recovery work ships in two slices
+
+- The supported recovery path should start with portable `memhub export` / `memhub import`, not a raw database-file copy workflow.
+- `memhub init` should stay non-interactive at first; any convenience recovery UX should layer on after export/import exists and is stable.
+- If `.memhub/` exists but `.memhub/project.sqlite` does not, `memhub` should treat that as an explicit recovery/safety case instead of silently creating a fresh database.
+- When recovery features ship, `README.md` should gain a clear backup/restore section with readable step-by-step instructions.
+
+## 2026-04-22 - M3-003 stages agent-originated MCP writes instead of promoting them directly
+
+- Agent-originated MCP fact and decision writes land in `pending_writes`, not `facts` or `decisions`.
+- `memhub status` and the MCP `status` tool expose pending-write count so staged proposals are visible before a review UX exists.
+- MCP client identity is derived from `clientInfo.name`, normalized for known Codex and Claude Code aliases, and stored alongside the raw observed value.

@@ -112,5 +112,6 @@ pub struct StatusSummary {
     pub commits: i64,
     pub files: i64,
     pub chunks: i64,
+    pub pending_writes: i64,
     pub writes_logged: i64,
 }

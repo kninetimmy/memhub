@@ -2,18 +2,18 @@
 
 `memhub` is a local-first Rust CLI for durable per-repo project memory shared across Codex and Claude Code. It gives a repository one structured source of truth for facts, decisions, tasks, command history, git-derived context, and managed project-state blocks in `AGENTS.md` and `CLAUDE.md`.
 
-The long-term product direction is a shared memory layer that both agents can read and write through a local interface. The current implementation already provides a usable local database, CLI workflows, git ingestion, indexed search, hardened markdown sync, and a first local MCP server slice, while later milestones add broader write policy and trust tooling.
+The long-term product direction is a shared memory layer that both agents can read and write through a local interface. The current implementation already provides a usable local database, CLI workflows, git ingestion, indexed search, hardened markdown sync, and a narrowed local MCP server/write-policy slice, while later milestones add broader trust and recovery tooling.
 
 ## Development Status
 
-`memhub` is in active development and is currently in Milestone 3 after completing `M3-002`.
+`memhub` is in active development and is now moving into Milestone 4 planning after completing `M3-003`.
 
 Current state:
 
-- Shipped: Milestone 1 foundations, Milestone 2 git ingestion and indexed search, and Milestone 3 markdown sync plus the first stdio MCP server slice
-- Current focus: broaden Milestone 3 safely without skipping agent write-policy boundaries
-- Implemented now: local SQLite storage, embedded migrations, per-repo config, audit logging, facts/decisions/tasks/commands CRUD, explicit command verification, git ingestion, indexed search, managed-block sync for `AGENTS.md` / `CLAUDE.md`, and `memhub serve` for stdio MCP access
-- Not implemented yet: review queue, confidence decay, export/import, deny-list enforcement, broader agent-originated write paths, and broader search coverage beyond current indexed paths
+- Shipped: Milestone 1 foundations, Milestone 2 git ingestion and indexed search, and the narrowed Milestone 3 slice covering markdown sync, stdio MCP access, staged proposal writes, and client alias normalization
+- Current focus: begin Milestone 4 recovery work with portable export/import and missing-DB safety
+- Implemented now: local SQLite storage, embedded migrations, per-repo config, audit logging, facts/decisions/tasks/commands CRUD, explicit command verification, git ingestion, indexed search, managed-block sync for `AGENTS.md` / `CLAUDE.md`, `memhub serve` for stdio MCP access, staged MCP fact/decision proposals, and pending-write visibility in status
+- Not implemented yet: review queue and promotion of staged writes, confidence decay, export/import, missing-DB recovery handling, deny-list enforcement, and broader search coverage beyond current indexed paths
 
 Milestone status:
 
@@ -21,8 +21,8 @@ Milestone status:
 |-----------|--------|-------|
 | Milestone 1: DB + CLI | Complete | Core repo bootstrap, schema, CRUD, config, logging |
 | Milestone 2: Git + search | Complete | `ingest-git`, FTS-backed decision search, exact file-history lookups |
-| Milestone 3: MCP + markdown sync | Current | Markdown sync and the first MCP adapter slice are shipped; broader write-policy work remains |
-| Milestone 4: Quality | Planned | Review flow, confidence/staleness, export/import, deny-list work |
+| Milestone 3: MCP + markdown sync | Complete | Markdown sync, stdio MCP reads, verified command recording, staged proposal writes, and client alias normalization are shipped under the current narrowed plan |
+| Milestone 4: Quality | Planned | Review flow, confidence/staleness, portable recovery import/export, missing-DB safety, deny-list work |
 | Milestone 5+ | Planned | Speculative future expansions only after separate validation |
 
 ## Why memhub exists
@@ -41,10 +41,11 @@ The current codebase already supports a practical local workflow:
 - Store and list architectural or workflow decisions with `memhub decision add|list`
 - Track work with `memhub task add|list|done`
 - Record verified command outcomes with `memhub command verify` and inspect them with `memhub command list`
+- See staged proposal count in `memhub status`
 - Ingest git history with `memhub ingest-git [--since <ref>]`
 - Search current indexed memory with `memhub search <query>`
 - Regenerate managed blocks in `AGENTS.md` and `CLAUDE.md` with `memhub sync-md`
-- Serve the current repository over stdio MCP with `memhub serve`
+- Serve the current repository over stdio MCP with `memhub serve`, including staged `propose_fact` and `propose_decision` MCP tools
 
 ## Install and Quick Start
 
@@ -172,8 +173,10 @@ The current search surface is deliberately smaller than the PRD end-state. It is
 - `list_decisions`
 - `get_command`
 - `record_command`
+- `propose_fact`
+- `propose_decision`
 
-That keeps the first MCP slice useful without pretending the broader write-policy system already exists.
+Proposal tools stage writes in `pending_writes`; they do not write directly to durable `facts` or `decisions`, and they do not replace the later review flow.
 
 ### Local-first trust model
 
@@ -182,9 +185,9 @@ The product guardrails matter:
 - runtime state stays local to the repository
 - there is no cloud backend
 - agents are treated as untrusted writers in the product design
-- current Milestone 1-3 implementation focuses on explicit CLI actions and verifiable stored state
+- current Milestone 1-3 implementation focuses on explicit CLI actions, verifiable stored state, and staged proposals instead of direct agent promotion
 
-The stricter write-back policy, review flow, and confidence handling described in the PRD are planned work, not shipped behavior yet.
+The fuller review flow, promotion path, confidence handling, and recovery tooling described in the PRD are still planned work, not shipped behavior yet.
 
 ## Architecture
 
@@ -219,7 +222,7 @@ Implemented subsystems today:
 - git ingestion into relational tables
 - FTS5-backed decision search and indexed file-history lookup
 - markdown managed-block generation and sync
-- stdio MCP tools for status, search, task listing, recent decisions, latest command lookup, and explicit verified command recording
+- stdio MCP tools for status, search, task listing, recent decisions, latest command lookup, explicit verified command recording, and staged fact/decision proposals
 
 ### Planned architecture
 
@@ -275,9 +278,9 @@ Delivered:
 
 ### Milestone 3: MCP + markdown sync
 
-Status: Current
+Status: Complete
 
-Delivered so far:
+Delivered:
 
 - `memhub sync-md`
 - managed-block generation for `AGENTS.md` and `CLAUDE.md`
@@ -285,13 +288,14 @@ Delivered so far:
 - strict marker validation
 - safer temp-file replacement writes
 - `memhub serve`
-- thin stdio MCP tools for status, search, task listing, recent decisions, latest command lookup, and explicit verified command recording
+- thin stdio MCP tools for status, search, task listing, recent decisions, latest command lookup, explicit verified command recording, and staged fact/decision proposals
+- pending-write visibility in status output
+- client identification and alias normalization from MCP `clientInfo.name`
 
-Next in this milestone:
+Deferred to Milestone 4:
 
-- broader agent-originated write-policy work
-- client identification and alias normalization
-- possible retrieval expansion if MCP usage proves the current indexed paths are too narrow
+- review and promotion flow for staged writes
+- confidence and staleness handling
 
 ### Milestone 4: Quality
 
@@ -301,7 +305,10 @@ Expected scope:
 
 - review flow for proposed writes
 - confidence scoring and staleness handling
-- export/import
+- portable `memhub export` / `memhub import` as the supported backup and restore path
+- missing-DB safety handling so an existing `.memhub/` without `project.sqlite` is treated as recovery, not silent re-init
+- narrow follow-on recovery UX around restore entry points once export/import is in place
+- readable README backup/restore instructions
 - deny-list enforcement
 
 ### Milestone 5+

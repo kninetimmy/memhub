@@ -190,6 +190,7 @@ pub fn run(cli: Cli) -> Result<()> {
             println!("Commits: {}", summary.commits);
             println!("Files: {}", summary.files);
             println!("Search chunks: {}", summary.chunks);
+            println!("Pending writes: {}", summary.pending_writes);
             println!("Writes logged: {}", summary.writes_logged);
         }
         TopLevelCommand::SyncMd => {
