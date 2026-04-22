@@ -1,0 +1,32 @@
+# memhub
+
+Local-first Rust CLI for durable per-repo project memory shared between Codex and Claude Code. Treat [docs/reference/memhub-prd.md](docs/reference/memhub-prd.md) as the product authority and do not silently diverge from it.
+
+## Session Continuity
+
+At session start, read `agent_docs/project_state.md` first. Load the other continuity files only when the task needs them:
+- `agent_docs/project_arch.md` for the actual implemented architecture
+- `agent_docs/project_decisions.md` for append-only project decisions
+- `agent_docs/project_backlog.md` for staged work and deferred tasks
+
+## Project Guardrails
+
+- Local-first, offline-capable, and intentionally boring.
+- Milestone 1 stays lean: CLI, DB, migrations, config, logging, and real CRUD for facts, decisions, and tasks.
+- Agents are untrusted writers; do not promote agent claims to durable truth without a concrete signal or explicit user action.
+- Prefer narrow milestones and explicit TODOs over speculative subsystems.
+- Do not pretend MCP, markdown sync, git ingestion, routing, or confidence decay are implemented before they exist.
+- Keep `docs/reference/memhub-prd.md` verbatim.
+
+## Build / Test / Run
+
+```bash
+cargo build
+cargo test
+cargo run -- init
+cargo run -- status
+```
+
+## Current Build Focus
+
+The repository currently provides Milestone 1 scaffolding and a usable local CLI foundation. Future work should extend from these boundaries instead of replacing them.
