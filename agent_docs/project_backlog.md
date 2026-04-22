@@ -28,9 +28,9 @@ Each item should capture scope, affected files, status, and explicit deferrals.
   Notes: Implemented with FTS5-backed decision search plus exact indexed file-history lookups and query-plan tests that guard against full scans on hot tables.
 
 - `M3-001` - Implement markdown managed-block sync for `AGENTS.md` and `CLAUDE.md`.
-  Status: in progress
+  Status: completed
   Scope: `src/sync_md/`, CLI surface, docs, backup behavior
-  Notes: Core `memhub sync-md` generation is implemented, including init-time sync and optional auto-sync after writes. Backup behavior and any broader managed-content coverage remain open.
+  Notes: Completed by adding strict marker validation, timestamped backups for changed existing markdown files, temp-file replacement writes, richer sync reporting, and regression coverage for failure/no-op/manual-content paths. Broader managed-content coverage remains deferred.
 
 - `M3-002` - Implement MCP read/write tools as thin adapters over existing services.
   Status: triaged

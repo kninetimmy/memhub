@@ -200,6 +200,12 @@ pub fn run(cli: Cli) -> Result<()> {
                 for path in result.updated_files {
                     println!("  {}", path.display());
                 }
+                if !result.backup_files.is_empty() {
+                    println!("Backups created:");
+                    for path in result.backup_files {
+                        println!("  {}", path.display());
+                    }
+                }
             }
         }
         TopLevelCommand::IngestGit { since } => {

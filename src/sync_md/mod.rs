@@ -1,11 +1,12 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension};
 
-use crate::Result;
 use crate::db;
 use crate::models::MarkdownSyncResult;
+use crate::{MemhubError, Result};
 
 const AGENTS_FILENAME: &str = "AGENTS.md";
 const CLAUDE_FILENAME: &str = "CLAUDE.md";
@@ -15,12 +16,22 @@ const MANAGED_END: &str = "<!-- memhub:managed:end -->";
 pub fn sync_project(start: &Path) -> Result<MarkdownSyncResult> {
     let ctx = db::open_project(start)?;
     let rendered = render_managed_block(&ctx.conn)?;
+    let backup_dir = ctx.paths.memhub_dir.join("backups").join("markdown");
 
-    let mut updated_files = Vec::new();
+    let mut plans = Vec::new();
     for filename in [AGENTS_FILENAME, CLAUDE_FILENAME] {
         let path = ctx.paths.repo_root.join(filename);
-        if sync_file(&path, &rendered)? {
-            updated_files.push(path);
+        plans.push(plan_sync(&path, &rendered)?);
+    }
+
+    let mut updated_files = Vec::new();
+    let mut backup_files = Vec::new();
+    for plan in plans {
+        if let Some(outcome) = apply_sync_plan(plan, &backup_dir)? {
+            updated_files.push(outcome.path);
+            if let Some(backup_path) = outcome.backup_path {
+                backup_files.push(backup_path);
+            }
         }
     }
 
@@ -35,7 +46,10 @@ pub fn sync_project(start: &Path) -> Result<MarkdownSyncResult> {
         )?;
     }
 
-    Ok(MarkdownSyncResult { updated_files })
+    Ok(MarkdownSyncResult {
+        updated_files,
+        backup_files,
+    })
 }
 
 pub fn sync_if_enabled(start: &Path) -> Result<()> {
@@ -96,38 +110,192 @@ fn render_managed_block(conn: &Connection) -> Result<String> {
     Ok(lines.join("\n"))
 }
 
-fn sync_file(path: &Path, rendered_block: &str) -> Result<bool> {
+#[derive(Debug)]
+struct SyncPlan {
+    path: PathBuf,
+    updated_content: Option<String>,
+    create_backup: bool,
+}
+
+#[derive(Debug)]
+struct SyncOutcome {
+    path: PathBuf,
+    backup_path: Option<PathBuf>,
+}
+
+fn plan_sync(path: &Path, rendered_block: &str) -> Result<SyncPlan> {
     let existing = if path.exists() {
         fs::read_to_string(path)?
     } else {
         String::new()
     };
 
-    let updated = if let Some((start, end)) = find_managed_block(&existing) {
-        let mut next = String::new();
-        next.push_str(&existing[..start]);
-        next.push_str(rendered_block);
-        next.push_str(&existing[end..]);
-        next
-    } else if existing.trim().is_empty() {
-        format!("{rendered_block}\n")
-    } else {
-        let trimmed = existing.trim_end_matches(['\r', '\n']);
-        format!("{trimmed}\n\n{rendered_block}\n")
+    let updated = match inspect_managed_block(path, &existing)? {
+        ManagedBlockState::Present { start, end } => {
+            let mut next = String::new();
+            next.push_str(&existing[..start]);
+            next.push_str(rendered_block);
+            next.push_str(&existing[end..]);
+            next
+        }
+        ManagedBlockState::Missing if existing.trim().is_empty() => format!("{rendered_block}\n"),
+        ManagedBlockState::Missing => {
+            let trimmed = existing.trim_end_matches(['\r', '\n']);
+            format!("{trimmed}\n\n{rendered_block}\n")
+        }
     };
 
     if updated == existing {
-        return Ok(false);
+        return Ok(SyncPlan {
+            path: path.to_path_buf(),
+            updated_content: None,
+            create_backup: false,
+        });
     }
 
-    fs::write(path, updated)?;
-    Ok(true)
+    Ok(SyncPlan {
+        path: path.to_path_buf(),
+        updated_content: Some(updated),
+        create_backup: path.exists(),
+    })
 }
 
-fn find_managed_block(content: &str) -> Option<(usize, usize)> {
-    let start = content.find(MANAGED_START)?;
-    let end = content[start..].find(MANAGED_END)? + start + MANAGED_END.len();
-    Some((start, end))
+fn apply_sync_plan(plan: SyncPlan, backup_dir: &Path) -> Result<Option<SyncOutcome>> {
+    let Some(updated_content) = plan.updated_content else {
+        return Ok(None);
+    };
+
+    let backup_path = if plan.create_backup {
+        Some(create_backup(&plan.path, backup_dir)?)
+    } else {
+        None
+    };
+
+    write_with_replace(&plan.path, &updated_content)?;
+
+    Ok(Some(SyncOutcome {
+        path: plan.path,
+        backup_path,
+    }))
+}
+
+enum ManagedBlockState {
+    Missing,
+    Present { start: usize, end: usize },
+}
+
+fn inspect_managed_block(path: &Path, content: &str) -> Result<ManagedBlockState> {
+    let starts = collect_marker_positions(content, MANAGED_START);
+    let ends = collect_marker_positions(content, MANAGED_END);
+
+    if starts.is_empty() && ends.is_empty() {
+        return Ok(ManagedBlockState::Missing);
+    }
+
+    if starts.len() != 1 || ends.len() != 1 {
+        return Err(invalid_managed_markdown(
+            path,
+            "expected exactly one managed block start marker and one managed block end marker",
+        ));
+    }
+
+    let start = starts[0];
+    let end = ends[0];
+    if end < start {
+        return Err(invalid_managed_markdown(
+            path,
+            "managed block end marker appears before the start marker",
+        ));
+    }
+
+    Ok(ManagedBlockState::Present {
+        start,
+        end: end + MANAGED_END.len(),
+    })
+}
+
+fn collect_marker_positions(content: &str, marker: &str) -> Vec<usize> {
+    content
+        .match_indices(marker)
+        .map(|(index, _)| index)
+        .collect()
+}
+
+fn invalid_managed_markdown(path: &Path, reason: &str) -> MemhubError {
+    MemhubError::InvalidManagedMarkdown {
+        path: path.display().to_string(),
+        reason: reason.to_string(),
+    }
+}
+
+fn create_backup(path: &Path, backup_dir: &Path) -> Result<PathBuf> {
+    fs::create_dir_all(backup_dir)?;
+
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            MemhubError::InvalidInput(format!("invalid markdown filename: {}", path.display()))
+        })?;
+    let stamp = backup_stamp()?;
+
+    for attempt in 0..1000 {
+        let suffix = if attempt == 0 {
+            String::new()
+        } else {
+            format!("-{attempt}")
+        };
+        let backup_path = backup_dir.join(format!("{stamp}{suffix}-{file_name}.bak"));
+        if !backup_path.exists() {
+            let _ = fs::copy(path, &backup_path)?;
+            return Ok(backup_path);
+        }
+    }
+
+    Err(MemhubError::InvalidInput(format!(
+        "failed to allocate a backup path for {}",
+        path.display()
+    )))
+}
+
+fn backup_stamp() -> Result<String> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|err| {
+            MemhubError::InvalidInput(format!("system clock is before unix epoch: {err}"))
+        })?;
+    Ok(format!("{}-{:09}", now.as_secs(), now.subsec_nanos()))
+}
+
+fn write_with_replace(path: &Path, updated_content: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let temp_path = temp_path_for(path)?;
+    fs::write(&temp_path, updated_content)?;
+
+    if path.exists() {
+        fs::remove_file(path)?;
+    }
+
+    if let Err(err) = fs::rename(&temp_path, path) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(err.into());
+    }
+
+    Ok(())
+}
+
+fn temp_path_for(path: &Path) -> Result<PathBuf> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            MemhubError::InvalidInput(format!("invalid markdown filename: {}", path.display()))
+        })?;
+    let stamp = backup_stamp()?;
+    Ok(path.with_file_name(format!(".{file_name}.{stamp}.tmp")))
 }
 
 fn load_command_summary(conn: &Connection, kind: &str) -> Result<Option<(String, String)>> {

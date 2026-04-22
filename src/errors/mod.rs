@@ -8,6 +8,8 @@ pub enum MemhubError {
     NotInitialized { start: PathBuf },
     #[error("invalid input: {0}")]
     InvalidInput(String),
+    #[error("invalid managed markdown in {path}: {reason}")]
+    InvalidManagedMarkdown { path: String, reason: String },
     #[error("{command} failed: {stderr}")]
     ExternalCommand { command: String, stderr: String },
     #[error("feature not implemented yet: {0}")]
