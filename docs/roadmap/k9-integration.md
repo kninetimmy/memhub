@@ -4,7 +4,9 @@ Status: phases 1 (`M5-001`), 2 memhub-side (`M5-002`), and 3 memhub-side
 (`M5-003`) shipped. The v1 wrap-up contract lives at
 [`docs/reference/k9-wrap-up-contract.md`](../reference/k9-wrap-up-contract.md).
 The K9-repo consumer edit that calls into the contract end-to-end (gate
-+ read + mutate) remains triaged separately, outside this repo.
++ read + mutate) remains triaged separately, outside this repo. The
+operator-facing handoff for that work is the audit prompt at
+[`docs/reference/k9-consumer-audit-prompt.md`](../reference/k9-consumer-audit-prompt.md).
 
 ## Goal
 
