@@ -39,10 +39,12 @@ This repository is in foundational scaffolding / Milestone 1 mode. Favor correct
 
 **Build:** `n/a`
 **Test:** `n/a`
-**Active tasks:** 0 open, 0 blocked - see `memhub task list --status open`
+**Active tasks:** 2 open, 0 blocked - see `memhub task list --status open`
 
 ### Durable decisions
-- None recorded.
+- K9 canonical conventions (H3 backlog items, em-dash decisions) are the parser target (2026-05-12 21:03:01)
+- Evaluating memhub-primary is staged behind parser-fix evidence (2026-05-12 21:02:58)
+- One-shot K9 bootstrap is the narrow exception to the no-import non-goal (2026-05-12 19:38:52)
 
 ### Known quirks
 - None recorded.

@@ -4,62 +4,49 @@ Last updated: 2026-05-12
 
 ## Currently building
 
-Between tasks. By PRD §16 milestones memhub is at v1: Milestones 1–4
-are complete and the memhub side of Milestone 5 (K9 framework interop)
-is shipped, including the PRD-§12 and PRD-§17 surfaces (`memhub stats`
-and the `log_session_note` MCP tool + `memhub note list` CLI).
-Continuous confidence decay (PRD §11.4) was explicitly dropped from
-v1 (see `project_decisions.md`). The README's onboarding surface is
-also now fully fleshed out — manual install, agent-driven install,
-and end-to-end typical-workflow narratives for both K9 and
-standalone tracks. The only named remaining slice lives outside this
-repo: the K9 `/wrap-up.md` consumer edit that calls into the v1
-contract end-to-end (gate + read + mutate).
+Between tasks. M6-001 + M6-002 shipped together as `cd25a25`.
+M6-003 (Free-AI-SSD bootstrap re-run for Phase 2 evidence) is now
+unblocked. M6-004 (memhub's own agent_docs migration to K9
+canonical) remains open and independent.
 
 ## Next up
 
-1. Coordinate the K9 repo `/wrap-up.md` consumer change with whoever
-   owns the K9 repo. With `M5-003` shipped on the memhub side, K9 can
-   stay CLI-only end-to-end; their slice is mechanical and lives
-   outside this repo.
-2. Decide whether MCP needs broader indexed retrieval over facts,
-   tasks, command history, or session notes beyond the current narrow
-   paths.
-3. If session notes start carrying durable value, bump the export
-   format to `v2` and include them. Until then they're intentionally
-   lost on export/import.
+1. M6-003 — wipe Free-AI-SSD's bootstrap DB, re-run `memhub
+   integrations bootstrap-k9`, and write Phase 2 results into
+   `docs/roadmap/memhub-primary-evaluation.md`. Outcome routes the
+   Phase 3 decision (commission `memhub render` design, extend the
+   parser further, or close the evaluation).
+2. M6-004 — migrate memhub's own `agent_docs/project_backlog.md`
+   and `project_decisions.md` to K9 canonical structural delimiters
+   (independent; can land in any order).
 
 ## Last session
 
-2026-05-12 - Extended the README onboarding surface with two
-follow-on doc-only additions. `f382a50` added an "Install with
-Claude Code" subsection with a copy-pasteable prompt that walks an
-agent through clone → `cargo build --release` → PATH symlink →
-`memhub init` / `status`, with explicit guardrails against modifying
-repo files beyond `.memhub/`. `a7060aa` added a "Typical Workflow"
-section sitting between Quick Start and Backup and Restore:
-narrates an end-to-end working session on each track (orient →
-record-as-you-go → close out → maintain for standalone; mid-session
-MCP plus `/wrap-up` shell-out for K9), framing memhub as a
-"deliberate notebook" without K9 and as the structured half of a
-Markdown + database transaction with K9. No code, schema, or
-contract changes.
+2026-05-12 — Shipped M6-001 + M6-002 in `cd25a25`. M6-002 replaced
+`strip_date_prefix` with `extract_date_and_title`, which accepts
+ASCII hyphen or em-dash (U+2014, K9 canonical) as the separator and
+extracts the heading date into `decisions.decided_at` as
+`YYYY-MM-DD 00:00:00`. New `decision::add_with_decided_at` honors an
+explicit timestamp; existing `decision::add` delegates with `None`
+and preserves the schema default. Wrap-up choices: en-dash
+intentionally rejected (typo tolerance would mask drift from K9
+canonical); date format `YYYY-MM-DD 00:00:00` chosen to match
+SQLite's `CURRENT_TIMESTAMP` shape. 4 new tests (unit covering all
+separator forms, unit for em-dash headings, updated test for
+ASCII-hyphen + date assertion, subprocess asserting persisted
+`decided_at`). Commit bundle also carries M6-001's H3-driven parser
+rewrite that had been landed locally last session.
 
-2026-05-12 - Restructured the README install/usage sections into
-parallel "without K9" and "with K9" tracks (`c27ed69`). Added a
-Prerequisites section (Rust 1.85+, git CLI, optional K9 prereq),
-split Install into a shared `cargo build --release` step plus Step 2a
-"init without K9" / Step 2b "init with K9 already installed",
-documented the auto-detection + `enable-k9` / `disable-k9` toggle
-path, and split Quick Start into "Usage without K9" (manual CLI
-flows) and "Usage with K9" (the `/wrap-up` shell-out using
-`--json --actor k9:wrap-up`, linked to
-`docs/reference/k9-wrap-up-contract.md` as v1 truth). Switched every
-example from `cargo run --` to a `memhub` binary on PATH and added a
-"put it on PATH" install step (copy or symlink to `~/.local/bin/`)
-so the K9 shell-out actually resolves the binary. Fixed a stray
-`enable k9` (space) → `enable-k9` typo in the existing K9 deep-dive
-section. Doc-only; no code or schema changes.
+2026-05-12 — Tested bootstrap-k9 on Free-AI-SSD's K9 history; the
+test surfaced 6 parser bugs (519 tasks from a 49-task backlog, dates
+bolted on every decision title, 0 done-skips) and prompted a 12-gap
+analysis of full memhub-primary replacement. Settled on a
+bridge-first evaluation strategy in
+`docs/roadmap/memhub-primary-evaluation.md`. Added M6-001 through
+M6-004 to the backlog and two decisions to `project_decisions.md`
+(evaluation staging; K9 canonical conventions H3 + em-dash per
+`K9-Claude-Framework/docs/file-structure.md:156-208` as the parser
+target). M6-001 landed locally pending commit at session end.
 
 ## Open questions
 
