@@ -269,18 +269,22 @@ fn resolve_narrative_body(
     body: Option<String>,
     from_file: Option<PathBuf>,
 ) -> Result<String> {
-    match (body, from_file) {
+    resolve_text_input(&format!("{} set", kind.as_str()), body, from_file)
+}
+
+fn resolve_text_input(
+    label: &str,
+    text: Option<String>,
+    from_file: Option<PathBuf>,
+) -> Result<String> {
+    match (text, from_file) {
         (Some(_), Some(_)) => Err(MemhubError::InvalidInput(format!(
-            "{} set: pass either a body argument or --from-file, not both",
-            kind.as_str()
+            "{label}: pass either a text argument or --from-file, not both"
         ))),
-        (Some(text), None) => Ok(text),
-        (None, Some(path)) => {
-            fs::read_to_string(&path).map_err(MemhubError::from)
-        }
+        (Some(s), None) => Ok(s),
+        (None, Some(path)) => fs::read_to_string(&path).map_err(MemhubError::from),
         (None, None) => Err(MemhubError::InvalidInput(format!(
-            "{} set: provide a body argument or --from-file <path>",
-            kind.as_str()
+            "{label}: provide a text argument or --from-file <path>"
         ))),
     }
 }
@@ -436,6 +440,15 @@ pub enum NarrativeCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum NoteCommand {
+    Add {
+        text: Option<String>,
+        #[arg(long, value_name = "PATH")]
+        from_file: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        actor: Option<String>,
+    },
     List {
         #[arg(long, default_value_t = 25)]
         limit: usize,
@@ -1205,6 +1218,33 @@ pub fn run(cli: Cli) -> Result<()> {
             }
         }
         TopLevelCommand::Note { command } => match command {
+            NoteCommand::Add {
+                text,
+                from_file,
+                json: as_json,
+                actor,
+            } => {
+                let body = resolve_text_input("note add", text, from_file)?;
+                let actor = resolve_actor(actor.as_deref())?;
+                let note = commands::session_note::add(&cwd, &body, &actor, &actor)?;
+                if as_json {
+                    let payload = json!({
+                        "id": note.id,
+                        "actor": note.actor,
+                        "actor_raw": note.actor_raw,
+                        "text": note.text,
+                        "created_at": note.created_at,
+                    });
+                    println!("{payload}");
+                } else {
+                    println!(
+                        "Recorded note {} ({} chars) at {}",
+                        note.id,
+                        note.text.chars().count(),
+                        note.created_at
+                    );
+                }
+            }
             NoteCommand::List {
                 limit,
                 actor,

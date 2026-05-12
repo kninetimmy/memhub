@@ -177,3 +177,118 @@ fn note_list_cli_empty_repo_prints_no_match_message() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("No session notes match this filter."));
 }
+
+#[test]
+fn note_add_cli_creates_note_via_positional_text() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    let output = run_cli(temp.path(), &["note", "add", "first cli note"]);
+    assert!(
+        output.status.success(),
+        "note add failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Recorded note"));
+
+    let notes = session_note::list(temp.path(), 10, None, None).expect("list");
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].text, "first cli note");
+    assert_eq!(notes[0].actor, "cli:user");
+}
+
+#[test]
+fn note_add_cli_reads_body_from_file() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    let body_path = temp.path().join("note-body.txt");
+    std::fs::write(&body_path, "multi\nline\nnote body").expect("write body file");
+
+    let output = run_cli(
+        temp.path(),
+        &["note", "add", "--from-file", body_path.to_str().expect("path")],
+    );
+    assert!(
+        output.status.success(),
+        "note add --from-file failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let notes = session_note::list(temp.path(), 10, None, None).expect("list");
+    assert_eq!(notes.len(), 1);
+    assert!(notes[0].text.contains("multi"));
+    assert!(notes[0].text.contains("note body"));
+}
+
+#[test]
+fn note_add_cli_rejects_text_and_from_file_together() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    let body_path = temp.path().join("body.txt");
+    std::fs::write(&body_path, "from file").expect("write body file");
+
+    let output = run_cli(
+        temp.path(),
+        &[
+            "note",
+            "add",
+            "inline text",
+            "--from-file",
+            body_path.to_str().expect("path"),
+        ],
+    );
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not both"));
+
+    let notes = session_note::list(temp.path(), 10, None, None).expect("list");
+    assert!(notes.is_empty(), "no note should have been written");
+}
+
+#[test]
+fn note_add_cli_requires_text_or_from_file() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    let output = run_cli(temp.path(), &["note", "add"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("provide a text argument or --from-file"));
+}
+
+#[test]
+fn note_add_cli_emits_json_envelope() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    let output = run_cli(temp.path(), &["note", "add", "json note", "--json"]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("utf8");
+    let payload: Value = serde_json::from_str(stdout.trim()).expect("json");
+
+    assert!(payload["id"].as_i64().expect("id") > 0);
+    assert_eq!(payload["actor"], "cli:user");
+    assert_eq!(payload["text"], "json note");
+    assert!(payload["created_at"].is_string());
+}
+
+#[test]
+fn note_add_cli_propagates_actor_to_writes_log() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    let output = run_cli(
+        temp.path(),
+        &["note", "add", "actor test", "--actor", "claude:wrap-up"],
+    );
+    assert!(output.status.success());
+
+    let (actor, table, action) =
+        last_writes_log_for_table(temp.path(), "session_notes").expect("audit row");
+    assert_eq!(actor, "claude:wrap-up");
+    assert_eq!(table, "session_notes");
+    assert_eq!(action, "insert");
+}
