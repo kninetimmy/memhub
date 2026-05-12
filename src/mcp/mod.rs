@@ -396,6 +396,7 @@ struct StatusToolResponse {
     chunks: i64,
     pending_writes: i64,
     writes_logged: i64,
+    deny_patterns: usize,
 }
 
 impl From<StatusSummary> for StatusToolResponse {
@@ -416,6 +417,7 @@ impl From<StatusSummary> for StatusToolResponse {
             chunks: value.chunks,
             pending_writes: value.pending_writes,
             writes_logged: value.writes_logged,
+            deny_patterns: value.deny_patterns,
         }
     }
 }

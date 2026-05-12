@@ -57,6 +57,7 @@ pub struct GitIngestSummary {
     pub commits_seen: usize,
     pub unique_files_seen: usize,
     pub commit_file_links_seen: usize,
+    pub denied_files_skipped: usize,
 }
 
 #[derive(Debug)]
@@ -134,4 +135,5 @@ pub struct StatusSummary {
     pub chunks: i64,
     pub pending_writes: i64,
     pub writes_logged: i64,
+    pub deny_patterns: usize,
 }

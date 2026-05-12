@@ -6,14 +6,14 @@ The long-term product direction is a shared memory layer that both agents can re
 
 ## Development Status
 
-`memhub` is in active development and is now mid-Milestone 4 after shipping `M4-001`, `M4-002`, and `M4-003`.
+`memhub` is in active development and is now mid-Milestone 4 after shipping `M4-001`, `M4-002`, `M4-003`, and `M4-004`.
 
 Current state:
 
-- Shipped: Milestone 1 foundations, Milestone 2 git ingestion and indexed search, the narrowed Milestone 3 slice covering markdown sync, stdio MCP access, staged proposal writes, and client alias normalization, the Milestone 4 portable export/import recovery path, Milestone 4 missing-DB safety with `memhub init --from-backup <path>` recovery, and Milestone 4 `memhub review` flow for promoting or rejecting staged MCP proposals
-- Current focus: remaining Milestone 4 work — confidence/staleness handling and deny-list enforcement
-- Implemented now: local SQLite storage, embedded migrations, per-repo config, audit logging, facts/decisions/tasks/commands CRUD, explicit command verification, git ingestion, indexed search, managed-block sync for `AGENTS.md` / `CLAUDE.md`, `memhub serve` for stdio MCP access, staged MCP fact/decision proposals, MCP `list_pending_writes` read tool, `memhub review list|show|accept|reject|expire` CLI flow, pending-write visibility in status, portable `memhub export` / `memhub import`, missing-DB detection, and `memhub init --from-backup <path>` single-step recovery
-- Not implemented yet: confidence decay, deny-list enforcement, and broader search coverage beyond current indexed paths
+- Shipped: Milestone 1 foundations, Milestone 2 git ingestion and indexed search, the narrowed Milestone 3 slice covering markdown sync, stdio MCP access, staged proposal writes, and client alias normalization, the Milestone 4 portable export/import recovery path, Milestone 4 missing-DB safety with `memhub init --from-backup <path>` recovery, Milestone 4 `memhub review` flow for promoting or rejecting staged MCP proposals, and Milestone 4 deny-list enforcement that filters sensitive paths out of git ingestion and search
+- Current focus: remaining Milestone 4 work — confidence/staleness handling
+- Implemented now: local SQLite storage, embedded migrations, per-repo config (including a configurable deny list), audit logging, facts/decisions/tasks/commands CRUD, explicit command verification, git ingestion with path-based deny-list filtering, indexed search with deny-list filtering, managed-block sync for `AGENTS.md` / `CLAUDE.md`, `memhub serve` for stdio MCP access, staged MCP fact/decision proposals, MCP `list_pending_writes` read tool, `memhub review list|show|accept|reject|expire` CLI flow, pending-write visibility in status, portable `memhub export` / `memhub import`, missing-DB detection, and `memhub init --from-backup <path>` single-step recovery
+- Not implemented yet: confidence decay and broader search coverage beyond current indexed paths
 
 Milestone status:
 
@@ -22,7 +22,7 @@ Milestone status:
 | Milestone 1: DB + CLI | Complete | Core repo bootstrap, schema, CRUD, config, logging |
 | Milestone 2: Git + search | Complete | `ingest-git`, FTS-backed decision search, exact file-history lookups |
 | Milestone 3: MCP + markdown sync | Complete | Markdown sync, stdio MCP reads, verified command recording, staged proposal writes, and client alias normalization are shipped under the current narrowed plan |
-| Milestone 4: Quality | In progress | Portable `export` / `import` shipped (`M4-001`), missing-DB safety with `init --from-backup` recovery shipped (`M4-002`), and `memhub review` flow for staged proposals shipped (`M4-003`); confidence/staleness and deny-list work remain |
+| Milestone 4: Quality | In progress | Portable `export` / `import` shipped (`M4-001`), missing-DB safety with `init --from-backup` recovery shipped (`M4-002`), `memhub review` flow for staged proposals shipped (`M4-003`), and deny-list filtering of git ingestion and search shipped (`M4-004`); confidence/staleness work remains |
 | Milestone 5+ | Planned | Speculative future expansions only after separate validation |
 
 ## Why memhub exists
@@ -49,6 +49,7 @@ The current codebase already supports a practical local workflow:
 - Back up the project with `memhub export <path>` and restore it on another machine or a clean checkout with `memhub import <path>` (use `--force` to overwrite existing data)
 - Recover from a deleted or corrupted database in a single step with `memhub init --from-backup <path>`
 - Review and promote staged MCP fact/decision proposals with `memhub review list|show|accept|reject|expire`
+- Keep sensitive paths (`*.pem`, `.env*`, `secrets/**`, etc.) out of ingestion and search via a configurable deny list in `.memhub/config.toml`
 
 ## Install and Quick Start
 
@@ -224,6 +225,51 @@ on read.
 Re-reviewing an already-reviewed row is an error, so re-acceptance must
 go through `memhub fact add` / `memhub decision add` directly.
 
+## Deny list
+
+`memhub` ships a configurable path-based deny list so sensitive files
+never enter the database. The list is matched as glob patterns against
+each file path that `memhub ingest-git` would otherwise insert, and
+also against `memhub search` results before they are returned. A
+denied direct path lookup returns a normal "no matches" — there is no
+signal indicating *why* the result is empty.
+
+Defaults cover the patterns the PRD calls out:
+
+```toml
+[deny_list]
+patterns = [
+  ".env", ".env.*",
+  "*.pem", "*.key", "*.p12", "*.pfx",
+  "id_rsa", "id_rsa.*",
+  "id_dsa", "id_dsa.*",
+  "id_ecdsa", "id_ecdsa.*",
+  "id_ed25519", "id_ed25519.*",
+  "secrets/**",
+  ".aws/credentials",
+  ".gcloud/credentials*",
+  ".gnupg/**",
+]
+```
+
+Edit `.memhub/config.toml` to add or remove patterns. Existing configs
+without a `[deny_list]` section automatically fall back to the
+defaults at load time.
+
+Matching is glob-based via the `globset` crate and supports `**` for
+recursive directory matches. The matcher checks each path segment, so
+`config/server.pem` is denied by `*.pem` even though the pattern is
+unrooted. Invalid patterns fail closed: `memhub ingest-git` and
+`memhub search` refuse to run until the bad pattern is fixed, rather
+than silently allowing sensitive paths through.
+
+The current scope is path-based only. Content scanning for credential
+strings (e.g. AWS access key IDs in file contents) is out of scope for
+this slice, as is purging already-ingested paths from the database
+after a pattern change. `memhub status` prints the current deny pattern
+count, and `memhub ingest-git` prints how many paths were skipped on
+each run.
+
 ## How memhub works
 
 ### Per-repo source of truth
@@ -331,6 +377,7 @@ Implemented subsystems today:
 - markdown managed-block generation and sync
 - stdio MCP tools for status, search, task listing, recent decisions, latest command lookup, explicit verified command recording, staged fact/decision proposals, and read-only `list_pending_writes`
 - `memhub review` CLI for promoting, rejecting, and expiring staged MCP proposals
+- path-based deny list filtering git ingestion writes and search reads
 
 ### Planned architecture
 
@@ -416,11 +463,11 @@ Shipped:
 - missing-DB safety: every command refuses with a clear recovery error when `.memhub/` exists without `project.sqlite` instead of silently rebuilding an empty database (`M4-002`)
 - `memhub init --from-backup <path>` single-step recovery that initializes and restores in one command (`M4-002`)
 - `memhub review list|show|accept|reject|expire` to promote, reject, or age out staged MCP proposals, plus a read-only `list_pending_writes` MCP tool (`M4-003`)
+- path-based deny list with sensible defaults, filtering both `ingest-git` writes and `search` reads (`M4-004`)
 
 Remaining scope:
 
 - confidence scoring and staleness handling
-- deny-list enforcement
 
 ### Milestone 5+
 

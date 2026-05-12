@@ -3,6 +3,7 @@ use std::path::Path;
 use rusqlite::{Connection, params};
 
 use crate::Result;
+use crate::config::PathMatcher;
 use crate::db;
 use crate::errors::MemhubError;
 use crate::models::{DecisionSearchHit, FileHistoryHit, SearchResponse, SearchResult};
@@ -22,11 +23,19 @@ pub fn run(start: &Path, query: &str, limit: usize) -> Result<SearchResponse> {
     }
 
     let ctx = db::open_project(start)?;
+    let matcher = PathMatcher::from_patterns(&ctx.config.deny_list.patterns)?;
     sync_decision_chunks(&ctx.conn)?;
 
     if let Some(path_query) = strip_file_prefix(query) {
         let normalized = normalize_path(path_query);
-        let results = search_file_history(&ctx.conn, &normalized, limit)?;
+        let results = if matcher.is_denied(&normalized) {
+            Vec::new()
+        } else {
+            filter_denied_paths(
+                search_file_history(&ctx.conn, &normalized, limit)?,
+                &matcher,
+            )
+        };
         return Ok(SearchResponse {
             matcher: "exact:file-history".to_string(),
             query: normalized,
@@ -36,7 +45,14 @@ pub fn run(start: &Path, query: &str, limit: usize) -> Result<SearchResponse> {
 
     if looks_like_path(query) && file_exists(&ctx.conn, &normalize_path(query))? {
         let normalized = normalize_path(query);
-        let results = search_file_history(&ctx.conn, &normalized, limit)?;
+        let results = if matcher.is_denied(&normalized) {
+            Vec::new()
+        } else {
+            filter_denied_paths(
+                search_file_history(&ctx.conn, &normalized, limit)?,
+                &matcher,
+            )
+        };
         return Ok(SearchResponse {
             matcher: "exact:file-history".to_string(),
             query: normalized,
@@ -73,6 +89,12 @@ pub fn sync_decision_chunks(conn: &Connection) -> Result<()> {
     )?;
 
     Ok(())
+}
+
+fn filter_denied_paths(hits: Vec<FileHistoryHit>, matcher: &PathMatcher) -> Vec<FileHistoryHit> {
+    hits.into_iter()
+        .filter(|hit| !matcher.is_denied(&hit.path))
+        .collect()
 }
 
 fn search_file_history(conn: &Connection, path: &str, limit: usize) -> Result<Vec<FileHistoryHit>> {

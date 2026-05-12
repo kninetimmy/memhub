@@ -5,6 +5,7 @@ use std::process::Command;
 use rusqlite::params;
 
 use crate::Result;
+use crate::config::PathMatcher;
 use crate::db;
 use crate::errors::MemhubError;
 use crate::models::GitIngestSummary;
@@ -26,10 +27,12 @@ struct GitFileChange {
 
 pub fn run(start: &Path, since: Option<&str>) -> Result<GitIngestSummary> {
     let mut ctx = db::open_project(start)?;
+    let matcher = PathMatcher::from_patterns(&ctx.config.deny_list.patterns)?;
     let commits = load_git_history(&ctx.paths.repo_root, since)?;
 
     let mut unique_files = HashSet::new();
     let mut commit_file_links_seen = 0usize;
+    let mut denied_files_skipped = 0usize;
 
     let tx = ctx.conn.transaction()?;
     for commit in &commits {
@@ -49,6 +52,10 @@ pub fn run(start: &Path, since: Option<&str>) -> Result<GitIngestSummary> {
         )?;
 
         for file in &commit.files {
+            if matcher.is_denied(&file.path) {
+                denied_files_skipped += 1;
+                continue;
+            }
             tx.execute(
                 "INSERT INTO files(project_id, path, last_seen_commit, language)
                  VALUES (1, ?1, ?2, ?3)
@@ -99,6 +106,7 @@ pub fn run(start: &Path, since: Option<&str>) -> Result<GitIngestSummary> {
         commits_seen: commits.len(),
         unique_files_seen: unique_files.len(),
         commit_file_links_seen,
+        denied_files_skipped,
     })
 }
 

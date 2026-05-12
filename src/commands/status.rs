@@ -33,6 +33,7 @@ pub fn run(start: &Path) -> Result<StatusSummary> {
     let writes_logged: i64 =
         conn.query_row("SELECT COUNT(*) FROM writes_log", [], |row| row.get(0))?;
 
+    let deny_patterns = ctx.config.deny_list.patterns.len();
     let project_name = ctx.config.project_name;
     let repo_root = ctx.paths.repo_root;
     let db_path = ctx.paths.db_path;
@@ -54,5 +55,6 @@ pub fn run(start: &Path) -> Result<StatusSummary> {
         chunks,
         pending_writes,
         writes_logged,
+        deny_patterns,
     })
 }

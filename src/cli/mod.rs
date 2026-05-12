@@ -273,6 +273,7 @@ pub fn run(cli: Cli) -> Result<()> {
             println!("Search chunks: {}", summary.chunks);
             println!("Pending writes: {}", summary.pending_writes);
             println!("Writes logged: {}", summary.writes_logged);
+            println!("Deny patterns: {}", summary.deny_patterns);
         }
         TopLevelCommand::SyncMd => {
             let result = commands::sync_md::run(&cwd)?;
@@ -306,6 +307,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 "Commit-file links recorded: {}",
                 summary.commit_file_links_seen
             );
+            println!("Denied files skipped: {}", summary.denied_files_skipped);
         }
         TopLevelCommand::Search { query, limit } => {
             let response = commands::search::run(&cwd, &query, limit)?;

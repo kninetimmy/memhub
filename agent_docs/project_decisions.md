@@ -121,6 +121,28 @@ Append-only. Superseding decisions should be added as new dated entries rather t
 - It is set on any transition out of `pending` (accepted, rejected, expired) and stays null while a proposal is still pending.
 - Keeping it on the row directly makes "show me recent reviews" queryable without joining `writes_log`, and makes `review show` self-contained for human inspection.
 
+## 2026-05-12 - Deny list ships with `globset` and matches by path segments
+
+- `memhub` uses the `globset` crate for deny-list pattern compilation so patterns like `secrets/**` work the same way `.gitignore` patterns do, without rolling our own glob engine.
+- `PathMatcher::is_denied` matches the full normalized path *and* each `/`-separated suffix, so unrooted patterns like `*.pem` deny `config/server.pem` even though they don't start at the repo root. This matches the user expectation that "*.pem" means "any .pem file anywhere."
+- The trade-off is one extra small dep (`globset` + transitive `aho-corasick`/`regex`), which is acceptable given how widely used these crates already are in the Rust ecosystem.
+
+## 2026-05-12 - Deny-list pattern compilation fails closed
+
+- If any user-supplied pattern fails to compile, `commands::ingest_git` and `commands::search` return `MemhubError::InvalidInput` and refuse to run.
+- Fail-open (warn-and-skip) was rejected because a typo in a deny pattern is exactly the kind of mistake that silently regresses sensitive-data protection. Hard failure forces the user to fix the config before sensitive paths can flow through.
+
+## 2026-05-12 - Deny list is filter-on-read for existing data; no auto-cleanup
+
+- New ingestions skip denied paths. Search post-filters denied paths even if older `files` / `commit_files` rows still contain them.
+- After a pattern change, previously-ingested denied paths stay in the database but never surface through search. Deletion is explicitly deferred to a future `memhub gc` slice that does not exist yet.
+- The reasoning is that a destructive auto-cleanup on every pattern change is exactly the kind of surprise behavior that erodes trust. Filter-on-read is sufficient for the "agents reading memory can't read these" property the PRD requires.
+
+## 2026-05-12 - Deny list is path-based, not content-based
+
+- Patterns match the file path only. Content scanning for credential strings (e.g. AWS access key IDs, GCP service-account keys embedded in tracked files) is out of scope for this slice.
+- The PRD's mention of "common AWS/GCP credential patterns" is interpreted as filenames (`.aws/credentials`, `.gcloud/credentials*`) rather than regex over file contents. Content scanning is a much larger design space (false positives, performance over commit history, what to do on partial matches) and would distract from the M4 trust theme.
+
 ## 2026-05-12 - Review acceptance is not a single transaction across `pending_writes` and the durable table
 
 - `accept` delegates to existing `fact::add` / `decision::add`, each of which opens its own connection and transaction, and then runs a second update on `pending_writes` in a separate transaction.

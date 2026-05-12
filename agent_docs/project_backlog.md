@@ -47,6 +47,11 @@ Each item should capture scope, affected files, status, and explicit deferrals.
   Scope: `src/cli/`, `src/commands/export.rs`, `src/commands/import.rs`, `src/export/v1.rs`, `docs/reference/export-format.md`, README backup/restore section, `tests/export_import.rs`
   Notes: Shipped `memhub export <path>` writing a version-tagged JSON file (`memhub_export_version = 1`) covering facts, decisions, tasks, commands, pending_writes, and writes_log. Shipped `memhub import <path>` with `--force` flag; wipe-and-restore semantics in a single transaction using `PRAGMA defer_foreign_keys = ON`; preserves row IDs; regenerates decision chunks via `search::sync_decision_chunks`; logs an audit entry for the restore; runs `sync_md::sync_project` after commit. Import requires the target to already be initialized; the missing-DB recovery case is `M4-002`. Merge semantics and CLI restore convenience UX explicitly deferred.
 
+- `M4-004` - Add path-based deny-list enforcement.
+  Status: completed
+  Scope: `Cargo.toml`, `src/config/deny.rs`, `src/config/mod.rs`, `src/commands/ingest_git.rs`, `src/commands/search.rs`, `src/commands/status.rs`, `src/models/mod.rs`, `src/cli/mod.rs`, `src/mcp/mod.rs`, `tests/deny_list.rs`, README
+  Notes: `ProjectConfig::deny_list` (serde-defaulted) holds the per-repo glob patterns. `commands::ingest_git` skips denied paths and surfaces `denied_files_skipped`; `commands::search` post-filters file-history results both for prefixed `file:` lookups and inferred path lookups. Invalid patterns fail closed via `MemhubError::InvalidInput`. Matching uses `globset` and walks path segments so `config/server.pem` is denied by `*.pem`. Content scanning and historical-data cleanup explicitly deferred.
+
 - `M4-003` - Add review and promotion flow for staged MCP `pending_writes`.
   Status: completed
   Scope: `migrations/0005_pending_write_reviewed_at.sql`, `src/commands/review.rs`, `src/commands/mod.rs`, `src/cli/mod.rs`, `src/mcp/mod.rs`, `src/models/mod.rs`, `tests/review.rs`, README

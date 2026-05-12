@@ -1,7 +1,11 @@
+pub mod deny;
+
 use std::fs;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+
+pub use deny::{DenyList, PathMatcher, default_patterns};
 
 use crate::Result;
 
@@ -10,6 +14,8 @@ pub struct ProjectConfig {
     pub project_name: String,
     pub auto_sync_md: bool,
     pub log_level: String,
+    #[serde(default)]
+    pub deny_list: DenyList,
 }
 
 impl ProjectConfig {
@@ -18,6 +24,7 @@ impl ProjectConfig {
             project_name: repo_name.to_string(),
             auto_sync_md: false,
             log_level: "info".to_string(),
+            deny_list: DenyList::default(),
         }
     }
 
