@@ -1,5 +1,6 @@
 use std::fs;
 
+use memhub::MemhubError;
 use memhub::commands::{decision, export, fact, import, init, search, task};
 use memhub::export::v1;
 use tempfile::tempdir;
@@ -262,7 +263,7 @@ fn import_preserves_decision_ids_and_supersession_chain() {
     let second_id = decision::add(source.path(), "Pick library B", "Library A had bugs")
         .expect("second decision");
 
-    let mut ctx = memhub::db::open_project(source.path()).expect("open source");
+    let ctx = memhub::db::open_project(source.path()).expect("open source");
     ctx.conn
         .execute(
             "UPDATE decisions SET status = 'superseded', superseded_by = ?1 WHERE id = ?2",
@@ -344,4 +345,120 @@ fn import_logs_audit_entry_for_the_restore_event() {
         )
         .expect("query writes_log");
     assert_eq!(count, 1, "expected one import audit entry");
+}
+
+#[test]
+fn open_project_errors_when_memhub_exists_but_db_is_missing() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init succeeds");
+
+    let db_path = temp.path().join(".memhub").join("project.sqlite");
+    fs::remove_file(&db_path).expect("remove db file");
+
+    let result = memhub::db::open_project(temp.path());
+    match result {
+        Err(MemhubError::MissingDatabase {
+            db_path: missing_db,
+            ..
+        }) => {
+            assert_eq!(missing_db, db_path);
+        }
+        Err(other) => panic!("expected MissingDatabase, got {other:?}"),
+        Ok(_) => panic!("open should fail when db is missing"),
+    }
+}
+
+#[test]
+fn init_refuses_to_silently_recreate_db_inside_existing_memhub() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init succeeds");
+
+    let db_path = temp.path().join(".memhub").join("project.sqlite");
+    fs::remove_file(&db_path).expect("remove db file");
+
+    let err = init::run(temp.path()).expect_err("init should refuse");
+    assert!(
+        matches!(err, MemhubError::MissingDatabase { .. }),
+        "expected MissingDatabase, got {err:?}"
+    );
+    assert!(
+        !db_path.exists(),
+        "init must not silently recreate the database"
+    );
+}
+
+#[test]
+fn init_from_backup_recovers_when_db_is_missing() {
+    let source = tempdir().expect("source tempdir");
+    seed_project(source.path());
+    let export_path = source.path().join("backup.json");
+    export::run(source.path(), &export_path).expect("export succeeds");
+
+    let target = tempdir().expect("target tempdir");
+    init::run(target.path()).expect("target init succeeds");
+    let target_db = target.path().join(".memhub").join("project.sqlite");
+    fs::remove_file(&target_db).expect("remove target db");
+
+    let (init_result, import_summary) =
+        init::run_with_backup(target.path(), &export_path).expect("recovery succeeds");
+
+    assert!(init_result.memhub_preexisting);
+    assert!(target_db.exists());
+    assert_eq!(import_summary.facts, 2);
+    assert_eq!(import_summary.decisions, 1);
+    assert_eq!(import_summary.tasks, 1);
+
+    let facts = fact::list(target.path()).expect("list facts");
+    assert_eq!(facts.len(), 2);
+}
+
+#[test]
+fn init_from_backup_works_when_memhub_directory_does_not_exist() {
+    let source = tempdir().expect("source tempdir");
+    seed_project(source.path());
+    let export_path = source.path().join("backup.json");
+    export::run(source.path(), &export_path).expect("export succeeds");
+
+    let target = tempdir().expect("target tempdir");
+    let target_memhub = target.path().join(".memhub");
+    assert!(
+        !target_memhub.exists(),
+        "target should not yet have .memhub/"
+    );
+
+    let (init_result, import_summary) =
+        init::run_with_backup(target.path(), &export_path).expect("recovery succeeds");
+
+    assert!(!init_result.memhub_preexisting);
+    assert!(target_memhub.join("project.sqlite").exists());
+    assert_eq!(import_summary.facts, 2);
+
+    let decisions = decision::list(target.path()).expect("list decisions");
+    assert_eq!(decisions.len(), 1);
+}
+
+#[test]
+fn init_from_backup_refuses_when_db_already_exists() {
+    let source = tempdir().expect("source tempdir");
+    seed_project(source.path());
+    let export_path = source.path().join("backup.json");
+    export::run(source.path(), &export_path).expect("export succeeds");
+
+    let target = tempdir().expect("target tempdir");
+    init::run(target.path()).expect("target init succeeds");
+    fact::add(target.path(), "preexisting", "value", "user").expect("seed fact");
+
+    let result = init::run_with_backup(target.path(), &export_path);
+    match result {
+        Err(MemhubError::InvalidInput(_)) => {}
+        Err(other) => panic!("expected InvalidInput, got {other:?}"),
+        Ok(_) => panic!("recovery should refuse when db already exists"),
+    }
+
+    let facts = fact::list(target.path()).expect("list facts");
+    assert_eq!(
+        facts.len(),
+        1,
+        "preexisting data should remain when recovery refuses"
+    );
 }

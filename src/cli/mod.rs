@@ -4,6 +4,40 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::Result;
 use crate::commands;
+use crate::models::InitResult;
+
+fn print_init_result(result: &InitResult) {
+    println!("Initialized memhub at {}", result.repo_root.display());
+    println!("Database: {}", result.db_path.display());
+    println!(
+        "Config created: {}",
+        if result.config_created { "yes" } else { "no" }
+    );
+    println!(
+        ".memhub existed already: {}",
+        if result.memhub_preexisting {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    println!(
+        ".gitignore updated: {}",
+        if result.gitignore_updated {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    if result.migrations_applied.is_empty() {
+        println!("Migrations applied: none");
+    } else {
+        println!(
+            "Migrations applied: {}",
+            result.migrations_applied.join(", ")
+        );
+    }
+}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -18,7 +52,10 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum TopLevelCommand {
-    Init,
+    Init {
+        #[arg(long, value_name = "PATH")]
+        from_backup: Option<PathBuf>,
+    },
     Status,
     SyncMd,
     Serve,
@@ -150,39 +187,23 @@ pub fn run(cli: Cli) -> Result<()> {
     let cwd = std::env::current_dir()?;
 
     match cli.command {
-        TopLevelCommand::Init => {
-            let result = commands::init::run(&cwd)?;
-            println!("Initialized memhub at {}", result.repo_root.display());
-            println!("Database: {}", result.db_path.display());
-            println!(
-                "Config created: {}",
-                if result.config_created { "yes" } else { "no" }
-            );
-            println!(
-                ".memhub existed already: {}",
-                if result.memhub_preexisting {
-                    "yes"
-                } else {
-                    "no"
-                }
-            );
-            println!(
-                ".gitignore updated: {}",
-                if result.gitignore_updated {
-                    "yes"
-                } else {
-                    "no"
-                }
-            );
-            if result.migrations_applied.is_empty() {
-                println!("Migrations applied: none");
-            } else {
-                println!(
-                    "Migrations applied: {}",
-                    result.migrations_applied.join(", ")
-                );
+        TopLevelCommand::Init { from_backup } => match from_backup {
+            None => {
+                let result = commands::init::run(&cwd)?;
+                print_init_result(&result);
             }
-        }
+            Some(backup_path) => {
+                let (result, import_summary) = commands::init::run_with_backup(&cwd, &backup_path)?;
+                print_init_result(&result);
+                println!("Restored from {}", import_summary.source.display());
+                println!("  facts: {}", import_summary.facts);
+                println!("  decisions: {}", import_summary.decisions);
+                println!("  tasks: {}", import_summary.tasks);
+                println!("  commands: {}", import_summary.commands);
+                println!("  pending writes: {}", import_summary.pending_writes);
+                println!("  writes log entries: {}", import_summary.writes_log);
+            }
+        },
         TopLevelCommand::Status => {
             let summary = commands::status::run(&cwd)?;
             println!("Project: {}", summary.project_name);

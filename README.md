@@ -6,14 +6,14 @@ The long-term product direction is a shared memory layer that both agents can re
 
 ## Development Status
 
-`memhub` is in active development and is now mid-Milestone 4 after shipping `M4-001`.
+`memhub` is in active development and is now mid-Milestone 4 after shipping `M4-001` and `M4-002`.
 
 Current state:
 
-- Shipped: Milestone 1 foundations, Milestone 2 git ingestion and indexed search, the narrowed Milestone 3 slice covering markdown sync, stdio MCP access, staged proposal writes, and client alias normalization, plus the Milestone 4 portable export/import recovery path
-- Current focus: `M4-002` missing-DB safety so an existing `.memhub/` without `project.sqlite` is treated as recovery, not silent re-init
-- Implemented now: local SQLite storage, embedded migrations, per-repo config, audit logging, facts/decisions/tasks/commands CRUD, explicit command verification, git ingestion, indexed search, managed-block sync for `AGENTS.md` / `CLAUDE.md`, `memhub serve` for stdio MCP access, staged MCP fact/decision proposals, pending-write visibility in status, and portable `memhub export` / `memhub import`
-- Not implemented yet: review queue and promotion of staged writes, confidence decay, missing-DB recovery handling, deny-list enforcement, and broader search coverage beyond current indexed paths
+- Shipped: Milestone 1 foundations, Milestone 2 git ingestion and indexed search, the narrowed Milestone 3 slice covering markdown sync, stdio MCP access, staged proposal writes, and client alias normalization, the Milestone 4 portable export/import recovery path, and Milestone 4 missing-DB safety with `memhub init --from-backup <path>` recovery
+- Current focus: remaining Milestone 4 work — review/promotion flow for staged writes, confidence/staleness handling, and deny-list enforcement
+- Implemented now: local SQLite storage, embedded migrations, per-repo config, audit logging, facts/decisions/tasks/commands CRUD, explicit command verification, git ingestion, indexed search, managed-block sync for `AGENTS.md` / `CLAUDE.md`, `memhub serve` for stdio MCP access, staged MCP fact/decision proposals, pending-write visibility in status, portable `memhub export` / `memhub import`, missing-DB detection, and `memhub init --from-backup <path>` single-step recovery
+- Not implemented yet: review queue and promotion of staged writes, confidence decay, deny-list enforcement, and broader search coverage beyond current indexed paths
 
 Milestone status:
 
@@ -22,7 +22,7 @@ Milestone status:
 | Milestone 1: DB + CLI | Complete | Core repo bootstrap, schema, CRUD, config, logging |
 | Milestone 2: Git + search | Complete | `ingest-git`, FTS-backed decision search, exact file-history lookups |
 | Milestone 3: MCP + markdown sync | Complete | Markdown sync, stdio MCP reads, verified command recording, staged proposal writes, and client alias normalization are shipped under the current narrowed plan |
-| Milestone 4: Quality | In progress | Portable `export` / `import` shipped (`M4-001`); missing-DB safety, review flow, confidence/staleness, deny-list work remain |
+| Milestone 4: Quality | In progress | Portable `export` / `import` shipped (`M4-001`) and missing-DB safety with `init --from-backup` recovery shipped (`M4-002`); review flow, confidence/staleness, deny-list work remain |
 | Milestone 5+ | Planned | Speculative future expansions only after separate validation |
 
 ## Why memhub exists
@@ -47,6 +47,7 @@ The current codebase already supports a practical local workflow:
 - Regenerate managed blocks in `AGENTS.md` and `CLAUDE.md` with `memhub sync-md`
 - Serve the current repository over stdio MCP with `memhub serve`, including staged `propose_fact` and `propose_decision` MCP tools
 - Back up the project with `memhub export <path>` and restore it on another machine or a clean checkout with `memhub import <path>` (use `--force` to overwrite existing data)
+- Recover from a deleted or corrupted database in a single step with `memhub init --from-backup <path>`
 
 ## Install and Quick Start
 
@@ -159,6 +160,31 @@ cargo run -- import /path/to/memhub-backup.json --force
 After import, re-run `memhub ingest-git` to repopulate commit/file
 history from the local git repository — git history is not part of the
 export.
+
+### Recover when the database is missing or corrupted
+
+If `.memhub/` exists but `project.sqlite` is gone — for example after a
+disk fault, an accidental deletion, or a partial sync — `memhub` will
+not silently rebuild an empty database. Every command except the
+recovery entry point refuses with a `MissingDatabase` error pointing at
+the recovery flow.
+
+The supported single-step recovery is:
+
+```bash
+cd /path/to/repo
+cargo run -- init --from-backup /path/to/memhub-backup.json
+```
+
+`init --from-backup` creates `.memhub/` if needed, runs migrations to
+the current schema, then imports the supplied backup. It works for both
+a clean clone (no `.memhub/`) and the missing-database case (existing
+`.memhub/` without `project.sqlite`). It refuses to run when a database
+already exists at `.memhub/project.sqlite`; use `memhub import --force`
+to overwrite a live database instead.
+
+If you intentionally want to start over with no data, remove `.memhub/`
+manually and run `memhub init` again.
 
 The on-disk shape of the export file is documented in
 [docs/reference/export-format.md](docs/reference/export-format.md).
@@ -350,11 +376,11 @@ Shipped:
 
 - portable `memhub export` / `memhub import` as the supported backup and restore path (`M4-001`)
 - readable README backup/restore instructions
+- missing-DB safety: every command refuses with a clear recovery error when `.memhub/` exists without `project.sqlite` instead of silently rebuilding an empty database (`M4-002`)
+- `memhub init --from-backup <path>` single-step recovery that initializes and restores in one command (`M4-002`)
 
 Remaining scope:
 
-- missing-DB safety handling so an existing `.memhub/` without `project.sqlite` is treated as recovery, not silent re-init (`M4-002`)
-- narrow follow-on recovery UX around restore entry points once `M4-002` is in place
 - review flow for proposed writes
 - confidence scoring and staleness handling
 - deny-list enforcement

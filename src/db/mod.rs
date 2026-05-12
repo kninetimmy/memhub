@@ -43,8 +43,27 @@ impl ProjectPaths {
 }
 
 pub fn init_project(repo_root: &Path) -> Result<(ProjectContext, InitResult)> {
+    init_project_inner(repo_root, false)
+}
+
+pub fn init_project_for_recovery(repo_root: &Path) -> Result<(ProjectContext, InitResult)> {
+    init_project_inner(repo_root, true)
+}
+
+fn init_project_inner(
+    repo_root: &Path,
+    allow_missing_db_recovery: bool,
+) -> Result<(ProjectContext, InitResult)> {
     let paths = ProjectPaths::for_repo_root(repo_root);
     let memhub_preexisting = paths.memhub_dir.exists();
+
+    if memhub_preexisting && !paths.db_path.exists() && !allow_missing_db_recovery {
+        return Err(MemhubError::MissingDatabase {
+            memhub_dir: paths.memhub_dir.clone(),
+            db_path: paths.db_path.clone(),
+        });
+    }
+
     fs::create_dir_all(&paths.memhub_dir)?;
 
     let gitignore_updated = ensure_gitignore(repo_root)?;
@@ -87,6 +106,13 @@ pub fn init_project(repo_root: &Path) -> Result<(ProjectContext, InitResult)> {
 
 pub fn open_project(start: &Path) -> Result<ProjectContext> {
     let paths = discover_paths(start)?;
+
+    if !paths.db_path.exists() {
+        return Err(MemhubError::MissingDatabase {
+            memhub_dir: paths.memhub_dir.clone(),
+            db_path: paths.db_path.clone(),
+        });
+    }
 
     if !paths.config_path.exists() {
         let repo_name = paths

@@ -84,3 +84,15 @@ Append-only. Superseding decisions should be added as new dated entries rather t
 
 - `memhub import` requires the target to already have a `.memhub/` created via `memhub init` and will not auto-initialize.
 - This keeps the recovery flow explicit and leaves the missing-`.memhub/` and missing-`project.sqlite` scenarios to be handled by `M4-002`.
+
+## 2026-05-12 - Missing `project.sqlite` is an explicit recovery error, not a silent re-init
+
+- `db::open_project` and `db::init_project` both return `MemhubError::MissingDatabase` when `.memhub/` exists without `project.sqlite`.
+- The error names the missing path and points the user at `memhub init --from-backup <path>` for recovery or at removing `.memhub/` to start over.
+- `db::init_project_for_recovery` is the explicit recovery-mode entry point used by the `init --from-backup` flow; plain `memhub init` stays strict and non-interactive.
+
+## 2026-05-12 - `memhub init --from-backup <path>` is the single recovery entry point
+
+- The single-step recovery UX lives on `init`, not on `import`, so `memhub import` keeps its prior "target must be initialized first" contract unchanged.
+- `init --from-backup` refuses to run when `.memhub/project.sqlite` already exists; the documented overwrite path remains `memhub import --force <path>` on a live database.
+- The flag works in both the clean-clone case (no `.memhub/`) and the missing-database case (existing `.memhub/` without `project.sqlite`).

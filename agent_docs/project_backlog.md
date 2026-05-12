@@ -48,11 +48,11 @@ Each item should capture scope, affected files, status, and explicit deferrals.
   Notes: Shipped `memhub export <path>` writing a version-tagged JSON file (`memhub_export_version = 1`) covering facts, decisions, tasks, commands, pending_writes, and writes_log. Shipped `memhub import <path>` with `--force` flag; wipe-and-restore semantics in a single transaction using `PRAGMA defer_foreign_keys = ON`; preserves row IDs; regenerates decision chunks via `search::sync_decision_chunks`; logs an audit entry for the restore; runs `sync_md::sync_project` after commit. Import requires the target to already be initialized; the missing-DB recovery case is `M4-002`. Merge semantics and CLI restore convenience UX explicitly deferred.
 
 - `M4-002` - Add recovery-safe missing-DB handling and follow-on init UX.
-  Status: triaged
-  Scope: `src/db/`, `src/commands/`, `src/cli/`, README, tests
-  Notes: If `.memhub/` exists but `project.sqlite` is missing, fail as an explicit recovery case instead of silently creating a fresh database. After `M4-001`, add the narrowest convenience UX around restore entry points without making plain `memhub init` depend on prompts. Ship README backup/restore instructions with this slice.
+  Status: completed
+  Scope: `src/db/`, `src/commands/init.rs`, `src/cli/mod.rs`, `src/errors/mod.rs`, README, `tests/export_import.rs`
+  Notes: Shipped `MemhubError::MissingDatabase` and gated both `db::open_project` and `db::init_project` so an existing `.memhub/` without `project.sqlite` returns the new error instead of silently rebuilding the database. Exposed `db::init_project_for_recovery` as the explicit recovery-mode entry point. Added `memhub init --from-backup <path>` (CLI flag plus `commands::init::run_with_backup`) which refuses when a database already exists, then runs the existing import flow. README "Recover when the database is missing or corrupted" section explains the recovery path. Plain `memhub init` stays non-interactive and refuses the missing-DB case per the prior decision.
 
 - `M5-001` - K9 Claude Framework integration: optional DB writes from `/wrap-up`.
   Status: triaged
   Scope: `docs/roadmap/k9-integration.md`, install scripts, `src/cli/init`, `src/config/`, K9 repo `/wrap-up.md`
-  Notes: Deferred until `M4-001` and `M4-002` complete. Full design in `docs/roadmap/k9-integration.md`. Key requirements: memhub install must detect K9 and configure accordingly without modifying K9 files; K9 `/wrap-up` shells out to existing memhub CLI commands after human approval; no bidirectional sync; standalone modes for both systems remain fully supported.
+  Notes: Full design in `docs/roadmap/k9-integration.md`. `M4-001` and `M4-002` are now complete, so the recovery preconditions for this milestone are in place. Key requirements: memhub install must detect K9 and configure accordingly without modifying K9 files; K9 `/wrap-up` shells out to existing memhub CLI commands after human approval; no bidirectional sync; standalone modes for both systems remain fully supported.

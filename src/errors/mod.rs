@@ -6,6 +6,15 @@ use thiserror::Error;
 pub enum MemhubError {
     #[error("no memhub project above {start}; run `memhub init`")]
     NotInitialized { start: PathBuf },
+    #[error(
+        "memhub database missing at {db_path} but {memhub_dir} exists; \
+         this is a recovery case. Run `memhub init --from-backup <path>` to restore \
+         from a memhub export, or remove {memhub_dir} to start over."
+    )]
+    MissingDatabase {
+        memhub_dir: PathBuf,
+        db_path: PathBuf,
+    },
     #[error("invalid input: {0}")]
     InvalidInput(String),
     #[error("invalid managed markdown in {path}: {reason}")]
