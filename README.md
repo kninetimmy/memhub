@@ -307,6 +307,32 @@ it to config if a real workflow needs it. Continuous decay, a persisted
 confidence column on `commands`, and confidence on `decisions` are
 explicitly deferred.
 
+## Project usage stats
+
+`memhub stats` prints the dogfood metrics that PRD §17 names as the
+success signal: are facts/decisions/tasks growing, is the review queue
+actually being reviewed, is the store going stale?
+
+```
+cargo run -- stats                          # default: --window 30d
+cargo run -- stats --window 7d
+cargo run -- stats --window 90d
+cargo run -- stats --window all
+cargo run -- stats --json                   # machine-readable
+```
+
+The human-readable output prints totals, windowed write activity
+grouped by actor and table (sourced from `writes_log`), pending-write
+review rate over the window, all-time `pending_writes` status counts,
+the top five commands by run count, and the five most recently verified
+facts. `--json` emits the same data as a structured envelope.
+
+Deliberate limitation: this slice tracks **write** activity only, via
+`writes_log`. PRD §17 also mentions a "simple read counter"; instrumenting
+every read path is deferred until there's a real workflow demanding it.
+The output explicitly notes the deviation so the omission is never
+silent.
+
 ## K9 Claude Framework integration
 
 `memhub` runs standalone, but if the [K9 Claude

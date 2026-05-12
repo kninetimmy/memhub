@@ -4,32 +4,53 @@ Last updated: 2026-05-12
 
 ## Currently building
 
-Between tasks after `M5-003` (memhub side). The K9 wrap-up read path
-is now locked into the v1 contract: `memhub review list` and `memhub
-review show` accept `--json` and emit shapes that mirror the MCP
-`PendingWriteToolRecord` field set. `review list --json` returns
-`{"status": <filter|null>, "pending_writes": [...]}`; `review show
---json` returns a single record. Read surfaces are intentionally
-side-effect-free — no `--actor`, no `writes_log` rows. The contract
-doc gained a "Read surfaces" section before "Mutating commands" and
-the sequencing step 3 now points directly at `review list --json`.
-The amendment is additive within `v1` (no `v2` bump). No K9 repo
-edits in this slice — the K9 `/wrap-up.md` consumer change remains
-triaged separately and can now pick the CLI-only path end-to-end.
+Mid-Milestone 5 PRD-surface cleanup. `M5-004` shipped: `memhub stats`
+prints PRD §17 success-metric tooling — totals, windowed write activity
+from `writes_log`, pending-write review rate, top commands by run count,
+recent verified facts. Default window is 30 days; flag is
+`--window 7d|30d|90d|all` plus `--json` for machine consumption. The
+read-counter half of PRD §17 is explicitly deferred and the deviation
+is surfaced in both output modes so the omission is never silent. Next
+slice is `M5-005`: `log_session_note` MCP tool + `memhub note list`
+CLI for free-form agent scratch (PRD §12). The prior K9 wrap-up read
+path (`M5-003`) remains the most recent contract amendment: `memhub
+review list` / `review show` both accept `--json` with shapes mirroring
+the MCP `PendingWriteToolRecord`.
 
 ## Next up
 
-1. Coordinate the K9 repo `/wrap-up.md` consumer change with whoever
+1. Ship `M5-005`: `log_session_note` MCP tool + `memhub note list` CLI
+   read surface. New `session_notes` table behind migration `0006`,
+   `ClientIdentity` actor wiring on the MCP side, no FTS, no promotion
+   path, no `note add` CLI.
+2. Coordinate the K9 repo `/wrap-up.md` consumer change with whoever
    owns the K9 repo. With `M5-003` shipped on the memhub side, K9 can
    stay CLI-only end-to-end (gate + read + mutate); their slice is
-   mechanical.
-2. Decide whether MCP needs broader indexed retrieval over facts,
+   mechanical and lives outside this repo.
+3. Decide whether MCP needs broader indexed retrieval over facts,
    tasks, or command history beyond the current narrow paths.
-3. Revisit the open `MEMHUB_ACTOR` env-var question once a real K9
-   `/wrap-up` consumer exists and we know how many CLI invocations
-   per session it actually fans out to.
 
 ## Last session
+
+2026-05-12 - Completed `M5-004`. New `memhub stats [--window
+7d|30d|90d|all] [--json]` subcommand. Created `src/commands/stats.rs`
+exposing `StatsWindow` (`Days(i64)` / `All`) and a `run` that
+aggregates over existing tables only — no migration, no schema change.
+Added `StatsSummary`, `CountByLabel`, `TopCommandKind`, and
+`RecentFactKey` to `src/models/mod.rs`. CLI gained
+`TopLevelCommand::Stats { window, json }` with a `StatsWindowArg`
+clap value-enum using `#[value(name = "7d")]` etc. Two print helpers
+(`print_stats_human`, `print_stats_json`) live in `src/cli/mod.rs`.
+Default window is 30 days. The output explicitly notes the PRD §17
+read-counter deviation in both human and JSON modes. Added 7
+integration tests in `tests/stats.rs`: empty-repo zero counts,
+windowed write counts grouped by actor and table, 7d-vs-all-time
+window via direct `UPDATE writes_log SET at = datetime('now', '-100
+days')`, review rate from `pending_writes`, stale-fact ratio, CLI
+JSON envelope shape on `30d`, and CLI `--window all` emitting null
+`days`. Updated README with a "Project usage stats" section ahead of
+the K9 integration section. Verified with `cargo fmt`, `cargo build`,
+and `cargo test` (110 tests across all suites, up from 103).
 
 2026-05-12 - Completed `M5-003` (memhub side). Added `--json` to
 `memhub review list` and `memhub review show` in `src/cli/mod.rs`,

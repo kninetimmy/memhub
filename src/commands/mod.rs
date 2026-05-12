@@ -9,6 +9,7 @@ pub mod integrations;
 pub mod pending_write;
 pub mod review;
 pub mod search;
+pub mod stats;
 pub mod status;
 pub mod sync_md;
 pub mod task;

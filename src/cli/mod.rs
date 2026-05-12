@@ -7,7 +7,7 @@ use serde_json::json;
 use crate::Result;
 use crate::commands;
 use crate::commands::{DEFAULT_ACTOR, validate_actor};
-use crate::models::{InitResult, PendingWriteRecord};
+use crate::models::{InitResult, PendingWriteRecord, StatsSummary};
 
 fn resolve_actor(actor: Option<&str>) -> Result<String> {
     match actor {
@@ -17,6 +17,157 @@ fn resolve_actor(actor: Option<&str>) -> Result<String> {
         }
         None => Ok(DEFAULT_ACTOR.to_string()),
     }
+}
+
+fn print_stats_human(s: &StatsSummary) {
+    println!("memhub stats — project: {}", s.project_name);
+    println!("Repo: {}", s.repo_root.display());
+    println!("Window: {}", s.window_label);
+    println!();
+    println!("Totals");
+    println!(
+        "  Facts: {} ({} stale{})",
+        s.facts,
+        s.stale_facts,
+        match s.stale_ratio {
+            Some(r) => format!(", {:.0}% stale", r * 100.0),
+            None => String::new(),
+        }
+    );
+    println!("  Decisions: {}", s.decisions);
+    println!("  Tasks: {} open / {} total", s.tasks_open, s.tasks_total);
+    println!("  Commands: {}", s.commands);
+    println!("  Commits: {}", s.commits);
+    println!("  Files: {}", s.files);
+    println!("  Search chunks: {}", s.chunks);
+    println!("  Pending writes (open): {}", s.pending_writes_now);
+    println!("  Writes logged (all time): {}", s.writes_logged_total);
+    println!();
+    println!("Activity ({})", s.window_label);
+    println!("  Writes: {}", s.writes_in_window);
+    if !s.writes_by_actor.is_empty() {
+        println!("  By actor:");
+        for row in &s.writes_by_actor {
+            println!("    {:<24} {}", row.label, row.count);
+        }
+    }
+    if !s.writes_by_table.is_empty() {
+        println!("  By table:");
+        for row in &s.writes_by_table {
+            println!("    {:<24} {}", row.label, row.count);
+        }
+    }
+    println!();
+    println!("Pending writes ({})", s.window_label);
+    println!("  Created: {}", s.pending_created_in_window);
+    println!(
+        "  Reviewed: {}{}",
+        s.pending_reviewed_in_window,
+        match s.review_rate {
+            Some(r) => format!(" (review rate: {:.0}%)", r * 100.0),
+            None => String::new(),
+        }
+    );
+    if !s.pending_by_status.is_empty() {
+        print!("  By status (all time):");
+        for row in &s.pending_by_status {
+            print!(" {}={}", row.label, row.count);
+        }
+        println!();
+    }
+    println!();
+    if !s.top_command_kinds.is_empty() {
+        println!("Top commands (by runs)");
+        for c in &s.top_command_kinds {
+            let conf = c
+                .confidence
+                .map(|v| format!("conf={:.2}", v))
+                .unwrap_or_else(|| "conf=n/a".to_string());
+            println!(
+                "  {:<10} {}  ({}/{} runs)  {}",
+                c.kind,
+                conf,
+                c.success_count,
+                c.success_count + c.fail_count,
+                c.cmdline,
+            );
+        }
+        println!();
+    }
+    if !s.recent_facts.is_empty() {
+        println!("Recent facts");
+        for f in &s.recent_facts {
+            let stamp = f.verified_at.as_deref().unwrap_or("never verified");
+            let stale = if f.is_stale { " [stale]" } else { "" };
+            println!("  {}  {}{}", stamp, f.key, stale);
+        }
+        println!();
+    }
+    println!(
+        "Note: \"writes\" counts mutations recorded in writes_log. Read activity is not tracked in this slice; see PRD §17."
+    );
+}
+
+fn print_stats_json(s: &StatsSummary) {
+    let payload = json!({
+        "project_name": s.project_name,
+        "repo_root": s.repo_root.display().to_string(),
+        "window": {
+            "label": s.window_label,
+            "days": s.window_days,
+        },
+        "totals": {
+            "facts": s.facts,
+            "stale_facts": s.stale_facts,
+            "stale_ratio": s.stale_ratio,
+            "decisions": s.decisions,
+            "tasks_total": s.tasks_total,
+            "tasks_open": s.tasks_open,
+            "commands": s.commands,
+            "commits": s.commits,
+            "files": s.files,
+            "chunks": s.chunks,
+            "pending_writes_now": s.pending_writes_now,
+            "writes_logged_total": s.writes_logged_total,
+        },
+        "activity": {
+            "writes_in_window": s.writes_in_window,
+            "writes_by_actor": s.writes_by_actor.iter().map(|r| json!({
+                "label": r.label,
+                "count": r.count,
+            })).collect::<Vec<_>>(),
+            "writes_by_table": s.writes_by_table.iter().map(|r| json!({
+                "label": r.label,
+                "count": r.count,
+            })).collect::<Vec<_>>(),
+        },
+        "pending_writes": {
+            "created_in_window": s.pending_created_in_window,
+            "reviewed_in_window": s.pending_reviewed_in_window,
+            "review_rate": s.review_rate,
+            "by_status_all_time": s.pending_by_status.iter().map(|r| json!({
+                "status": r.label,
+                "count": r.count,
+            })).collect::<Vec<_>>(),
+        },
+        "top_command_kinds": s.top_command_kinds.iter().map(|c| json!({
+            "kind": c.kind,
+            "cmdline": c.cmdline,
+            "success_count": c.success_count,
+            "fail_count": c.fail_count,
+            "confidence": c.confidence,
+            "last_run_at": c.last_run_at,
+        })).collect::<Vec<_>>(),
+        "recent_facts": s.recent_facts.iter().map(|f| json!({
+            "key": f.key,
+            "verified_at": f.verified_at,
+            "is_stale": f.is_stale,
+        })).collect::<Vec<_>>(),
+        "notes": [
+            "writes counts mutations recorded in writes_log; read activity is not tracked in this slice (PRD §17 read counter deferred)",
+        ],
+    });
+    println!("{payload}");
 }
 
 fn pending_write_record_to_json(row: &PendingWriteRecord) -> serde_json::Value {
@@ -85,6 +236,12 @@ pub enum TopLevelCommand {
         from_backup: Option<PathBuf>,
     },
     Status,
+    Stats {
+        #[arg(long, value_enum, default_value_t = StatsWindowArg::ThirtyDays)]
+        window: StatsWindowArg,
+        #[arg(long)]
+        json: bool,
+    },
     SyncMd,
     Serve,
     IngestGit {
@@ -141,6 +298,29 @@ pub enum IntegrationsCommand {
     },
     DisableK9,
     CheckK9,
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+pub enum StatsWindowArg {
+    #[value(name = "7d")]
+    SevenDays,
+    #[value(name = "30d")]
+    ThirtyDays,
+    #[value(name = "90d")]
+    NinetyDays,
+    #[value(name = "all")]
+    All,
+}
+
+impl StatsWindowArg {
+    fn to_window(&self) -> commands::stats::StatsWindow {
+        match self {
+            Self::SevenDays => commands::stats::StatsWindow::Days(7),
+            Self::ThirtyDays => commands::stats::StatsWindow::Days(30),
+            Self::NinetyDays => commands::stats::StatsWindow::Days(90),
+            Self::All => commands::stats::StatsWindow::All,
+        }
+    }
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -362,6 +542,17 @@ pub fn run(cli: Cli) -> Result<()> {
             );
             if let Some(drift) = &summary.k9_drift {
                 println!("  note: {drift}");
+            }
+        }
+        TopLevelCommand::Stats {
+            window,
+            json: as_json,
+        } => {
+            let summary = commands::stats::run(&cwd, window.to_window())?;
+            if as_json {
+                print_stats_json(&summary);
+            } else {
+                print_stats_human(&summary);
             }
         }
         TopLevelCommand::SyncMd => {

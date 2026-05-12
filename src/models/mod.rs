@@ -133,6 +133,58 @@ pub struct ReviewExpireSummary {
 }
 
 #[derive(Debug)]
+pub struct CountByLabel {
+    pub label: String,
+    pub count: i64,
+}
+
+#[derive(Debug)]
+pub struct TopCommandKind {
+    pub kind: String,
+    pub cmdline: String,
+    pub success_count: i64,
+    pub fail_count: i64,
+    pub confidence: Option<f64>,
+    pub last_run_at: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct RecentFactKey {
+    pub key: String,
+    pub verified_at: Option<String>,
+    pub is_stale: bool,
+}
+
+#[derive(Debug)]
+pub struct StatsSummary {
+    pub project_name: String,
+    pub repo_root: PathBuf,
+    pub window_label: String,
+    pub window_days: Option<i64>,
+    pub facts: i64,
+    pub stale_facts: i64,
+    pub stale_ratio: Option<f64>,
+    pub decisions: i64,
+    pub tasks_total: i64,
+    pub tasks_open: i64,
+    pub commands: i64,
+    pub commits: i64,
+    pub files: i64,
+    pub chunks: i64,
+    pub pending_writes_now: i64,
+    pub writes_logged_total: i64,
+    pub writes_in_window: i64,
+    pub writes_by_actor: Vec<CountByLabel>,
+    pub writes_by_table: Vec<CountByLabel>,
+    pub pending_created_in_window: i64,
+    pub pending_reviewed_in_window: i64,
+    pub review_rate: Option<f64>,
+    pub pending_by_status: Vec<CountByLabel>,
+    pub top_command_kinds: Vec<TopCommandKind>,
+    pub recent_facts: Vec<RecentFactKey>,
+}
+
+#[derive(Debug)]
 pub struct StatusSummary {
     pub project_name: String,
     pub repo_root: PathBuf,
