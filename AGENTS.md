@@ -39,7 +39,7 @@ This repository is in foundational scaffolding / Milestone 1 mode. Favor correct
 
 **Build:** `n/a`
 **Test:** `n/a`
-**Active tasks:** 2 open, 0 blocked - see `memhub task list --status open`
+**Active tasks:** 3 open, 0 blocked - see `memhub task list --status open`
 
 ### Durable decisions
 - K9 canonical conventions (H3 backlog items, em-dash decisions) are the parser target (2026-05-12 21:03:01)

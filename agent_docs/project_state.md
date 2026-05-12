@@ -4,23 +4,47 @@ Last updated: 2026-05-12
 
 ## Currently building
 
-Between tasks. M6-001 + M6-002 shipped together as `cd25a25`.
-M6-003 (Free-AI-SSD bootstrap re-run for Phase 2 evidence) is now
-unblocked. M6-004 (memhub's own agent_docs migration to K9
-canonical) remains open and independent.
+Between tasks. M6-003 shipped as `9c8c103`; Phase 2 evaluation
+evidence is captured in `docs/roadmap/memhub-primary-evaluation.md`
+and routed to **marginal** (not "acceptable"). M6-004 (memhub's own
+agent_docs migration to K9 canonical) remains open and independent.
+M6-005 (done-marker recall fixes) and M6-006 (mojibake separator)
+opened as the narrow follow-ups recommended by Phase 2.
 
 ## Next up
 
-1. M6-003 — wipe Free-AI-SSD's bootstrap DB, re-run `memhub
-   integrations bootstrap-k9`, and write Phase 2 results into
-   `docs/roadmap/memhub-primary-evaluation.md`. Outcome routes the
-   Phase 3 decision (commission `memhub render` design, extend the
-   parser further, or close the evaluation).
-2. M6-004 — migrate memhub's own `agent_docs/project_backlog.md`
+1. M6-005 — extend done-marker detection to recognize
+   `**done** — merged DATE (PR #N)` syntax and "Shipped"
+   vocabulary. Expected to lift Free-AI-SSD recall on body markers
+   from 8/12 to 12/12.
+2. M6-006 — accept the UTF-8 mojibake `â€"` triple-codepoint
+   sequence (U+00E2 U+20AC U+201D) as a third separator branch in
+   `extract_date_and_title`. Expected to lift 19/82 Free-AI-SSD
+   decisions from dirty-title to clean.
+3. M6-004 — migrate memhub's own `agent_docs/project_backlog.md`
    and `project_decisions.md` to K9 canonical structural delimiters
    (independent; can land in any order).
 
 ## Last session
+
+2026-05-12 — Ran the M6-003 Phase 2 evaluation against
+Free-AI-SSD. Built a fresh `cargo --release` binary, wiped
+Free-AI-SSD's `.memhub/` (backup preserved at
+`/Users/stephenelswick/Free-AI-SSD/project.sqlite.pre-m6-003-rerun.bak`),
+re-ran `memhub integrations bootstrap-k9 --json`. Captured: 82/82
+decisions imported (63 clean / 19 mojibake-stuck on `â€"`
+separator), 49/49 backlog items found (41 open / 8 skipped done;
+human's index-table truth is 16-20 done). Surfaced three concrete
+parser limitations on real data: mojibake separator in 19
+decisions, `**done** — merged DATE (PR #N)` syntax missing 4 done
+items (F2, F2a, F3, X13), and "Shipped" / preamble index-table
+conventions unrecognized. Wrote +195 lines into
+`docs/roadmap/memhub-primary-evaluation.md` including counts vs
+`grep` ground truth, 5-decision + 10-task spot-check, DB ergonomics
+comparison, and Phase 3 routing on "marginal." Recommendation: do
+NOT commission `memhub render` yet; close M6-005/M6-006 first then
+revisit. Shipped as `9c8c103` alongside the M6-005/M6-006 backlog
+entries.
 
 2026-05-12 — Shipped M6-001 + M6-002 in `cd25a25`. M6-002 replaced
 `strip_date_prefix` with `extract_date_and_title`, which accepts
@@ -36,17 +60,6 @@ separator forms, unit for em-dash headings, updated test for
 ASCII-hyphen + date assertion, subprocess asserting persisted
 `decided_at`). Commit bundle also carries M6-001's H3-driven parser
 rewrite that had been landed locally last session.
-
-2026-05-12 — Tested bootstrap-k9 on Free-AI-SSD's K9 history; the
-test surfaced 6 parser bugs (519 tasks from a 49-task backlog, dates
-bolted on every decision title, 0 done-skips) and prompted a 12-gap
-analysis of full memhub-primary replacement. Settled on a
-bridge-first evaluation strategy in
-`docs/roadmap/memhub-primary-evaluation.md`. Added M6-001 through
-M6-004 to the backlog and two decisions to `project_decisions.md`
-(evaluation staging; K9 canonical conventions H3 + em-dash per
-`K9-Claude-Framework/docs/file-structure.md:156-208` as the parser
-target). M6-001 landed locally pending commit at session end.
 
 ## Open questions
 
