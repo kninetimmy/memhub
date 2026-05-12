@@ -295,6 +295,89 @@ sqlite3 .memhub/project.sqlite \
 
 > **Practical note:** K9 expects the `memhub` binary on `PATH`. If you skipped the PATH step during install, K9's wrap-up shell-out will fail the pre-flight gate and silently fall back to its standalone Markdown-only flow.
 
+## Typical Workflow
+
+The Quick Start section above is a command catalog. This section walks through what an actual working session looks like end-to-end, on a project that uses memhub day-to-day.
+
+### Typical flow without K9
+
+A standalone-memhub session is driven entirely by you from the terminal. Nothing happens automatically — memhub records what you tell it to record.
+
+**Start of session — orient yourself:**
+
+```bash
+memhub status                    # open tasks, stale facts, pending writes, K9 state
+memhub task list --status open   # what's queued
+```
+
+**While working — capture the things you'd otherwise lose to chat history:**
+
+```bash
+# A command you just verified actually works on this repo
+cargo test
+memhub command verify test "cargo test" --exit-code 0
+
+# A decision you just made, with the reasoning
+memhub decision add "Use serde_json for the export format" \
+  --rationale "Keeps exports human-diffable; bincode was rejected because binary blobs make code review opaque."
+
+# A fact that's now true and will be true tomorrow
+memhub fact add msrv "1.85"
+```
+
+**Closing out work:**
+
+```bash
+memhub task done 7
+memhub task add "Document the export schema" --notes "Follow-up from #7"
+memhub sync-md                   # regenerate AGENTS.md / CLAUDE.md managed blocks
+```
+
+**Periodic maintenance (weekly-ish):**
+
+```bash
+memhub ingest-git --since HEAD~50   # incremental git history refresh
+memhub review list                  # triage staged MCP proposals if you've been running `memhub serve`
+memhub stats --window 7d            # what moved this week; which facts went stale
+```
+
+The mental model: memhub is a notebook you write to deliberately. The CLI never guesses or auto-promotes. If it isn't in the database, it's because nobody wrote it down.
+
+### Typical flow with K9
+
+With K9 in the repo, the same CLI surface is available — but most of the structured writes happen at session boundaries through K9's `/wrap-up`, not mid-task.
+
+**Start of session.** Open Claude Code in the repo. K9's continuity files (`agent_docs/project_state.md` and friends) are the primary "what's going on" surface — they get loaded into context up front. memhub's role is to back those files with structured, queryable data so they don't drift.
+
+**During the session.** Work normally. Two things change vs. the standalone flow:
+
+- If you're running `memhub serve` (stdio MCP), Claude Code can read project state (`status`, `search`, `list_tasks`, `list_decisions`) and stage proposals (`propose_fact`, `propose_decision`, `log_session_note`) over MCP. Proposals do **not** land in durable tables — they queue in `pending_writes` for review.
+- You can still drop into a terminal and run the manual commands from the previous section at any time. The CLI is the same with or without K9.
+
+**End of session — K9 `/wrap-up`:**
+
+1. K9 drafts a Markdown update to the `agent_docs/` continuity files and shows it to you.
+2. After you approve the Markdown, K9 shells out to memhub using the v1 contract (gate first, then writes):
+
+    ```bash
+    memhub integrations check-k9                                   # pre-flight gate
+    memhub fact add build-command "cargo build" --json --actor k9:wrap-up
+    memhub decision add "..." --rationale "..." --json --actor k9:wrap-up
+    memhub task done 7 --json --actor k9:wrap-up
+    memhub review accept 4 --json --actor k9:wrap-up               # promote staged MCP proposals you said yes to
+    ```
+
+3. Every K9-driven write is tagged `actor = k9:wrap-up` in `writes_log`, so the audit trail distinguishes K9-mediated changes from manual CLI use.
+
+**Auditing what K9 did:**
+
+```bash
+memhub stats --window 30d        # writes grouped by actor and table
+memhub review list --status all  # what was accepted, rejected, or expired recently
+```
+
+The mental model: K9 handles the *narrative* (Markdown continuity files) and memhub handles the *structured* side (facts, decisions, tasks, audit log). `/wrap-up` is the seam where both get written transactionally — Markdown for humans, database rows for queries. Anything that needs to land mid-session (a verified command, an urgent fact) you still write by hand via the standalone CLI.
+
 ## Backup and Restore
 
 `memhub` ships a portable, version-tagged JSON export as the supported
