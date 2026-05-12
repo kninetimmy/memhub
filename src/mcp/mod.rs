@@ -387,6 +387,7 @@ struct StatusToolResponse {
     config_path: String,
     schema_version: String,
     facts: i64,
+    stale_facts: i64,
     decisions: i64,
     tasks_open: i64,
     tasks_total: i64,
@@ -408,6 +409,7 @@ impl From<StatusSummary> for StatusToolResponse {
             config_path: value.config_path.display().to_string(),
             schema_version: value.schema_version,
             facts: value.facts,
+            stale_facts: value.stale_facts,
             decisions: value.decisions,
             tasks_open: value.tasks_open,
             tasks_total: value.tasks_total,
@@ -540,10 +542,12 @@ struct CommandToolRecord {
     last_run_at: Option<String>,
     success_count: i64,
     fail_count: i64,
+    confidence: Option<f64>,
 }
 
 impl From<CommandRecord> for CommandToolRecord {
     fn from(value: CommandRecord) -> Self {
+        let confidence = value.confidence();
         Self {
             id: value.id,
             kind: value.kind,
@@ -552,6 +556,7 @@ impl From<CommandRecord> for CommandToolRecord {
             last_run_at: value.last_run_at,
             success_count: value.success_count,
             fail_count: value.fail_count,
+            confidence,
         }
     }
 }

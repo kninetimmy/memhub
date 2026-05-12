@@ -4,7 +4,7 @@ use rusqlite::{OptionalExtension, params};
 
 use crate::Result;
 use crate::db;
-use crate::models::Fact;
+use crate::models::{FACT_STALE_AFTER_DAYS, Fact};
 use crate::sync_md;
 
 pub fn add(start: &Path, key: &str, value: &str, source: &str) -> Result<(i64, bool)> {
@@ -53,12 +53,18 @@ pub fn add(start: &Path, key: &str, value: &str, source: &str) -> Result<(i64, b
 pub fn list(start: &Path) -> Result<Vec<Fact>> {
     let ctx = db::open_project(start)?;
     let mut stmt = ctx.conn.prepare(
-        "SELECT id, key, value, confidence, source, verified_at, created_at
+        "SELECT id, key, value, confidence, source, verified_at, created_at,
+                CASE
+                    WHEN verified_at IS NULL THEN 1
+                    WHEN (julianday('now') - julianday(verified_at)) > ?1 THEN 1
+                    ELSE 0
+                END AS is_stale
          FROM facts
          ORDER BY key ASC",
     )?;
 
-    let rows = stmt.query_map([], |row| {
+    let rows = stmt.query_map(params![FACT_STALE_AFTER_DAYS], |row| {
+        let is_stale_int: i64 = row.get(7)?;
         Ok(Fact {
             id: row.get(0)?,
             key: row.get(1)?,
@@ -67,9 +73,23 @@ pub fn list(start: &Path) -> Result<Vec<Fact>> {
             source: row.get(4)?,
             verified_at: row.get(5)?,
             created_at: row.get(6)?,
+            is_stale: is_stale_int != 0,
         })
     })?;
 
     rows.collect::<std::result::Result<Vec<_>, _>>()
         .map_err(Into::into)
+}
+
+pub fn count_stale(start: &Path) -> Result<i64> {
+    let ctx = db::open_project(start)?;
+    let count: i64 = ctx.conn.query_row(
+        "SELECT COUNT(*)
+         FROM facts
+         WHERE verified_at IS NULL
+            OR (julianday('now') - julianday(verified_at)) > ?1",
+        params![FACT_STALE_AFTER_DAYS],
+        |row| row.get(0),
+    )?;
+    Ok(count)
 }

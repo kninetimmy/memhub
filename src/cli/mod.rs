@@ -261,7 +261,7 @@ pub fn run(cli: Cli) -> Result<()> {
             println!("Database: {}", summary.db_path.display());
             println!("Config: {}", summary.config_path.display());
             println!("Schema version: {}", summary.schema_version);
-            println!("Facts: {}", summary.facts);
+            println!("Facts: {} ({} stale)", summary.facts, summary.stale_facts);
             println!("Decisions: {}", summary.decisions);
             println!(
                 "Tasks: {} total / {} open",
@@ -363,11 +363,13 @@ pub fn run(cli: Cli) -> Result<()> {
                 } else {
                     for fact in facts {
                         let verified_at = fact.verified_at.unwrap_or_else(|| "n/a".to_string());
+                        let stale_marker = if fact.is_stale { " [stale]" } else { "" };
                         println!(
-                            "[{}] {} = {} (source: {}, confidence: {:.2}, verified: {}, created: {})",
+                            "[{}] {} = {}{} (source: {}, confidence: {:.2}, verified: {}, created: {})",
                             fact.id,
                             fact.key,
                             fact.value,
+                            stale_marker,
                             fact.source,
                             fact.confidence,
                             verified_at,
@@ -464,8 +466,12 @@ pub fn run(cli: Cli) -> Result<()> {
                     println!("No commands recorded yet.");
                 } else {
                     for command in commands {
+                        let confidence = command
+                            .confidence()
+                            .map(|value| format!("{value:.2}"))
+                            .unwrap_or_else(|| "n/a".to_string());
                         println!(
-                            "[{}] {} => {} (last_exit: {}, last_run: {}, success: {}, fail: {})",
+                            "[{}] {} => {} (last_exit: {}, last_run: {}, success: {}, fail: {}, confidence: {})",
                             command.id,
                             command.kind,
                             command.cmdline,
@@ -475,7 +481,8 @@ pub fn run(cli: Cli) -> Result<()> {
                                 .unwrap_or_else(|| "n/a".to_string()),
                             command.last_run_at.unwrap_or_else(|| "n/a".to_string()),
                             command.success_count,
-                            command.fail_count
+                            command.fail_count,
+                            confidence
                         );
                     }
                 }

@@ -270,6 +270,42 @@ after a pattern change. `memhub status` prints the current deny pattern
 count, and `memhub ingest-git` prints how many paths were skipped on
 each run.
 
+## Confidence and staleness
+
+`memhub` surfaces two derived freshness signals on read paths, matching
+PRD §11.4.
+
+**Facts** carry a `verified_at` timestamp that is refreshed every time
+`memhub fact add` writes the row (insert or upsert) or `memhub review
+accept` promotes a staged proposal. A fact whose `verified_at` is more
+than 90 days old — or null entirely — is flagged stale.
+
+```
+$ memhub fact list
+[1] build-command = cargo build (source: user, confidence: 1.00, verified: 2026-05-12 14:22:00, created: 2026-05-12 14:22:00)
+[2] router-style = manual [stale] (source: user, confidence: 1.00, verified: 2026-01-02 09:00:00, created: 2026-01-02 09:00:00)
+```
+
+`memhub status` also reports the total count of stale facts so you can
+see at a glance how much of the store has decayed without re-verification.
+
+**Commands** carry a derived confidence equal to
+`success_count / (success_count + fail_count)`. `memhub command verify`
+already bumps the counters on every recorded run, so confidence rises
+on successful re-runs and falls on failures with no schema change. A
+command that has never been verified reports `confidence: n/a` rather
+than a fabricated value.
+
+```
+$ memhub command list
+[1] build => cargo build (last_exit: 0, last_run: 2026-05-12 14:23:00, success: 3, fail: 1, confidence: 0.75)
+```
+
+The 90-day threshold is intentionally hardcoded in this slice; promote
+it to config if a real workflow needs it. Continuous decay, a persisted
+confidence column on `commands`, and confidence on `decisions` are
+explicitly deferred.
+
 ## How memhub works
 
 ### Per-repo source of truth
@@ -464,10 +500,11 @@ Shipped:
 - `memhub init --from-backup <path>` single-step recovery that initializes and restores in one command (`M4-002`)
 - `memhub review list|show|accept|reject|expire` to promote, reject, or age out staged MCP proposals, plus a read-only `list_pending_writes` MCP tool (`M4-003`)
 - path-based deny list with sensible defaults, filtering both `ingest-git` writes and `search` reads (`M4-004`)
+- stale-flag on facts (90-day threshold) and derived confidence on commands, surfaced in CLI list output, `memhub status`, and MCP responses (`M4-005`)
 
 Remaining scope:
 
-- confidence scoring and staleness handling
+- none — Milestone 4 is complete.
 
 ### Milestone 5+
 

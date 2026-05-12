@@ -10,6 +10,8 @@ pub struct InitResult {
     pub migrations_applied: Vec<String>,
 }
 
+pub const FACT_STALE_AFTER_DAYS: i64 = 90;
+
 #[derive(Debug)]
 pub struct Fact {
     pub id: i64,
@@ -19,6 +21,7 @@ pub struct Fact {
     pub source: String,
     pub verified_at: Option<String>,
     pub created_at: String,
+    pub is_stale: bool,
 }
 
 #[derive(Debug)]
@@ -49,6 +52,17 @@ pub struct CommandRecord {
     pub last_run_at: Option<String>,
     pub success_count: i64,
     pub fail_count: i64,
+}
+
+impl CommandRecord {
+    pub fn confidence(&self) -> Option<f64> {
+        let total = self.success_count + self.fail_count;
+        if total <= 0 {
+            None
+        } else {
+            Some(self.success_count as f64 / total as f64)
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -126,6 +140,7 @@ pub struct StatusSummary {
     pub config_path: PathBuf,
     pub schema_version: String,
     pub facts: i64,
+    pub stale_facts: i64,
     pub decisions: i64,
     pub tasks_open: i64,
     pub tasks_total: i64,

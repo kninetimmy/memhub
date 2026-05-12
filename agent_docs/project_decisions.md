@@ -148,3 +148,23 @@ Append-only. Superseding decisions should be added as new dated entries rather t
 - `accept` delegates to existing `fact::add` / `decision::add`, each of which opens its own connection and transaction, and then runs a second update on `pending_writes` in a separate transaction.
 - A failure between the durable insert and the pending-row update leaves the pending row in `pending` so a retry is safe; `fact::add`'s `(project_id, key)` upsert makes the fact path idempotent, and a duplicate decision created via retry is acceptable (the original-actor provenance still points back through `pending_writes`).
 - The alternative — refactoring `fact::add` / `decision::add` to accept an existing transaction — was rejected to keep this slice narrow and avoid touching every existing caller for a corner case that is local-only and easy to recover from manually.
+
+## 2026-05-12 - Fact staleness ships as a 90-day hardcoded threshold, not continuous decay
+
+- A fact is stale when `verified_at` is null or older than 90 days. The threshold lives as `models::FACT_STALE_AFTER_DAYS = 90` in code, not as a config knob.
+- Continuous decay (e.g. exponential half-life on `confidence`) was rejected for v1 because it adds tuning knobs and makes confidence harder to reason about; the PRD §11.4 wording is the simpler stale-flag model and matches v1 expectations.
+- Staleness is computed at read time in SQL via `julianday('now') - julianday(verified_at) > 90`. There is no stored `is_stale` column — the result drifts as time passes, which is correct.
+- Promotion to a config knob is deferred until a real workflow shows the default needs tuning.
+
+## 2026-05-12 - Command confidence is derived from existing counters, not a persisted column
+
+- `CommandRecord::confidence()` returns `Option<f64>` equal to `success_count / (success_count + fail_count)`, with `None` when there have been no runs.
+- No new `commands.confidence` column. Adding one was considered and rejected: the counters are already the source of truth, `command verify` already updates them on every run, and a stored derived value would double the state we'd have to keep consistent.
+- The trade-off is that an EMA / recency-weighted confidence isn't possible without schema change. If a real workflow needs that, it ships as a follow-on slice with its own migration.
+
+## 2026-05-12 - Staleness and confidence updates rely only on existing write paths
+
+- The only triggers that refresh `verified_at` on a fact are `memhub fact add` (insert or upsert, including the upsert path used by `review accept`) and any other caller of `fact::add`. There is no implicit auto-bump from search, list, or any other read.
+- The only triggers that update command counters are `memhub command verify` and the MCP `record_command` adapter that delegates to it.
+- Auto-bumping fact confidence on duplicate `propose_fact` arrivals was rejected for this slice — it would require a dedupe path we haven't designed. Treating every read as weak re-verification was rejected to stay consistent with PRD §11.2 ("agent claiming 'that worked' in chat is not a verifiable signal").
+- This keeps the slice narrow and means no new write-side surface was added in `M4-005`.
