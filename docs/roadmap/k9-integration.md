@@ -75,8 +75,13 @@ accordingly:
 
 - No bidirectional sync. memhub does not re-render `agent_docs/*.md` from
   database state.
-- No new `k9 import/export/sync` CLI surface. Existing `memhub decision add` /
-  `task add` / `fact add` commands are the invocation surface.
+- No general `k9 import/export/sync` CLI surface. Existing `memhub decision add` /
+  `task add` / `fact add` commands are the steady-state invocation surface.
+  One narrow exception: `memhub integrations bootstrap-k9` is a first-install-only
+  one-shot that parses `project_decisions.md` and `project_backlog.md` into
+  durable rows when the database is empty. It writes through the same `decision::add`
+  and `task::add_with_status` paths with `actor = "k9:bootstrap"` and refuses on
+  any non-empty target. No reverse direction, no general re-sync.
 - No managed-block writes inside `agent_docs/`. memhub continues to manage
   only the existing block in root `CLAUDE.md` / `AGENTS.md`.
 - No mapping of `project_state.md` or `project_arch.md` into DB tables. Those

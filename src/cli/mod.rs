@@ -316,6 +316,12 @@ pub enum IntegrationsCommand {
     },
     DisableK9,
     CheckK9,
+    BootstrapK9 {
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -998,6 +1004,40 @@ pub fn run(cli: Cli) -> Result<()> {
             IntegrationsCommand::CheckK9 => {
                 let enabled = commands::integrations::check_k9(&cwd);
                 process::exit(if enabled { 0 } else { 1 });
+            }
+            IntegrationsCommand::BootstrapK9 { dry_run, json: as_json } => {
+                let summary = commands::bootstrap_k9::run(&cwd, dry_run)?;
+                if as_json {
+                    let payload = json!({
+                        "dry_run": summary.dry_run,
+                        "agent_docs_path": summary.agent_docs_path.display().to_string(),
+                        "decisions_imported": summary.decisions.len(),
+                        "tasks_imported": summary.tasks.len(),
+                        "tasks_skipped_completed": summary.tasks_skipped_completed,
+                        "files_read": summary.files_read.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+                        "files_missing": summary.files_missing.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+                        "actor": commands::bootstrap_k9::BOOTSTRAP_ACTOR,
+                    });
+                    println!("{payload}");
+                } else {
+                    println!(
+                        "Bootstrap from K9 at {} ({})",
+                        summary.agent_docs_path.display(),
+                        if summary.dry_run { "dry run" } else { "applied" }
+                    );
+                    println!(
+                        "  decisions: {} | tasks: {} (skipped completed: {})",
+                        summary.decisions.len(),
+                        summary.tasks.len(),
+                        summary.tasks_skipped_completed
+                    );
+                    for p in &summary.files_read {
+                        println!("  read: {}", p.display());
+                    }
+                    for p in &summary.files_missing {
+                        println!("  missing: {}", p.display());
+                    }
+                }
             }
         },
         TopLevelCommand::Note { command } => match command {

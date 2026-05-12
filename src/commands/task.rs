@@ -6,13 +6,29 @@ use crate::sync_md;
 use crate::{MemhubError, Result};
 
 pub fn add(start: &Path, title: &str, notes: Option<&str>, actor: &str) -> Result<i64> {
+    add_with_status(start, title, notes, "open", actor)
+}
+
+pub fn add_with_status(
+    start: &Path,
+    title: &str,
+    notes: Option<&str>,
+    status: &str,
+    actor: &str,
+) -> Result<i64> {
+    if !matches!(status, "open" | "done" | "blocked") {
+        return Err(MemhubError::InvalidInput(format!(
+            "unsupported task status '{status}'"
+        )));
+    }
+
     let mut ctx = db::open_project(start)?;
     let tx = ctx.conn.transaction()?;
 
     tx.execute(
         "INSERT INTO tasks(project_id, title, status, notes)
-         VALUES (1, ?1, 'open', ?2)",
-        rusqlite::params![title, notes],
+         VALUES (1, ?1, ?2, ?3)",
+        rusqlite::params![title, status, notes],
     )?;
     let row_id = tx.last_insert_rowid();
 

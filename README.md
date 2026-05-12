@@ -139,6 +139,20 @@ memhub integrations disable-k9     # keeps the section but sets enabled = false
 
 `enable-k9` refuses to run when no `agent_docs/project_state.md` marker is found unless you pass `--force`. A custom marker location is configurable with `--agent-docs-path docs/k9`.
 
+### Priming an empty database from existing K9 files
+
+If you're installing memhub into a repo that already has months of K9 history in `project_decisions.md` and `project_backlog.md`, you can prime the empty database in one shot:
+
+```bash
+memhub integrations bootstrap-k9 --dry-run   # preview parsed rows
+memhub integrations bootstrap-k9             # write durable rows
+memhub integrations bootstrap-k9 --json      # machine-readable summary
+```
+
+This parses each `## YYYY-MM-DD - <title>` block in `project_decisions.md` into a `decisions` row, and each top-level bullet in `project_backlog.md` into a `tasks` row (skipping `Status: completed` entries, mapping `Status: blocked` to `tasks.status = 'blocked'`). All writes go through the existing `decision::add` / `task::add_with_status` paths with `actor = "k9:bootstrap"` so the audit trail is intact.
+
+`bootstrap-k9` is first-install-only by design: it refuses if `decisions` or `tasks` already has any rows, and there is no `--force`. Use the regular `memhub decision add` / `task add` commands for steady-state writes. `project_state.md` and `project_arch.md` are intentionally not parsed (out of scope for DB mapping); fact extraction is also intentionally manual.
+
 ### Restoring from a backup instead of initializing fresh
 
 If you already have a `memhub-backup.json` from another machine, replace step 2 with:

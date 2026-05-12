@@ -241,3 +241,10 @@ Append-only. Superseding decisions should be added as new dated entries rather t
 - Continuous decay (exponential or otherwise) on fact confidence, a persisted `commands.confidence` column, decision-level confidence, and a configurable staleness threshold are all explicitly out of v1 scope and will not ship unless a real workflow demands them.
 - The reasoning: binary stale-vs-fresh is easier to reason about than a tuning-knob exponential decay; v1 should ship the simplest model that satisfies the PRD's wording rather than the maximally faithful one.
 - If a future slice changes this, it ships as a separate milestone with its own migration and PRD addendum.
+
+## 2026-05-12 - One-shot K9 bootstrap is the narrow exception to the no-import non-goal
+
+- `docs/roadmap/k9-integration.md` listed "no `k9 import/export/sync` CLI surface" as a non-goal because steady-state writes should go through `/wrap-up`'s human-approval gate, not a bulk parser that bypasses it.
+- That non-goal is preserved for the steady state. The carve-out is a first-install-only `memhub integrations bootstrap-k9` that primes an empty database from existing `project_decisions.md` and `project_backlog.md`. It refuses on any non-empty target, writes through the existing `decision::add` and `task::add_with_status` paths with `actor = "k9:bootstrap"`, and supports `--dry-run`.
+- Motivation: installing memhub on a repo that already has months of K9 history shouldn't start from a blank database. The fix is one-shot bootstrap, not a generalized import surface.
+- Out of scope by design: `project_state.md` and `project_arch.md` (still non-goals for DB mapping); fact extraction (no canonical fact syntax in K9 Markdown); re-runs (the empty-DB precondition is the guard, no `--force` flag); reverse-direction sync.
