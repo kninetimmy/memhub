@@ -285,6 +285,24 @@ pub enum TopLevelCommand {
         #[command(subcommand)]
         command: IntegrationsCommand,
     },
+    Note {
+        #[command(subcommand)]
+        command: NoteCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum NoteCommand {
+    List {
+        #[arg(long, default_value_t = 25)]
+        limit: usize,
+        #[arg(long)]
+        actor: Option<String>,
+        #[arg(long, value_name = "DAYS")]
+        since_days: Option<i64>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -980,6 +998,41 @@ pub fn run(cli: Cli) -> Result<()> {
             IntegrationsCommand::CheckK9 => {
                 let enabled = commands::integrations::check_k9(&cwd);
                 process::exit(if enabled { 0 } else { 1 });
+            }
+        },
+        TopLevelCommand::Note { command } => match command {
+            NoteCommand::List {
+                limit,
+                actor,
+                since_days,
+                json: as_json,
+            } => {
+                let rows = commands::session_note::list(&cwd, limit, actor.as_deref(), since_days)?;
+                if as_json {
+                    let payload = json!({
+                        "session_notes": rows
+                            .iter()
+                            .map(|n| json!({
+                                "id": n.id,
+                                "actor": n.actor,
+                                "actor_raw": n.actor_raw,
+                                "text": n.text,
+                                "created_at": n.created_at,
+                            }))
+                            .collect::<Vec<_>>(),
+                    });
+                    println!("{payload}");
+                } else if rows.is_empty() {
+                    println!("No session notes match this filter.");
+                } else {
+                    for note in rows {
+                        println!(
+                            "[{}] {} actor={} (raw: {})",
+                            note.id, note.created_at, note.actor, note.actor_raw
+                        );
+                        println!("  {}", note.text);
+                    }
+                }
             }
         },
     }

@@ -133,6 +133,15 @@ pub struct ReviewExpireSummary {
 }
 
 #[derive(Debug)]
+pub struct SessionNote {
+    pub id: i64,
+    pub actor: String,
+    pub actor_raw: String,
+    pub text: String,
+    pub created_at: String,
+}
+
+#[derive(Debug)]
 pub struct CountByLabel {
     pub label: String,
     pub count: i64,

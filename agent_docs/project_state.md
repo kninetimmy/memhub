@@ -4,33 +4,54 @@ Last updated: 2026-05-12
 
 ## Currently building
 
-Mid-Milestone 5 PRD-surface cleanup. `M5-004` shipped: `memhub stats`
-prints PRD §17 success-metric tooling — totals, windowed write activity
-from `writes_log`, pending-write review rate, top commands by run count,
-recent verified facts. Default window is 30 days; flag is
-`--window 7d|30d|90d|all` plus `--json` for machine consumption. The
-read-counter half of PRD §17 is explicitly deferred and the deviation
-is surfaced in both output modes so the omission is never silent. Next
-slice is `M5-005`: `log_session_note` MCP tool + `memhub note list`
-CLI for free-form agent scratch (PRD §12). The prior K9 wrap-up read
-path (`M5-003`) remains the most recent contract amendment: `memhub
-review list` / `review show` both accept `--json` with shapes mirroring
-the MCP `PendingWriteToolRecord`.
+Between numbered tasks after `M5-005`. The PRD-surface cleanup slice
+of Milestone 5 is done: `M5-004` shipped `memhub stats` (PRD §17), and
+`M5-005` shipped the `log_session_note` MCP tool + `memhub note list`
+CLI (PRD §12). Notes live in a new `session_notes` table behind
+migration `0006` — write-only scratch, never promoted, indexed by
+`created_at DESC`. Actor identity flows from `clientInfo.name` through
+the same `ClientIdentity` path as `propose_fact` / `propose_decision`.
+Notes are intentionally excluded from the v1 `memhub export` format
+(scratch isn't durable enough to lock into the export contract); a v2
+export would change that. By PRD §16 milestones, memhub is at v1; the
+remaining named-but-deferred items are continuous confidence decay
+(PRD §11.4 — explicitly dropped from this session per user direction)
+and the K9 repo `/wrap-up.md` consumer edit (lives outside this repo).
 
 ## Next up
 
-1. Ship `M5-005`: `log_session_note` MCP tool + `memhub note list` CLI
-   read surface. New `session_notes` table behind migration `0006`,
-   `ClientIdentity` actor wiring on the MCP side, no FTS, no promotion
-   path, no `note add` CLI.
-2. Coordinate the K9 repo `/wrap-up.md` consumer change with whoever
+1. Coordinate the K9 repo `/wrap-up.md` consumer change with whoever
    owns the K9 repo. With `M5-003` shipped on the memhub side, K9 can
    stay CLI-only end-to-end (gate + read + mutate); their slice is
    mechanical and lives outside this repo.
-3. Decide whether MCP needs broader indexed retrieval over facts,
-   tasks, or command history beyond the current narrow paths.
+2. Decide whether MCP needs broader indexed retrieval over facts,
+   tasks, command history, or session notes beyond the current narrow
+   paths.
+3. If notes start carrying durable value, bump the export format to
+   `v2` and include them. Until then they're intentionally lost on
+   export/import.
 
 ## Last session
+
+2026-05-12 - Completed `M5-005`. New `session_notes` table behind
+migration `0006_session_notes.sql` (`id, project_id, actor, actor_raw,
+text, created_at`, indexed `created_at DESC`). `commands::session_note`
+exposes `add` (validates non-empty text, 4096-char ceiling) and `list`
+(supports `--limit`, `--actor`, `--since-days <n>`). MCP gained a new
+`log_session_note { text }` tool that pulls actor identity from
+`clientInfo.name` via the same `ClientIdentity` plumbing as
+`propose_fact` / `propose_decision`, returning `{ id, actor, actor_raw,
+created_at }`. CLI gained `memhub note list [--limit] [--actor]
+[--since-days] [--json]`; deliberately no `note add` since `fact add` /
+`decision add` cover the human-at-terminal case. The MCP server
+instructions string was updated to mention the new write path. 8
+integration tests in `tests/session_notes.rs` plus 1 new MCP-side unit
+test (`mcp_log_session_note_persists_with_client_identity`). Explicit
+deferrals: no FTS index, no promotion path, no inclusion in v1
+`memhub export` (notes are scratch and intentionally lost on
+export/import). README gained a "Session notes" subsection. Verified
+with `cargo fmt`, `cargo build`, and `cargo test` (119 tests across
+all suites, up from 110).
 
 2026-05-12 - Completed `M5-004`. New `memhub stats [--window
 7d|30d|90d|all] [--json]` subcommand. Created `src/commands/stats.rs`

@@ -170,6 +170,23 @@ impl MemhubServer {
         }))
     }
 
+    async fn log_session_note_impl(
+        &self,
+        Parameters(params): Parameters<LogSessionNoteParams>,
+        actor: ClientIdentity,
+    ) -> std::result::Result<Json<LogSessionNoteToolResponse>, McpError> {
+        let note =
+            commands::session_note::add(&self.start, &params.text, &actor.normalized, &actor.raw)
+                .map_err(map_tool_error)?;
+
+        Ok(Json(LogSessionNoteToolResponse {
+            id: note.id,
+            actor: note.actor,
+            actor_raw: note.actor_raw,
+            created_at: note.created_at,
+        }))
+    }
+
     async fn propose_decision_impl(
         &self,
         Parameters(params): Parameters<ProposeDecisionParams>,
@@ -300,6 +317,19 @@ impl MemhubServer {
         self.propose_decision_impl(params, actor, provenance_json)
             .await
     }
+
+    #[tool(
+        name = "log_session_note",
+        description = "Record a free-form session note. Notes are write-only scratch space and never promote to facts or decisions."
+    )]
+    async fn log_session_note(
+        &self,
+        params: Parameters<LogSessionNoteParams>,
+        request_context: RequestContext<RoleServer>,
+    ) -> std::result::Result<Json<LogSessionNoteToolResponse>, McpError> {
+        let actor = current_client_identity(&request_context);
+        self.log_session_note_impl(params, actor).await
+    }
 }
 
 impl ServerHandler for MemhubServer {
@@ -307,7 +337,7 @@ impl ServerHandler for MemhubServer {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("memhub", env!("CARGO_PKG_VERSION")))
             .with_instructions(
-                "Local-first per-repo project memory. Read tools are direct; writes are limited to explicit verified command recording plus staged fact and decision proposals.",
+                "Local-first per-repo project memory. Read tools are direct; writes are limited to explicit verified command recording, staged fact and decision proposals, and free-form session notes (write-only scratch).",
             )
     }
 
@@ -613,6 +643,19 @@ impl From<PendingWriteRecord> for PendingWriteToolRecord {
             reviewed_at: value.reviewed_at,
         }
     }
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct LogSessionNoteParams {
+    text: String,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct LogSessionNoteToolResponse {
+    id: i64,
+    actor: String,
+    actor_raw: String,
+    created_at: String,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -1061,6 +1104,60 @@ mod tests {
         assert_eq!(durable_fact_count, 0);
         assert_eq!(durable_decision_count, 0);
         assert_eq!(summary.pending_writes, 2);
+    }
+
+    #[test]
+    fn mcp_log_session_note_persists_with_client_identity() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+
+        let server = MemhubServer::new(temp.path().to_path_buf());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+
+        let response = runtime
+            .block_on(server.log_session_note_impl(
+                Parameters(LogSessionNoteParams {
+                    text: "experimented with router fallback, no clear winner yet".to_string(),
+                }),
+                ClientIdentity {
+                    normalized: "claude-code".to_string(),
+                    raw: "claude-ai".to_string(),
+                },
+            ))
+            .expect("log session note");
+
+        assert!(response.0.id > 0);
+        assert_eq!(response.0.actor, "claude-code");
+        assert_eq!(response.0.actor_raw, "claude-ai");
+        assert!(!response.0.created_at.is_empty());
+
+        let ctx = db::open_project(temp.path()).expect("open");
+        let stored_text: String = ctx
+            .conn
+            .query_row(
+                "SELECT text FROM session_notes WHERE id = ?1",
+                params![response.0.id],
+                |row| row.get(0),
+            )
+            .expect("note row exists");
+        assert!(stored_text.contains("router fallback"));
+
+        let (audit_actor, audit_table, audit_action): (String, String, String) = ctx
+            .conn
+            .query_row(
+                "SELECT actor, table_name, action FROM writes_log
+                 WHERE table_name = 'session_notes'
+                 ORDER BY id DESC LIMIT 1",
+                params![],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("audit row exists");
+        assert_eq!(audit_actor, "claude-code");
+        assert_eq!(audit_table, "session_notes");
+        assert_eq!(audit_action, "insert");
     }
 
     #[test]

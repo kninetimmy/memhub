@@ -333,6 +333,42 @@ every read path is deferred until there's a real workflow demanding it.
 The output explicitly notes the deviation so the omission is never
 silent.
 
+## Session notes
+
+Agents talking to `memhub` over MCP often want to record low-stakes
+scratch — *"tried X, no observable effect"* — without polluting durable
+facts or clogging the review queue. `log_session_note` is that path:
+write-only, never promoted, never surfaced as truth, but durable in the
+local database for later inspection.
+
+Write surface (MCP only):
+
+```
+log_session_note({ "text": "tried router rewrite, no measurable diff" })
+  → { "id": 17, "actor": "claude-code", "actor_raw": "claude-ai", "created_at": "2026-05-12 14:55:00" }
+```
+
+The actor identity is taken from `clientInfo.name` exactly like the
+`propose_*` tools — both the normalized alias (e.g. `claude-code`) and
+the raw value are persisted on the row, plus a `writes_log` audit entry
+with `table_name = "session_notes"`.
+
+Read surface (CLI only):
+
+```
+cargo run -- note list
+cargo run -- note list --limit 50
+cargo run -- note list --actor claude-code
+cargo run -- note list --since-days 7
+cargo run -- note list --json
+```
+
+Notes are intentionally not promotable — they never become facts or
+decisions. Notes are also intentionally not yet covered by `memhub
+export` (the v1 export format is locked); they live in the local
+database only and are lost on `import`. Promote that to a v2 export if
+notes start carrying durable value.
+
 ## K9 Claude Framework integration
 
 `memhub` runs standalone, but if the [K9 Claude
