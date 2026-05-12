@@ -6,6 +6,7 @@ pub mod import;
 pub mod ingest_git;
 pub mod init;
 pub mod pending_write;
+pub mod review;
 pub mod search;
 pub mod status;
 pub mod sync_md;

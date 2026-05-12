@@ -98,6 +98,26 @@ pub struct MarkdownSyncResult {
 }
 
 #[derive(Debug)]
+pub struct PendingWriteRecord {
+    pub id: i64,
+    pub kind: String,
+    pub payload_json: String,
+    pub rationale: String,
+    pub status: String,
+    pub actor: String,
+    pub actor_raw: String,
+    pub provenance_json: String,
+    pub created_at: String,
+    pub reviewed_at: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct ReviewExpireSummary {
+    pub older_than_days: i64,
+    pub expired: usize,
+}
+
+#[derive(Debug)]
 pub struct StatusSummary {
     pub project_name: String,
     pub repo_root: PathBuf,

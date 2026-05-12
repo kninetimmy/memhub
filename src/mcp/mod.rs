@@ -16,7 +16,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::commands;
-use crate::models::{CommandRecord, Decision, SearchResult, StatusSummary, Task};
+use crate::models::{
+    CommandRecord, Decision, PendingWriteRecord, SearchResult, StatusSummary, Task,
+};
 use crate::{MemhubError, Result};
 
 pub fn serve(start: &Path) -> Result<()> {
@@ -126,6 +128,19 @@ impl MemhubServer {
             kind: params.kind,
             cmdline: params.cmdline,
             exit_code: params.exit_code,
+        }))
+    }
+
+    async fn list_pending_writes_impl(
+        &self,
+        Parameters(params): Parameters<ListPendingWritesParams>,
+    ) -> std::result::Result<Json<ListPendingWritesToolResponse>, McpError> {
+        let status = params.status.as_deref();
+        let limit = params.limit.unwrap_or(commands::review::DEFAULT_LIST_LIMIT);
+        let rows = commands::review::list(&self.start, status, limit).map_err(map_tool_error)?;
+        Ok(Json(ListPendingWritesToolResponse {
+            status: status.map(|s| s.to_string()),
+            pending_writes: rows.into_iter().map(PendingWriteToolRecord::from).collect(),
         }))
     }
 
@@ -247,6 +262,17 @@ impl MemhubServer {
     }
 
     #[tool(
+        name = "list_pending_writes",
+        description = "List staged agent-originated proposals from pending_writes. Filter by status; defaults to pending."
+    )]
+    async fn list_pending_writes(
+        &self,
+        params: Parameters<ListPendingWritesParams>,
+    ) -> std::result::Result<Json<ListPendingWritesToolResponse>, McpError> {
+        self.list_pending_writes_impl(params).await
+    }
+
+    #[tool(
         name = "propose_fact",
         description = "Stage a proposed fact write for later review instead of writing directly to durable facts."
     )]
@@ -332,6 +358,12 @@ struct RecordCommandParams {
     kind: String,
     cmdline: String,
     exit_code: i64,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
+struct ListPendingWritesParams {
+    status: Option<String>,
+    limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -529,6 +561,43 @@ struct RecordCommandToolResponse {
     kind: String,
     cmdline: String,
     exit_code: i64,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct ListPendingWritesToolResponse {
+    status: Option<String>,
+    pending_writes: Vec<PendingWriteToolRecord>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct PendingWriteToolRecord {
+    id: i64,
+    kind: String,
+    status: String,
+    actor: String,
+    actor_raw: String,
+    rationale: String,
+    payload_json: String,
+    provenance_json: String,
+    created_at: String,
+    reviewed_at: Option<String>,
+}
+
+impl From<PendingWriteRecord> for PendingWriteToolRecord {
+    fn from(value: PendingWriteRecord) -> Self {
+        Self {
+            id: value.id,
+            kind: value.kind,
+            status: value.status,
+            actor: value.actor,
+            actor_raw: value.actor_raw,
+            rationale: value.rationale,
+            payload_json: value.payload_json,
+            provenance_json: value.provenance_json,
+            created_at: value.created_at,
+            reviewed_at: value.reviewed_at,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -945,6 +1014,61 @@ mod tests {
         assert_eq!(durable_fact_count, 0);
         assert_eq!(durable_decision_count, 0);
         assert_eq!(summary.pending_writes, 2);
+    }
+
+    #[test]
+    fn mcp_list_pending_writes_returns_staged_proposals() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+
+        crate::commands::pending_write::propose_fact(
+            temp.path(),
+            "build-command",
+            "cargo build",
+            "Observed in repo.",
+            "codex",
+            "openai-codex",
+            "{\"source\":\"mcp\"}",
+        )
+        .expect("propose fact");
+        crate::commands::pending_write::propose_decision(
+            temp.path(),
+            "Adopt the kraken pattern",
+            "Sea creatures organize concurrent workloads cleanly.",
+            "claude-code",
+            "claude-ai",
+            "{\"source\":\"mcp\"}",
+        )
+        .expect("propose decision");
+
+        let server = MemhubServer::new(temp.path().to_path_buf());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+
+        let response = runtime
+            .block_on(
+                server.list_pending_writes_impl(Parameters(ListPendingWritesParams::default())),
+            )
+            .expect("list pending writes");
+
+        assert_eq!(response.0.pending_writes.len(), 2);
+        let kinds: Vec<_> = response
+            .0
+            .pending_writes
+            .iter()
+            .map(|p| p.kind.as_str())
+            .collect();
+        assert!(kinds.contains(&"fact"));
+        assert!(kinds.contains(&"decision"));
+        assert!(
+            response
+                .0
+                .pending_writes
+                .iter()
+                .all(|p| p.status == "pending")
+        );
     }
 
     #[test]

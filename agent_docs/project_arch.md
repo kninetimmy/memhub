@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`memhub` is a local-first per-repo memory CLI that aims to give Codex and Claude Code one shared durable source of project context. The current implementation covers Milestone 2's retrieval path, the shipped markdown-sync and narrowed MCP/write-policy slices of Milestone 3, and the Milestone 4 portable export/import recovery path plus missing-DB safety with `init --from-backup` recovery, while still avoiding speculative subsystems.
+`memhub` is a local-first per-repo memory CLI that aims to give Codex and Claude Code one shared durable source of project context. The current implementation covers Milestone 2's retrieval path, the shipped markdown-sync and narrowed MCP/write-policy slices of Milestone 3, the Milestone 4 portable export/import recovery path plus missing-DB safety with `init --from-backup` recovery, and the Milestone 4 `memhub review` flow that closes the staged-MCP-proposal loop, while still avoiding speculative subsystems.
 
 ## Stack and Versions
 
@@ -31,12 +31,13 @@
 
 - Project bootstrap resolves or creates `.memhub/` in a repository root. `db::open_project` and `db::init_project` both refuse to silently rebuild `project.sqlite` inside an existing `.memhub/`, returning `MemhubError::MissingDatabase`; `db::init_project_for_recovery` is the explicit recovery-mode entry point used by `memhub init --from-backup`.
 - The DB layer applies migrations and maintains a single `projects` row.
-- Command handlers perform real writes for facts, decisions, tasks, explicit command verification, git ingestion, and staged pending writes, and log those writes to `writes_log`.
+- Command handlers perform real writes for facts, decisions, tasks, explicit command verification, git ingestion, and staged pending writes, plus the `commands::review` flow that promotes/rejects/expires staged proposals, and log those writes to `writes_log`.
 - Search uses SQLite FTS5 over `chunks` for decision text and exact indexed lookups for file history through `files` and `commit_files`.
-- The MCP layer serves a local stdio server through `memhub serve` and currently exposes thin tool adapters for status, search, task listing, decision listing, latest-command lookup, explicit verified command recording, and staged fact/decision proposals. It preserves the exact raw `clientInfo.name`, normalizes aliases from a trimmed copy, sanitizes client names before logging, and stores available MCP request/init provenance JSON with staged writes.
+- The MCP layer serves a local stdio server through `memhub serve` and currently exposes thin tool adapters for status, search, task listing, decision listing, latest-command lookup, explicit verified command recording, staged fact/decision proposals, and read-only `list_pending_writes` for staged-proposal review surfaces (notably K9 wrap-up). It preserves the exact raw `clientInfo.name`, normalizes aliases from a trimmed copy, sanitizes client names before logging, and stores available MCP request/init provenance JSON with staged writes.
 - Markdown sync rewrites only explicit managed sections in `AGENTS.md` and `CLAUDE.md`, validates that each file has at most one well-formed managed block pair, creates timestamped backups for changed existing files under `.memhub/backups/markdown/`, and uses temp-file replacement writes. It can run explicitly or after writes when `auto_sync_md` is enabled.
 - Export/import provides the supported recovery path. `memhub export` writes a version-tagged JSON file covering facts, decisions, tasks, commands, pending writes, and the writes log; derived data (git ingestion, FTS chunks, schema migrations) is excluded. `memhub import` validates the format version, refuses on non-empty targets unless `--force` is passed, wipes durable tables plus decision chunks in a single transaction with `PRAGMA defer_foreign_keys = ON`, restores rows with their original IDs, regenerates decision chunks, appends a `writes_log` entry for the restore event, and runs `sync-md` after commit.
 - `memhub init --from-backup <path>` is the single-step recovery convenience UX. It refuses to run when `.memhub/project.sqlite` already exists, then uses `db::init_project_for_recovery` to create `.memhub/` (if missing) and run migrations before delegating to the existing `commands::import::run` path. This covers both the clean-clone case and the missing-database case without making plain `memhub init` interactive.
+- `commands::review` provides the explicit review and promotion flow for staged MCP proposals. `accept` delegates to `fact::add` / `decision::add` so promoted rows reuse all existing audit, FTS, and sync-md plumbing; `reject` and `expire` only mutate the pending row and `writes_log`. The `pending_writes` table gained a `reviewed_at` column in migration `0005_pending_write_reviewed_at` that is stamped on any transition out of `pending`. Acceptance runs against fresh database connections (not a single transaction), so a failure between durable promotion and pending-row update leaves the pending row in `pending` for safe retry, and `fact::add`'s `(project_id, key)` upsert keeps that retry idempotent.
 
 ## Security Invariants
 
@@ -51,5 +52,5 @@ Single local CLI process with an embedded SQLite database plus an on-demand stdi
 ## Known Gaps / Out of Scope
 
 - Search coverage beyond exact file history plus decision FTS
-- Review/promotion flow for staged agent-originated writes
-- Confidence decay, review queue, and deny-list enforcement
+- Confidence decay and stale-fact flagging
+- Deny-list enforcement for sensitive paths

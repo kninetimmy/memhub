@@ -92,6 +92,56 @@ pub enum TopLevelCommand {
         #[arg(long)]
         force: bool,
     },
+    Review {
+        #[command(subcommand)]
+        command: ReviewCommand,
+    },
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+pub enum PendingStatus {
+    Pending,
+    Accepted,
+    Rejected,
+    Expired,
+    All,
+}
+
+impl PendingStatus {
+    fn as_filter(&self) -> Option<&'static str> {
+        match self {
+            Self::Pending => Some("pending"),
+            Self::Accepted => Some("accepted"),
+            Self::Rejected => Some("rejected"),
+            Self::Expired => Some("expired"),
+            Self::All => None,
+        }
+    }
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ReviewCommand {
+    List {
+        #[arg(long, value_enum, default_value_t = PendingStatus::Pending)]
+        status: PendingStatus,
+        #[arg(long, default_value_t = 25)]
+        limit: usize,
+    },
+    Show {
+        id: i64,
+    },
+    Accept {
+        id: i64,
+    },
+    Reject {
+        id: i64,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    Expire {
+        #[arg(long, default_value_t = 30)]
+        older_than_days: i64,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -452,6 +502,61 @@ pub fn run(cli: Cli) -> Result<()> {
                         exit_code
                     );
                 }
+            }
+        },
+        TopLevelCommand::Review { command } => match command {
+            ReviewCommand::List { status, limit } => {
+                let rows = commands::review::list(&cwd, status.as_filter(), limit)?;
+                if rows.is_empty() {
+                    println!("No pending writes match this filter.");
+                } else {
+                    for row in rows {
+                        println!(
+                            "[{}] kind={} status={} actor={} created={}{}",
+                            row.id,
+                            row.kind,
+                            row.status,
+                            row.actor,
+                            row.created_at,
+                            row.reviewed_at
+                                .as_deref()
+                                .map(|ts| format!(" reviewed={ts}"))
+                                .unwrap_or_default(),
+                        );
+                        println!("  rationale: {}", row.rationale);
+                        println!("  payload: {}", row.payload_json);
+                    }
+                }
+            }
+            ReviewCommand::Show { id } => {
+                let row = commands::review::show(&cwd, id)?;
+                println!("[{}] kind={} status={}", row.id, row.kind, row.status);
+                println!("Actor: {} (raw: {})", row.actor, row.actor_raw);
+                println!("Created: {}", row.created_at);
+                if let Some(reviewed) = row.reviewed_at {
+                    println!("Reviewed: {reviewed}");
+                }
+                println!("Rationale: {}", row.rationale);
+                println!("Payload: {}", row.payload_json);
+                println!("Provenance: {}", row.provenance_json);
+            }
+            ReviewCommand::Accept { id } => {
+                let outcome = commands::review::accept(&cwd, id)?;
+                println!(
+                    "Accepted pending write {} ({}) -> {} row {}",
+                    outcome.pending_id, outcome.kind, outcome.durable_table, outcome.durable_id
+                );
+            }
+            ReviewCommand::Reject { id, reason } => {
+                commands::review::reject(&cwd, id, reason.as_deref())?;
+                println!("Rejected pending write {id}");
+            }
+            ReviewCommand::Expire { older_than_days } => {
+                let summary = commands::review::expire(&cwd, older_than_days)?;
+                println!(
+                    "Expired {} pending write(s) older than {} day(s)",
+                    summary.expired, summary.older_than_days
+                );
             }
         },
     }

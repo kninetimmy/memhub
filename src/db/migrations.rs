@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use crate::Result;
 
-pub const LATEST_VERSION: &str = "0004_pending_write_provenance";
+pub const LATEST_VERSION: &str = "0005_pending_write_reviewed_at";
 
 const MIGRATIONS: &[(&str, &str)] = &[
     (
@@ -20,6 +20,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "0004_pending_write_provenance",
         include_str!("../../migrations/0004_pending_write_provenance.sql"),
+    ),
+    (
+        "0005_pending_write_reviewed_at",
+        include_str!("../../migrations/0005_pending_write_reviewed_at.sql"),
     ),
 ];
 

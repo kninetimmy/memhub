@@ -6,14 +6,14 @@ The long-term product direction is a shared memory layer that both agents can re
 
 ## Development Status
 
-`memhub` is in active development and is now mid-Milestone 4 after shipping `M4-001` and `M4-002`.
+`memhub` is in active development and is now mid-Milestone 4 after shipping `M4-001`, `M4-002`, and `M4-003`.
 
 Current state:
 
-- Shipped: Milestone 1 foundations, Milestone 2 git ingestion and indexed search, the narrowed Milestone 3 slice covering markdown sync, stdio MCP access, staged proposal writes, and client alias normalization, the Milestone 4 portable export/import recovery path, and Milestone 4 missing-DB safety with `memhub init --from-backup <path>` recovery
-- Current focus: remaining Milestone 4 work — review/promotion flow for staged writes, confidence/staleness handling, and deny-list enforcement
-- Implemented now: local SQLite storage, embedded migrations, per-repo config, audit logging, facts/decisions/tasks/commands CRUD, explicit command verification, git ingestion, indexed search, managed-block sync for `AGENTS.md` / `CLAUDE.md`, `memhub serve` for stdio MCP access, staged MCP fact/decision proposals, pending-write visibility in status, portable `memhub export` / `memhub import`, missing-DB detection, and `memhub init --from-backup <path>` single-step recovery
-- Not implemented yet: review queue and promotion of staged writes, confidence decay, deny-list enforcement, and broader search coverage beyond current indexed paths
+- Shipped: Milestone 1 foundations, Milestone 2 git ingestion and indexed search, the narrowed Milestone 3 slice covering markdown sync, stdio MCP access, staged proposal writes, and client alias normalization, the Milestone 4 portable export/import recovery path, Milestone 4 missing-DB safety with `memhub init --from-backup <path>` recovery, and Milestone 4 `memhub review` flow for promoting or rejecting staged MCP proposals
+- Current focus: remaining Milestone 4 work — confidence/staleness handling and deny-list enforcement
+- Implemented now: local SQLite storage, embedded migrations, per-repo config, audit logging, facts/decisions/tasks/commands CRUD, explicit command verification, git ingestion, indexed search, managed-block sync for `AGENTS.md` / `CLAUDE.md`, `memhub serve` for stdio MCP access, staged MCP fact/decision proposals, MCP `list_pending_writes` read tool, `memhub review list|show|accept|reject|expire` CLI flow, pending-write visibility in status, portable `memhub export` / `memhub import`, missing-DB detection, and `memhub init --from-backup <path>` single-step recovery
+- Not implemented yet: confidence decay, deny-list enforcement, and broader search coverage beyond current indexed paths
 
 Milestone status:
 
@@ -22,7 +22,7 @@ Milestone status:
 | Milestone 1: DB + CLI | Complete | Core repo bootstrap, schema, CRUD, config, logging |
 | Milestone 2: Git + search | Complete | `ingest-git`, FTS-backed decision search, exact file-history lookups |
 | Milestone 3: MCP + markdown sync | Complete | Markdown sync, stdio MCP reads, verified command recording, staged proposal writes, and client alias normalization are shipped under the current narrowed plan |
-| Milestone 4: Quality | In progress | Portable `export` / `import` shipped (`M4-001`) and missing-DB safety with `init --from-backup` recovery shipped (`M4-002`); review flow, confidence/staleness, deny-list work remain |
+| Milestone 4: Quality | In progress | Portable `export` / `import` shipped (`M4-001`), missing-DB safety with `init --from-backup` recovery shipped (`M4-002`), and `memhub review` flow for staged proposals shipped (`M4-003`); confidence/staleness and deny-list work remain |
 | Milestone 5+ | Planned | Speculative future expansions only after separate validation |
 
 ## Why memhub exists
@@ -48,6 +48,7 @@ The current codebase already supports a practical local workflow:
 - Serve the current repository over stdio MCP with `memhub serve`, including staged `propose_fact` and `propose_decision` MCP tools
 - Back up the project with `memhub export <path>` and restore it on another machine or a clean checkout with `memhub import <path>` (use `--force` to overwrite existing data)
 - Recover from a deleted or corrupted database in a single step with `memhub init --from-backup <path>`
+- Review and promote staged MCP fact/decision proposals with `memhub review list|show|accept|reject|expire`
 
 ## Install and Quick Start
 
@@ -189,6 +190,40 @@ manually and run `memhub init` again.
 The on-disk shape of the export file is documented in
 [docs/reference/export-format.md](docs/reference/export-format.md).
 
+## Reviewing staged MCP proposals
+
+Agent-originated MCP writes never land directly in durable `facts` or
+`decisions`. They stage in `pending_writes` and wait for a human review.
+`memhub review` is the CLI surface for that review.
+
+```bash
+cargo run -- review list                       # default: --status pending --limit 25
+cargo run -- review list --status all
+cargo run -- review show <id>
+cargo run -- review accept <id>
+cargo run -- review reject <id> --reason "untrusted source"
+cargo run -- review expire                     # default: --older-than-days 30
+```
+
+`accept` promotes the staged row to its durable table:
+
+- A staged `fact` becomes a row in `facts` with `source = "user"` and
+  `confidence = 1.0`, upserted by `(project_id, key)` like
+  `memhub fact add`.
+- A staged `decision` becomes an active row in `decisions` with the
+  original rationale, regenerating the FTS chunk so it is immediately
+  searchable.
+
+In both cases the `pending_writes` row is marked `accepted` and a
+`reviewed_at` timestamp is recorded. `reject` marks the row `rejected`
+and stores any user-provided reason in `writes_log`. `expire` is an
+explicit batch operation that ages pending proposals older than
+`--older-than-days` (default 30) into `expired`. Nothing auto-expires
+on read.
+
+Re-reviewing an already-reviewed row is an error, so re-acceptance must
+go through `memhub fact add` / `memhub decision add` directly.
+
 ## How memhub works
 
 ### Per-repo source of truth
@@ -242,6 +277,7 @@ The current search surface is deliberately smaller than the PRD end-state. It is
 - `search`
 - `list_tasks`
 - `list_decisions`
+- `list_pending_writes`
 - `get_command`
 - `record_command`
 - `propose_fact`
@@ -293,7 +329,8 @@ Implemented subsystems today:
 - git ingestion into relational tables
 - FTS5-backed decision search and indexed file-history lookup
 - markdown managed-block generation and sync
-- stdio MCP tools for status, search, task listing, recent decisions, latest command lookup, explicit verified command recording, and staged fact/decision proposals
+- stdio MCP tools for status, search, task listing, recent decisions, latest command lookup, explicit verified command recording, staged fact/decision proposals, and read-only `list_pending_writes`
+- `memhub review` CLI for promoting, rejecting, and expiring staged MCP proposals
 
 ### Planned architecture
 
@@ -310,7 +347,7 @@ Those pieces should be described as planned only until the implementation lands.
 ## Repository Layout
 
 - `src/cli/` - top-level CLI command definitions and output formatting
-- `src/commands/` - command handlers for facts, decisions, tasks, commands, search, git ingestion, status, and portable export/import
+- `src/commands/` - command handlers for facts, decisions, tasks, commands, search, git ingestion, status, portable export/import, and review of staged MCP proposals
 - `src/config/` - per-repo config model and read/write helpers
 - `src/db/` - path discovery, connection bootstrap, migrations, and `.gitignore` handling
 - `src/models/` - small structs used by the CLI layer
@@ -359,7 +396,7 @@ Delivered:
 - strict marker validation
 - safer temp-file replacement writes
 - `memhub serve`
-- thin stdio MCP tools for status, search, task listing, recent decisions, latest command lookup, explicit verified command recording, and staged fact/decision proposals
+- thin stdio MCP tools for status, search, task listing, recent decisions, latest command lookup, explicit verified command recording, staged fact/decision proposals, and read-only `list_pending_writes`
 - pending-write visibility in status output
 - client identification and alias normalization from MCP `clientInfo.name`
 
@@ -378,10 +415,10 @@ Shipped:
 - readable README backup/restore instructions
 - missing-DB safety: every command refuses with a clear recovery error when `.memhub/` exists without `project.sqlite` instead of silently rebuilding an empty database (`M4-002`)
 - `memhub init --from-backup <path>` single-step recovery that initializes and restores in one command (`M4-002`)
+- `memhub review list|show|accept|reject|expire` to promote, reject, or age out staged MCP proposals, plus a read-only `list_pending_writes` MCP tool (`M4-003`)
 
 Remaining scope:
 
-- review flow for proposed writes
 - confidence scoring and staleness handling
 - deny-list enforcement
 

@@ -96,3 +96,33 @@ Append-only. Superseding decisions should be added as new dated entries rather t
 - The single-step recovery UX lives on `init`, not on `import`, so `memhub import` keeps its prior "target must be initialized first" contract unchanged.
 - `init --from-backup` refuses to run when `.memhub/project.sqlite` already exists; the documented overwrite path remains `memhub import --force <path>` on a live database.
 - The flag works in both the clean-clone case (no `.memhub/`) and the missing-database case (existing `.memhub/` without `project.sqlite`).
+
+## 2026-05-12 - Promoted facts use `source = "user"`, not encoded original-actor strings
+
+- When `memhub review accept` promotes a staged fact, the resulting `facts` row uses `source = "user"` and `confidence = 1.0`, matching the PRD §8 user-authored category and existing `memhub fact add` behavior.
+- The original-actor chain (which agent proposed it, when, with what provenance JSON) is preserved on the `pending_writes` row (which stays around with `status = 'accepted'` and `reviewed_at` set) and in `writes_log`.
+- This keeps the `facts.source` vocabulary small and consistent rather than expanding it with `user-confirmed-from:<actor>` variants that would be harder to query.
+
+## 2026-05-12 - Review and promotion is CLI-only; MCP gains a read-only proposal list
+
+- Promotion of staged proposals into durable `facts` / `decisions` happens through `memhub review accept` only. There is no MCP tool that accepts on the user's behalf, consistent with PRD §12's asymmetry between read and write surfaces.
+- MCP exposes `list_pending_writes` as a read-only adapter so K9 `/wrap-up` (and any future review UI) can surface staged proposals during the human-approval gate without needing direct DB access.
+- `reject` is also CLI-only, with the user-supplied reason captured in `writes_log` rather than as a column on `pending_writes`.
+
+## 2026-05-12 - Pending writes age out explicitly, not automatically on read
+
+- `memhub review expire` is the only path that transitions a `pending_writes` row to `status = 'expired'`. No read-shaped command (`review list`, `status`, MCP `list_pending_writes`) has expiry side effects.
+- The default cutoff is `--older-than-days 30`, matching PRD §11.3. Users / cron jobs can override per invocation.
+- `expire` emits a single summary `writes_log` row rather than one entry per expired row; the affected `pending_writes` rows are still inspectable directly because they retain their original `id`, `payload_json`, and `actor`.
+
+## 2026-05-12 - `reviewed_at` column lives on `pending_writes`, not derived from `writes_log`
+
+- Migration `0005_pending_write_reviewed_at` adds a nullable `reviewed_at TEXT` column on `pending_writes`.
+- It is set on any transition out of `pending` (accepted, rejected, expired) and stays null while a proposal is still pending.
+- Keeping it on the row directly makes "show me recent reviews" queryable without joining `writes_log`, and makes `review show` self-contained for human inspection.
+
+## 2026-05-12 - Review acceptance is not a single transaction across `pending_writes` and the durable table
+
+- `accept` delegates to existing `fact::add` / `decision::add`, each of which opens its own connection and transaction, and then runs a second update on `pending_writes` in a separate transaction.
+- A failure between the durable insert and the pending-row update leaves the pending row in `pending` so a retry is safe; `fact::add`'s `(project_id, key)` upsert makes the fact path idempotent, and a duplicate decision created via retry is acceptable (the original-actor provenance still points back through `pending_writes`).
+- The alternative — refactoring `fact::add` / `decision::add` to accept an existing transaction — was rejected to keep this slice narrow and avoid touching every existing caller for a corner case that is local-only and easy to recover from manually.

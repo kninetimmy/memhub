@@ -47,6 +47,11 @@ Each item should capture scope, affected files, status, and explicit deferrals.
   Scope: `src/cli/`, `src/commands/export.rs`, `src/commands/import.rs`, `src/export/v1.rs`, `docs/reference/export-format.md`, README backup/restore section, `tests/export_import.rs`
   Notes: Shipped `memhub export <path>` writing a version-tagged JSON file (`memhub_export_version = 1`) covering facts, decisions, tasks, commands, pending_writes, and writes_log. Shipped `memhub import <path>` with `--force` flag; wipe-and-restore semantics in a single transaction using `PRAGMA defer_foreign_keys = ON`; preserves row IDs; regenerates decision chunks via `search::sync_decision_chunks`; logs an audit entry for the restore; runs `sync_md::sync_project` after commit. Import requires the target to already be initialized; the missing-DB recovery case is `M4-002`. Merge semantics and CLI restore convenience UX explicitly deferred.
 
+- `M4-003` - Add review and promotion flow for staged MCP `pending_writes`.
+  Status: completed
+  Scope: `migrations/0005_pending_write_reviewed_at.sql`, `src/commands/review.rs`, `src/commands/mod.rs`, `src/cli/mod.rs`, `src/mcp/mod.rs`, `src/models/mod.rs`, `tests/review.rs`, README
+  Notes: Added `memhub review list|show|accept|reject|expire`. `accept` reuses `fact::add` / `decision::add` so promoted rows go through existing audit, FTS chunk regeneration, and sync-md plumbing; promoted facts land at `source = "user"` with `confidence = 1.0`. `pending_writes` gained a nullable `reviewed_at` column set on any transition out of `pending`. `expire` is explicit only (no auto-expire on read), defaulting to 30 days per PRD §11.3. Added a read-only `list_pending_writes` MCP tool so K9 `/wrap-up` can surface staged proposals during its human-approval gate. Confidence-override flags and batch auto-accept remain deferred until confidence decay exists.
+
 - `M4-002` - Add recovery-safe missing-DB handling and follow-on init UX.
   Status: completed
   Scope: `src/db/`, `src/commands/init.rs`, `src/cli/mod.rs`, `src/errors/mod.rs`, README, `tests/export_import.rs`
@@ -55,4 +60,4 @@ Each item should capture scope, affected files, status, and explicit deferrals.
 - `M5-001` - K9 Claude Framework integration: optional DB writes from `/wrap-up`.
   Status: triaged
   Scope: `docs/roadmap/k9-integration.md`, install scripts, `src/cli/init`, `src/config/`, K9 repo `/wrap-up.md`
-  Notes: Full design in `docs/roadmap/k9-integration.md`. `M4-001` and `M4-002` are now complete, so the recovery preconditions for this milestone are in place. Key requirements: memhub install must detect K9 and configure accordingly without modifying K9 files; K9 `/wrap-up` shells out to existing memhub CLI commands after human approval; no bidirectional sync; standalone modes for both systems remain fully supported.
+  Notes: Full design in `docs/roadmap/k9-integration.md`. `M4-001`, `M4-002`, and `M4-003` are now complete; the recovery preconditions and the staged-write promotion surface that K9 `/wrap-up` was designed against both exist. Key requirements: memhub install must detect K9 and configure accordingly without modifying K9 files; K9 `/wrap-up` shells out to existing memhub CLI commands (`memhub review list/accept/reject`, plus `decision add` / `task add` / `fact add`) after human approval; no bidirectional sync; standalone modes for both systems remain fully supported.
