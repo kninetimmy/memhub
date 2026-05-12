@@ -184,6 +184,27 @@ Please install memhub for this repo.
 5. Then `cd` back to this repo and run `memhub init` followed by `memhub status`.
    Report the K9 detection line from `status` so I can confirm the integration
    state.
+6. If `memhub status` from step 5 reports `K9 detected: yes`, also check
+   whether the new memhub database is empty while K9 has populated
+   history (the typical case when installing memhub on an existing
+   K9-tracked repo for the first time on this machine):
+
+   - Run `memhub decision list | wc -l` and `memhub task list | wc -l`.
+     Both `0` → memhub's durable tables are empty.
+   - Run `wc -l agent_docs/project_decisions.md agent_docs/project_backlog.md`.
+     Non-trivial line counts (each > ~10 lines) → K9 carries real content.
+
+   If the DB is empty AND K9 is populated, run:
+
+       memhub integrations bootstrap-k9 --dry-run --json
+
+   This is read-only — it parses the K9 files and reports counts without
+   writing. Show me the JSON summary, then ask whether to apply
+   `memhub integrations bootstrap-k9` (drop the flag) to prime the
+   database in one shot. Bootstrap is first-install-only by design;
+   memhub refuses on a non-empty target. If the DB already has rows or
+   the K9 files are bare skeletons, skip this step silently — do not
+   nag.
 
 Don't modify any files in this repo other than what `memhub init` writes
 (`.memhub/` and a `.gitignore` line). Stop and ask me before installing
