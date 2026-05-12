@@ -52,76 +52,216 @@ The current codebase already supports a practical local workflow:
 - Review and promote staged MCP fact/decision proposals with `memhub review list|show|accept|reject|expire`
 - Keep sensitive paths (`*.pem`, `.env*`, `secrets/**`, etc.) out of ingestion and search via a configurable deny list in `.memhub/config.toml`
 
-## Install and Quick Start
+## Prerequisites
 
-`memhub` currently runs from source as a standard Rust CLI.
+`memhub` builds from source as a standard Rust CLI.
 
-Build the project:
+- Rust toolchain (stable, edition 2024-compatible — Rust 1.85+). Install via [`rustup`](https://rustup.rs/).
+- `git` CLI on `PATH` (used by `memhub ingest-git`).
+- A local checkout of the repository you want memhub to track. Any git repo or plain directory works — memhub stores its data in a `.memhub/` directory at that repo's root.
 
-```bash
-cargo build
-```
+If you plan to pair memhub with the **K9 Claude Framework**, install and configure K9 in your target repo first (K9 lives outside this repo). memhub's K9 integration is triggered by the presence of `agent_docs/project_state.md` in the repo where you run `memhub init`.
 
-Initialize the current repository for `memhub`:
+## Install
 
-```bash
-cargo run -- init
-```
+Both install tracks share the same build step. The difference shows up at `memhub init`, where the K9 integration is auto-detected.
 
-Check the current project summary:
+### Step 1: build the `memhub` binary (both tracks)
 
 ```bash
-cargo run -- status
+git clone https://github.com/kninetimmy/memhub.git
+cd memhub
+cargo build --release
 ```
 
-Add a fact and list stored facts:
+The release binary lands at `target/release/memhub`. For day-to-day use, put it on your `PATH`:
 
 ```bash
-cargo run -- fact add build-command "cargo build"
-cargo run -- fact list
+# Option A: copy into a directory already on PATH
+cp target/release/memhub ~/.local/bin/memhub
+
+# Option B: symlink (future `cargo build --release` rebuilds propagate)
+ln -s "$(pwd)/target/release/memhub" ~/.local/bin/memhub
 ```
 
-Record a decision and list decisions:
+Verify:
 
 ```bash
-cargo run -- decision add "Use rusqlite bundled mode" --rationale "Avoid system SQLite setup friction during early development."
-cargo run -- decision list
+memhub --help
 ```
 
-Track a task:
+> If you'd rather not install a binary, every example below also works as `cargo run --release -- <args>` from the memhub checkout. The K9 `/wrap-up` shell-out, however, expects `memhub` on `PATH`.
+
+### Step 2a: initialize a repo (without K9)
 
 ```bash
-cargo run -- task add "Implement MCP server" --notes "Milestone 3"
-cargo run -- task list
-cargo run -- task done 1
+cd /path/to/your/project
+memhub init
+memhub status
 ```
 
-Record and inspect a verified command:
+`memhub init` creates `.memhub/project.sqlite`, writes a default `.memhub/config.toml`, and adds `.memhub/` to `.gitignore` so the database doesn't leak into git. `memhub status` should report `K9 detected: no`.
+
+### Step 2b: initialize a repo (with K9 already installed)
+
+If K9 is already set up in the target repo — specifically, `agent_docs/project_state.md` exists — `memhub init` auto-enables the integration:
 
 ```bash
-cargo run -- command verify build "cargo build" --exit-code 0
-cargo run -- command list
+cd /path/to/your/k9-repo
+memhub init
+memhub status
 ```
 
-Ingest git history and search the indexed store:
+Expected status output:
+
+```
+K9 detected: yes
+K9 integration: enabled (agent_docs_path: agent_docs)
+```
+
+`.memhub/config.toml` will now contain:
+
+```toml
+[integrations.k9]
+enabled = true
+agent_docs_path = "agent_docs"
+```
+
+If K9 was added to the repo *after* you ran `memhub init`, the integration won't auto-enable — `init` is idempotent and never mutates an existing config. Toggle it explicitly:
 
 ```bash
-cargo run -- ingest-git
-cargo run -- search src/lib.rs
-cargo run -- search "sqlite decisions"
+memhub integrations status         # see current detection + config state
+memhub integrations enable-k9      # writes [integrations.k9] into config.toml
+memhub integrations disable-k9     # keeps the section but sets enabled = false
 ```
 
-Refresh managed markdown blocks:
+`enable-k9` refuses to run when no `agent_docs/project_state.md` marker is found unless you pass `--force`. A custom marker location is configurable with `--agent-docs-path docs/k9`.
+
+### Restoring from a backup instead of initializing fresh
+
+If you already have a `memhub-backup.json` from another machine, replace step 2 with:
 
 ```bash
-cargo run -- sync-md
+cd /path/to/repo
+memhub init --from-backup /path/to/memhub-backup.json
 ```
 
-Start the local stdio MCP server:
+This creates `.memhub/`, runs migrations, and imports the backup in a single step. See [Backup and Restore](#backup-and-restore) for the full recovery story.
+
+## Quick Start
+
+The CLI surface is the same with or without K9. The difference is whether you drive it by hand, or whether K9's `/wrap-up` skill shells out to memhub during session compaction.
+
+### Usage without K9
+
+Day-to-day, you'll be writing structured project memory by hand from your terminal.
+
+**Store and inspect facts:**
 
 ```bash
-cargo run -- serve
+memhub fact add build-command "cargo build"
+memhub fact add test-command "cargo test"
+memhub fact list
 ```
+
+**Record decisions with rationale:**
+
+```bash
+memhub decision add "Use rusqlite bundled mode" \
+  --rationale "Avoid system SQLite setup friction during early development."
+memhub decision list
+```
+
+**Track tasks:**
+
+```bash
+memhub task add "Implement MCP server" --notes "Milestone 3"
+memhub task list
+memhub task done 1
+```
+
+**Record verified command outcomes** so future agents can trust the recipe:
+
+```bash
+memhub command verify build "cargo build" --exit-code 0
+memhub command list
+```
+
+**Ingest git history and search:**
+
+```bash
+memhub ingest-git                  # initial full ingest
+memhub ingest-git --since HEAD~50  # incremental
+memhub search src/lib.rs           # exact file-history lookup
+memhub search "sqlite decisions"   # FTS5-backed decision search
+```
+
+**Refresh managed markdown** (the `<!-- memhub:managed:start -->` block in `AGENTS.md` / `CLAUDE.md`):
+
+```bash
+memhub sync-md
+```
+
+**Serve over MCP** so any local MCP-aware client (Codex, Claude Code) can read project state:
+
+```bash
+memhub serve   # stdio MCP server
+```
+
+**Inspect dogfood metrics:**
+
+```bash
+memhub stats
+memhub stats --window 7d
+memhub stats --json
+```
+
+### Usage with K9
+
+Everything above still works the same way. K9 integration adds three additional flows on top of the standalone CLI.
+
+**1. `memhub status` reports integration state on every invocation:**
+
+```
+K9 detected: yes
+K9 integration: enabled (agent_docs_path: agent_docs)
+```
+
+If the config says `enabled = true` but the marker disappeared (drift), status surfaces a `note: K9 enabled in config but agent_docs/project_state.md is missing` warning. The reverse — K9 detected but not yet enabled — prints a `note: K9 detected; run \`memhub integrations enable-k9\` to enable` hint.
+
+**2. K9 `/wrap-up` shells out to memhub** after the human-approval gate, using a stable v1 CLI contract. You don't run these by hand — K9 does — but they're useful to recognize in the audit trail.
+
+Pre-flight gate (K9 runs this first; exits 0 if memhub is enabled, 1 otherwise):
+
+```bash
+memhub integrations check-k9
+```
+
+Approved Markdown changes then become memhub calls with `--json` and `--actor k9:wrap-up`:
+
+```bash
+memhub fact add build-command "cargo build" --json --actor k9:wrap-up
+# {"id":12,"key":"build-command","value":"cargo build","source":"user","created":true}
+
+memhub decision add "Adopt the kraken pattern" \
+  --rationale "..." --json --actor k9:wrap-up
+# {"id":7,"title":"Adopt the kraken pattern"}
+
+memhub review accept 4 --json --actor k9:wrap-up
+# {"pending_id":4,"kind":"fact","durable_table":"facts","durable_id":12}
+```
+
+The full machine-readable contract — every gate, read surface, mutating command, exit code, and JSON shape — is documented in [`docs/reference/k9-wrap-up-contract.md`](docs/reference/k9-wrap-up-contract.md). Treat that doc as the v1 source of truth; this section is a summary.
+
+**3. Audit who wrote what.** Every `--actor k9:wrap-up` write is captured in `writes_log`, so K9-mediated changes are distinguishable from manual CLI use:
+
+```bash
+memhub stats --window 30d        # groups writes by actor
+sqlite3 .memhub/project.sqlite \
+  "SELECT actor, COUNT(*) FROM writes_log GROUP BY actor;"
+```
+
+> **Practical note:** K9 expects the `memhub` binary on `PATH`. If you skipped the PATH step during install, K9's wrap-up shell-out will fail the pre-flight gate and silently fall back to its standalone Markdown-only flow.
 
 ## Backup and Restore
 
@@ -413,7 +553,7 @@ If the config says `enabled = true` but the marker disappeared (drift),
 `status` surfaces a `note: K9 enabled in config but
 agent_docs/project_state.md is missing` line. The reverse case — K9
 detected but not yet enabled — produces a `note: K9 detected; run
-\`memhub integrations enable k9\` to enable` hint instead.
+\`memhub integrations enable-k9\` to enable` hint instead.
 
 The MCP `status` tool exposes the same booleans (`k9_detected`,
 `k9_enabled`, `k9_agent_docs_path`, `k9_drift`) so MCP clients can
