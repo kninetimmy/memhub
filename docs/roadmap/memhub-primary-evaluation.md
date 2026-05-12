@@ -1,8 +1,17 @@
 # Evaluating memhub-primary as a K9 replacement
 
-Status: Open evaluation. No PRD or roadmap non-goals are modified by
-this document; it captures the hypothesis being tested, the evidence
-required to advance, and the explicit decision points that follow.
+Status: Closed / superseded. The hypothesis tested here resolved in
+favor of memhub-primary; the deprecation direction is now captured
+in `docs/roadmap/k9-deprecation-plan.md`. This document remains as
+the origin record of how the direction was reached — including the
+Phase 2 evidence on Free-AI-SSD — but it is no longer a live
+evaluation. Phase 3's three open routes are obsolete: the
+render-design route is the committed path, planned under the
+deprecation doc.
+
+Historical note: No PRD or roadmap non-goals are modified by this
+document. Each is revisited explicitly in the design slices listed
+under `k9-deprecation-plan.md`.
 
 ## Hypothesis
 
