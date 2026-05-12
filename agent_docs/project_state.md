@@ -8,10 +8,13 @@ Between tasks. By PRD §16 milestones memhub is at v1: Milestones 1–4
 are complete and the memhub side of Milestone 5 (K9 framework interop)
 is shipped, including the PRD-§12 and PRD-§17 surfaces (`memhub stats`
 and the `log_session_note` MCP tool + `memhub note list` CLI).
-Continuous confidence decay (PRD §11.4) was explicitly dropped this
-session. The only named remaining slice lives outside this repo: the
-K9 `/wrap-up.md` consumer edit that calls into the v1 contract
-end-to-end (gate + read + mutate).
+Continuous confidence decay (PRD §11.4) was explicitly dropped from
+v1 (see `project_decisions.md`). The README's onboarding surface is
+also now fully fleshed out — manual install, agent-driven install,
+and end-to-end typical-workflow narratives for both K9 and
+standalone tracks. The only named remaining slice lives outside this
+repo: the K9 `/wrap-up.md` consumer edit that calls into the v1
+contract end-to-end (gate + read + mutate).
 
 ## Next up
 
@@ -28,35 +31,35 @@ end-to-end (gate + read + mutate).
 
 ## Last session
 
-2026-05-12 - Shipped four commits closing out PRD-named surfaces.
-`b103792` (`M5-003`) added `--json` to `memhub review list` and
-`review show`, mirroring the MCP `PendingWriteToolRecord` shape and
-amending the K9 v1 contract additively (no v2 bump). `b6cc920`
-refreshed the README and roadmap docs to reflect actual shipped state
-after they'd drifted into reading like mid-M4. `eedc973` (`M5-004`)
-added `memhub stats [--window 7d|30d|90d|all] [--json]` covering
-totals, windowed write activity from `writes_log`, pending-write
-review rate, top commands by run count, and recent verified facts;
-PRD §17's "simple read counter" was explicitly deferred and the
-deviation is surfaced in both human and JSON outputs. `072c087`
-(`M5-005`) added a new `session_notes` table (migration `0006`),
-the `log_session_note` MCP tool, and `memhub note list [--limit]
-[--actor] [--since-days] [--json]` — write-only scratch with no
-promotion path and intentional omission from the v1 `memhub export`
-format. Test count moved 99 → 119 across this session. Continuous
-confidence decay (PRD §11.4) was dropped entirely after planning.
+2026-05-12 - Extended the README onboarding surface with two
+follow-on doc-only additions. `f382a50` added an "Install with
+Claude Code" subsection with a copy-pasteable prompt that walks an
+agent through clone → `cargo build --release` → PATH symlink →
+`memhub init` / `status`, with explicit guardrails against modifying
+repo files beyond `.memhub/`. `a7060aa` added a "Typical Workflow"
+section sitting between Quick Start and Backup and Restore:
+narrates an end-to-end working session on each track (orient →
+record-as-you-go → close out → maintain for standalone; mid-session
+MCP plus `/wrap-up` shell-out for K9), framing memhub as a
+"deliberate notebook" without K9 and as the structured half of a
+Markdown + database transaction with K9. No code, schema, or
+contract changes.
 
-2026-05-12 - Completed `M5-002`. Shipped
-`docs/reference/k9-wrap-up-contract.md` (v1 contract: sequencing,
-gating with `check-k9`, JSON schemas per mutating command, actor
-convention, exit codes, audit-trail query, explicit non-goals). Added
-`memhub integrations check-k9` subcommand returning 0/1 with empty
-stdout, gracefully handling missing `.memhub/` via silent exit 1.
-Threaded a new `actor: &str` parameter through `fact::add`,
-`decision::add`, `task::add`, `task::done`, `review::accept`,
-`review::reject`, and `review::mark_status`. CLI gained `--json` and
-`--actor` flags on the six mutating commands. Added 11 integration
-tests in `tests/k9_contract.rs`.
+2026-05-12 - Restructured the README install/usage sections into
+parallel "without K9" and "with K9" tracks (`c27ed69`). Added a
+Prerequisites section (Rust 1.85+, git CLI, optional K9 prereq),
+split Install into a shared `cargo build --release` step plus Step 2a
+"init without K9" / Step 2b "init with K9 already installed",
+documented the auto-detection + `enable-k9` / `disable-k9` toggle
+path, and split Quick Start into "Usage without K9" (manual CLI
+flows) and "Usage with K9" (the `/wrap-up` shell-out using
+`--json --actor k9:wrap-up`, linked to
+`docs/reference/k9-wrap-up-contract.md` as v1 truth). Switched every
+example from `cargo run --` to a `memhub` binary on PATH and added a
+"put it on PATH" install step (copy or symlink to `~/.local/bin/`)
+so the K9 shell-out actually resolves the binary. Fixed a stray
+`enable k9` (space) → `enable-k9` typo in the existing K9 deep-dive
+section. Doc-only; no code or schema changes.
 
 ## Open questions
 
@@ -72,6 +75,9 @@ tests in `tests/k9_contract.rs`.
   indefinitely?
 - Which additional `clientInfo.name` values do Codex and Claude Code
   send in real handshakes beyond the initial alias map?
+- Should `memhub` ship a `cargo install`-able crate (or homebrew tap)
+  so the README's "put the binary on PATH" step becomes a single
+  command, or stay source-only until external adoption pulls?
 - Should `memhub migrate` remain implicit-on-open or become explicit
   once external users adopt the tool?
 - Should a `v2` export format be introduced to include `session_notes`,
