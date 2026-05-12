@@ -4,28 +4,53 @@ Last updated: 2026-05-12
 
 ## Currently building
 
-Between tasks. M6-003 shipped as `9c8c103`; Phase 2 evaluation
-evidence is captured in `docs/roadmap/memhub-primary-evaluation.md`
-and routed to **marginal** (not "acceptable"). M6-004 (memhub's own
-agent_docs migration to K9 canonical) remains open and independent.
-M6-005 (done-marker recall fixes) and M6-006 (mojibake separator)
-opened as the narrow follow-ups recommended by Phase 2.
+Between tasks. The K9 framework is now on a deprecation track — see
+`docs/roadmap/k9-deprecation-plan.md` for the four load-bearing
+slices that gate the transition (memhub render, PRD §2 + non-goal
+revisits, `project_state.md` / `project_arch.md` as DB content, and
+the wrap-up routing brain). M6-005 (done-marker recall fixes)
+shipped as `675f614`; M6-006 closed as won't-fix because building
+permanent parser tolerance for mojibake doesn't pay back when
+`bootstrap-k9` itself is a transition tool.
+`docs/roadmap/memhub-primary-evaluation.md` is marked superseded —
+Phase 3's three open routes are now obsolete since the
+render-design route is committed.
 
 ## Next up
 
-1. M6-005 — extend done-marker detection to recognize
-   `**done** — merged DATE (PR #N)` syntax and "Shipped"
-   vocabulary. Expected to lift Free-AI-SSD recall on body markers
-   from 8/12 to 12/12.
-2. M6-006 — accept the UTF-8 mojibake `â€"` triple-codepoint
-   sequence (U+00E2 U+20AC U+201D) as a third separator branch in
-   `extract_date_and_title`. Expected to lift 19/82 Free-AI-SSD
-   decisions from dirty-title to clean.
-3. M6-004 — migrate memhub's own `agent_docs/project_backlog.md`
-   and `project_decisions.md` to K9 canonical structural delimiters
-   (independent; can land in any order).
+1. `docs/roadmap/memhub-render-design.md` — the gating artifact per
+   the deprecation plan. Markdown becomes an *output* of memhub
+   instead of an *input*; this doc surfaces which files to emit, who
+   triggers regeneration, conflict semantics on human edits, and
+   where emitted files live. Loaded with implications for PRD §2, so
+   likely sequences before the PRD addendum.
+2. PRD §2 + `docs/roadmap/k9-integration.md` non-goal revisits.
+   Downstream of the render design — let it surface which non-goals
+   actually need to move before editing the PRD.
+3. M6-004 — migrate memhub's own `agent_docs/*.md` to K9 canonical.
+   May be obviated entirely by the render design (once memhub emits
+   its own narrative, dogfooding K9 canonical disappears as a goal).
+   Hold until render design clarifies.
 
 ## Last session
+
+2026-05-12 — Cleaned Free-AI-SSD's mojibake at the source (465
+`â€"` → `—` replacements across
+`agent_docs/{project_decisions,project_backlog,mac_project_backlog}.md`
+via byte-mode perl; changes uncommitted in that repo). Shipped
+M6-005 as `675f614`: `line_has_inline_done_pr_marker` now
+optionally consumes `(merged|shipped|landed|released) YYYY-MM-DD?`
+between `**done**` and the PR # tail; new `extract_status_clause`
+matches bolded non-bulleted `**Status:** word` lines;
+`map_legacy_status` gained `shipped|landed|released → completed`.
+6 new unit tests + 144 total green. End-to-end re-bootstrap on
+cleaned Free-AI-SSD source: 22 done-skips (was 8), 82/82 clean
+decisions (was 63). Then committed `29cdbef`: opened
+`docs/roadmap/k9-deprecation-plan.md` capturing the direction
+(memhub becomes primary, K9 retires) and four load-bearing slices.
+Closed M6-006 as won't-fix-deprecating-K9; marked
+memhub-primary-evaluation.md superseded. No PRD edits or non-goal
+changes — each slice argues its own case under explicit reasoning.
 
 2026-05-12 — Ran the M6-003 Phase 2 evaluation against
 Free-AI-SSD. Built a fresh `cargo --release` binary, wiped
@@ -46,23 +71,14 @@ NOT commission `memhub render` yet; close M6-005/M6-006 first then
 revisit. Shipped as `9c8c103` alongside the M6-005/M6-006 backlog
 entries.
 
-2026-05-12 — Shipped M6-001 + M6-002 in `cd25a25`. M6-002 replaced
-`strip_date_prefix` with `extract_date_and_title`, which accepts
-ASCII hyphen or em-dash (U+2014, K9 canonical) as the separator and
-extracts the heading date into `decisions.decided_at` as
-`YYYY-MM-DD 00:00:00`. New `decision::add_with_decided_at` honors an
-explicit timestamp; existing `decision::add` delegates with `None`
-and preserves the schema default. Wrap-up choices: en-dash
-intentionally rejected (typo tolerance would mask drift from K9
-canonical); date format `YYYY-MM-DD 00:00:00` chosen to match
-SQLite's `CURRENT_TIMESTAMP` shape. 4 new tests (unit covering all
-separator forms, unit for em-dash headings, updated test for
-ASCII-hyphen + date assertion, subprocess asserting persisted
-`decided_at`). Commit bundle also carries M6-001's H3-driven parser
-rewrite that had been landed locally last session.
-
 ## Open questions
 
+- Render-design sequencing: render-first vs PRD-addendum-first?
+  (Captured in `k9-deprecation-plan.md` "Sequencing" section; this
+  bullet is just a pointer.)
+- Does M6-004 (memhub's own `agent_docs` K9-canonical migration)
+  get obviated by `memhub render`, or does it ship as a final
+  dogfood pass before render?
 - Should `MEMHUB_ACTOR` env var be added as an alternative to the
   `--actor` flag for K9 invocations that fan out to many CLI calls?
 - Should `enable-k9 --agent-docs-path` accept any path and create the

@@ -39,9 +39,10 @@ The repository currently provides Milestone 1 scaffolding and a usable local CLI
 
 **Build:** `n/a`
 **Test:** `n/a`
-**Active tasks:** 3 open, 0 blocked - see `memhub task list --status open`
+**Active tasks:** 1 open, 0 blocked - see `memhub task list --status open`
 
 ### Durable decisions
+- K9 framework deprecation: memhub becomes primary durable store (2026-05-12 22:40:23)
 - K9 canonical conventions (H3 backlog items, em-dash decisions) are the parser target (2026-05-12 21:03:01)
 - Evaluating memhub-primary is staged behind parser-fix evidence (2026-05-12 21:02:58)
 - One-shot K9 bootstrap is the narrow exception to the no-import non-goal (2026-05-12 19:38:52)
