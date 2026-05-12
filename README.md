@@ -6,14 +6,14 @@ The long-term product direction is a shared memory layer that both agents can re
 
 ## Development Status
 
-`memhub` is in active development and is now mid-Milestone 4 after shipping `M4-001`, `M4-002`, `M4-003`, and `M4-004`.
+`memhub` has completed PRD §16 Milestones 1–4 and the K9 Claude Framework interop slice of Milestone 5 (the memhub-side of K9 `/wrap-up` integration). Milestone 5 K9-repo consumer edits live outside this repo. Milestone 6+ is speculative future work.
 
 Current state:
 
-- Shipped: Milestone 1 foundations, Milestone 2 git ingestion and indexed search, the narrowed Milestone 3 slice covering markdown sync, stdio MCP access, staged proposal writes, and client alias normalization, the Milestone 4 portable export/import recovery path, Milestone 4 missing-DB safety with `memhub init --from-backup <path>` recovery, Milestone 4 `memhub review` flow for promoting or rejecting staged MCP proposals, and Milestone 4 deny-list enforcement that filters sensitive paths out of git ingestion and search
-- Current focus: remaining Milestone 4 work — confidence/staleness handling
-- Implemented now: local SQLite storage, embedded migrations, per-repo config (including a configurable deny list), audit logging, facts/decisions/tasks/commands CRUD, explicit command verification, git ingestion with path-based deny-list filtering, indexed search with deny-list filtering, managed-block sync for `AGENTS.md` / `CLAUDE.md`, `memhub serve` for stdio MCP access, staged MCP fact/decision proposals, MCP `list_pending_writes` read tool, `memhub review list|show|accept|reject|expire` CLI flow, pending-write visibility in status, portable `memhub export` / `memhub import`, missing-DB detection, and `memhub init --from-backup <path>` single-step recovery
-- Not implemented yet: confidence decay and broader search coverage beyond current indexed paths
+- Shipped: Milestone 1 foundations, Milestone 2 git ingestion and indexed search, the narrowed Milestone 3 slice covering markdown sync, stdio MCP access, staged proposal writes, and client alias normalization, all of Milestone 4 (portable `export` / `import`, missing-DB safety with `memhub init --from-backup <path>` recovery, the `memhub review` flow for promoting or rejecting staged MCP proposals, path-based deny-list enforcement, and the fact-staleness + derived command-confidence pass), and the memhub side of Milestone 5 K9 interop (detection + config + status surfacing, the v1 K9 `/wrap-up` contract, and machine-readable `--json` on every read and mutating command K9 needs)
+- Current focus: between numbered tasks; PRD §16 v1 milestones are done
+- Implemented now: local SQLite storage, embedded migrations, per-repo config (including a configurable deny list and K9 integration section), audit logging, facts/decisions/tasks/commands CRUD, explicit command verification, derived command confidence and 90-day fact staleness flag, git ingestion with path-based deny-list filtering, indexed search with deny-list filtering, managed-block sync for `AGENTS.md` / `CLAUDE.md`, `memhub serve` for stdio MCP access, staged MCP fact/decision proposals, MCP `list_pending_writes` read tool, `memhub review list|show|accept|reject|expire` CLI flow with `--json` on `list` / `show` / `accept` / `reject`, pending-write visibility in status, portable `memhub export` / `memhub import`, missing-DB detection, `memhub init --from-backup <path>` single-step recovery, K9 detection on `memhub init`, `memhub integrations status | enable-k9 | disable-k9 | check-k9`, and `--actor` attribution on every K9-targeted mutating command
+- Not implemented yet: continuous confidence decay over time, `memhub.log_session_note` and `memhub stats` PRD surfaces, and broader indexed retrieval beyond current narrow paths
 
 Milestone status:
 
@@ -22,8 +22,9 @@ Milestone status:
 | Milestone 1: DB + CLI | Complete | Core repo bootstrap, schema, CRUD, config, logging |
 | Milestone 2: Git + search | Complete | `ingest-git`, FTS-backed decision search, exact file-history lookups |
 | Milestone 3: MCP + markdown sync | Complete | Markdown sync, stdio MCP reads, verified command recording, staged proposal writes, and client alias normalization are shipped under the current narrowed plan |
-| Milestone 4: Quality | In progress | Portable `export` / `import` shipped (`M4-001`), missing-DB safety with `init --from-backup` recovery shipped (`M4-002`), `memhub review` flow for staged proposals shipped (`M4-003`), and deny-list filtering of git ingestion and search shipped (`M4-004`); confidence/staleness work remains |
-| Milestone 5+ | Planned | Speculative future expansions only after separate validation |
+| Milestone 4: Quality | Complete | Portable `export` / `import` (`M4-001`), missing-DB safety with `init --from-backup` (`M4-002`), `memhub review` flow for staged proposals (`M4-003`), deny-list filtering of git ingestion and search (`M4-004`), and fact staleness + derived command confidence (`M4-005`) |
+| Milestone 5: K9 framework interop | Memhub side complete | K9 detection + config (`M5-001`), v1 wrap-up contract + machine-readable mutating commands (`M5-002`), and `--json` read surfaces on `review list` / `review show` (`M5-003`). K9 repo `/wrap-up.md` consumer edits live outside this repo. |
+| Milestone 6+ | Planned | Speculative future expansions only after separate validation |
 
 ## Why memhub exists
 
@@ -586,7 +587,7 @@ Deferred to Milestone 4:
 
 ### Milestone 4: Quality
 
-Status: In progress
+Status: Complete
 
 Shipped:
 
@@ -604,21 +605,21 @@ Remaining scope:
 
 ### Milestone 5: K9 framework interop
 
-Status: In progress
+Status: Memhub side complete
 
 Shipped:
 
 - K9 detection on `memhub init`; `[integrations.k9]` config section auto-populated when `agent_docs/project_state.md` is present (`M5-001` phase 1)
 - `memhub integrations status | enable-k9 | disable-k9` subcommands for explicit toggling on already-initialized repos (`M5-001` phase 1)
 - Drift detection and surfacing in `memhub status` and the MCP `status` tool (`M5-001` phase 1)
-- v1 K9 wrap-up contract documented at `docs/reference/k9-wrap-up-contract.md` (`M5-002`)
+- v1 K9 wrap-up contract documented at `docs/reference/k9-wrap-up-contract.md` (`M5-002`, additively amended by `M5-003`)
 - `memhub integrations check-k9` exit-code gate for K9 to short-circuit on disabled repos (`M5-002`)
 - `--json` and `--actor` flags on `fact add`, `decision add`, `task add`, `task done`, `review accept`, `review reject` (`M5-002`)
+- `--json` read surfaces on `memhub review list` and `memhub review show` so K9 can fold staged proposals into draft assembly without parsing human-readable output (`M5-003`)
 
-Remaining scope (separate slices):
+Remaining scope (separate slices, outside this repo):
 
-- K9 repo `/wrap-up.md` consumer edits (lives in K9 repo; consumes the v1 contract)
-- `M5-003`: surface `pending_writes` during K9 `/wrap-up` review drafts
+- K9 repo `/wrap-up.md` consumer edits (lives in K9 repo; consumes the v1 contract end-to-end — gate + read + mutate)
 
 ### Milestone 6+
 

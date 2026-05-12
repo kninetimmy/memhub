@@ -2,20 +2,23 @@
 
 ## Current Scaffold
 
-This repository now covers the Milestone 1 foundation, the core Milestone 2 retrieval path, the shipped markdown sync plus narrowed MCP/write-policy slices of Milestone 3, and the Milestone 4 portable export/import recovery path (`M4-001`):
+This repository covers PRD §16 Milestones 1–4 in full, plus the memhub side of Milestone 5 K9 Claude Framework interop:
 
 - Rust CLI scaffold
 - SQLite schema and migrations
-- Config loading and persistence
+- Config loading and persistence (including deny-list and `[integrations.k9]`)
 - Logging and error handling
-- `init`, `status`, `sync-md`, `ingest-git`, `search`, `fact add|list`, `decision add|list`, `task add|list|done`, `command list|verify`
-- Git ingestion into `commits`, `files`, and `commit_files`
-- FTS-backed decision search plus exact indexed file-history lookup
+- `init`, `status`, `sync-md`, `ingest-git`, `search`, `fact add|list`, `decision add|list`, `task add|list|done`, `command list|verify`, `export`, `import`, `review list|show|accept|reject|expire`, `integrations status|enable-k9|disable-k9|check-k9`
+- Git ingestion into `commits`, `files`, and `commit_files` with path-based deny-list filtering
+- FTS-backed decision search plus exact indexed file-history lookup, deny-list filtered
 - Managed-block generation for `AGENTS.md` and `CLAUDE.md`
 - Local stdio MCP server through `memhub serve`
-- Thin MCP tools for status, search, task listing, recent decisions, latest command lookup, explicit verified command recording, and staged fact/decision proposals
-- Audit logging for writes
+- Thin MCP tools for status, search, task listing, recent decisions, latest command lookup, explicit verified command recording, staged fact/decision proposals, and read-only `list_pending_writes`
+- Audit logging for writes with `--actor` attribution on every K9-targeted mutating command
 - Portable version-tagged JSON `memhub export` and `memhub import` with `--force` overwrite, id preservation, FTS rebuild, and `sync-md` after restore
+- Missing-DB safety with `memhub init --from-backup <path>` single-step recovery
+- Derived per-command confidence and 90-day fact staleness flag
+- v1 K9 `/wrap-up` shell-out contract with `--json` on every read and mutating command K9 needs
 
 ## Milestone 2: Git + Search
 
@@ -23,25 +26,32 @@ This repository now covers the Milestone 1 foundation, the core Milestone 2 retr
 - Add FTS-backed text chunks
 - Add a rule-based search path from the CLI
 - Add query-plan-aware tests for hot queries
-- Status: core complete in the current codebase
+- Status: complete
 
 ## Milestone 3: MCP + Markdown Sync
 
 - Add an MCP server with thin wrappers over read/write services
 - Add explicit markdown managed-block sync for `AGENTS.md` and `CLAUDE.md`
 - Start enforcing write-back policy boundaries for agent-originated data
-- Status: core complete in the current codebase under the narrowed repo plan, with staged proposal writes and client alias normalization shipped; review/promotion flow remains deferred to Milestone 4
+- Status: complete under the narrowed repo plan; staged proposal writes, client alias normalization, and the `memhub review` promotion flow all shipped (the latter in Milestone 4)
 
 ## Milestone 4: Trust and Maintenance
 
-- Add portable export/import as the supported repo backup and restore path - shipped in `M4-001`
-- Add readable README backup/restore instructions - shipped with `M4-001`
-- Add missing-DB safety handling so an existing `.memhub/` without `project.sqlite` is treated as a recovery case
-- Add follow-on restore UX around `init` or adjacent commands after export/import is stable
-- Add review queue flows
-- Add confidence scoring and stale data handling
-- Add deny-list enforcement for sensitive paths and patterns
+- Portable export/import as the supported repo backup and restore path - shipped in `M4-001`
+- Readable README backup/restore instructions - shipped with `M4-001`
+- Missing-DB safety handling and `memhub init --from-backup <path>` single-step recovery - shipped in `M4-002`
+- Review queue flows (`memhub review list|show|accept|reject|expire` plus MCP `list_pending_writes`) - shipped in `M4-003`
+- Path-based deny-list enforcement for sensitive files - shipped in `M4-004`
+- Confidence scoring and stale data handling (derived command confidence, 90-day fact staleness flag) - shipped in `M4-005`
+- Status: complete
 
-## Milestone 5+
+## Milestone 5: K9 Claude Framework Interop
 
-Beyond Milestone 4 is speculative until a mini-PRD exists per feature. The first scoped M5 candidate is K9 Claude Framework integration (see `docs/roadmap/k9-integration.md`). Other speculative areas: embeddings, desktop UI, file watchers, richer global DB behavior, and network-backed ingestion.
+- K9 detection on `memhub init`, plus `memhub integrations status|enable-k9|disable-k9` - shipped in `M5-001`
+- v1 K9 `/wrap-up` contract with `memhub integrations check-k9` gate, plus `--json` / `--actor` on every mutating command K9 needs - shipped in `M5-002`
+- `--json` read surfaces on `memhub review list` and `memhub review show` - shipped in `M5-003`
+- Status: memhub side complete. The K9-repo `/wrap-up.md` consumer edit that calls into the v1 contract end-to-end lives outside this repo.
+
+## Milestone 6+
+
+Speculative until a mini-PRD exists per feature: continuous confidence decay, `memhub.log_session_note` MCP tool, `memhub stats` success-metric command, broader indexed retrieval over facts / tasks / command history, embeddings, desktop UI, file watchers, richer global DB behavior, and network-backed ingestion.
