@@ -43,4 +43,4 @@ This repository now covers the Milestone 1 foundation, the core Milestone 2 retr
 
 ## Milestone 5+
 
-Treat everything beyond Milestone 4 as speculative until a new mini-PRD exists. That includes embeddings, desktop UI, file watchers, richer global DB behavior, and network-backed ingestion.
+Beyond Milestone 4 is speculative until a mini-PRD exists per feature. The first scoped M5 candidate is K9 Claude Framework integration (see `docs/roadmap/k9-integration.md`). Other speculative areas: embeddings, desktop UI, file watchers, richer global DB behavior, and network-backed ingestion.

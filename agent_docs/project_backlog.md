@@ -51,3 +51,8 @@ Each item should capture scope, affected files, status, and explicit deferrals.
   Status: triaged
   Scope: `src/db/`, `src/commands/`, `src/cli/`, README, tests
   Notes: If `.memhub/` exists but `project.sqlite` is missing, fail as an explicit recovery case instead of silently creating a fresh database. After `M4-001`, add the narrowest convenience UX around restore entry points without making plain `memhub init` depend on prompts. Ship README backup/restore instructions with this slice.
+
+- `M5-001` - K9 Claude Framework integration: optional DB writes from `/wrap-up`.
+  Status: triaged
+  Scope: `docs/roadmap/k9-integration.md`, install scripts, `src/cli/init`, `src/config/`, K9 repo `/wrap-up.md`
+  Notes: Deferred until `M4-001` and `M4-002` complete. Full design in `docs/roadmap/k9-integration.md`. Key requirements: memhub install must detect K9 and configure accordingly without modifying K9 files; K9 `/wrap-up` shells out to existing memhub CLI commands after human approval; no bidirectional sync; standalone modes for both systems remain fully supported.
