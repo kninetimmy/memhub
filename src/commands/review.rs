@@ -83,7 +83,7 @@ pub struct AcceptOutcome {
     pub durable_table: &'static str,
 }
 
-pub fn accept(start: &Path, id: i64) -> Result<AcceptOutcome> {
+pub fn accept(start: &Path, id: i64, actor: &str) -> Result<AcceptOutcome> {
     let pending = load_pending(start, id)?;
     if pending.status != "pending" {
         return Err(MemhubError::InvalidInput(format!(
@@ -108,7 +108,7 @@ pub fn accept(start: &Path, id: i64) -> Result<AcceptOutcome> {
                 .get("value")
                 .and_then(Value::as_str)
                 .ok_or_else(|| missing_payload_field(id, "value"))?;
-            let (fact_id, _) = fact::add(start, key, value, "user")?;
+            let (fact_id, _) = fact::add(start, key, value, "user", actor)?;
             (fact_id, "facts")
         }
         "decision" => {
@@ -116,7 +116,7 @@ pub fn accept(start: &Path, id: i64) -> Result<AcceptOutcome> {
                 .get("title")
                 .and_then(Value::as_str)
                 .ok_or_else(|| missing_payload_field(id, "title"))?;
-            let decision_id = decision::add(start, title, &pending.rationale)?;
+            let decision_id = decision::add(start, title, &pending.rationale, actor)?;
             (decision_id, "decisions")
         }
         other => {
@@ -126,7 +126,13 @@ pub fn accept(start: &Path, id: i64) -> Result<AcceptOutcome> {
         }
     };
 
-    mark_status(start, id, "accepted", &format!("accept pending_write:{id}"))?;
+    mark_status(
+        start,
+        id,
+        "accepted",
+        &format!("accept pending_write:{id}"),
+        actor,
+    )?;
 
     Ok(AcceptOutcome {
         pending_id: id,
@@ -136,7 +142,7 @@ pub fn accept(start: &Path, id: i64) -> Result<AcceptOutcome> {
     })
 }
 
-pub fn reject(start: &Path, id: i64, reason: Option<&str>) -> Result<()> {
+pub fn reject(start: &Path, id: i64, reason: Option<&str>, actor: &str) -> Result<()> {
     let pending = load_pending(start, id)?;
     if pending.status != "pending" {
         return Err(MemhubError::InvalidInput(format!(
@@ -152,7 +158,7 @@ pub fn reject(start: &Path, id: i64, reason: Option<&str>) -> Result<()> {
         _ => format!("reject pending_write:{id}"),
     };
 
-    mark_status(start, id, "rejected", &log_reason)?;
+    mark_status(start, id, "rejected", &log_reason, actor)?;
     Ok(())
 }
 
@@ -197,7 +203,7 @@ fn load_pending(start: &Path, id: i64) -> Result<PendingWriteRecord> {
     show(start, id)
 }
 
-fn mark_status(start: &Path, id: i64, new_status: &str, reason: &str) -> Result<()> {
+fn mark_status(start: &Path, id: i64, new_status: &str, reason: &str, actor: &str) -> Result<()> {
     let mut ctx = db::open_project(start)?;
     let tx = ctx.conn.transaction()?;
 
@@ -214,14 +220,7 @@ fn mark_status(start: &Path, id: i64, new_status: &str, reason: &str) -> Result<
         )));
     }
 
-    db::log_write(
-        &tx,
-        "cli:user",
-        "pending_writes",
-        Some(id),
-        "update",
-        reason,
-    )?;
+    db::log_write(&tx, actor, "pending_writes", Some(id), "update", reason)?;
 
     tx.commit()?;
     Ok(())

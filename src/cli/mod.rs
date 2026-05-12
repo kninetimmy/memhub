@@ -1,10 +1,23 @@
 use std::path::PathBuf;
+use std::process;
 
 use clap::{Parser, Subcommand, ValueEnum};
+use serde_json::json;
 
 use crate::Result;
 use crate::commands;
+use crate::commands::{DEFAULT_ACTOR, validate_actor};
 use crate::models::InitResult;
+
+fn resolve_actor(actor: Option<&str>) -> Result<String> {
+    match actor {
+        Some(value) => {
+            validate_actor(value)?;
+            Ok(value.trim().to_string())
+        }
+        None => Ok(DEFAULT_ACTOR.to_string()),
+    }
+}
 
 fn print_init_result(result: &InitResult) {
     println!("Initialized memhub at {}", result.repo_root.display());
@@ -112,6 +125,7 @@ pub enum IntegrationsCommand {
         force: bool,
     },
     DisableK9,
+    CheckK9,
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -148,11 +162,19 @@ pub enum ReviewCommand {
     },
     Accept {
         id: i64,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        actor: Option<String>,
     },
     Reject {
         id: i64,
         #[arg(long)]
         reason: Option<String>,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        actor: Option<String>,
     },
     Expire {
         #[arg(long, default_value_t = 30)]
@@ -167,6 +189,10 @@ pub enum FactCommand {
         value: String,
         #[arg(long, default_value = "user")]
         source: String,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        actor: Option<String>,
     },
     List,
 }
@@ -177,6 +203,10 @@ pub enum DecisionCommand {
         title: String,
         #[arg(long)]
         rationale: String,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        actor: Option<String>,
     },
     List,
 }
@@ -206,6 +236,10 @@ pub enum TaskCommand {
         title: String,
         #[arg(long)]
         notes: Option<String>,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        actor: Option<String>,
     },
     List {
         #[arg(long, value_enum)]
@@ -213,6 +247,10 @@ pub enum TaskCommand {
     },
     Done {
         id: i64,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        actor: Option<String>,
     },
 }
 
@@ -381,12 +419,30 @@ pub fn run(cli: Cli) -> Result<()> {
             }
         }
         TopLevelCommand::Fact { command } => match command {
-            FactCommand::Add { key, value, source } => {
-                let (id, created) = commands::fact::add(&cwd, &key, &value, &source)?;
-                println!(
-                    "{} fact {id}: {key}",
-                    if created { "Created" } else { "Updated" }
-                );
+            FactCommand::Add {
+                key,
+                value,
+                source,
+                json: as_json,
+                actor,
+            } => {
+                let actor = resolve_actor(actor.as_deref())?;
+                let (id, created) = commands::fact::add(&cwd, &key, &value, &source, &actor)?;
+                if as_json {
+                    let payload = json!({
+                        "id": id,
+                        "key": key,
+                        "value": value,
+                        "source": source,
+                        "created": created,
+                    });
+                    println!("{payload}");
+                } else {
+                    println!(
+                        "{} fact {id}: {key}",
+                        if created { "Created" } else { "Updated" }
+                    );
+                }
             }
             FactCommand::List => {
                 let facts = commands::fact::list(&cwd)?;
@@ -412,9 +468,23 @@ pub fn run(cli: Cli) -> Result<()> {
             }
         },
         TopLevelCommand::Decision { command } => match command {
-            DecisionCommand::Add { title, rationale } => {
-                let id = commands::decision::add(&cwd, &title, &rationale)?;
-                println!("Created decision {id}: {title}");
+            DecisionCommand::Add {
+                title,
+                rationale,
+                json: as_json,
+                actor,
+            } => {
+                let actor = resolve_actor(actor.as_deref())?;
+                let id = commands::decision::add(&cwd, &title, &rationale, &actor)?;
+                if as_json {
+                    let payload = json!({
+                        "id": id,
+                        "title": title,
+                    });
+                    println!("{payload}");
+                } else {
+                    println!("Created decision {id}: {title}");
+                }
             }
             DecisionCommand::List => {
                 let decisions = commands::decision::list(&cwd)?;
@@ -435,9 +505,23 @@ pub fn run(cli: Cli) -> Result<()> {
             }
         },
         TopLevelCommand::Task { command } => match command {
-            TaskCommand::Add { title, notes } => {
-                let id = commands::task::add(&cwd, &title, notes.as_deref())?;
-                println!("Created task {id}: {title}");
+            TaskCommand::Add {
+                title,
+                notes,
+                json: as_json,
+                actor,
+            } => {
+                let actor = resolve_actor(actor.as_deref())?;
+                let id = commands::task::add(&cwd, &title, notes.as_deref(), &actor)?;
+                if as_json {
+                    let payload = json!({
+                        "id": id,
+                        "title": title,
+                    });
+                    println!("{payload}");
+                } else {
+                    println!("Created task {id}: {title}");
+                }
             }
             TaskCommand::List { status } => {
                 let tasks = commands::task::list(&cwd, status.as_ref().map(TaskStatus::as_str))?;
@@ -458,9 +542,22 @@ pub fn run(cli: Cli) -> Result<()> {
                     }
                 }
             }
-            TaskCommand::Done { id } => {
-                commands::task::done(&cwd, id)?;
-                println!("Marked task {id} as done.");
+            TaskCommand::Done {
+                id,
+                json: as_json,
+                actor,
+            } => {
+                let actor = resolve_actor(actor.as_deref())?;
+                commands::task::done(&cwd, id, &actor)?;
+                if as_json {
+                    let payload = json!({
+                        "id": id,
+                        "status": "done",
+                    });
+                    println!("{payload}");
+                } else {
+                    println!("Marked task {id} as done.");
+                }
             }
         },
         TopLevelCommand::Export { path } => {
@@ -581,16 +678,44 @@ pub fn run(cli: Cli) -> Result<()> {
                 println!("Payload: {}", row.payload_json);
                 println!("Provenance: {}", row.provenance_json);
             }
-            ReviewCommand::Accept { id } => {
-                let outcome = commands::review::accept(&cwd, id)?;
-                println!(
-                    "Accepted pending write {} ({}) -> {} row {}",
-                    outcome.pending_id, outcome.kind, outcome.durable_table, outcome.durable_id
-                );
+            ReviewCommand::Accept {
+                id,
+                json: as_json,
+                actor,
+            } => {
+                let actor = resolve_actor(actor.as_deref())?;
+                let outcome = commands::review::accept(&cwd, id, &actor)?;
+                if as_json {
+                    let payload = json!({
+                        "pending_id": outcome.pending_id,
+                        "kind": outcome.kind,
+                        "durable_table": outcome.durable_table,
+                        "durable_id": outcome.durable_id,
+                    });
+                    println!("{payload}");
+                } else {
+                    println!(
+                        "Accepted pending write {} ({}) -> {} row {}",
+                        outcome.pending_id, outcome.kind, outcome.durable_table, outcome.durable_id
+                    );
+                }
             }
-            ReviewCommand::Reject { id, reason } => {
-                commands::review::reject(&cwd, id, reason.as_deref())?;
-                println!("Rejected pending write {id}");
+            ReviewCommand::Reject {
+                id,
+                reason,
+                json: as_json,
+                actor,
+            } => {
+                let actor = resolve_actor(actor.as_deref())?;
+                commands::review::reject(&cwd, id, reason.as_deref(), &actor)?;
+                if as_json {
+                    let payload = json!({
+                        "pending_id": id,
+                    });
+                    println!("{payload}");
+                } else {
+                    println!("Rejected pending write {id}");
+                }
             }
             ReviewCommand::Expire { older_than_days } => {
                 let summary = commands::review::expire(&cwd, older_than_days)?;
@@ -623,6 +748,10 @@ pub fn run(cli: Cli) -> Result<()> {
             IntegrationsCommand::DisableK9 => {
                 commands::integrations::disable_k9(&cwd)?;
                 println!("K9 integration disabled.");
+            }
+            IntegrationsCommand::CheckK9 => {
+                let enabled = commands::integrations::check_k9(&cwd);
+                process::exit(if enabled { 0 } else { 1 });
             }
         },
     }

@@ -4,32 +4,60 @@ Last updated: 2026-05-12
 
 ## Currently building
 
-Between tasks after `M5-001` phase 1. K9 detection and integration
-config landed in this repo. `memhub init` now detects the K9 four-file
-framework by probing `<agent_docs_path>/project_state.md` (defaults to
-`agent_docs`) and, when the config is freshly created, writes a
-`[integrations.k9]` section with `enabled = true` into
-`.memhub/config.toml`. Existing configs are never modified. A new
-`memhub integrations status | enable-k9 | disable-k9` subcommand
-provides explicit toggling. Drift between config and filesystem is
-surfaced in `memhub status` (and the MCP `status` tool) as a `note:`
-line but never auto-corrected. No K9 repo edits in this slice — the
-`/wrap-up` shell-out is `M5-002`, and surfacing `pending_writes` during
-wrap-up review is `M5-003`.
+Between tasks after `M5-002`. The memhub-side half of the K9 wrap-up
+integration shipped: a stable v1 contract document at
+`docs/reference/k9-wrap-up-contract.md`, plus the supporting CLI
+affordances K9 needs to consume it. `memhub integrations check-k9`
+provides a zero-stdout exit-code gate (0 = enabled, 1 = not). All
+mutating commands the K9 wrap-up touches (`fact add`, `decision add`,
+`task add`, `task done`, `review accept`, `review reject`) now accept
+`--json` (single JSON object on stdout, schema locked by the contract
+doc) and `--actor <name>` (free-form, defaults to `cli:user`, max 64
+chars, non-empty). The actor flag is threaded all the way down to
+`writes_log`, including through `review accept`'s delegated calls into
+`fact::add` / `decision::add`. No K9 repo edits in this slice — those
+land as a separate change in the K9 repository, consuming the v1
+contract verbatim.
 
 ## Next up
 
-1. Plan `M5-002`: K9 repo `/wrap-up.md` post-approval shell-out into
-   `memhub decision add` / `memhub task add` / `memhub fact add`.
-   Needs a stable contract doc (`docs/reference/k9-wrap-up-contract.md`)
-   describing the CLI invocations and exit-code semantics.
-2. Plan `M5-003`: surfacing `pending_writes` during K9 `/wrap-up`
-   review drafts via the existing `memhub review list` / MCP
-   `list_pending_writes` paths.
+1. Plan `M5-003`: surfacing `pending_writes` during K9 `/wrap-up`
+   review drafts. The memhub side already exposes `memhub review list`
+   and MCP `list_pending_writes`; the slice is mostly about whether
+   the contract doc needs additions or whether existing surfaces are
+   sufficient.
+2. Coordinate the K9 repo `/wrap-up.md` consumer change with whoever
+   owns the K9 repo. The v1 contract document gives them everything
+   they need; their slice is mechanical.
 3. Decide whether MCP needs broader indexed retrieval over facts,
    tasks, or command history beyond the current narrow paths.
 
 ## Last session
+
+2026-05-12 - Completed `M5-002`. Shipped
+`docs/reference/k9-wrap-up-contract.md` (v1 contract: sequencing,
+gating with `check-k9`, JSON schemas per mutating command, actor
+convention, exit codes, audit-trail query, explicit non-goals). Added
+`memhub integrations check-k9` subcommand returning 0/1 with empty
+stdout, gracefully handling missing `.memhub/` via silent exit 1.
+Threaded a new `actor: &str` parameter through `fact::add`,
+`decision::add`, `task::add`, `task::done`, `review::accept`,
+`review::reject`, and `review::mark_status` (plus the internal
+`fact::add` / `decision::add` calls from inside `review::accept` so
+the actor propagates to durable writes). Added a `commands::DEFAULT_ACTOR`
+constant (`cli:user`), `commands::MAX_ACTOR_LEN` (64), and
+`commands::validate_actor` helper. CLI gained `--json` and `--actor`
+flags on the six mutating commands; JSON output is rendered via
+`serde_json::json!` and replaces the human-readable line when set.
+Updated every existing internal and test caller (about 25 sites) to
+pass `"cli:user"` explicitly. Added 11 integration tests in
+`tests/k9_contract.rs` that exercise the actual CLI binary as a
+subprocess — verifying JSON shape per command, `--actor` flowing to
+`writes_log`, actor validation (empty / >64 chars), and `check-k9`
+exit codes across all four states (enabled, missing section,
+disabled, not initialized). README gained a "K9 `/wrap-up` shell-out
+contract" subsection. Verified with `cargo fmt`, `cargo build`, and
+`cargo test` (99 tests across all suites).
 
 2026-05-12 - Completed `M5-001` phase 1 (K9 detection + config +
 status surfacing). Added `src/config/integrations.rs` with
@@ -67,21 +95,13 @@ with a "Confidence and staleness" section and marked Milestone 4
 complete in the roadmap. Verified with `cargo fmt`, `cargo build`, and
 `cargo test` (70 tests across all suites).
 
-2026-05-12 - Completed `M4-004` by adding the `globset` crate, a new
-`src/config/deny.rs` module with `DenyList`/`PathMatcher`/`default_patterns`,
-ingest-git skip logic with `denied_files_skipped` reporting,
-search-side post-filtering for both prefixed and inferred file lookups,
-and a `deny_patterns` count in `memhub status` and the MCP `status`
-tool. Added 5 integration tests in `tests/deny_list.rs` plus 4 unit
-tests in `src/config/deny.rs`. Updated README with a "Deny list"
-section. Verified with `cargo fmt`, `cargo build`, and `cargo test`
-(59 tests across all suites).
-
 ## Open questions
 
-- Should `M5-002` ship as a memhub-side contract doc first
-  (`docs/reference/k9-wrap-up-contract.md`) and let the K9 repo land
-  the consumer changes asynchronously, or should both land together?
+- Should the v1 contract grow a `memhub review list --json` surface
+  for K9 to consume during draft assembly (`M5-003`), or is the
+  existing MCP `list_pending_writes` the right path?
+- Should `MEMHUB_ACTOR` env var be added as an alternative to the
+  `--actor` flag for K9 invocations that fan out to many CLI calls?
 - Should `enable-k9 --agent-docs-path` accept any path and create the
   marker file as part of an explicit "set up K9 here" flow, or stay
   read-only as it is today?

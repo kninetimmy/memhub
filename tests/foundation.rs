@@ -39,21 +39,33 @@ fn core_records_are_persisted_and_status_counts_change() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init succeeds");
 
-    let (_fact_id, created) =
-        fact::add(temp.path(), "build-command", "cargo build", "user").expect("fact add");
+    let (_fact_id, created) = fact::add(
+        temp.path(),
+        "build-command",
+        "cargo build",
+        "user",
+        "cli:user",
+    )
+    .expect("fact add");
     assert!(created);
 
     let decision_id = decision::add(
         temp.path(),
         "Use rusqlite bundled mode",
         "Avoid system SQLite setup friction.",
+        "cli:user",
     )
     .expect("decision add");
     assert!(decision_id > 0);
 
-    let task_id =
-        task::add(temp.path(), "Implement MCP server", Some("Milestone 3")).expect("task add");
-    task::done(temp.path(), task_id).expect("task done");
+    let task_id = task::add(
+        temp.path(),
+        "Implement MCP server",
+        Some("Milestone 3"),
+        "cli:user",
+    )
+    .expect("task add");
+    task::done(temp.path(), task_id, "cli:user").expect("task done");
 
     let facts = fact::list(temp.path()).expect("fact list");
     let decisions = decision::list(temp.path()).expect("decision list");

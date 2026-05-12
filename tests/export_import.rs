@@ -8,17 +8,24 @@ use tempfile::tempdir;
 fn seed_project(path: &std::path::Path) {
     init::run(path).expect("init succeeds");
 
-    fact::add(path, "build-command", "cargo build", "user").expect("fact add");
-    fact::add(path, "test-command", "cargo test", "user").expect("fact add");
+    fact::add(path, "build-command", "cargo build", "user", "cli:user").expect("fact add");
+    fact::add(path, "test-command", "cargo test", "user", "cli:user").expect("fact add");
 
     decision::add(
         path,
         "Use rusqlite bundled mode",
         "Avoid system SQLite friction.",
+        "cli:user",
     )
     .expect("decision add");
 
-    task::add(path, "Wire export command", Some("Phase A of M4-001")).expect("task add");
+    task::add(
+        path,
+        "Wire export command",
+        Some("Phase A of M4-001"),
+        "cli:user",
+    )
+    .expect("task add");
 }
 
 #[test]
@@ -183,7 +190,7 @@ fn import_refuses_to_overwrite_existing_data_without_force() {
 
     let target = tempdir().expect("target tempdir");
     init::run(target.path()).expect("target init succeeds");
-    fact::add(target.path(), "preexisting", "value", "user").expect("seed target fact");
+    fact::add(target.path(), "preexisting", "value", "user", "cli:user").expect("seed target fact");
 
     let result = import::run(target.path(), &export_path, false);
     assert!(result.is_err(), "import without force should refuse");
@@ -203,8 +210,8 @@ fn import_with_force_overwrites_existing_data() {
 
     let target = tempdir().expect("target tempdir");
     init::run(target.path()).expect("target init succeeds");
-    fact::add(target.path(), "preexisting", "value", "user").expect("seed target fact");
-    task::add(target.path(), "target-task", None).expect("seed target task");
+    fact::add(target.path(), "preexisting", "value", "user", "cli:user").expect("seed target fact");
+    task::add(target.path(), "target-task", None, "cli:user").expect("seed target task");
 
     let summary = import::run(target.path(), &export_path, true).expect("forced import succeeds");
     assert!(summary.forced);
@@ -258,10 +265,20 @@ fn import_rejects_unsupported_export_version() {
 fn import_preserves_decision_ids_and_supersession_chain() {
     let source = tempdir().expect("source tempdir");
     init::run(source.path()).expect("source init succeeds");
-    let first_id =
-        decision::add(source.path(), "Pick library A", "Initial choice").expect("first decision");
-    let second_id = decision::add(source.path(), "Pick library B", "Library A had bugs")
-        .expect("second decision");
+    let first_id = decision::add(
+        source.path(),
+        "Pick library A",
+        "Initial choice",
+        "cli:user",
+    )
+    .expect("first decision");
+    let second_id = decision::add(
+        source.path(),
+        "Pick library B",
+        "Library A had bugs",
+        "cli:user",
+    )
+    .expect("second decision");
 
     let ctx = memhub::db::open_project(source.path()).expect("open source");
     ctx.conn
@@ -307,6 +324,7 @@ fn import_regenerates_decision_chunks_for_fts_search() {
         source.path(),
         "Adopt the kraken pattern",
         "Sea creatures organize concurrent workloads cleanly.",
+        "cli:user",
     )
     .expect("decision add");
 
@@ -446,7 +464,7 @@ fn init_from_backup_refuses_when_db_already_exists() {
 
     let target = tempdir().expect("target tempdir");
     init::run(target.path()).expect("target init succeeds");
-    fact::add(target.path(), "preexisting", "value", "user").expect("seed fact");
+    fact::add(target.path(), "preexisting", "value", "user", "cli:user").expect("seed fact");
 
     let result = init::run_with_backup(target.path(), &export_path);
     match result {

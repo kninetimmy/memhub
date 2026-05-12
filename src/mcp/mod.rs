@@ -808,9 +808,16 @@ mod tests {
             temp.path(),
             "Use indexed MCP lookups",
             "Keep reads predictable.",
+            "cli:user",
         )
         .expect("decision");
-        task::add(temp.path(), "Ship MCP server", Some("Milestone 3")).expect("task");
+        task::add(
+            temp.path(),
+            "Ship MCP server",
+            Some("Milestone 3"),
+            "cli:user",
+        )
+        .expect("task");
         command::verify(temp.path(), "build", "cargo build", 0).expect("command");
 
         let server = MemhubServer::new(temp.path().to_path_buf());

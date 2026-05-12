@@ -123,6 +123,18 @@ pub(crate) fn k9_state(repo_root: &Path, integrations: &IntegrationsConfig) -> K
     }
 }
 
+pub fn check_k9(start: &Path) -> bool {
+    let Ok(ctx) = db::open_project(start) else {
+        return false;
+    };
+    ctx.config
+        .integrations
+        .k9
+        .as_ref()
+        .map(|cfg| cfg.enabled)
+        .unwrap_or(false)
+}
+
 pub fn apply_k9_detection_on_init(repo_root: &Path, config: &mut ProjectConfig) -> bool {
     let path = config
         .integrations

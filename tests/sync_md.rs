@@ -40,11 +40,18 @@ fn sync_md_renders_db_state_and_creates_backups_for_existing_files() {
 
     command::verify(temp.path(), "build", "cargo build", 0).expect("build command");
     command::verify(temp.path(), "test", "cargo test", 0).expect("test command");
-    task::add(temp.path(), "Implement markdown sync", Some("Milestone 3")).expect("task add");
+    task::add(
+        temp.path(),
+        "Implement markdown sync",
+        Some("Milestone 3"),
+        "cli:user",
+    )
+    .expect("task add");
     decision::add(
         temp.path(),
         "Managed block lives at the bottom",
         "Keep hand-authored instructions visible first.",
+        "cli:user",
     )
     .expect("decision add");
     fact::add(
@@ -52,6 +59,7 @@ fn sync_md_renders_db_state_and_creates_backups_for_existing_files() {
         "quirk.windows-toolchain",
         "Windows builds require the MSVC toolchain.",
         "user",
+        "cli:user",
     )
     .expect("fact add");
 
@@ -118,6 +126,7 @@ fn sync_md_rejects_invalid_markers_without_writing_any_files() {
         temp.path(),
         "Marker validation should fail closed",
         "Never rewrite malformed managed blocks.",
+        "cli:user",
     )
     .expect("decision add");
 
@@ -150,6 +159,7 @@ fn sync_md_preserves_manual_content_outside_managed_block() {
         temp.path(),
         "Preserve manual content around sync blocks",
         "Only the managed section should change.",
+        "cli:user",
     )
     .expect("decision add");
 
@@ -175,6 +185,7 @@ fn auto_sync_md_updates_markdown_after_writes() {
         temp.path(),
         "Use explicit markdown sync markers",
         "Only rewrite the managed section.",
+        "cli:user",
     )
     .expect("decision add");
 

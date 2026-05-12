@@ -7,7 +7,7 @@ use crate::db;
 use crate::models::{FACT_STALE_AFTER_DAYS, Fact};
 use crate::sync_md;
 
-pub fn add(start: &Path, key: &str, value: &str, source: &str) -> Result<(i64, bool)> {
+pub fn add(start: &Path, key: &str, value: &str, source: &str, actor: &str) -> Result<(i64, bool)> {
     let mut ctx = db::open_project(start)?;
     let tx = ctx.conn.transaction()?;
 
@@ -38,7 +38,7 @@ pub fn add(start: &Path, key: &str, value: &str, source: &str) -> Result<(i64, b
 
     db::log_write(
         &tx,
-        "cli:user",
+        actor,
         "facts",
         Some(row_id),
         if created { "insert" } else { "update" },

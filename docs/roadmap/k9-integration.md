@@ -1,7 +1,10 @@
 # K9 Claude Framework Integration
 
-Status: phase 1 (detection + config + status surfacing) shipped as
-`M5-001`. Phases 2 and 3 remain triaged as `M5-002` and `M5-003`.
+Status: phases 1 (`M5-001`) and 2 memhub-side (`M5-002`) shipped. The
+v1 wrap-up contract lives at
+[`docs/reference/k9-wrap-up-contract.md`](../reference/k9-wrap-up-contract.md).
+The K9-repo consumer edit for phase 2 and phase 3
+(`pending_writes` surfacing during wrap-up, `M5-003`) remain triaged.
 
 ## Goal
 
@@ -97,10 +100,12 @@ time rather than parsing Markdown after the fact.
    `M5-001`.**
 2. **`/wrap-up` post-approval hook** — K9 repo's `/wrap-up.md` gains an
    optional final step that shells out to memhub when `.memhub/` exists
-   and `[integrations.k9].enabled = true`. Triaged as `M5-002`. Lives
-   mostly in the K9 repo; memhub side will ship a
-   `docs/reference/k9-wrap-up-contract.md` describing CLI invocations
-   and exit-code semantics.
+   and `[integrations.k9].enabled = true`. **Memhub side shipped as
+   `M5-002`**: v1 contract at `docs/reference/k9-wrap-up-contract.md`,
+   `memhub integrations check-k9` exit-code gate, `--json` / `--actor`
+   flags on every mutating command K9 needs. The K9 repo consumer edit
+   that actually calls those commands lives outside this repo and
+   remains a separate landing.
 3. **Pending-write promotion** — `/wrap-up` reads `pending_writes` (via
    `memhub review list` or MCP `list_pending_writes`) and surfaces them
    for inclusion in wrap-up drafts. Triaged as `M5-003`. Lives entirely

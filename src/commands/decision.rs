@@ -8,7 +8,7 @@ use crate::db;
 use crate::models::Decision;
 use crate::sync_md;
 
-pub fn add(start: &Path, title: &str, rationale: &str) -> Result<i64> {
+pub fn add(start: &Path, title: &str, rationale: &str, actor: &str) -> Result<i64> {
     let mut ctx = db::open_project(start)?;
     let tx = ctx.conn.transaction()?;
 
@@ -22,7 +22,7 @@ pub fn add(start: &Path, title: &str, rationale: &str) -> Result<i64> {
 
     db::log_write(
         &tx,
-        "cli:user",
+        actor,
         "decisions",
         Some(row_id),
         "insert",

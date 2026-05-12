@@ -40,7 +40,7 @@ fn review_list_defaults_to_pending_and_filters_by_status() {
         "Observed in repo.",
     );
     let to_reject = stage_fact(temp.path(), "lint-command", "cargo fmt", "Maybe wrong.");
-    review::reject(temp.path(), to_reject, Some("Wrong source")).expect("reject");
+    review::reject(temp.path(), to_reject, Some("Wrong source"), "cli:user").expect("reject");
 
     let pending = review::list(temp.path(), Some("pending"), 25).expect("list pending");
     let rejected = review::list(temp.path(), Some("rejected"), 25).expect("list rejected");
@@ -99,7 +99,7 @@ fn review_accept_promotes_fact_and_marks_pending_accepted() {
         "Observed across recent sessions.",
     );
 
-    let outcome = review::accept(temp.path(), pending_id).expect("accept");
+    let outcome = review::accept(temp.path(), pending_id, "cli:user").expect("accept");
     assert_eq!(outcome.kind, "fact");
     assert_eq!(outcome.durable_table, "facts");
     assert!(outcome.durable_id > 0);
@@ -131,7 +131,7 @@ fn review_accept_promotes_decision_and_indexes_fts() {
         "Sea creatures organize concurrent workloads cleanly.",
     );
 
-    let outcome = review::accept(temp.path(), pending_id).expect("accept decision");
+    let outcome = review::accept(temp.path(), pending_id, "cli:user").expect("accept decision");
     assert_eq!(outcome.kind, "decision");
     assert_eq!(outcome.durable_table, "decisions");
 
@@ -158,9 +158,9 @@ fn review_accept_errors_on_non_pending_row() {
         "cargo test",
         "Should be reviewed.",
     );
-    review::accept(temp.path(), pending_id).expect("first accept");
+    review::accept(temp.path(), pending_id, "cli:user").expect("first accept");
 
-    match review::accept(temp.path(), pending_id) {
+    match review::accept(temp.path(), pending_id, "cli:user") {
         Err(MemhubError::InvalidInput(message)) => {
             assert!(message.contains("already accepted"));
         }
@@ -174,7 +174,13 @@ fn review_reject_records_reason_in_writes_log() {
     init::run(temp.path()).expect("init");
 
     let pending_id = stage_fact(temp.path(), "deploy-command", "./deploy.sh", "Looks risky.");
-    review::reject(temp.path(), pending_id, Some("Untrusted source")).expect("reject");
+    review::reject(
+        temp.path(),
+        pending_id,
+        Some("Untrusted source"),
+        "cli:user",
+    )
+    .expect("reject");
 
     let pending = review::show(temp.path(), pending_id).expect("show");
     assert_eq!(pending.status, "rejected");

@@ -12,3 +12,23 @@ pub mod search;
 pub mod status;
 pub mod sync_md;
 pub mod task;
+
+use crate::{MemhubError, Result};
+
+pub const DEFAULT_ACTOR: &str = "cli:user";
+pub const MAX_ACTOR_LEN: usize = 64;
+
+pub fn validate_actor(actor: &str) -> Result<()> {
+    let trimmed = actor.trim();
+    if trimmed.is_empty() {
+        return Err(MemhubError::InvalidInput(
+            "--actor cannot be empty".to_string(),
+        ));
+    }
+    if trimmed.len() > MAX_ACTOR_LEN {
+        return Err(MemhubError::InvalidInput(format!(
+            "--actor must be {MAX_ACTOR_LEN} characters or fewer"
+        )));
+    }
+    Ok(())
+}

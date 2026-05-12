@@ -357,11 +357,45 @@ The MCP `status` tool exposes the same booleans (`k9_detected`,
 condition behavior on the integration state without a separate
 endpoint.
 
-This slice covers detection and config only. The K9 `/wrap-up`
-post-approval shell-out into `memhub` (and surfacing of `pending_writes`
-during wrap-up) ships as a follow-on slice once the K9 repo is updated
-to call the existing `memhub decision add` / `memhub task add` /
-`memhub fact add` commands.
+### K9 `/wrap-up` shell-out contract
+
+`memhub` ships a stable v1 CLI contract that K9 `/wrap-up` shells out
+to after the human-approval gate. The full contract — gating
+semantics, JSON output schemas, actor convention, exit codes — lives
+in [`docs/reference/k9-wrap-up-contract.md`](docs/reference/k9-wrap-up-contract.md).
+
+Quick reference for the supporting affordances `memhub` provides:
+
+- **Pre-flight gate.** `memhub integrations check-k9` exits 0 when
+  the integration is enabled (and a `.memhub/project.sqlite` exists),
+  exit 1 otherwise. Zero stdout. K9 should run this once at the top
+  of `/wrap-up` and short-circuit when it returns non-zero.
+- **Machine-readable mutating commands.** `fact add`, `decision add`,
+  `task add`, `task done`, `review accept`, and `review reject` all
+  accept `--json`. When set, they emit a single JSON object on stdout
+  (no trailing decoration) and suppress the human-readable line. The
+  per-command schema is locked by the contract doc — there is no
+  in-payload `schema_version` field; a `v2` contract will bump the
+  doc instead.
+- **Actor attribution.** The same commands accept `--actor <name>`
+  (defaults to `cli:user`, max 64 characters, non-empty). K9 passes
+  `--actor k9:wrap-up` so the `writes_log` audit trail differentiates
+  K9-mediated writes from manual CLI use.
+
+Example end-to-end shell session:
+
+```bash
+memhub integrations check-k9 || exit 0
+
+memhub fact add build-command "cargo build" --json --actor k9:wrap-up
+# {"id":12,"key":"build-command","value":"cargo build","source":"user","created":true}
+
+memhub review accept 4 --json --actor k9:wrap-up
+# {"pending_id":4,"kind":"fact","durable_table":"facts","durable_id":12}
+```
+
+Any non-zero exit from a mutating call is a hard abort signal: K9
+should not touch `agent_docs/*.md` if the DB write phase failed.
 
 ## How memhub works
 
@@ -572,10 +606,13 @@ Shipped:
 - K9 detection on `memhub init`; `[integrations.k9]` config section auto-populated when `agent_docs/project_state.md` is present (`M5-001` phase 1)
 - `memhub integrations status | enable-k9 | disable-k9` subcommands for explicit toggling on already-initialized repos (`M5-001` phase 1)
 - Drift detection and surfacing in `memhub status` and the MCP `status` tool (`M5-001` phase 1)
+- v1 K9 wrap-up contract documented at `docs/reference/k9-wrap-up-contract.md` (`M5-002`)
+- `memhub integrations check-k9` exit-code gate for K9 to short-circuit on disabled repos (`M5-002`)
+- `--json` and `--actor` flags on `fact add`, `decision add`, `task add`, `task done`, `review accept`, `review reject` (`M5-002`)
 
 Remaining scope (separate slices):
 
-- `M5-002`: K9 `/wrap-up` post-approval shell-out into `memhub decision add` / `task add` / `fact add` (lives in K9 repo)
+- K9 repo `/wrap-up.md` consumer edits (lives in K9 repo; consumes the v1 contract)
 - `M5-003`: surface `pending_writes` during K9 `/wrap-up` review drafts
 
 ### Milestone 6+

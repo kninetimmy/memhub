@@ -40,7 +40,14 @@ fn fresh_fact_is_not_stale() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
-    fact::add(temp.path(), "build-command", "cargo build", "user").expect("add fact");
+    fact::add(
+        temp.path(),
+        "build-command",
+        "cargo build",
+        "user",
+        "cli:user",
+    )
+    .expect("add fact");
 
     let facts = fact::list(temp.path()).expect("list facts");
     assert_eq!(facts.len(), 1);
@@ -52,7 +59,14 @@ fn fact_just_under_threshold_is_not_stale() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
-    fact::add(temp.path(), "build-command", "cargo build", "user").expect("add fact");
+    fact::add(
+        temp.path(),
+        "build-command",
+        "cargo build",
+        "user",
+        "cli:user",
+    )
+    .expect("add fact");
     backdate_fact(temp.path(), "build-command", 89);
 
     let facts = fact::list(temp.path()).expect("list facts");
@@ -64,7 +78,14 @@ fn fact_over_threshold_is_stale() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
-    fact::add(temp.path(), "build-command", "cargo build", "user").expect("add fact");
+    fact::add(
+        temp.path(),
+        "build-command",
+        "cargo build",
+        "user",
+        "cli:user",
+    )
+    .expect("add fact");
     backdate_fact(temp.path(), "build-command", 91);
 
     let facts = fact::list(temp.path()).expect("list facts");
@@ -76,7 +97,14 @@ fn fact_with_null_verified_at_is_stale() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
-    fact::add(temp.path(), "build-command", "cargo build", "user").expect("add fact");
+    fact::add(
+        temp.path(),
+        "build-command",
+        "cargo build",
+        "user",
+        "cli:user",
+    )
+    .expect("add fact");
     null_verified_at(temp.path(), "build-command");
 
     let facts = fact::list(temp.path()).expect("list facts");
@@ -88,7 +116,14 @@ fn fact_add_upsert_clears_stale() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
-    fact::add(temp.path(), "build-command", "cargo build", "user").expect("add fact");
+    fact::add(
+        temp.path(),
+        "build-command",
+        "cargo build",
+        "user",
+        "cli:user",
+    )
+    .expect("add fact");
     backdate_fact(temp.path(), "build-command", 200);
     assert!(fact::list(temp.path()).expect("list").remove(0).is_stale);
 
@@ -98,6 +133,7 @@ fn fact_add_upsert_clears_stale() {
         "build-command",
         "cargo build --release",
         "user",
+        "cli:user",
     )
     .expect("upsert fact");
 
@@ -122,7 +158,7 @@ fn review_accept_produces_fresh_fact() {
     )
     .expect("propose fact");
 
-    review::accept(temp.path(), pending_id).expect("accept");
+    review::accept(temp.path(), pending_id, "cli:user").expect("accept");
 
     let facts = fact::list(temp.path()).expect("list facts");
     let accepted = facts
@@ -139,9 +175,9 @@ fn count_stale_reports_only_stale_facts() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
-    fact::add(temp.path(), "fresh", "value", "user").expect("fresh fact");
-    fact::add(temp.path(), "old", "value", "user").expect("old fact");
-    fact::add(temp.path(), "older", "value", "user").expect("older fact");
+    fact::add(temp.path(), "fresh", "value", "user", "cli:user").expect("fresh fact");
+    fact::add(temp.path(), "old", "value", "user", "cli:user").expect("old fact");
+    fact::add(temp.path(), "older", "value", "user", "cli:user").expect("older fact");
     backdate_fact(temp.path(), "old", 100);
     backdate_fact(temp.path(), "older", 365);
 

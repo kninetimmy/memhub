@@ -198,3 +198,32 @@ Append-only. Superseding decisions should be added as new dated entries rather t
 - The MCP `status` tool response gained `k9_detected`, `k9_enabled`, `k9_agent_docs_path`, and `k9_drift` so agents can condition behavior on the integration state.
 - A dedicated `integrations` MCP tool was rejected as overkill — `status` already exists and the K9 state is small.
 - Agents continue to use `propose_fact` / `propose_decision` identically regardless of K9 presence. The integration is a CLI / human-approval concern, not an agent concern at the MCP layer.
+
+## 2026-05-12 - K9 wrap-up contract is locked by a versioned doc, not in-payload metadata
+
+- The K9 `/wrap-up` shell-out contract lives at `docs/reference/k9-wrap-up-contract.md` and is the single source of truth for JSON output shapes, exit codes, actor conventions, and sequencing.
+- JSON responses on mutating commands deliberately do not carry a `schema_version` field — the document itself is the version artifact. Breaking changes ship as a `v2` doc with K9 migrating explicitly.
+- Considered embedding `schema_version: 1` in every response; rejected as noise that future-you would have to keep consistent across every command for no real consumer benefit (K9 consumes the contract as a whole, not per-response).
+
+## 2026-05-12 - `memhub integrations check-k9` is a pure exit-code probe
+
+- `memhub integrations check-k9` writes nothing to stdout and returns exit 0 only when `.memhub/project.sqlite` exists AND `[integrations.k9].enabled = true`. Any failure mode (no `.memhub/`, missing section, disabled, internal error) returns exit 1 silently.
+- The implementation in `commands::integrations::check_k9` swallows `open_project` errors via `let Ok(ctx) = ...` rather than propagating them, because a missing-DB or no-project state is "not enabled" from K9's perspective — not a user-facing error.
+- The clap-derived `CheckK9` handler calls `process::exit(0|1)` directly, bypassing the normal `Result<()>` error-printing path in `main.rs`. This is the only command that exits explicitly; everything else returns through the standard pipeline.
+
+## 2026-05-12 - `--actor` is a free-form string with bounded length
+
+- All mutating CLI commands accept `--actor <name>` (default `cli:user`, max 64 chars, non-empty). The internal API takes `actor: &str` as an explicit parameter on every write function.
+- Validation lives in `commands::validate_actor` and runs at the CLI boundary via `resolve_actor`. Invalid values produce `MemhubError::InvalidInput` and exit 1.
+- Considered adding a `MEMHUB_ACTOR` env var as the K9 convention; deferred. The explicit per-command flag is auditable in shell history and harder to leak across processes. Env-var support can be added later as an alternative without breaking the flag.
+
+## 2026-05-12 - `review accept` propagates the supplied actor to durable writes
+
+- `review::accept` was already calling `fact::add` / `decision::add` internally to promote staged proposals. With the new actor parameter it threads its own `actor` argument down into those calls, so a `memhub review accept <id> --actor k9:wrap-up` produces `writes_log` rows with `actor = "k9:wrap-up"` for both the pending-write status update AND the durable fact/decision insert.
+- This keeps K9's audit trail coherent: a single `/wrap-up` invocation produces a contiguous block of `writes_log` rows all tagged with the same actor.
+
+## 2026-05-12 - K9 wrap-up contract is memhub-side only; K9 repo edits are a separate slice
+
+- `M5-002` delivers the contract document AND the CLI affordances K9 needs to consume it, but does not include the K9 repo's `/wrap-up.md` consumer change. That edit lives in the K9 repository and is owned separately.
+- This split was chosen so the memhub side has a stable artifact to point at (`v1` contract) and can ship independently without lockstep coordination.
+- The K9 repo edit, when it ships, must consume `v1` verbatim or bump the contract to a new version.

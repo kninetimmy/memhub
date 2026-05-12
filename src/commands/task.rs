@@ -5,7 +5,7 @@ use crate::models::Task;
 use crate::sync_md;
 use crate::{MemhubError, Result};
 
-pub fn add(start: &Path, title: &str, notes: Option<&str>) -> Result<i64> {
+pub fn add(start: &Path, title: &str, notes: Option<&str>, actor: &str) -> Result<i64> {
     let mut ctx = db::open_project(start)?;
     let tx = ctx.conn.transaction()?;
 
@@ -16,7 +16,7 @@ pub fn add(start: &Path, title: &str, notes: Option<&str>) -> Result<i64> {
     )?;
     let row_id = tx.last_insert_rowid();
 
-    db::log_write(&tx, "cli:user", "tasks", Some(row_id), "insert", "task add")?;
+    db::log_write(&tx, actor, "tasks", Some(row_id), "insert", "task add")?;
 
     tx.commit()?;
     sync_md::sync_if_enabled(start)?;
@@ -95,7 +95,7 @@ pub fn list_by_status(start: &Path, status: &str, limit: usize) -> Result<Vec<Ta
         .map_err(Into::into)
 }
 
-pub fn done(start: &Path, task_id: i64) -> Result<()> {
+pub fn done(start: &Path, task_id: i64, actor: &str) -> Result<()> {
     let mut ctx = db::open_project(start)?;
     let tx = ctx.conn.transaction()?;
 
@@ -112,14 +112,7 @@ pub fn done(start: &Path, task_id: i64) -> Result<()> {
         )));
     }
 
-    db::log_write(
-        &tx,
-        "cli:user",
-        "tasks",
-        Some(task_id),
-        "update",
-        "task done",
-    )?;
+    db::log_write(&tx, actor, "tasks", Some(task_id), "update", "task done")?;
 
     tx.commit()?;
     sync_md::sync_if_enabled(start)?;
