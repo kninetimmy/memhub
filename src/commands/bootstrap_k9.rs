@@ -313,6 +313,7 @@ fn classify_backlog_task(heading_done: bool, body_lines: &[String]) -> String {
 
     let mut inline_done_pr = false;
     let mut bulleted_status: Option<String> = None;
+    let mut status_clause: Option<String> = None;
     let mut legacy_status: Option<String> = None;
 
     for line in body_lines {
@@ -322,6 +323,11 @@ fn classify_backlog_task(heading_done: bool, body_lines: &[String]) -> String {
         if bulleted_status.is_none() {
             if let Some(v) = extract_bulleted_status(line) {
                 bulleted_status = Some(v);
+            }
+        }
+        if status_clause.is_none() {
+            if let Some(v) = extract_status_clause(line) {
+                status_clause = Some(v);
             }
         }
         if legacy_status.is_none() {
@@ -337,6 +343,9 @@ fn classify_backlog_task(heading_done: bool, body_lines: &[String]) -> String {
     if let Some(v) = bulleted_status {
         return map_k9_status(&v);
     }
+    if let Some(v) = status_clause {
+        return map_legacy_status(&v);
+    }
     if let Some(v) = legacy_status {
         return map_legacy_status(&v);
     }
@@ -350,7 +359,11 @@ fn line_has_inline_done_pr_marker(line: &str) -> bool {
         let abs = from + rel;
         let after = &lower[abs + "**done**".len()..];
         let after = after.trim_start_matches(|c: char| {
-            c.is_whitespace() || matches!(c, '—' | '-' | ':' | '(' | '[')
+            c.is_whitespace() || matches!(c, '—' | '-' | ':' | '(' | '[' | ',')
+        });
+        let after = skip_optional_action_clause(after);
+        let after = after.trim_start_matches(|c: char| {
+            c.is_whitespace() || matches!(c, '—' | '-' | ':' | '(' | '[' | ',')
         });
         if let Some(rest) = after.strip_prefix("pr") {
             let is_pr_word = rest.chars().next().map_or(true, |c| !c.is_alphabetic());
@@ -364,6 +377,49 @@ fn line_has_inline_done_pr_marker(line: &str) -> bool {
         from = abs + "**done**".len();
     }
     false
+}
+
+fn skip_optional_action_clause(s: &str) -> &str {
+    for verb in ["merged", "shipped", "landed", "released"] {
+        if let Some(rest) = s.strip_prefix(verb) {
+            if rest.chars().next().map_or(true, |c| !c.is_alphanumeric()) {
+                return skip_optional_iso_date(rest);
+            }
+        }
+    }
+    s
+}
+
+fn skip_optional_iso_date(s: &str) -> &str {
+    let trimmed = s.trim_start();
+    let bytes = trimmed.as_bytes();
+    if bytes.len() >= 10
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes[..4].iter().all(|b| b.is_ascii_digit())
+        && bytes[5..7].iter().all(|b| b.is_ascii_digit())
+        && bytes[8..10].iter().all(|b| b.is_ascii_digit())
+    {
+        &trimmed[10..]
+    } else {
+        s
+    }
+}
+
+fn extract_status_clause(line: &str) -> Option<String> {
+    let trimmed = line.trim_start();
+    let lower = trimmed.to_ascii_lowercase();
+    for prefix in ["**status:**", "**status.**"] {
+        if let Some(rest) = lower.strip_prefix(prefix) {
+            let raw = rest.trim().split_whitespace().next()?;
+            let cleaned = raw.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '-');
+            if cleaned.is_empty() {
+                return None;
+            }
+            return Some(cleaned.to_string());
+        }
+    }
+    None
 }
 
 fn extract_bulleted_status(line: &str) -> Option<String> {
@@ -409,7 +465,7 @@ fn map_k9_status(value: &str) -> String {
 
 fn map_legacy_status(value: &str) -> String {
     match value {
-        "done" | "completed" => "completed".to_string(),
+        "done" | "completed" | "shipped" | "landed" | "released" => "completed".to_string(),
         "blocked" => "blocked".to_string(),
         _ => "open".to_string(),
     }
@@ -598,6 +654,103 @@ Body text.
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].title, "Still in flight");
         assert_eq!(tasks[0].status, "open");
+    }
+
+    #[test]
+    fn inline_done_with_merged_date_clause_skips_task() {
+        // Real Free-AI-SSD shape: F2/F2a/F3/X13 status lines all use
+        // `**done** — merged YYYY-MM-DD (PR #N, ...)`.
+        let raw = "\
+### F2 — Live model list fetch
+**Status:** **done** — merged 2026-05-07 (PR #202, squash commit `dbc2510`).
+
+### F3 — PrepApp 2-tab restructure
+**Status:** **done** — merged 2026-04-21 (PR #164, merge commit `953fb1b`). Stages 2-3 shipped in the same PR.
+
+### Still active
+- **Status.** triaged
+";
+        let (tasks, skipped) = parse_backlog(raw);
+        assert_eq!(skipped, 2);
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].title, "Still active");
+    }
+
+    #[test]
+    fn inline_done_with_shipped_or_landed_verb_clause_skips_task() {
+        let raw = "\
+### Item A
+**Status:** **done** — shipped 2026-05-01 (PR #100).
+
+### Item B
+**Status:** **done** — landed 2026-04-30 (PR #101).
+
+### Item C
+**Status:** **done** — released 2026-04-29 (PR #102).
+
+### Still open
+- **Status.** in-progress
+";
+        let (tasks, skipped) = parse_backlog(raw);
+        assert_eq!(skipped, 3);
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].title, "Still open");
+    }
+
+    #[test]
+    fn inline_done_with_verb_clause_but_no_pr_stays_open() {
+        // Without a PR # reference, the verb clause alone is not strong
+        // enough evidence to skip — fall through to other signals.
+        let raw = "\
+### Loose end
+**Status:** **done** — merged 2026-05-07
+- **Status.** in-progress
+";
+        let (tasks, skipped) = parse_backlog(raw);
+        assert_eq!(skipped, 0);
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].status, "open");
+    }
+
+    #[test]
+    fn bolded_status_clause_with_shipped_vocab_skips_task() {
+        // Real Free-AI-SSD shape: X25's status line uses bare "Shipped"
+        // without a bolded **done** marker.
+        let raw = "\
+### X25 — Extend File.Replace retry
+**Status:** Shipped — PR #155 (`2f7dcd8`), v1.2.9.
+
+### X26 — Landed elsewhere
+**Status:** Landed — PR #200.
+
+### X27 — Released sample
+**Status:** Released — PR #201.
+
+### Still active
+- **Status.** triaged
+";
+        let (tasks, skipped) = parse_backlog(raw);
+        assert_eq!(skipped, 3);
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].title, "Still active");
+    }
+
+    #[test]
+    fn bolded_status_clause_with_non_done_vocab_stays_open() {
+        // The status-clause path should not over-match on "filed",
+        // "in-progress", "planning", or other non-done vocabulary.
+        let raw = "\
+### Filed
+**Status:** filed 2026-05-10 (post-C3 UX polish).
+
+### In flight
+**Status:** in-progress — exploring approaches.
+";
+        let (tasks, skipped) = parse_backlog(raw);
+        assert_eq!(skipped, 0);
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].status, "open");
+        assert_eq!(tasks[1].status, "open");
     }
 
     #[test]
