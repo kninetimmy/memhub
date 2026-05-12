@@ -103,10 +103,21 @@ deprecation, that responsibility migrates. Two routes:
 - **Into a thin shell wrapper** that lives in the user's dotfiles or
   a small companion tool, with memhub staying dumb durable storage.
 
-Open questions: which preserves the "memhub stays boring" PRD
-principle? Where do slash-command definitions live without K9 (a
-small `agents/` directory in the user's home? Inside memhub as
-embedded prompts? Outside memhub entirely as user-owned dotfiles?)?
+UX preference (durable): the slash-command ergonomic — typing
+`/wrap-up` at session end — is part of what the user wants
+preserved across the K9 retirement. Memhub-primary should not feel
+like a downgrade to "just a CLI." This biases the design toward a
+Claude Code skill that calls memhub primitives (preserving the
+`/wrap-up` invocation pattern) rather than a pure `memhub wrap-up`
+CLI subcommand. The CLI primitives stay as the underlying surface;
+the skill is the thin ergonomic layer on top. Same logic applies to
+any future replacements for `/init-project` and `/check-init`.
+
+Open questions: which routing-brain location preserves the "memhub
+stays boring" PRD principle? Where do slash-command definitions live
+without K9 (inside memhub as embedded prompts? In a small companion
+repo of memhub-aware skills? Outside memhub entirely as user-owned
+dotfiles?)?
 
 Artifact: design slice TBD, downstream of slices 1-3.
 

@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::PathBuf;
 use std::process;
 
@@ -7,7 +8,8 @@ use serde_json::json;
 use crate::Result;
 use crate::commands;
 use crate::commands::{DEFAULT_ACTOR, validate_actor};
-use crate::models::{InitResult, PendingWriteRecord, StatsSummary};
+use crate::models::{InitResult, NarrativeEntry, NarrativeKind, PendingWriteRecord, StatsSummary};
+use crate::{MemhubError, commands::narrative::DEFAULT_HISTORY_LIMIT};
 
 fn resolve_actor(actor: Option<&str>) -> Result<String> {
     match actor {
@@ -185,6 +187,115 @@ fn pending_write_record_to_json(row: &PendingWriteRecord) -> serde_json::Value {
     })
 }
 
+fn run_narrative(cwd: &std::path::Path, kind: NarrativeKind, command: NarrativeCommand) -> Result<()> {
+    match command {
+        NarrativeCommand::Set {
+            body,
+            from_file,
+            json: as_json,
+            actor,
+        } => {
+            let body_text = resolve_narrative_body(kind, body, from_file)?;
+            let actor = resolve_actor(actor.as_deref())?;
+            let entry = commands::narrative::set(cwd, kind, &body_text, &actor, &actor)?;
+            if as_json {
+                println!("{}", narrative_entry_to_json(kind, &entry));
+            } else {
+                println!(
+                    "Recorded {} entry {} ({} chars) at {}",
+                    kind.as_str(),
+                    entry.id,
+                    entry.body.chars().count(),
+                    entry.created_at
+                );
+            }
+        }
+        NarrativeCommand::Show { json: as_json } => {
+            let maybe_entry = commands::narrative::show(cwd, kind)?;
+            if as_json {
+                let payload = match &maybe_entry {
+                    Some(entry) => narrative_entry_to_json(kind, entry),
+                    None => json!({ "kind": kind.as_str(), "entry": null }),
+                };
+                println!("{payload}");
+            } else {
+                match maybe_entry {
+                    Some(entry) => {
+                        println!(
+                            "[{}] {} (actor: {}, created: {})",
+                            entry.id, kind.as_str(), entry.actor, entry.created_at
+                        );
+                        println!();
+                        println!("{}", entry.body);
+                    }
+                    None => println!("No {} entries recorded.", kind.as_str()),
+                }
+            }
+        }
+        NarrativeCommand::History {
+            limit,
+            json: as_json,
+        } => {
+            let entries = commands::narrative::history(cwd, kind, limit)?;
+            if as_json {
+                let payload = json!({
+                    "kind": kind.as_str(),
+                    "entries": entries
+                        .iter()
+                        .map(|e| narrative_entry_to_json(kind, e))
+                        .collect::<Vec<_>>(),
+                });
+                println!("{payload}");
+            } else if entries.is_empty() {
+                println!("No {} entries recorded.", kind.as_str());
+            } else {
+                for entry in entries {
+                    println!(
+                        "[{}] {} actor={} ({} chars)",
+                        entry.id,
+                        entry.created_at,
+                        entry.actor,
+                        entry.body.chars().count()
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn resolve_narrative_body(
+    kind: NarrativeKind,
+    body: Option<String>,
+    from_file: Option<PathBuf>,
+) -> Result<String> {
+    match (body, from_file) {
+        (Some(_), Some(_)) => Err(MemhubError::InvalidInput(format!(
+            "{} set: pass either a body argument or --from-file, not both",
+            kind.as_str()
+        ))),
+        (Some(text), None) => Ok(text),
+        (None, Some(path)) => {
+            fs::read_to_string(&path).map_err(MemhubError::from)
+        }
+        (None, None) => Err(MemhubError::InvalidInput(format!(
+            "{} set: provide a body argument or --from-file <path>",
+            kind.as_str()
+        ))),
+    }
+}
+
+fn narrative_entry_to_json(kind: NarrativeKind, entry: &NarrativeEntry) -> serde_json::Value {
+    json!({
+        "kind": kind.as_str(),
+        "id": entry.id,
+        "body": entry.body,
+        "actor": entry.actor,
+        "actor_raw": entry.actor_raw,
+        "created_at": entry.created_at,
+    })
+}
+
 fn print_init_result(result: &InitResult) {
     println!("Initialized memhub at {}", result.repo_root.display());
     println!("Database: {}", result.db_path.display());
@@ -288,6 +399,37 @@ pub enum TopLevelCommand {
     Note {
         #[command(subcommand)]
         command: NoteCommand,
+    },
+    State {
+        #[command(subcommand)]
+        command: NarrativeCommand,
+    },
+    Arch {
+        #[command(subcommand)]
+        command: NarrativeCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum NarrativeCommand {
+    Set {
+        body: Option<String>,
+        #[arg(long, value_name = "PATH")]
+        from_file: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    Show {
+        #[arg(long)]
+        json: bool,
+    },
+    History {
+        #[arg(long, default_value_t = DEFAULT_HISTORY_LIMIT)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -1040,6 +1182,12 @@ pub fn run(cli: Cli) -> Result<()> {
                 }
             }
         },
+        TopLevelCommand::State { command } => {
+            run_narrative(&cwd, NarrativeKind::State, command)?;
+        }
+        TopLevelCommand::Arch { command } => {
+            run_narrative(&cwd, NarrativeKind::Arch, command)?;
+        }
         TopLevelCommand::Note { command } => match command {
             NoteCommand::List {
                 limit,

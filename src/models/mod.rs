@@ -141,6 +141,37 @@ pub struct SessionNote {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum NarrativeKind {
+    State,
+    Arch,
+}
+
+impl NarrativeKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::State => "state",
+            Self::Arch => "arch",
+        }
+    }
+
+    pub fn table(&self) -> &'static str {
+        match self {
+            Self::State => "project_state",
+            Self::Arch => "project_arch",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct NarrativeEntry {
+    pub id: i64,
+    pub body: String,
+    pub actor: String,
+    pub actor_raw: String,
+    pub created_at: String,
+}
+
 #[derive(Debug)]
 pub struct CountByLabel {
     pub label: String,
