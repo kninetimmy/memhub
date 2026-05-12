@@ -66,6 +66,8 @@ If you plan to pair memhub with the **K9 Claude Framework**, install and configu
 
 Both install tracks share the same build step. The difference shows up at `memhub init`, where the K9 integration is auto-detected.
 
+If you'd rather have an agent run the steps below for you, see [Install with Claude Code](#install-with-claude-code). Otherwise, follow the manual steps.
+
 ### Step 1: build the `memhub` binary (both tracks)
 
 ```bash
@@ -147,6 +149,36 @@ memhub init --from-backup /path/to/memhub-backup.json
 ```
 
 This creates `.memhub/`, runs migrations, and imports the backup in a single step. See [Backup and Restore](#backup-and-restore) for the full recovery story.
+
+### Install with Claude Code
+
+If you already use [Claude Code](https://claude.com/claude-code), you can have it walk through the install above instead of running each step by hand. Open Claude Code in the repo you want memhub to track, then paste the prompt below:
+
+```
+Please install memhub for this repo.
+
+1. Clone https://github.com/kninetimmy/memhub.git into a workspace directory
+   outside this repo (e.g. ~/src/memhub). If that path already exists and is a
+   memhub checkout, run `git pull` there instead of re-cloning.
+2. From that checkout run `cargo build --release`. The Rust toolchain (stable,
+   1.85+) must already be installed via rustup — stop and tell me if it isn't.
+3. Put the resulting `target/release/memhub` binary on PATH. Prefer a symlink
+   into `~/.local/bin/memhub` so future `cargo build --release` rebuilds
+   propagate. Create `~/.local/bin` if it doesn't exist and warn me if it's
+   not already on PATH.
+4. Verify by running `memhub --help`.
+5. Then `cd` back to this repo and run `memhub init` followed by `memhub status`.
+   Report the K9 detection line from `status` so I can confirm the integration
+   state.
+
+Don't modify any files in this repo other than what `memhub init` writes
+(`.memhub/` and a `.gitignore` line). Stop and ask me before installing
+anything system-wide.
+```
+
+Claude Code will ask permission before each shell command, so you stay in control of what runs. The prompt is intentionally explicit about *not* modifying repo files beyond what `memhub init` creates — agents sometimes over-help.
+
+If K9 is already set up in this repo (`agent_docs/project_state.md` exists), `memhub init` will auto-enable the integration and `status` will report `K9 detected: yes`. Otherwise it reports `K9 detected: no` and the integration stays off until you run `memhub integrations enable-k9` later.
 
 ## Quick Start
 
