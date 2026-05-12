@@ -9,6 +9,7 @@ pub mod init;
 pub mod integrations;
 pub mod narrative;
 pub mod pending_write;
+pub mod render;
 pub mod review;
 pub mod search;
 pub mod session_note;

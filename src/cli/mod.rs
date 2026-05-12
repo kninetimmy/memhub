@@ -408,6 +408,7 @@ pub enum TopLevelCommand {
         #[command(subcommand)]
         command: NarrativeCommand,
     },
+    Render,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1187,6 +1188,21 @@ pub fn run(cli: Cli) -> Result<()> {
         }
         TopLevelCommand::Arch { command } => {
             run_narrative(&cwd, NarrativeKind::Arch, command)?;
+        }
+        TopLevelCommand::Render => {
+            let result = commands::render::run(&cwd)?;
+            println!("Rendered to {}", result.output_dir.display());
+            for path in &result.written_files {
+                println!("  wrote: {}", path.display());
+            }
+            if result.backup_files.is_empty() {
+                println!("Backups: none (no prior files to back up)");
+            } else {
+                println!("Backups:");
+                for path in &result.backup_files {
+                    println!("  {}", path.display());
+                }
+            }
         }
         TopLevelCommand::Note { command } => match command {
             NoteCommand::List {

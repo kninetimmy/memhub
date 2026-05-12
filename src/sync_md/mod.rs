@@ -228,7 +228,7 @@ fn invalid_managed_markdown(path: &Path, reason: &str) -> MemhubError {
     }
 }
 
-fn create_backup(path: &Path, backup_dir: &Path) -> Result<PathBuf> {
+pub(crate) fn create_backup(path: &Path, backup_dir: &Path) -> Result<PathBuf> {
     fs::create_dir_all(backup_dir)?;
 
     let file_name = path
@@ -258,7 +258,7 @@ fn create_backup(path: &Path, backup_dir: &Path) -> Result<PathBuf> {
     )))
 }
 
-fn backup_stamp() -> Result<String> {
+pub(crate) fn backup_stamp() -> Result<String> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|err| {
@@ -267,7 +267,7 @@ fn backup_stamp() -> Result<String> {
     Ok(format!("{}-{:09}", now.as_secs(), now.subsec_nanos()))
 }
 
-fn write_with_replace(path: &Path, updated_content: &str) -> Result<()> {
+pub(crate) fn write_with_replace(path: &Path, updated_content: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }

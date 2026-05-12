@@ -113,6 +113,15 @@ pub struct MarkdownSyncResult {
 }
 
 #[derive(Debug)]
+pub struct RenderResult {
+    pub output_dir: PathBuf,
+    pub project_md_path: PathBuf,
+    pub ledger_md_path: PathBuf,
+    pub written_files: Vec<PathBuf>,
+    pub backup_files: Vec<PathBuf>,
+}
+
+#[derive(Debug)]
 pub struct PendingWriteRecord {
     pub id: i64,
     pub kind: String,

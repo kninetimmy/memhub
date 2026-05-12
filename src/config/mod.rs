@@ -13,6 +13,26 @@ pub use integrations::{
 
 use crate::Result;
 
+pub const DEFAULT_RENDER_OUTPUT_DIR: &str = "agent_docs";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RenderConfig {
+    #[serde(default = "default_render_output_dir")]
+    pub output_dir: String,
+}
+
+impl Default for RenderConfig {
+    fn default() -> Self {
+        Self {
+            output_dir: default_render_output_dir(),
+        }
+    }
+}
+
+fn default_render_output_dir() -> String {
+    DEFAULT_RENDER_OUTPUT_DIR.to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectConfig {
     pub project_name: String,
@@ -22,6 +42,8 @@ pub struct ProjectConfig {
     pub deny_list: DenyList,
     #[serde(default)]
     pub integrations: IntegrationsConfig,
+    #[serde(default)]
+    pub render: RenderConfig,
 }
 
 impl ProjectConfig {
@@ -32,6 +54,7 @@ impl ProjectConfig {
             log_level: "info".to_string(),
             deny_list: DenyList::default(),
             integrations: IntegrationsConfig::default(),
+            render: RenderConfig::default(),
         }
     }
 
