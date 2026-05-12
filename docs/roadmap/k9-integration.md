@@ -1,6 +1,7 @@
 # K9 Claude Framework Integration
 
-Status: planned, deferred until Milestone 4 completes.
+Status: phase 1 (detection + config + status surfacing) shipped as
+`M5-001`. Phases 2 and 3 remain triaged as `M5-002` and `M5-003`.
 
 ## Goal
 
@@ -89,14 +90,20 @@ time rather than parsing Markdown after the fact.
 
 ## Phasing
 
-Deferred until `M4-001` (export/import) and `M4-002` (missing-DB safety)
-complete. After that:
-
 1. **K9 detection + config** — `memhub init` learns the K9 integration
-   profile. Install scripts add the detection step.
+   profile. `memhub integrations enable-k9 / disable-k9 / status`
+   handle explicit toggling on already-initialized repos. Status
+   surfaces drift between config and filesystem. **Shipped as
+   `M5-001`.**
 2. **`/wrap-up` post-approval hook** — K9 repo's `/wrap-up.md` gains an
-   optional final step that shells out to memhub when `.memhub/` exists.
-3. **Pending-write promotion** — `/wrap-up` reads `pending_writes` and
-   surfaces them for inclusion in wrap-up drafts.
+   optional final step that shells out to memhub when `.memhub/` exists
+   and `[integrations.k9].enabled = true`. Triaged as `M5-002`. Lives
+   mostly in the K9 repo; memhub side will ship a
+   `docs/reference/k9-wrap-up-contract.md` describing CLI invocations
+   and exit-code semantics.
+3. **Pending-write promotion** — `/wrap-up` reads `pending_writes` (via
+   `memhub review list` or MCP `list_pending_writes`) and surfaces them
+   for inclusion in wrap-up drafts. Triaged as `M5-003`. Lives entirely
+   in the K9 repo; no memhub-side code change anticipated.
 
 Each phase is independently useful and reversible.

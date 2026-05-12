@@ -398,6 +398,10 @@ struct StatusToolResponse {
     pending_writes: i64,
     writes_logged: i64,
     deny_patterns: usize,
+    k9_detected: bool,
+    k9_enabled: bool,
+    k9_agent_docs_path: String,
+    k9_drift: Option<String>,
 }
 
 impl From<StatusSummary> for StatusToolResponse {
@@ -420,6 +424,10 @@ impl From<StatusSummary> for StatusToolResponse {
             pending_writes: value.pending_writes,
             writes_logged: value.writes_logged,
             deny_patterns: value.deny_patterns,
+            k9_detected: value.k9_detected,
+            k9_enabled: value.k9_enabled,
+            k9_agent_docs_path: value.k9_agent_docs_path,
+            k9_drift: value.k9_drift,
         }
     }
 }
@@ -765,6 +773,31 @@ mod tests {
         assert_eq!(status.0.tasks_open, 0);
         assert_eq!(status.0.commands, 0);
         assert_eq!(status.0.pending_writes, 0);
+        assert!(!status.0.k9_detected);
+        assert!(!status.0.k9_enabled);
+        assert!(status.0.k9_drift.is_none());
+    }
+
+    #[test]
+    fn mcp_status_reports_k9_state_when_detected_and_enabled() {
+        let temp = tempdir().expect("tempdir");
+        let docs = temp.path().join("agent_docs");
+        std::fs::create_dir_all(&docs).expect("create agent_docs");
+        std::fs::write(docs.join("project_state.md"), "# state").expect("marker");
+        init::run(temp.path()).expect("init");
+
+        let server = MemhubServer::new(temp.path().to_path_buf());
+        let status = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(server.status_impl())
+            .expect("status");
+
+        assert!(status.0.k9_detected);
+        assert!(status.0.k9_enabled);
+        assert_eq!(status.0.k9_agent_docs_path, "agent_docs");
+        assert!(status.0.k9_drift.is_none());
     }
 
     #[test]

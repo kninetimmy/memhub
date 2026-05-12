@@ -96,6 +96,22 @@ pub enum TopLevelCommand {
         #[command(subcommand)]
         command: ReviewCommand,
     },
+    Integrations {
+        #[command(subcommand)]
+        command: IntegrationsCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum IntegrationsCommand {
+    Status,
+    EnableK9 {
+        #[arg(long, value_name = "PATH")]
+        agent_docs_path: Option<String>,
+        #[arg(long)]
+        force: bool,
+    },
+    DisableK9,
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -274,6 +290,22 @@ pub fn run(cli: Cli) -> Result<()> {
             println!("Pending writes: {}", summary.pending_writes);
             println!("Writes logged: {}", summary.writes_logged);
             println!("Deny patterns: {}", summary.deny_patterns);
+            println!(
+                "K9 detected: {}",
+                if summary.k9_detected { "yes" } else { "no" }
+            );
+            println!(
+                "K9 integration: {} (agent_docs_path: {})",
+                if summary.k9_enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                },
+                summary.k9_agent_docs_path
+            );
+            if let Some(drift) = &summary.k9_drift {
+                println!("  note: {drift}");
+            }
         }
         TopLevelCommand::SyncMd => {
             let result = commands::sync_md::run(&cwd)?;
@@ -566,6 +598,31 @@ pub fn run(cli: Cli) -> Result<()> {
                     "Expired {} pending write(s) older than {} day(s)",
                     summary.expired, summary.older_than_days
                 );
+            }
+        },
+        TopLevelCommand::Integrations { command } => match command {
+            IntegrationsCommand::Status => {
+                let status = commands::integrations::status(&cwd)?;
+                println!(
+                    "K9: detected={}, enabled={}, agent_docs_path={}",
+                    if status.k9.detected { "yes" } else { "no" },
+                    if status.k9.enabled { "yes" } else { "no" },
+                    status.k9.agent_docs_path
+                );
+                if let Some(drift) = status.k9.drift {
+                    println!("  note: {drift}");
+                }
+            }
+            IntegrationsCommand::EnableK9 {
+                agent_docs_path,
+                force,
+            } => {
+                commands::integrations::enable_k9(&cwd, agent_docs_path.as_deref(), force)?;
+                println!("K9 integration enabled.");
+            }
+            IntegrationsCommand::DisableK9 => {
+                commands::integrations::disable_k9(&cwd)?;
+                println!("K9 integration disabled.");
             }
         },
     }

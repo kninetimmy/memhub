@@ -1,4 +1,5 @@
 pub mod deny;
+pub mod integrations;
 
 use std::fs;
 use std::path::Path;
@@ -6,6 +7,9 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 pub use deny::{DenyList, PathMatcher, default_patterns};
+pub use integrations::{
+    DEFAULT_AGENT_DOCS_PATH, IntegrationsConfig, K9_DETECTION_FILENAME, K9Config, detect_k9,
+};
 
 use crate::Result;
 
@@ -16,6 +20,8 @@ pub struct ProjectConfig {
     pub log_level: String,
     #[serde(default)]
     pub deny_list: DenyList,
+    #[serde(default)]
+    pub integrations: IntegrationsConfig,
 }
 
 impl ProjectConfig {
@@ -25,6 +31,7 @@ impl ProjectConfig {
             auto_sync_md: false,
             log_level: "info".to_string(),
             deny_list: DenyList::default(),
+            integrations: IntegrationsConfig::default(),
         }
     }
 

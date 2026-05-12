@@ -151,4 +151,8 @@ pub struct StatusSummary {
     pub pending_writes: i64,
     pub writes_logged: i64,
     pub deny_patterns: usize,
+    pub k9_detected: bool,
+    pub k9_enabled: bool,
+    pub k9_agent_docs_path: String,
+    pub k9_drift: Option<String>,
 }

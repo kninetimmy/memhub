@@ -4,34 +4,53 @@ Last updated: 2026-05-12
 
 ## Currently building
 
-Between tasks after `M4-005`. Confidence scoring and staleness handling
-is shipped, which closes out Milestone 4. Facts now carry a derived
-`is_stale` flag computed in SQL via `julianday('now') - julianday(verified_at) > 90`
-(with a null `verified_at` also stale). The threshold lives as
-`models::FACT_STALE_AFTER_DAYS = 90` — hardcoded for this slice, not
-configurable. `CommandRecord::confidence()` returns
-`success_count / (success_count + fail_count)` as `Option<f64>`, with
-`None` when there have been no runs at all. `memhub fact list` renders
-a `[stale]` marker, `memhub command list` renders a confidence column,
-`memhub status` reports `Facts: N (M stale)`, and the MCP `status`
-response gained `stale_facts` while `CommandToolRecord` gained
-`confidence`. No schema migration, no new write triggers — the existing
-`fact::add` and `command verify` paths already touch the right state.
+Between tasks after `M5-001` phase 1. K9 detection and integration
+config landed in this repo. `memhub init` now detects the K9 four-file
+framework by probing `<agent_docs_path>/project_state.md` (defaults to
+`agent_docs`) and, when the config is freshly created, writes a
+`[integrations.k9]` section with `enabled = true` into
+`.memhub/config.toml`. Existing configs are never modified. A new
+`memhub integrations status | enable-k9 | disable-k9` subcommand
+provides explicit toggling. Drift between config and filesystem is
+surfaced in `memhub status` (and the MCP `status` tool) as a `note:`
+line but never auto-corrected. No K9 repo edits in this slice — the
+`/wrap-up` shell-out is `M5-002`, and surfacing `pending_writes` during
+wrap-up review is `M5-003`.
 
 ## Next up
 
-1. Plan `M5-001` K9 Claude Framework integration per
-   `docs/roadmap/k9-integration.md`. All four M4 preconditions
-   (`M4-001` export/import, `M4-002` recovery, `M4-003` review flow,
-   `M4-004` deny list) are now shipped alongside `M4-005`, and the
-   `list_pending_writes` MCP tool plus the `memhub review` CLI are the
-   surface K9 `/wrap-up` was designed for.
-2. Decide whether MCP needs broader indexed retrieval over facts,
+1. Plan `M5-002`: K9 repo `/wrap-up.md` post-approval shell-out into
+   `memhub decision add` / `memhub task add` / `memhub fact add`.
+   Needs a stable contract doc (`docs/reference/k9-wrap-up-contract.md`)
+   describing the CLI invocations and exit-code semantics.
+2. Plan `M5-003`: surfacing `pending_writes` during K9 `/wrap-up`
+   review drafts via the existing `memhub review list` / MCP
+   `list_pending_writes` paths.
+3. Decide whether MCP needs broader indexed retrieval over facts,
    tasks, or command history beyond the current narrow paths.
-3. Decide whether to promote `FACT_STALE_AFTER_DAYS` to a config knob
-   once a real workflow shows the 90-day default needs tuning.
 
 ## Last session
+
+2026-05-12 - Completed `M5-001` phase 1 (K9 detection + config +
+status surfacing). Added `src/config/integrations.rs` with
+`IntegrationsConfig`, `K9Config`, and `detect_k9`; wired
+`integrations: IntegrationsConfig` into `ProjectConfig` behind
+`#[serde(default)]` so existing configs upgrade cleanly. New
+`src/commands/integrations.rs` exposes `enable_k9` (refuses without
+detection unless `--force`), `disable_k9` (flips `enabled = false`,
+preserves section), `status`, and a `k9_state` helper used by
+`commands::status`. `commands::init::run` (and `run_with_backup`)
+call `apply_k9_detection_on_init` after fresh config creation; existing
+configs are left alone. `StatusSummary` and the MCP `StatusToolResponse`
+gained `k9_detected`, `k9_enabled`, `k9_agent_docs_path`, `k9_drift`.
+CLI gained a `memhub integrations` subcommand with `status`,
+`enable-k9 [--agent-docs-path <PATH>] [--force]`, and `disable-k9`
+variants. Added 12 integration tests in `tests/integrations.rs` plus 5
+unit tests in `src/config/integrations.rs` and 1 new MCP-side test for
+the new status fields. Updated README with a "K9 Claude Framework
+integration" section and bumped roadmap to introduce Milestone 5 and
+shift the speculative bucket to Milestone 6+. Verified with `cargo
+fmt`, `cargo build`, and `cargo test` (88 tests across all suites).
 
 2026-05-12 - Completed `M4-005` (confidence and staleness). Added
 `models::FACT_STALE_AFTER_DAYS`, `Fact::is_stale`,
@@ -58,18 +77,14 @@ tests in `src/config/deny.rs`. Updated README with a "Deny list"
 section. Verified with `cargo fmt`, `cargo build`, and `cargo test`
 (59 tests across all suites).
 
-2026-05-12 - Completed `M4-003` by adding migration
-`0005_pending_write_reviewed_at`, the `commands::review` module with
-`list/show/accept/reject/expire`, the `memhub review` CLI subcommand,
-and the read-only `list_pending_writes` MCP tool. Promotion delegates
-to `fact::add`/`decision::add` (which regenerate FTS chunks and run
-sync-md when enabled). Added 9 integration tests in `tests/review.rs`
-plus 1 MCP test. Updated README with a "Reviewing staged MCP proposals"
-section. Verified with `cargo fmt`, `cargo build`, and `cargo test`
-(50 tests across all suites).
-
 ## Open questions
 
+- Should `M5-002` ship as a memhub-side contract doc first
+  (`docs/reference/k9-wrap-up-contract.md`) and let the K9 repo land
+  the consumer changes asynchronously, or should both land together?
+- Should `enable-k9 --agent-docs-path` accept any path and create the
+  marker file as part of an explicit "set up K9 here" flow, or stay
+  read-only as it is today?
 - Should `FACT_STALE_AFTER_DAYS` become a config knob, or stay
   hardcoded at 90 days until a real workflow needs otherwise?
 - Should `memhub` ship a future `gc` slice that purges already-ingested

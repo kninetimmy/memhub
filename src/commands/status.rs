@@ -2,6 +2,7 @@ use std::path::Path;
 
 use crate::Result;
 use crate::commands::fact;
+use crate::commands::integrations;
 use crate::db;
 use crate::models::StatusSummary;
 
@@ -36,6 +37,7 @@ pub fn run(start: &Path) -> Result<StatusSummary> {
         conn.query_row("SELECT COUNT(*) FROM writes_log", [], |row| row.get(0))?;
 
     let deny_patterns = ctx.config.deny_list.patterns.len();
+    let k9_state = integrations::k9_state(&ctx.paths.repo_root, &ctx.config.integrations);
     let project_name = ctx.config.project_name;
     let repo_root = ctx.paths.repo_root;
     let db_path = ctx.paths.db_path;
@@ -59,5 +61,9 @@ pub fn run(start: &Path) -> Result<StatusSummary> {
         pending_writes,
         writes_logged,
         deny_patterns,
+        k9_detected: k9_state.detected,
+        k9_enabled: k9_state.enabled,
+        k9_agent_docs_path: k9_state.agent_docs_path,
+        k9_drift: k9_state.drift,
     })
 }

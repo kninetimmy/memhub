@@ -306,6 +306,63 @@ it to config if a real workflow needs it. Continuous decay, a persisted
 confidence column on `commands`, and confidence on `decisions` are
 explicitly deferred.
 
+## K9 Claude Framework integration
+
+`memhub` runs standalone, but if the [K9 Claude
+Framework](https://github.com/anthropics/claude-code) is in use in a
+repo, `memhub init` detects it automatically and records the
+integration in `.memhub/config.toml`. The detection probe is a single
+file: `agent_docs/project_state.md`.
+
+When detected during a fresh `memhub init`, a new section appears in
+the config:
+
+```toml
+[integrations.k9]
+enabled = true
+agent_docs_path = "agent_docs"
+```
+
+If K9 is not present at init time, the section is omitted entirely —
+the default config stays minimal. `memhub init` is idempotent and
+never modifies an existing config, so to toggle the integration after
+the fact use the explicit subcommand:
+
+```bash
+memhub integrations status
+memhub integrations enable-k9 [--agent-docs-path docs/k9] [--force]
+memhub integrations disable-k9
+```
+
+`enable-k9` refuses to run when no K9 marker is detected unless
+`--force` is supplied, so the config can't quietly drift away from
+reality. `disable-k9` flips `enabled = false` but keeps the section as
+a record of past configuration.
+
+`memhub status` reports the integration state on every invocation:
+
+```
+K9 detected: yes
+K9 integration: enabled (agent_docs_path: agent_docs)
+```
+
+If the config says `enabled = true` but the marker disappeared (drift),
+`status` surfaces a `note: K9 enabled in config but
+agent_docs/project_state.md is missing` line. The reverse case — K9
+detected but not yet enabled — produces a `note: K9 detected; run
+\`memhub integrations enable k9\` to enable` hint instead.
+
+The MCP `status` tool exposes the same booleans (`k9_detected`,
+`k9_enabled`, `k9_agent_docs_path`, `k9_drift`) so MCP clients can
+condition behavior on the integration state without a separate
+endpoint.
+
+This slice covers detection and config only. The K9 `/wrap-up`
+post-approval shell-out into `memhub` (and surfacing of `pending_writes`
+during wrap-up) ships as a follow-on slice once the K9 repo is updated
+to call the existing `memhub decision add` / `memhub task add` /
+`memhub fact add` commands.
+
 ## How memhub works
 
 ### Per-repo source of truth
@@ -506,7 +563,22 @@ Remaining scope:
 
 - none — Milestone 4 is complete.
 
-### Milestone 5+
+### Milestone 5: K9 framework interop
+
+Status: In progress
+
+Shipped:
+
+- K9 detection on `memhub init`; `[integrations.k9]` config section auto-populated when `agent_docs/project_state.md` is present (`M5-001` phase 1)
+- `memhub integrations status | enable-k9 | disable-k9` subcommands for explicit toggling on already-initialized repos (`M5-001` phase 1)
+- Drift detection and surfacing in `memhub status` and the MCP `status` tool (`M5-001` phase 1)
+
+Remaining scope (separate slices):
+
+- `M5-002`: K9 `/wrap-up` post-approval shell-out into `memhub decision add` / `task add` / `fact add` (lives in K9 repo)
+- `M5-003`: surface `pending_writes` during K9 `/wrap-up` review drafts
+
+### Milestone 6+
 
 Status: Planned, speculative
 

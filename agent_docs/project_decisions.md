@@ -168,3 +168,33 @@ Append-only. Superseding decisions should be added as new dated entries rather t
 - The only triggers that update command counters are `memhub command verify` and the MCP `record_command` adapter that delegates to it.
 - Auto-bumping fact confidence on duplicate `propose_fact` arrivals was rejected for this slice — it would require a dedupe path we haven't designed. Treating every read as weak re-verification was rejected to stay consistent with PRD §11.2 ("agent claiming 'that worked' in chat is not a verifiable signal").
 - This keeps the slice narrow and means no new write-side surface was added in `M4-005`.
+
+## 2026-05-12 - K9 detection is a single-file existence probe at a configurable path
+
+- `memhub` treats the K9 Claude Framework as present when `<agent_docs_path>/project_state.md` exists as a regular file. `agent_docs_path` is configurable per project (default `"agent_docs"`).
+- A single canonical file was chosen over "all four canonical files" because mid-bootstrap K9 repos may not yet have all four; over "directory exists" because that produces false positives for repos using `agent_docs/` for unrelated purposes; and over "scan CLAUDE.md for a sentinel string" because that couples detection to documentation text that can drift.
+- Detection is path-only — `memhub` never reads the contents of `project_state.md`. The marker file is treated as opaque.
+
+## 2026-05-12 - `[integrations.k9]` is omitted from fresh configs when K9 isn't detected
+
+- A fresh `memhub init` only writes the `[integrations.k9]` section when K9 is detected at init time. When K9 is not detected, the section is omitted entirely rather than written as `enabled = false`.
+- This keeps default `.memhub/config.toml` files minimal and makes "K9 was detected at init time" visually obvious from the config file itself.
+- Existing configs without the section continue to work because `IntegrationsConfig` is `#[serde(default)]` on `ProjectConfig` and `IntegrationsConfig::k9` defaults to `None`.
+
+## 2026-05-12 - `memhub init` never modifies an existing config; toggling goes through `memhub integrations`
+
+- `memhub init` writes `[integrations.k9]` only when it creates the config file. On a re-init against an existing config it leaves the file alone, preserving its prior idempotent contract.
+- Toggling on already-initialized repos uses a new dedicated subcommand: `memhub integrations enable-k9 [--agent-docs-path <path>] [--force]` and `memhub integrations disable-k9`. `enable-k9` refuses to run when no K9 marker is detected unless `--force` is supplied, so the config can't quietly drift away from filesystem reality. `disable-k9` keeps the section and flips `enabled = false` rather than removing the section entirely, so the audit trail of "this project once integrated with K9" survives.
+- Auto-merging the missing section on re-init was rejected because it would stretch `init`'s contract (it currently never modifies an existing config) and create a surprise when re-running init on a repo where the user intentionally chose not to enable K9.
+
+## 2026-05-12 - K9 detection re-runs on `memhub status` but not on every `open_project`
+
+- `commands::integrations::k9_state` runs the detection probe whenever `memhub status` (or the MCP `status` tool) executes. The result is reported as `K9 detected: yes/no` plus a `drift` message when config and filesystem disagree.
+- `db::open_project` does not re-run detection. Adding a filesystem probe to every CLI invocation was rejected as unnecessary work for the common case and risky — it would create temptation to silently rewrite config on drift, which we explicitly don't want.
+- Drift is surfaced, never auto-corrected. The user runs `memhub integrations enable-k9` / `disable-k9` to bring config and filesystem back into agreement.
+
+## 2026-05-12 - MCP exposes K9 state on `status` only; no new tools
+
+- The MCP `status` tool response gained `k9_detected`, `k9_enabled`, `k9_agent_docs_path`, and `k9_drift` so agents can condition behavior on the integration state.
+- A dedicated `integrations` MCP tool was rejected as overkill — `status` already exists and the K9 state is small.
+- Agents continue to use `propose_fact` / `propose_decision` identically regardless of K9 presence. The integration is a CLI / human-approval concern, not an agent concern at the MCP layer.
