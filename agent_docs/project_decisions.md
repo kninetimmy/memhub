@@ -60,3 +60,27 @@ Append-only. Superseding decisions should be added as new dated entries rather t
 - `pending_writes` now stores MCP provenance as a JSON blob so the schema can remain forward-compatible without pretending prompt or session text is available yet.
 - The stored provenance currently covers MCP request ID, request meta, protocol version, client name/version, and initialize meta where `rmcp` exposes them.
 - Prompt/session review context remains deferred until the transport surface or Milestone 4 review design gives a concrete source for it.
+
+## 2026-05-12 - Export format version is independent of database schema version
+
+- `memhub_export_version` is the durable on-disk contract; `source_schema_version` records which SQLite migration the source was at.
+- A new format version is introduced only when a schema change makes the existing layout insufficient, and lands as a sibling reader module (`src/export/v2`) rather than mutating `v1`.
+- Older `memhub` builds must reject newer format versions with a clear error; newer builds keep accepting older versions until the older version is explicitly retired and documented.
+
+## 2026-05-12 - Export covers durable user data only; derived state is regenerated
+
+- The export contains `facts`, `decisions`, `tasks`, `commands`, `pending_writes`, and `writes_log`.
+- Git-derived data (`commits`, `files`, `commit_files`), FTS state (`chunks`, `chunk_fts`), `schema_migrations`, and per-machine config are excluded by design.
+- Import regenerates decision chunks from the restored decisions; the user re-runs `memhub ingest-git` after import to repopulate git history from the local repository.
+
+## 2026-05-12 - Import is wipe-and-restore with ID preservation, not merge
+
+- `memhub import` refuses on a non-empty target unless `--force` is passed, and a forced run wipes durable tables before inserting.
+- Row IDs are preserved so cross-table references (`decisions.superseded_by`, `writes_log.row_id`) stay valid.
+- The restore runs in a single transaction with `PRAGMA defer_foreign_keys = ON` so the self-referencing `decisions.superseded_by` FK does not block id-order inserts.
+- Merge semantics are explicitly deferred; if needed they ship as a separate command rather than an `--merge` mode on `import`.
+
+## 2026-05-12 - Import target must be initialized first
+
+- `memhub import` requires the target to already have a `.memhub/` created via `memhub init` and will not auto-initialize.
+- This keeps the recovery flow explicit and leaves the missing-`.memhub/` and missing-`project.sqlite` scenarios to be handled by `M4-002`.

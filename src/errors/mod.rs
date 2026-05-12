@@ -24,6 +24,8 @@ pub enum MemhubError {
     TomlDeserialize(#[from] toml::de::Error),
     #[error(transparent)]
     TomlSerialize(#[from] toml::ser::Error),
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
 }
 
 pub type Result<T> = std::result::Result<T, MemhubError>;

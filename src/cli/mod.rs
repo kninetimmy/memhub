@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::Result;
@@ -44,6 +46,14 @@ pub enum TopLevelCommand {
     Command {
         #[command(subcommand)]
         command: CommandCommand,
+    },
+    Export {
+        path: PathBuf,
+    },
+    Import {
+        path: PathBuf,
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -346,6 +356,34 @@ pub fn run(cli: Cli) -> Result<()> {
                 println!("Marked task {id} as done.");
             }
         },
+        TopLevelCommand::Export { path } => {
+            let summary = commands::export::run(&cwd, &path)?;
+            println!(
+                "Exported memhub project to {}",
+                summary.destination.display()
+            );
+            println!("  facts: {}", summary.facts);
+            println!("  decisions: {}", summary.decisions);
+            println!("  tasks: {}", summary.tasks);
+            println!("  commands: {}", summary.commands);
+            println!("  pending writes: {}", summary.pending_writes);
+            println!("  writes log entries: {}", summary.writes_log);
+        }
+        TopLevelCommand::Import { path, force } => {
+            let summary = commands::import::run(&cwd, &path, force)?;
+            println!(
+                "Imported memhub project from {}{}",
+                summary.source.display(),
+                if summary.forced { " (forced)" } else { "" }
+            );
+            println!("Target: {}", summary.target_root.display());
+            println!("  facts: {}", summary.facts);
+            println!("  decisions: {}", summary.decisions);
+            println!("  tasks: {}", summary.tasks);
+            println!("  commands: {}", summary.commands);
+            println!("  pending writes: {}", summary.pending_writes);
+            println!("  writes log entries: {}", summary.writes_log);
+        }
         TopLevelCommand::Command { command } => match command {
             CommandCommand::List => {
                 let commands = commands::command::list(&cwd)?;

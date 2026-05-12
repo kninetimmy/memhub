@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`memhub` is a local-first per-repo memory CLI that aims to give Codex and Claude Code one shared durable source of project context. The current implementation now covers the core of Milestone 2 plus the shipped markdown-sync and narrowed MCP/write-policy slices of Milestone 3 while still avoiding speculative subsystems.
+`memhub` is a local-first per-repo memory CLI that aims to give Codex and Claude Code one shared durable source of project context. The current implementation covers Milestone 2's retrieval path, the shipped markdown-sync and narrowed MCP/write-policy slices of Milestone 3, and the Milestone 4 portable export/import recovery path, while still avoiding speculative subsystems.
 
 ## Stack and Versions
 
@@ -17,7 +17,8 @@
 ## Layout
 
 - `src/cli/` - top-level CLI command definitions and output formatting
-- `src/commands/` - core command handlers
+- `src/commands/` - core command handlers, including `export` and `import` for portable recovery
+- `src/export/` - version-tagged on-disk format types (`v1`) for export/import
 - `src/config/` - per-repo config model and read/write helpers
 - `src/db/` - path discovery, connection bootstrap, migrations, `.gitignore` handling
 - `src/models/` - small data structs used by the CLI layer
@@ -34,6 +35,7 @@
 - Search uses SQLite FTS5 over `chunks` for decision text and exact indexed lookups for file history through `files` and `commit_files`.
 - The MCP layer serves a local stdio server through `memhub serve` and currently exposes thin tool adapters for status, search, task listing, decision listing, latest-command lookup, explicit verified command recording, and staged fact/decision proposals. It preserves the exact raw `clientInfo.name`, normalizes aliases from a trimmed copy, sanitizes client names before logging, and stores available MCP request/init provenance JSON with staged writes.
 - Markdown sync rewrites only explicit managed sections in `AGENTS.md` and `CLAUDE.md`, validates that each file has at most one well-formed managed block pair, creates timestamped backups for changed existing files under `.memhub/backups/markdown/`, and uses temp-file replacement writes. It can run explicitly or after writes when `auto_sync_md` is enabled.
+- Export/import provides the supported recovery path. `memhub export` writes a version-tagged JSON file covering facts, decisions, tasks, commands, pending writes, and the writes log; derived data (git ingestion, FTS chunks, schema migrations) is excluded. `memhub import` validates the format version, refuses on non-empty targets unless `--force` is passed, wipes durable tables plus decision chunks in a single transaction with `PRAGMA defer_foreign_keys = ON`, restores rows with their original IDs, regenerates decision chunks, appends a `writes_log` entry for the restore event, and runs `sync-md` after commit.
 
 ## Security Invariants
 
@@ -49,4 +51,5 @@ Single local CLI process with an embedded SQLite database plus an on-demand stdi
 
 - Search coverage beyond exact file history plus decision FTS
 - Review/promotion flow for staged agent-originated writes
-- Confidence decay, review queue, export/import, and deny-list enforcement
+- Confidence decay, review queue, and deny-list enforcement
+- Missing-DB recovery handling (an existing `.memhub/` without `project.sqlite` is still silently re-initialized today; `M4-002` tightens this)

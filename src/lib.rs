@@ -3,6 +3,7 @@ pub mod commands;
 pub mod config;
 pub mod db;
 pub mod errors;
+pub mod export;
 pub mod logging;
 pub mod mcp;
 pub mod models;

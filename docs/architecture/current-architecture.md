@@ -17,6 +17,7 @@ The binary resolves the nearest ancestor containing `.memhub/`, opens the SQLite
 - MCP server wiring via `rmcp`
 - Schema bootstrap and migration tracking
 - CRUD handlers for facts, decisions, tasks, command history verification, git ingestion, and markdown sync
+- Portable version-tagged JSON export and wipe-and-restore import that preserve row IDs, regenerate decision chunks, and run `sync-md` after restore
 - Staged pending-write handling for agent-originated fact and decision proposals, including persisted MCP request/init provenance JSON
 - FTS5-backed search chunks for decision text plus exact file-history queries
 - Managed-block generation for `AGENTS.md` and `CLAUDE.md`, with optional auto-sync after writes
@@ -37,5 +38,6 @@ The binary resolves the nearest ancestor containing `.memhub/`, opens the SQLite
 - Search routing is still intentionally narrow: exact file-path history and decision-text FTS only.
 - No review or promotion flow exists yet for staged agent-originated writes.
 - No confidence decay, review queue, or deny-list enforcement exists yet.
+- Import requires the target to already be initialized via `memhub init`; the missing-DB recovery case is `M4-002` work.
 
 Future docs should describe those pieces only after they are implemented.

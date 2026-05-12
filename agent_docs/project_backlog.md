@@ -43,9 +43,9 @@ Each item should capture scope, affected files, status, and explicit deferrals.
   Notes: Completed by adding `pending_writes`, staged MCP `propose_fact` / `propose_decision` tools, status visibility for pending writes, and `clientInfo.name` alias normalization with raw-value preservation. Review and promotion flows remain deferred to Milestone 4.
 
 - `M4-001` - Add portable export/import for repo recovery and machine moves.
-  Status: triaged
-  Scope: `src/cli/`, `src/commands/`, `src/db/`, format docs, tests
-  Notes: Implement `memhub export` / `memhub import` as the supported recovery path using a version-tagged portable format. Import should restore data into the repo-local `.memhub/` layout, reconcile project metadata with the current repo root, run migrations as needed, and regenerate managed markdown after restore.
+  Status: completed
+  Scope: `src/cli/`, `src/commands/export.rs`, `src/commands/import.rs`, `src/export/v1.rs`, `docs/reference/export-format.md`, README backup/restore section, `tests/export_import.rs`
+  Notes: Shipped `memhub export <path>` writing a version-tagged JSON file (`memhub_export_version = 1`) covering facts, decisions, tasks, commands, pending_writes, and writes_log. Shipped `memhub import <path>` with `--force` flag; wipe-and-restore semantics in a single transaction using `PRAGMA defer_foreign_keys = ON`; preserves row IDs; regenerates decision chunks via `search::sync_decision_chunks`; logs an audit entry for the restore; runs `sync_md::sync_project` after commit. Import requires the target to already be initialized; the missing-DB recovery case is `M4-002`. Merge semantics and CLI restore convenience UX explicitly deferred.
 
 - `M4-002` - Add recovery-safe missing-DB handling and follow-on init UX.
   Status: triaged

@@ -2,7 +2,7 @@
 
 ## Current Scaffold
 
-This repository now covers the Milestone 1 foundation, the core Milestone 2 retrieval path, and the shipped markdown sync plus narrowed MCP/write-policy slices of Milestone 3:
+This repository now covers the Milestone 1 foundation, the core Milestone 2 retrieval path, the shipped markdown sync plus narrowed MCP/write-policy slices of Milestone 3, and the Milestone 4 portable export/import recovery path (`M4-001`):
 
 - Rust CLI scaffold
 - SQLite schema and migrations
@@ -15,6 +15,7 @@ This repository now covers the Milestone 1 foundation, the core Milestone 2 retr
 - Local stdio MCP server through `memhub serve`
 - Thin MCP tools for status, search, task listing, recent decisions, latest command lookup, explicit verified command recording, and staged fact/decision proposals
 - Audit logging for writes
+- Portable version-tagged JSON `memhub export` and `memhub import` with `--force` overwrite, id preservation, FTS rebuild, and `sync-md` after restore
 
 ## Milestone 2: Git + Search
 
@@ -33,12 +34,12 @@ This repository now covers the Milestone 1 foundation, the core Milestone 2 retr
 
 ## Milestone 4: Trust and Maintenance
 
-- Add review queue flows
-- Add confidence scoring and stale data handling
-- Add portable export/import as the supported repo backup and restore path
+- Add portable export/import as the supported repo backup and restore path - shipped in `M4-001`
+- Add readable README backup/restore instructions - shipped with `M4-001`
 - Add missing-DB safety handling so an existing `.memhub/` without `project.sqlite` is treated as a recovery case
 - Add follow-on restore UX around `init` or adjacent commands after export/import is stable
-- Add readable README backup/restore instructions when recovery features ship
+- Add review queue flows
+- Add confidence scoring and stale data handling
 - Add deny-list enforcement for sensitive paths and patterns
 
 ## Milestone 5+

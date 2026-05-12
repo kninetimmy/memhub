@@ -6,14 +6,14 @@ The long-term product direction is a shared memory layer that both agents can re
 
 ## Development Status
 
-`memhub` is in active development and is now moving into Milestone 4 planning after completing `M3-003`.
+`memhub` is in active development and is now mid-Milestone 4 after shipping `M4-001`.
 
 Current state:
 
-- Shipped: Milestone 1 foundations, Milestone 2 git ingestion and indexed search, and the narrowed Milestone 3 slice covering markdown sync, stdio MCP access, staged proposal writes, and client alias normalization
-- Current focus: begin Milestone 4 recovery work with portable export/import and missing-DB safety
-- Implemented now: local SQLite storage, embedded migrations, per-repo config, audit logging, facts/decisions/tasks/commands CRUD, explicit command verification, git ingestion, indexed search, managed-block sync for `AGENTS.md` / `CLAUDE.md`, `memhub serve` for stdio MCP access, staged MCP fact/decision proposals, and pending-write visibility in status
-- Not implemented yet: review queue and promotion of staged writes, confidence decay, export/import, missing-DB recovery handling, deny-list enforcement, and broader search coverage beyond current indexed paths
+- Shipped: Milestone 1 foundations, Milestone 2 git ingestion and indexed search, the narrowed Milestone 3 slice covering markdown sync, stdio MCP access, staged proposal writes, and client alias normalization, plus the Milestone 4 portable export/import recovery path
+- Current focus: `M4-002` missing-DB safety so an existing `.memhub/` without `project.sqlite` is treated as recovery, not silent re-init
+- Implemented now: local SQLite storage, embedded migrations, per-repo config, audit logging, facts/decisions/tasks/commands CRUD, explicit command verification, git ingestion, indexed search, managed-block sync for `AGENTS.md` / `CLAUDE.md`, `memhub serve` for stdio MCP access, staged MCP fact/decision proposals, pending-write visibility in status, and portable `memhub export` / `memhub import`
+- Not implemented yet: review queue and promotion of staged writes, confidence decay, missing-DB recovery handling, deny-list enforcement, and broader search coverage beyond current indexed paths
 
 Milestone status:
 
@@ -22,7 +22,7 @@ Milestone status:
 | Milestone 1: DB + CLI | Complete | Core repo bootstrap, schema, CRUD, config, logging |
 | Milestone 2: Git + search | Complete | `ingest-git`, FTS-backed decision search, exact file-history lookups |
 | Milestone 3: MCP + markdown sync | Complete | Markdown sync, stdio MCP reads, verified command recording, staged proposal writes, and client alias normalization are shipped under the current narrowed plan |
-| Milestone 4: Quality | Planned | Review flow, confidence/staleness, portable recovery import/export, missing-DB safety, deny-list work |
+| Milestone 4: Quality | In progress | Portable `export` / `import` shipped (`M4-001`); missing-DB safety, review flow, confidence/staleness, deny-list work remain |
 | Milestone 5+ | Planned | Speculative future expansions only after separate validation |
 
 ## Why memhub exists
@@ -46,6 +46,7 @@ The current codebase already supports a practical local workflow:
 - Search current indexed memory with `memhub search <query>`
 - Regenerate managed blocks in `AGENTS.md` and `CLAUDE.md` with `memhub sync-md`
 - Serve the current repository over stdio MCP with `memhub serve`, including staged `propose_fact` and `propose_decision` MCP tools
+- Back up the project with `memhub export <path>` and restore it on another machine or a clean checkout with `memhub import <path>` (use `--force` to overwrite existing data)
 
 ## Install and Quick Start
 
@@ -117,6 +118,50 @@ Start the local stdio MCP server:
 ```bash
 cargo run -- serve
 ```
+
+## Backup and Restore
+
+`memhub` ships a portable, version-tagged JSON export as the supported
+recovery path. The export captures durable user data — facts, decisions,
+tasks, commands, pending writes, and the writes log — and excludes
+derived state (git ingestion, FTS chunks, schema migrations) that can be
+regenerated.
+
+### Back up the current project
+
+```bash
+cargo run -- export ./memhub-backup.json
+```
+
+The destination is a path you choose. Parent directories are created if
+needed. Keep the file somewhere outside `.memhub/` — for example, a
+cloud-synced folder or another backup target.
+
+### Restore onto a fresh machine or clean checkout
+
+```bash
+cd /path/to/repo
+cargo run -- init
+cargo run -- import /path/to/memhub-backup.json
+```
+
+The target must already be initialized (`memhub init`). The import wipes
+durable tables and restores rows with their original IDs so cross-table
+references (e.g. decision supersession chains) stay intact.
+
+If the target already has data, `memhub import` refuses unless `--force`
+is passed:
+
+```bash
+cargo run -- import /path/to/memhub-backup.json --force
+```
+
+After import, re-run `memhub ingest-git` to repopulate commit/file
+history from the local git repository — git history is not part of the
+export.
+
+The on-disk shape of the export file is documented in
+[docs/reference/export-format.md](docs/reference/export-format.md).
 
 ## How memhub works
 
@@ -239,7 +284,7 @@ Those pieces should be described as planned only until the implementation lands.
 ## Repository Layout
 
 - `src/cli/` - top-level CLI command definitions and output formatting
-- `src/commands/` - command handlers for facts, decisions, tasks, commands, search, git ingestion, and status
+- `src/commands/` - command handlers for facts, decisions, tasks, commands, search, git ingestion, status, and portable export/import
 - `src/config/` - per-repo config model and read/write helpers
 - `src/db/` - path discovery, connection bootstrap, migrations, and `.gitignore` handling
 - `src/models/` - small structs used by the CLI layer
@@ -299,16 +344,19 @@ Deferred to Milestone 4:
 
 ### Milestone 4: Quality
 
-Status: Planned
+Status: In progress
 
-Expected scope:
+Shipped:
 
+- portable `memhub export` / `memhub import` as the supported backup and restore path (`M4-001`)
+- readable README backup/restore instructions
+
+Remaining scope:
+
+- missing-DB safety handling so an existing `.memhub/` without `project.sqlite` is treated as recovery, not silent re-init (`M4-002`)
+- narrow follow-on recovery UX around restore entry points once `M4-002` is in place
 - review flow for proposed writes
 - confidence scoring and staleness handling
-- portable `memhub export` / `memhub import` as the supported backup and restore path
-- missing-DB safety handling so an existing `.memhub/` without `project.sqlite` is treated as recovery, not silent re-init
-- narrow follow-on recovery UX around restore entry points once export/import is in place
-- readable README backup/restore instructions
 - deny-list enforcement
 
 ### Milestone 5+
