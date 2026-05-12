@@ -381,6 +381,11 @@ Quick reference for the supporting affordances `memhub` provides:
   (defaults to `cli:user`, max 64 characters, non-empty). K9 passes
   `--actor k9:wrap-up` so the `writes_log` audit trail differentiates
   K9-mediated writes from manual CLI use.
+- **Machine-readable read surfaces.** `review list` and `review show`
+  also accept `--json`. `review list --json` emits
+  `{"status": <filter|null>, "pending_writes": [...]}` so K9 can fold
+  staged proposals into the draft alongside Markdown updates without
+  parsing human-readable output.
 
 Example end-to-end shell session:
 

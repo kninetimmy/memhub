@@ -7,7 +7,7 @@ use serde_json::json;
 use crate::Result;
 use crate::commands;
 use crate::commands::{DEFAULT_ACTOR, validate_actor};
-use crate::models::InitResult;
+use crate::models::{InitResult, PendingWriteRecord};
 
 fn resolve_actor(actor: Option<&str>) -> Result<String> {
     match actor {
@@ -17,6 +17,21 @@ fn resolve_actor(actor: Option<&str>) -> Result<String> {
         }
         None => Ok(DEFAULT_ACTOR.to_string()),
     }
+}
+
+fn pending_write_record_to_json(row: &PendingWriteRecord) -> serde_json::Value {
+    json!({
+        "id": row.id,
+        "kind": row.kind,
+        "status": row.status,
+        "actor": row.actor,
+        "actor_raw": row.actor_raw,
+        "rationale": row.rationale,
+        "payload_json": row.payload_json,
+        "provenance_json": row.provenance_json,
+        "created_at": row.created_at,
+        "reviewed_at": row.reviewed_at,
+    })
 }
 
 fn print_init_result(result: &InitResult) {
@@ -156,9 +171,13 @@ pub enum ReviewCommand {
         status: PendingStatus,
         #[arg(long, default_value_t = 25)]
         limit: usize,
+        #[arg(long)]
+        json: bool,
     },
     Show {
         id: i64,
+        #[arg(long)]
+        json: bool,
     },
     Accept {
         id: i64,
@@ -643,9 +662,22 @@ pub fn run(cli: Cli) -> Result<()> {
             }
         },
         TopLevelCommand::Review { command } => match command {
-            ReviewCommand::List { status, limit } => {
+            ReviewCommand::List {
+                status,
+                limit,
+                json: as_json,
+            } => {
                 let rows = commands::review::list(&cwd, status.as_filter(), limit)?;
-                if rows.is_empty() {
+                if as_json {
+                    let payload = json!({
+                        "status": status.as_filter(),
+                        "pending_writes": rows
+                            .iter()
+                            .map(pending_write_record_to_json)
+                            .collect::<Vec<_>>(),
+                    });
+                    println!("{payload}");
+                } else if rows.is_empty() {
                     println!("No pending writes match this filter.");
                 } else {
                     for row in rows {
@@ -666,17 +698,22 @@ pub fn run(cli: Cli) -> Result<()> {
                     }
                 }
             }
-            ReviewCommand::Show { id } => {
+            ReviewCommand::Show { id, json: as_json } => {
                 let row = commands::review::show(&cwd, id)?;
-                println!("[{}] kind={} status={}", row.id, row.kind, row.status);
-                println!("Actor: {} (raw: {})", row.actor, row.actor_raw);
-                println!("Created: {}", row.created_at);
-                if let Some(reviewed) = row.reviewed_at {
-                    println!("Reviewed: {reviewed}");
+                if as_json {
+                    let payload = pending_write_record_to_json(&row);
+                    println!("{payload}");
+                } else {
+                    println!("[{}] kind={} status={}", row.id, row.kind, row.status);
+                    println!("Actor: {} (raw: {})", row.actor, row.actor_raw);
+                    println!("Created: {}", row.created_at);
+                    if let Some(reviewed) = row.reviewed_at {
+                        println!("Reviewed: {reviewed}");
+                    }
+                    println!("Rationale: {}", row.rationale);
+                    println!("Payload: {}", row.payload_json);
+                    println!("Provenance: {}", row.provenance_json);
                 }
-                println!("Rationale: {}", row.rationale);
-                println!("Payload: {}", row.payload_json);
-                println!("Provenance: {}", row.provenance_json);
             }
             ReviewCommand::Accept {
                 id,

@@ -4,35 +4,55 @@ Last updated: 2026-05-12
 
 ## Currently building
 
-Between tasks after `M5-002`. The memhub-side half of the K9 wrap-up
-integration shipped: a stable v1 contract document at
-`docs/reference/k9-wrap-up-contract.md`, plus the supporting CLI
-affordances K9 needs to consume it. `memhub integrations check-k9`
-provides a zero-stdout exit-code gate (0 = enabled, 1 = not). All
-mutating commands the K9 wrap-up touches (`fact add`, `decision add`,
-`task add`, `task done`, `review accept`, `review reject`) now accept
-`--json` (single JSON object on stdout, schema locked by the contract
-doc) and `--actor <name>` (free-form, defaults to `cli:user`, max 64
-chars, non-empty). The actor flag is threaded all the way down to
-`writes_log`, including through `review accept`'s delegated calls into
-`fact::add` / `decision::add`. No K9 repo edits in this slice — those
-land as a separate change in the K9 repository, consuming the v1
-contract verbatim.
+Between tasks after `M5-003` (memhub side). The K9 wrap-up read path
+is now locked into the v1 contract: `memhub review list` and `memhub
+review show` accept `--json` and emit shapes that mirror the MCP
+`PendingWriteToolRecord` field set. `review list --json` returns
+`{"status": <filter|null>, "pending_writes": [...]}`; `review show
+--json` returns a single record. Read surfaces are intentionally
+side-effect-free — no `--actor`, no `writes_log` rows. The contract
+doc gained a "Read surfaces" section before "Mutating commands" and
+the sequencing step 3 now points directly at `review list --json`.
+The amendment is additive within `v1` (no `v2` bump). No K9 repo
+edits in this slice — the K9 `/wrap-up.md` consumer change remains
+triaged separately and can now pick the CLI-only path end-to-end.
 
 ## Next up
 
-1. Plan `M5-003`: surfacing `pending_writes` during K9 `/wrap-up`
-   review drafts. The memhub side already exposes `memhub review list`
-   and MCP `list_pending_writes`; the slice is mostly about whether
-   the contract doc needs additions or whether existing surfaces are
-   sufficient.
-2. Coordinate the K9 repo `/wrap-up.md` consumer change with whoever
-   owns the K9 repo. The v1 contract document gives them everything
-   they need; their slice is mechanical.
-3. Decide whether MCP needs broader indexed retrieval over facts,
+1. Coordinate the K9 repo `/wrap-up.md` consumer change with whoever
+   owns the K9 repo. With `M5-003` shipped on the memhub side, K9 can
+   stay CLI-only end-to-end (gate + read + mutate); their slice is
+   mechanical.
+2. Decide whether MCP needs broader indexed retrieval over facts,
    tasks, or command history beyond the current narrow paths.
+3. Revisit the open `MEMHUB_ACTOR` env-var question once a real K9
+   `/wrap-up` consumer exists and we know how many CLI invocations
+   per session it actually fans out to.
 
 ## Last session
+
+2026-05-12 - Completed `M5-003` (memhub side). Added `--json` to
+`memhub review list` and `memhub review show` in `src/cli/mod.rs`,
+backed by a small `pending_write_record_to_json` helper that mirrors
+the MCP `PendingWriteToolRecord` shape (`id, kind, status, actor,
+actor_raw, rationale, payload_json, provenance_json, created_at,
+reviewed_at`). `payload_json` and `provenance_json` stay as nested
+JSON strings to preserve the durable representation byte-for-byte.
+`review list --json` envelopes the rows as `{"status": <filter or
+null>, "pending_writes": [...]}` — `null` only when `--status all`
+is used. Read surfaces accept no `--actor` flag and write no
+`writes_log` rows. Updated `docs/reference/k9-wrap-up-contract.md`
+with a new "Read surfaces" section ahead of "Mutating commands",
+amended step 3 of "Sequencing" to point directly at `review list
+--json`, and added a `v1`-additive version-history entry (no `v2`
+bump). Added 4 subprocess tests in `tests/k9_contract.rs`:
+`review_list_json_emits_contract_shape`,
+`review_list_json_filters_by_status` (verifies `--status all` produces
+`status: null`), `review_show_json_emits_contract_shape`,
+`review_show_json_missing_id_exits_nonzero`. README gained a
+"Machine-readable read surfaces" bullet in the K9 contract subsection.
+Verified with `cargo fmt`, `cargo build`, and `cargo test` (103 tests
+across all suites, up from 99).
 
 2026-05-12 - Completed `M5-002`. Shipped
 `docs/reference/k9-wrap-up-contract.md` (v1 contract: sequencing,
@@ -80,26 +100,8 @@ integration" section and bumped roadmap to introduce Milestone 5 and
 shift the speculative bucket to Milestone 6+. Verified with `cargo
 fmt`, `cargo build`, and `cargo test` (88 tests across all suites).
 
-2026-05-12 - Completed `M4-005` (confidence and staleness). Added
-`models::FACT_STALE_AFTER_DAYS`, `Fact::is_stale`,
-`CommandRecord::confidence()`, `StatusSummary::stale_facts`, and a
-`fact::count_stale` helper. `fact::list` computes staleness in SQL via
-`julianday`. CLI surfaces `[stale]` on facts, a confidence column on
-commands, and a stale-facts count in `status`. MCP `StatusToolResponse`
-gained `stale_facts`; `CommandToolRecord` gained `confidence`. Added
-11 integration tests in `tests/staleness.rs` covering the 90-day
-boundary (89d/91d), null `verified_at`, `fact add` upsert refreshing
-staleness, `review accept` producing fresh facts, `count_stale`
-correctness, and command confidence math edge cases. Updated README
-with a "Confidence and staleness" section and marked Milestone 4
-complete in the roadmap. Verified with `cargo fmt`, `cargo build`, and
-`cargo test` (70 tests across all suites).
-
 ## Open questions
 
-- Should the v1 contract grow a `memhub review list --json` surface
-  for K9 to consume during draft assembly (`M5-003`), or is the
-  existing MCP `list_pending_writes` the right path?
 - Should `MEMHUB_ACTOR` env var be added as an alternative to the
   `--actor` flag for K9 invocations that fan out to many CLI calls?
 - Should `enable-k9 --agent-docs-path` accept any path and create the

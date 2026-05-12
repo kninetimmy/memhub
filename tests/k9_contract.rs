@@ -319,6 +319,152 @@ fn check_k9_exits_nonzero_when_not_initialized() {
 }
 
 #[test]
+fn review_list_json_emits_contract_shape() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    memhub::commands::pending_write::propose_fact(
+        temp.path(),
+        "lint-command",
+        "cargo fmt --check",
+        "Observed in repo.",
+        "codex",
+        "openai-codex",
+        "{\"source\":\"mcp\"}",
+    )
+    .expect("propose fact");
+
+    let payload = run_cli_expecting_success(
+        temp.path(),
+        &["review", "list", "--status", "pending", "--json"],
+    );
+
+    assert_eq!(payload["status"], "pending");
+    let rows = payload["pending_writes"]
+        .as_array()
+        .expect("pending_writes array");
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    assert!(row["id"].as_i64().expect("id") > 0);
+    assert_eq!(row["kind"], "fact");
+    assert_eq!(row["status"], "pending");
+    assert_eq!(row["actor"], "codex");
+    assert_eq!(row["actor_raw"], "openai-codex");
+    assert_eq!(row["rationale"], "Observed in repo.");
+    assert!(row["payload_json"].is_string());
+    assert!(row["provenance_json"].is_string());
+    assert!(row["created_at"].is_string());
+    assert!(row["reviewed_at"].is_null());
+
+    let inner: Value =
+        serde_json::from_str(row["payload_json"].as_str().expect("payload_json str"))
+            .expect("payload_json parses");
+    assert_eq!(inner["key"], "lint-command");
+    assert_eq!(inner["value"], "cargo fmt --check");
+}
+
+#[test]
+fn review_list_json_filters_by_status() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    memhub::commands::pending_write::propose_fact(
+        temp.path(),
+        "k1",
+        "v1",
+        "r1",
+        "codex",
+        "openai-codex",
+        "{\"source\":\"mcp\"}",
+    )
+    .expect("propose fact");
+
+    let accepted_filter = run_cli_expecting_success(
+        temp.path(),
+        &["review", "list", "--status", "accepted", "--json"],
+    );
+    assert_eq!(accepted_filter["status"], "accepted");
+    assert_eq!(
+        accepted_filter["pending_writes"]
+            .as_array()
+            .expect("array")
+            .len(),
+        0
+    );
+
+    let all_filter = run_cli_expecting_success(
+        temp.path(),
+        &["review", "list", "--status", "all", "--json"],
+    );
+    assert!(all_filter["status"].is_null());
+    assert_eq!(
+        all_filter["pending_writes"]
+            .as_array()
+            .expect("array")
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn review_show_json_emits_contract_shape() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    memhub::commands::pending_write::propose_fact(
+        temp.path(),
+        "deploy-command",
+        "./deploy.sh",
+        "Risky.",
+        "codex",
+        "openai-codex",
+        "{\"source\":\"mcp\"}",
+    )
+    .expect("propose fact");
+
+    let pending_id: i64 = {
+        let ctx = db::open_project(temp.path()).expect("open project");
+        ctx.conn
+            .query_row(
+                "SELECT id FROM pending_writes ORDER BY id DESC LIMIT 1",
+                params![],
+                |row| row.get(0),
+            )
+            .expect("pending id")
+    };
+
+    let payload = run_cli_expecting_success(
+        temp.path(),
+        &["review", "show", &pending_id.to_string(), "--json"],
+    );
+
+    assert_eq!(payload["id"], pending_id);
+    assert_eq!(payload["kind"], "fact");
+    assert_eq!(payload["status"], "pending");
+    assert_eq!(payload["actor"], "codex");
+    assert_eq!(payload["actor_raw"], "openai-codex");
+    assert_eq!(payload["rationale"], "Risky.");
+    assert!(payload["payload_json"].is_string());
+    assert!(payload["provenance_json"].is_string());
+    assert!(payload["created_at"].is_string());
+    assert!(payload["reviewed_at"].is_null());
+}
+
+#[test]
+fn review_show_json_missing_id_exits_nonzero() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    let output = run_cli(temp.path(), &["review", "show", "999", "--json"]);
+    assert!(!output.status.success());
+    assert!(
+        output.stdout.is_empty(),
+        "missing-id show must not emit JSON on stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[test]
 fn actor_validation_rejects_empty_and_overlong_values() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");

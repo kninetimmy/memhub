@@ -20,10 +20,11 @@ explicitly migrated.
                  path described below.
        - Exit non-zero → skip the memhub path entirely. Continue
                  with K9's standalone Markdown-only flow.
-  3. If `.memhub/` is present, optionally fetch staged proposals via
-     `memhub review list --status pending` (or MCP
-     `list_pending_writes`) and fold them into the draft. This is
-     the `M5-003` surface; it is optional for `M5-002` consumers.
+  3. If `.memhub/` is present, fetch staged proposals via
+     `memhub review list --status pending --json` (or MCP
+     `list_pending_writes`) and fold them into the draft so promotion
+     happens through the same human-approval gate as Markdown updates.
+     Read shapes are described in "Read surfaces" below.
   4. Show drafts for human approval (existing K9 behavior).
   5. On approval:
        a. DB writes first. For each approved item, invoke the matching
@@ -54,6 +55,62 @@ memhub integrations check-k9
 
 K9 should run this once near the top of `/wrap-up` and gate the
 entire shell-out path on the exit code. There is no need to re-check.
+
+## Read surfaces
+
+Read surfaces are pure projections of `pending_writes`; they do not
+touch durable tables and do not write to `writes_log`. K9 should use
+them during draft assembly. They take `--json` but no `--actor`.
+
+### `memhub review list`
+
+```
+memhub review list [--status <status>] [--limit <n>] --json
+```
+
+- `--status` accepts `pending|accepted|rejected|expired|all`.
+  Defaults to `pending`. `all` omits the filter.
+- `--limit` defaults to 25.
+- Rows are ordered by `created_at DESC, id DESC` (most recent first).
+
+**JSON response:**
+
+```json
+{
+  "status": "pending",
+  "pending_writes": [
+    {
+      "id": 4,
+      "kind": "fact",
+      "status": "pending",
+      "actor": "claude-code",
+      "actor_raw": "Claude Code",
+      "rationale": "user asked to remember the build command",
+      "payload_json": "{\"key\":\"build-command\",\"value\":\"cargo build\"}",
+      "provenance_json": "{...}",
+      "created_at": "2026-05-12 14:32:01",
+      "reviewed_at": null
+    }
+  ]
+}
+```
+
+- `status` echoes the filter that was applied. `null` when `--status all` was used.
+- `payload_json` and `provenance_json` are nested JSON strings, not
+  parsed objects, to preserve the durable representation byte-for-byte.
+- `reviewed_at` is `null` for `pending` rows and an ISO-ish timestamp
+  string otherwise.
+
+### `memhub review show`
+
+```
+memhub review show <id> --json
+```
+
+**JSON response:** a single record with the same fields as one
+element of `pending_writes` above.
+
+Failure: exit 1 if the pending write does not exist.
 
 ## Mutating commands
 
@@ -230,3 +287,6 @@ ORDER BY at DESC;
 - `v1` (2026-05-12) — initial contract shipped with `M5-002`:
   `check-k9` gate, `--json`/`--actor` on `fact add`, `decision add`,
   `task add`, `task done`, `review accept`, `review reject`.
+- `v1` amended (2026-05-12, `M5-003`) — additive: `--json` on
+  `review list` and `review show`. Existing `v1` consumers are
+  unaffected; the new flag is opt-in.
