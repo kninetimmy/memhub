@@ -227,3 +227,17 @@ Append-only. Superseding decisions should be added as new dated entries rather t
 - `M5-002` delivers the contract document AND the CLI affordances K9 needs to consume it, but does not include the K9 repo's `/wrap-up.md` consumer change. That edit lives in the K9 repository and is owned separately.
 - This split was chosen so the memhub side has a stable artifact to point at (`v1` contract) and can ship independently without lockstep coordination.
 - The K9 repo edit, when it ships, must consume `v1` verbatim or bump the contract to a new version.
+
+## 2026-05-12 - K9 v1 contract read surfaces mirror the MCP record shape exactly
+
+- `memhub review list --json` and `memhub review show --json` are part of the K9 `/wrap-up` v1 contract. `list` returns `{"status": <filter|null>, "pending_writes": [...]}`; `show` returns a single record. Per-record fields are exactly `id, kind, status, actor, actor_raw, rationale, payload_json, provenance_json, created_at, reviewed_at`, matching the MCP `PendingWriteToolRecord`.
+- `payload_json` and `provenance_json` are nested JSON strings, not parsed objects, so the durable representation is preserved byte-for-byte and consumers can round-trip without re-serialization drift.
+- Read surfaces accept no `--actor` flag and emit no `writes_log` rows. Reading is pure projection.
+- This was an additive `v1` amendment (no `v2` bump). Future changes to these shapes require a `v2` contract document and explicit K9 migration.
+
+## 2026-05-12 - Continuous confidence decay (PRD §11.4 beyond v1 shipped scope) is dropped from v1
+
+- The shipped fact-staleness slice (`M4-005`) covers PRD §11.4 in full for v1: a 90-day binary stale flag on facts and a derived `success / (success + fail)` confidence on commands. That's the contract.
+- Continuous decay (exponential or otherwise) on fact confidence, a persisted `commands.confidence` column, decision-level confidence, and a configurable staleness threshold are all explicitly out of v1 scope and will not ship unless a real workflow demands them.
+- The reasoning: binary stale-vs-fresh is easier to reason about than a tuning-knob exponential decay; v1 should ship the simplest model that satisfies the PRD's wording rather than the maximally faithful one.
+- If a future slice changes this, it ships as a separate milestone with its own migration and PRD addendum.

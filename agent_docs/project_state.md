@@ -4,97 +4,47 @@ Last updated: 2026-05-12
 
 ## Currently building
 
-Between numbered tasks after `M5-005`. The PRD-surface cleanup slice
-of Milestone 5 is done: `M5-004` shipped `memhub stats` (PRD §17), and
-`M5-005` shipped the `log_session_note` MCP tool + `memhub note list`
-CLI (PRD §12). Notes live in a new `session_notes` table behind
-migration `0006` — write-only scratch, never promoted, indexed by
-`created_at DESC`. Actor identity flows from `clientInfo.name` through
-the same `ClientIdentity` path as `propose_fact` / `propose_decision`.
-Notes are intentionally excluded from the v1 `memhub export` format
-(scratch isn't durable enough to lock into the export contract); a v2
-export would change that. By PRD §16 milestones, memhub is at v1; the
-remaining named-but-deferred items are continuous confidence decay
-(PRD §11.4 — explicitly dropped from this session per user direction)
-and the K9 repo `/wrap-up.md` consumer edit (lives outside this repo).
+Between tasks. By PRD §16 milestones memhub is at v1: Milestones 1–4
+are complete and the memhub side of Milestone 5 (K9 framework interop)
+is shipped, including the PRD-§12 and PRD-§17 surfaces (`memhub stats`
+and the `log_session_note` MCP tool + `memhub note list` CLI).
+Continuous confidence decay (PRD §11.4) was explicitly dropped this
+session. The only named remaining slice lives outside this repo: the
+K9 `/wrap-up.md` consumer edit that calls into the v1 contract
+end-to-end (gate + read + mutate).
 
 ## Next up
 
 1. Coordinate the K9 repo `/wrap-up.md` consumer change with whoever
    owns the K9 repo. With `M5-003` shipped on the memhub side, K9 can
-   stay CLI-only end-to-end (gate + read + mutate); their slice is
-   mechanical and lives outside this repo.
+   stay CLI-only end-to-end; their slice is mechanical and lives
+   outside this repo.
 2. Decide whether MCP needs broader indexed retrieval over facts,
    tasks, command history, or session notes beyond the current narrow
    paths.
-3. If notes start carrying durable value, bump the export format to
-   `v2` and include them. Until then they're intentionally lost on
-   export/import.
+3. If session notes start carrying durable value, bump the export
+   format to `v2` and include them. Until then they're intentionally
+   lost on export/import.
 
 ## Last session
 
-2026-05-12 - Completed `M5-005`. New `session_notes` table behind
-migration `0006_session_notes.sql` (`id, project_id, actor, actor_raw,
-text, created_at`, indexed `created_at DESC`). `commands::session_note`
-exposes `add` (validates non-empty text, 4096-char ceiling) and `list`
-(supports `--limit`, `--actor`, `--since-days <n>`). MCP gained a new
-`log_session_note { text }` tool that pulls actor identity from
-`clientInfo.name` via the same `ClientIdentity` plumbing as
-`propose_fact` / `propose_decision`, returning `{ id, actor, actor_raw,
-created_at }`. CLI gained `memhub note list [--limit] [--actor]
-[--since-days] [--json]`; deliberately no `note add` since `fact add` /
-`decision add` cover the human-at-terminal case. The MCP server
-instructions string was updated to mention the new write path. 8
-integration tests in `tests/session_notes.rs` plus 1 new MCP-side unit
-test (`mcp_log_session_note_persists_with_client_identity`). Explicit
-deferrals: no FTS index, no promotion path, no inclusion in v1
-`memhub export` (notes are scratch and intentionally lost on
-export/import). README gained a "Session notes" subsection. Verified
-with `cargo fmt`, `cargo build`, and `cargo test` (119 tests across
-all suites, up from 110).
-
-2026-05-12 - Completed `M5-004`. New `memhub stats [--window
-7d|30d|90d|all] [--json]` subcommand. Created `src/commands/stats.rs`
-exposing `StatsWindow` (`Days(i64)` / `All`) and a `run` that
-aggregates over existing tables only — no migration, no schema change.
-Added `StatsSummary`, `CountByLabel`, `TopCommandKind`, and
-`RecentFactKey` to `src/models/mod.rs`. CLI gained
-`TopLevelCommand::Stats { window, json }` with a `StatsWindowArg`
-clap value-enum using `#[value(name = "7d")]` etc. Two print helpers
-(`print_stats_human`, `print_stats_json`) live in `src/cli/mod.rs`.
-Default window is 30 days. The output explicitly notes the PRD §17
-read-counter deviation in both human and JSON modes. Added 7
-integration tests in `tests/stats.rs`: empty-repo zero counts,
-windowed write counts grouped by actor and table, 7d-vs-all-time
-window via direct `UPDATE writes_log SET at = datetime('now', '-100
-days')`, review rate from `pending_writes`, stale-fact ratio, CLI
-JSON envelope shape on `30d`, and CLI `--window all` emitting null
-`days`. Updated README with a "Project usage stats" section ahead of
-the K9 integration section. Verified with `cargo fmt`, `cargo build`,
-and `cargo test` (110 tests across all suites, up from 103).
-
-2026-05-12 - Completed `M5-003` (memhub side). Added `--json` to
-`memhub review list` and `memhub review show` in `src/cli/mod.rs`,
-backed by a small `pending_write_record_to_json` helper that mirrors
-the MCP `PendingWriteToolRecord` shape (`id, kind, status, actor,
-actor_raw, rationale, payload_json, provenance_json, created_at,
-reviewed_at`). `payload_json` and `provenance_json` stay as nested
-JSON strings to preserve the durable representation byte-for-byte.
-`review list --json` envelopes the rows as `{"status": <filter or
-null>, "pending_writes": [...]}` — `null` only when `--status all`
-is used. Read surfaces accept no `--actor` flag and write no
-`writes_log` rows. Updated `docs/reference/k9-wrap-up-contract.md`
-with a new "Read surfaces" section ahead of "Mutating commands",
-amended step 3 of "Sequencing" to point directly at `review list
---json`, and added a `v1`-additive version-history entry (no `v2`
-bump). Added 4 subprocess tests in `tests/k9_contract.rs`:
-`review_list_json_emits_contract_shape`,
-`review_list_json_filters_by_status` (verifies `--status all` produces
-`status: null`), `review_show_json_emits_contract_shape`,
-`review_show_json_missing_id_exits_nonzero`. README gained a
-"Machine-readable read surfaces" bullet in the K9 contract subsection.
-Verified with `cargo fmt`, `cargo build`, and `cargo test` (103 tests
-across all suites, up from 99).
+2026-05-12 - Shipped four commits closing out PRD-named surfaces.
+`b103792` (`M5-003`) added `--json` to `memhub review list` and
+`review show`, mirroring the MCP `PendingWriteToolRecord` shape and
+amending the K9 v1 contract additively (no v2 bump). `b6cc920`
+refreshed the README and roadmap docs to reflect actual shipped state
+after they'd drifted into reading like mid-M4. `eedc973` (`M5-004`)
+added `memhub stats [--window 7d|30d|90d|all] [--json]` covering
+totals, windowed write activity from `writes_log`, pending-write
+review rate, top commands by run count, and recent verified facts;
+PRD §17's "simple read counter" was explicitly deferred and the
+deviation is surfaced in both human and JSON outputs. `072c087`
+(`M5-005`) added a new `session_notes` table (migration `0006`),
+the `log_session_note` MCP tool, and `memhub note list [--limit]
+[--actor] [--since-days] [--json]` — write-only scratch with no
+promotion path and intentional omission from the v1 `memhub export`
+format. Test count moved 99 → 119 across this session. Continuous
+confidence decay (PRD §11.4) was dropped entirely after planning.
 
 2026-05-12 - Completed `M5-002`. Shipped
 `docs/reference/k9-wrap-up-contract.md` (v1 contract: sequencing,
@@ -104,43 +54,9 @@ convention, exit codes, audit-trail query, explicit non-goals). Added
 stdout, gracefully handling missing `.memhub/` via silent exit 1.
 Threaded a new `actor: &str` parameter through `fact::add`,
 `decision::add`, `task::add`, `task::done`, `review::accept`,
-`review::reject`, and `review::mark_status` (plus the internal
-`fact::add` / `decision::add` calls from inside `review::accept` so
-the actor propagates to durable writes). Added a `commands::DEFAULT_ACTOR`
-constant (`cli:user`), `commands::MAX_ACTOR_LEN` (64), and
-`commands::validate_actor` helper. CLI gained `--json` and `--actor`
-flags on the six mutating commands; JSON output is rendered via
-`serde_json::json!` and replaces the human-readable line when set.
-Updated every existing internal and test caller (about 25 sites) to
-pass `"cli:user"` explicitly. Added 11 integration tests in
-`tests/k9_contract.rs` that exercise the actual CLI binary as a
-subprocess — verifying JSON shape per command, `--actor` flowing to
-`writes_log`, actor validation (empty / >64 chars), and `check-k9`
-exit codes across all four states (enabled, missing section,
-disabled, not initialized). README gained a "K9 `/wrap-up` shell-out
-contract" subsection. Verified with `cargo fmt`, `cargo build`, and
-`cargo test` (99 tests across all suites).
-
-2026-05-12 - Completed `M5-001` phase 1 (K9 detection + config +
-status surfacing). Added `src/config/integrations.rs` with
-`IntegrationsConfig`, `K9Config`, and `detect_k9`; wired
-`integrations: IntegrationsConfig` into `ProjectConfig` behind
-`#[serde(default)]` so existing configs upgrade cleanly. New
-`src/commands/integrations.rs` exposes `enable_k9` (refuses without
-detection unless `--force`), `disable_k9` (flips `enabled = false`,
-preserves section), `status`, and a `k9_state` helper used by
-`commands::status`. `commands::init::run` (and `run_with_backup`)
-call `apply_k9_detection_on_init` after fresh config creation; existing
-configs are left alone. `StatusSummary` and the MCP `StatusToolResponse`
-gained `k9_detected`, `k9_enabled`, `k9_agent_docs_path`, `k9_drift`.
-CLI gained a `memhub integrations` subcommand with `status`,
-`enable-k9 [--agent-docs-path <PATH>] [--force]`, and `disable-k9`
-variants. Added 12 integration tests in `tests/integrations.rs` plus 5
-unit tests in `src/config/integrations.rs` and 1 new MCP-side test for
-the new status fields. Updated README with a "K9 Claude Framework
-integration" section and bumped roadmap to introduce Milestone 5 and
-shift the speculative bucket to Milestone 6+. Verified with `cargo
-fmt`, `cargo build`, and `cargo test` (88 tests across all suites).
+`review::reject`, and `review::mark_status`. CLI gained `--json` and
+`--actor` flags on the six mutating commands. Added 11 integration
+tests in `tests/k9_contract.rs`.
 
 ## Open questions
 
@@ -158,6 +74,5 @@ fmt`, `cargo build`, and `cargo test` (88 tests across all suites).
   send in real handshakes beyond the initial alias map?
 - Should `memhub migrate` remain implicit-on-open or become explicit
   once external users adopt the tool?
-- Should `decisions` carry a derived confidence too, and what would the
-  re-verification trigger be without a `sessions`-based reference
-  signal in place?
+- Should a `v2` export format be introduced to include `session_notes`,
+  or do notes stay scratch-only and lost on export/import indefinitely?
