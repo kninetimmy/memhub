@@ -60,17 +60,17 @@ const SAMPLE_BACKLOG: &str = "\
 
 ## Items
 
-- `M1-001` - Wire CLI scaffolding.
-  Status: completed
-  Notes: Done in initial commit.
+### M1-001 — Wire CLI scaffolding
+- **Status.** done
+- **Design note.** Done in initial commit.
 
-- `M2-001` - Add git ingestion.
-  Status: open
-  Notes: Use the git CLI; deny-list filters apply.
+### M2-001 — Add git ingestion
+- **Status.** triaged
+- **Design note.** Use the git CLI; deny-list filters apply.
 
-- `M3-001` - Wait on upstream rmcp change.
-  Status: blocked
-  Scope: src/mcp/
+### M3-001 — Wait on upstream rmcp change
+- **Status.** blocked
+- **Scope.** src/mcp/
 ";
 
 #[test]
@@ -177,6 +177,54 @@ fn bootstrap_k9_refuses_when_k9_disabled() {
             || stderr.contains("K9 integration is disabled"),
         "unexpected stderr: {stderr}"
     );
+}
+
+#[test]
+fn bootstrap_k9_preserves_em_dash_dated_decided_at() {
+    let temp = tempdir().expect("tempdir");
+    let decisions = "\
+# Project Decisions
+
+## 2026-04-21 \u{2014} K9 canonical heading
+
+- First rationale.
+
+## 2026-04-22 \u{2014} Second K9 decision
+
+Body prose.
+
+## Undated decision
+
+Body without a date.
+";
+    write_agent_docs(temp.path(), decisions, "");
+    init::run(temp.path()).expect("init");
+
+    let output = run_cli(temp.path(), &["integrations", "bootstrap-k9", "--json"]);
+    assert!(
+        output.status.success(),
+        "bootstrap-k9 failed: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let ctx = db::open_project(temp.path()).expect("open project");
+    let rows: Vec<(String, String)> = ctx
+        .conn
+        .prepare("SELECT title, decided_at FROM decisions ORDER BY id ASC")
+        .unwrap()
+        .query_map(params![], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0].0, "K9 canonical heading");
+    assert_eq!(rows[0].1, "2026-04-21 00:00:00");
+    assert_eq!(rows[1].0, "Second K9 decision");
+    assert_eq!(rows[1].1, "2026-04-22 00:00:00");
+    assert_eq!(rows[2].0, "Undated decision");
+    assert_ne!(rows[2].1, "2026-04-21 00:00:00");
+    assert_ne!(rows[2].1, "2026-04-22 00:00:00");
 }
 
 #[test]

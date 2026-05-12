@@ -9,14 +9,35 @@ use crate::models::Decision;
 use crate::sync_md;
 
 pub fn add(start: &Path, title: &str, rationale: &str, actor: &str) -> Result<i64> {
+    add_with_decided_at(start, title, rationale, None, actor)
+}
+
+pub fn add_with_decided_at(
+    start: &Path,
+    title: &str,
+    rationale: &str,
+    decided_at: Option<&str>,
+    actor: &str,
+) -> Result<i64> {
     let mut ctx = db::open_project(start)?;
     let tx = ctx.conn.transaction()?;
 
-    tx.execute(
-        "INSERT INTO decisions(project_id, title, rationale, status)
-         VALUES (1, ?1, ?2, 'active')",
-        params![title, rationale],
-    )?;
+    match decided_at {
+        Some(when) => {
+            tx.execute(
+                "INSERT INTO decisions(project_id, title, rationale, status, decided_at)
+                 VALUES (1, ?1, ?2, 'active', ?3)",
+                params![title, rationale, when],
+            )?;
+        }
+        None => {
+            tx.execute(
+                "INSERT INTO decisions(project_id, title, rationale, status)
+                 VALUES (1, ?1, ?2, 'active')",
+                params![title, rationale],
+            )?;
+        }
+    }
     let row_id = tx.last_insert_rowid();
     search::sync_decision_chunks(&tx)?;
 
