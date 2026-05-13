@@ -39,13 +39,14 @@ This repository is in foundational scaffolding / Milestone 1 mode. Favor correct
 
 **Build:** `n/a`
 **Test:** `n/a`
-**Active tasks:** 1 open, 0 blocked - see `memhub task list --status open`
+**Active tasks:** 3 open, 0 blocked - see `memhub task list --status open`
 
 ### Durable decisions
-- K9 framework deprecation: memhub becomes primary durable store (2026-05-12 22:40:23)
-- K9 canonical conventions (H3 backlog items, em-dash decisions) are the parser target (2026-05-12 21:03:01)
-- Evaluating memhub-primary is staged behind parser-fix evidence (2026-05-12 21:02:58)
-- One-shot K9 bootstrap is the narrow exception to the no-import non-goal (2026-05-12 19:38:52)
+- Wrap-up session boundary is implicit; no sessions table (2026-05-13 00:07:40)
+- Wrap-up routing brain is a Claude Code skill, not a CLI subcommand (2026-05-13 00:07:39)
+- Render conflict semantics: DB wins, prior file backed up (2026-05-13 00:07:39)
+- Render trigger is on-demand; auto_render is opt-in for later (2026-05-13 00:07:39)
+- State and arch durable storage uses single-blob tables, not decomposed columns (2026-05-13 00:07:39)
 
 ### Known quirks
 - None recorded.

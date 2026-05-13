@@ -1,0 +1,207 @@
+<!-- memhub:rendered -->
+<!-- DO NOT EDIT. Generated from .memhub/project.sqlite. -->
+<!-- To change content, use memhub CLI; then re-run `memhub render`. -->
+<!-- Generated at: 2026-05-13T00:14:23Z by memhub 0.1.0 -->
+
+# memhub — Ledger
+
+## Decisions
+
+_10 decision(s). Most recent first._
+
+### D10 — Wrap-up session boundary is implicit; no sessions table
+
+**Status:** active • **Decided:** 2026-05-13 00:07:40
+
+The most recent project_state row created_at is the previous wrap-up timestamp. Anything newer in decisions, tasks, facts, session_notes, pending_writes, or commits is in-window. Rejected an explicit sessions(id, started_at, ended_at, summary) table plus memhub session start/end CLI because that structure is bookkeeping until something queries it. If real use surfaces a need for explicit sessions, the table ships as a future migration. Until then, since-last-state-set is a free boundary that requires no schema change.
+
+---
+
+### D9 — Wrap-up routing brain is a Claude Code skill, not a CLI subcommand
+
+**Status:** active • **Decided:** 2026-05-13 00:07:39
+
+The session-end approval gate that orchestrates state set, decision add, task close, fact add, note add, review accept/reject, and render lives as .claude/commands/wrap-up.md in this repo, not as memhub wrap-up. Rejected a memhub wrap-up CLI subcommand because UX continuity matters: typing /wrap-up is the user muscle memory; memhub wrap-up is a different gesture and feels like a regression. The skill route also keeps the memhub binary as small primitives per the PRD boring tech principle, and skill prompts iterate without a Rust recompile. Trade-off accepted: users who do not run Claude Code do not get a wrap-up brain, only the CLI primitives. Captured in docs/roadmap/wrap-up-design.md section 1.
+
+---
+
+### D8 — Render conflict semantics: DB wins, prior file backed up
+
+**Status:** active • **Decided:** 2026-05-13 00:07:39
+
+memhub render unconditionally overwrites existing rendered files but first copies them under .memhub/backups/rendered/<stamp>/, mirroring the existing sync_md markdown-backup convention. Rejected refuse-on-divergence (require --force if file content diverges from prior render) because refusing punishes the user for a mistake the file own header already warns about; backup-and-overwrite preserves the edit content if they need it. Rendered files are generated artifacts. A human editing one is a category error: the change will not survive the next render and is not reflected in the DB.
+
+---
+
+### D7 — Render trigger is on-demand; auto_render is opt-in for later
+
+**Status:** active • **Decided:** 2026-05-13 00:07:39
+
+memhub render is an explicit CLI command. There is no auto_render config flag in v1. Rejected auto-firing after every mutating write (mirroring auto_sync_md) because render output is bigger than the small managed block sync-md produces and would clutter git status mid-session. The natural cadence is render-at-session-end, which is a wrap-up step. auto_render = true is reserved in [render] config as a future opt-in.
+
+---
+
+### D6 — State and arch durable storage uses single-blob tables, not decomposed columns
+
+**Status:** active • **Decided:** 2026-05-13 00:07:39
+
+Migration 0007_project_narrative.sql adds project_state and project_arch tables with (id, project_id, body, actor, actor_raw, created_at) shape. set always inserts a new row (append-only history); show returns the most recent; history lists prior. Rejected decomposing narrative into structured columns (currently_building, next_up, open_questions) because decomposition is a guess at structure that may not survive contact with how state actually evolves. Going decomposed to blob is harder than blob to decomposed if querying patterns later demand it, so blob ships first.
+
+---
+
+### D5 — Render output shape is memhub-native two-file (PROJECT.md + PROJECT_LEDGER.md)
+
+**Status:** active • **Decided:** 2026-05-13 00:07:39
+
+memhub render emits two files into the configured output dir (default agent_docs/): PROJECT.md for narrative (state, arch, recent session notes) and PROJECT_LEDGER.md for structured append-only content (decisions, backlog, facts, recent activity). Rejected K9-style four-file mirror because mirror would inherit K9's split decisions without earning them and would name-collide with K9 files during transition. Two files split along the natural seam in the DB: narrative-cadence (rewritten on state changes) versus ledger-cadence (appended on decisions/tasks/facts). Each rendered file leads with a memhub:rendered marker comment plus ISO timestamp and memhub version. Captured in docs/roadmap/memhub-render-design.md section 1.
+
+---
+
+### D4 — K9 framework deprecation: memhub becomes primary durable store
+
+**Status:** active • **Decided:** 2026-05-12 22:40:23
+
+End-state has memhub as the single durable source; K9 retires its slash commands, markdown templates, and routing brain. Direction committed in intent; implementation slices land individually with their own design docs. PRD §2 and k9-integration non-goals stay in force until each slice argues an explicit change. See docs/roadmap/k9-deprecation-plan.md for the four load-bearing slices and docs/roadmap/memhub-primary-evaluation.md as the origin record.
+
+---
+
+### D3 — K9 canonical conventions (H3 backlog items, em-dash decisions) are the parser target
+
+**Status:** active • **Decided:** 2026-05-12 21:03:01
+
+K9-Claude-Framework/docs/file-structure.md:156-208 is the authoritative K9 framework spec. project_backlog.md items use ### Title H3 delimiters with bulleted bolded-field bodies. The Status field uses vocabulary: triaged, planning, in-progress, blocked, or done. project_decisions.md entries use ## YYYY-MM-DD plus em-dash plus Title with a Unicode em-dash separator (U+2014). M6-001 and M6-002 target only this canonical format. Free-AI-SSD follows it; memhub agent_docs does not. M6-004 migrates memhub agent_docs files to canonical structural delimiters (em-dash separator on decisions, H3 headings on backlog) while preserving prose Notes paragraphs rather than decomposing into K9 bulleted slots. The lenient support-both-formats option was rejected because doubling the parser surface would bake memhub divergence into the supported contract; the narrower trailing Status line is retained only as a tolerated input recognition path, not a supported authoring convention.
+
+---
+
+### D2 — Evaluating memhub-primary is staged behind parser-fix evidence
+
+**Status:** active • **Decided:** 2026-05-12 21:02:58
+
+A working-session analysis report (local, not committed) identifies six bootstrap parser bugs in src/commands/bootstrap_k9.rs and a 12-gap roadmap for full memhub-primary replacement of the K9 framework. Direction is not committed. Evaluation plan lives in docs/roadmap/memhub-primary-evaluation.md: Phase 1 lands parser fixes (M6-001 and M6-002), Phase 2 re-runs bootstrap on Free-AI-SSD and captures findings (M6-003), Phase 3 routes to commissioning a separate memhub render design doc, extending the parser further, or closing the evaluation with memhub staying complementary. PRD section 2 (markdown files stay as the entry point), PRD section 4 non-goals, and docs/roadmap/k9-integration.md non-goals (no bidirectional sync, no DB mapping of project_state.md or project_arch.md) all remain in force. Reasoning: replacement is genuinely better only if parser fixes land cleanly AND a memhub render materializes acceptably; committing the roadmap before parser-fix evidence would be premature.
+
+---
+
+### D1 — One-shot K9 bootstrap is the narrow exception to the no-import non-goal
+
+**Status:** active • **Decided:** 2026-05-12 19:38:52
+
+Steady-state non-goal of no bulk K9 import stays. First-install bootstrap-k9 is the narrow carve-out for new-machine clones with populated K9 history. Refuses on non-empty target; writes through decision::add and task::add_with_status with actor=k9:bootstrap; skips project_state.md/project_arch.md and facts by design.
+
+---
+
+## Backlog
+
+_9 task(s), 3 open. Open first, then by recency._
+
+### T9 — Migrate memhub's own agent_docs from K9 markdown to memhub-rendered files (M7-002)
+
+**Status:** open • **Updated:** 2026-05-13 00:07:40
+
+Blocked on M7-001. Once the memhub-native /wrap-up runs in this repo: (a) populate project_state and project_arch tables from current K9 narrative via memhub state set --from-file and memhub arch set --from-file; (b) run memhub render to produce PROJECT.md and PROJECT_LEDGER.md; (c) update CLAUDE.md Session Continuity to point at the new files instead of the K9 four-file set; (d) memhub integrations disable-k9; (e) decide whether to remove or archive the four K9 project_*.md files. Closes the M6-004 dogfood gap by replacing it. Validates the full memhub-primary loop end-to-end.
+
+---
+
+### T8 — Investigate .claude/commands/wrap-up.md override gap (M7-001)
+
+**Status:** open • **Updated:** 2026-05-13 00:07:40
+
+Project-level slash command at .claude/commands/wrap-up.md was expected to take precedence over user-level ~/.claude/commands/wrap-up.md when invoked inside the project. Empirically the user-level K9 /wrap-up fired instead during step 3 dogfood. Until this is understood and fixed, the memhub-native wrap-up cannot actually be dogfooded inside the memhub repo. Investigation: check Claude Code docs for skill resolution rules, verify file placement convention (commands/ vs agents/ vs skills/), test with a unique-named project skill to confirm whether project-level loading works at all, then either fix placement or rename to avoid collision while preserving slash-command ergonomics. Gates M7-002.
+
+---
+
+### T5 — M6-004 - Migrate memhub agent_docs to K9 canonical structural delimiters
+
+**Status:** open • **Updated:** 2026-05-12 21:03:09
+
+_No notes._
+
+---
+
+### T7 — M6-006 - Accept UTF-8 mojibake separator (â€" triple-codepoint sequence) in extract_date_and_title
+
+**Status:** done • **Updated:** 2026-05-12 22:40:23
+
+_No notes._
+
+---
+
+### T6 — M6-005 - Extend done-marker detection to recognize 'merged DATE' intervention and 'Shipped' vocabulary
+
+**Status:** done • **Updated:** 2026-05-12 22:40:23
+
+_No notes._
+
+---
+
+### T4 — M6-003 - Re-run bootstrap on Free-AI-SSD post-fix, capture findings, write Phase 2 results into the evaluation doc
+
+**Status:** done • **Updated:** 2026-05-12 21:39:53
+
+_No notes._
+
+---
+
+### T3 — M6-002 - Accept em-dash in strip_date_prefix and extract decision date into decided_at
+
+**Status:** done • **Updated:** 2026-05-12 21:15:10
+
+_No notes._
+
+---
+
+### T2 — M6-001 - Rewrite parse_backlog around K9 canonical H3 delimiters with structured done-detection
+
+**Status:** done • **Updated:** 2026-05-12 21:03:14
+
+_No notes._
+
+---
+
+### T1 — M5-006 - Add memhub integrations bootstrap-k9 first-install priming
+
+**Status:** done • **Updated:** 2026-05-12 19:38:58
+
+First-install-only memhub integrations bootstrap-k9 [--dry-run] [--json]. Refuses unless K9 enabled AND decisions+tasks empty; no --force. Parses project_decisions.md (heading-block, body becomes rationale) and project_backlog.md (bullets, Status: completed skipped, Status: blocked maps to blocked). Writes through decision::add and new task::add_with_status helper with actor=k9:bootstrap. project_state.md/project_arch.md not parsed; no fact extraction. 5 subprocess + 4 parser unit tests. Roadmap non-goal softened with carve-out. Discoverability: README install-prompt step 6 and checked-in audit prompt; K9 framework v1.2.1 shims outside this repo.
+
+---
+
+## Facts
+
+_No facts recorded._
+
+## Recent activity (last 30 days)
+
+| When | Actor | Table | Action | Reason |
+|------|-------|-------|--------|--------|
+| 2026-05-13 00:12:12 | cli:user | markdown_sync | update | sync-md |
+| 2026-05-13 00:07:40 | k9:wrap-up | tasks | insert | task add |
+| 2026-05-13 00:07:40 | k9:wrap-up | tasks | insert | task add |
+| 2026-05-13 00:07:40 | k9:wrap-up | decisions | insert | decision add |
+| 2026-05-13 00:07:40 | k9:wrap-up | decisions | insert | decision add |
+| 2026-05-13 00:07:39 | k9:wrap-up | decisions | insert | decision add |
+| 2026-05-13 00:07:39 | k9:wrap-up | decisions | insert | decision add |
+| 2026-05-13 00:07:39 | k9:wrap-up | decisions | insert | decision add |
+| 2026-05-13 00:07:39 | k9:wrap-up | decisions | insert | decision add |
+| 2026-05-12 22:41:15 | cli:user | markdown_sync | update | sync-md |
+| 2026-05-12 22:40:23 | k9:wrap-up | decisions | insert | decision add |
+| 2026-05-12 22:40:23 | k9:wrap-up | tasks | update | task done |
+| 2026-05-12 22:40:23 | k9:wrap-up | tasks | update | task done |
+| 2026-05-12 21:42:30 | k9:wrap-up | tasks | update | fix title shell-escape leak from wrap-up mirror |
+| 2026-05-12 21:40:30 | cli:user | markdown_sync | update | sync-md |
+| 2026-05-12 21:39:53 | k9:wrap-up | tasks | insert | task add |
+| 2026-05-12 21:39:53 | k9:wrap-up | tasks | insert | task add |
+| 2026-05-12 21:39:53 | k9:wrap-up | tasks | update | task done |
+| 2026-05-12 21:16:04 | cli:user | markdown_sync | update | sync-md |
+| 2026-05-12 21:15:10 | k9:wrap-up | tasks | update | task done |
+| 2026-05-12 21:04:19 | cli:user | markdown_sync | update | sync-md |
+| 2026-05-12 21:03:14 | k9:wrap-up | tasks | update | task done |
+| 2026-05-12 21:03:09 | k9:wrap-up | tasks | insert | task add |
+| 2026-05-12 21:03:09 | k9:wrap-up | tasks | insert | task add |
+| 2026-05-12 21:03:08 | k9:wrap-up | tasks | insert | task add |
+| 2026-05-12 21:03:07 | k9:wrap-up | tasks | insert | task add |
+| 2026-05-12 21:03:01 | k9:wrap-up | decisions | insert | decision add |
+| 2026-05-12 21:02:58 | k9:wrap-up | decisions | insert | decision add |
+| 2026-05-12 19:39:02 | cli:user | markdown_sync | update | sync-md |
+| 2026-05-12 19:38:58 | k9:wrap-up | tasks | update | task done |
+| 2026-05-12 19:38:55 | k9:wrap-up | tasks | insert | task add |
+| 2026-05-12 19:38:52 | k9:wrap-up | decisions | insert | decision add |

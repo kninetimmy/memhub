@@ -269,3 +269,42 @@ Append-only. Superseding decisions should be added as new dated entries rather t
 - The direction is committed in intent. Implementation slices land individually with their own design docs and rationale — `docs/roadmap/k9-deprecation-plan.md` is the planning anchor that enumerates the four load-bearing slices (`memhub render`, PRD §2 + `docs/roadmap/k9-integration.md` non-goal revisits, `project_state.md` / `project_arch.md` as DB content, wrap-up routing brain).
 - PRD §2 ("markdown files stay as the entry point") and the non-goals in `docs/roadmap/k9-integration.md` remain in force until each individual slice argues an explicit change. They will be revisited under deliberate reasoning, not silently reinterpreted.
 - `docs/roadmap/memhub-primary-evaluation.md` becomes a historical artifact — the origin of this direction — rather than a live evaluation surface. `M6-006` closes as won't-fix because the parser tolerance it scoped would defend a code path that doesn't run again post-deprecation; the source-cleanup approach used on Free-AI-SSD already covers the only repos that need to bootstrap before deprecation lands.
+
+## 2026-05-12 — Render output shape is memhub-native two-file (PROJECT.md + PROJECT_LEDGER.md)
+
+- `memhub render` emits two files into the configured output dir (default `agent_docs/`): `PROJECT.md` for narrative (state, arch, recent session notes) and `PROJECT_LEDGER.md` for structured append-only content (decisions, backlog, facts, recent activity).
+- Rejected: K9-style four-file mirror (project_state / project_arch / project_decisions / project_backlog). Mirror would inherit K9's split decisions without earning them in the memhub-primary world, and would name-collide with K9 files during transition.
+- Two files split along the natural seam in the DB: narrative-cadence (rewritten on state changes) versus ledger-cadence (appended on decisions/tasks/facts). Mixing them produces noisy diffs.
+- Each rendered file leads with a `<!-- memhub:rendered -->` marker comment + ISO timestamp + memhub version so render can recognize its own output.
+- Captured in `docs/roadmap/memhub-render-design.md` §1.
+
+## 2026-05-12 — State/arch durable storage uses single-blob tables, not decomposed columns
+
+- Migration `0007_project_narrative.sql` adds `project_state` and `project_arch` tables with `(id, project_id, body, actor, actor_raw, created_at)` shape. `set` always inserts a new row (append-only history); `show` returns the most recent; `history` lists prior.
+- Rejected: decomposing narrative into structured columns (`currently_building`, `next_up`, `open_questions`, etc.). Decomposition is a guess at structure that may not survive contact with how state actually evolves.
+- Going decomposed → blob is harder than blob → decomposed if querying patterns later demand the latter, so blob ships first.
+
+## 2026-05-12 — Render trigger is on-demand; auto-render is opt-in for later
+
+- `memhub render` is an explicit CLI command. There is no `auto_render` config flag in v1.
+- Rejected: auto-firing after every mutating write (mirroring `auto_sync_md`). Render output is bigger than the small managed block sync-md produces and would clutter `git status` mid-session.
+- The natural cadence is render-at-session-end, which is a wrap-up step. `auto_render = true` is reserved as a future opt-in.
+
+## 2026-05-12 — Render conflict semantics: DB wins, prior file backed up
+
+- `memhub render` unconditionally overwrites existing rendered files but first copies them under `.memhub/backups/rendered/<stamp>/`, mirroring the existing `sync_md` markdown-backup convention.
+- Rejected: refuse-on-divergence (require `--force` if file content diverges from the prior render). Refusing punishes the user for a mistake the file's own header already warns about; backup-and-overwrite preserves the edit content if they need it.
+- Rendered files are generated artifacts. A human editing one is a category error — the change won't survive the next render and isn't reflected in the DB.
+
+## 2026-05-12 — Wrap-up routing brain is a Claude Code skill, not a CLI subcommand
+
+- The session-end approval gate that orchestrates state set, decision add, task close, fact add, note add, review accept/reject, and render lives as `.claude/commands/wrap-up.md` in this repo, not as `memhub wrap-up`.
+- Rejected: a `memhub wrap-up` CLI subcommand. UX continuity matters — typing `/wrap-up` is the user's muscle memory; `memhub wrap-up` is a different gesture and feels like a regression. The skill route also keeps the memhub binary as small primitives per the PRD's "boring tech" principle, and skill prompts iterate without a Rust recompile.
+- Trade-off accepted: users who don't run Claude Code don't get a wrap-up brain, only the CLI primitives.
+- Captured in `docs/roadmap/wrap-up-design.md` §1.
+
+## 2026-05-12 — Wrap-up session boundary is implicit; no sessions table
+
+- The most recent `project_state` row's `created_at` is the previous wrap-up timestamp. Anything newer in `decisions`, `tasks`, `facts`, `session_notes`, `pending_writes`, or `commits` is in-window.
+- Rejected: an explicit `sessions(id, started_at, ended_at, summary)` table plus `memhub session start|end` CLI. That structure is bookkeeping until something queries it.
+- If real use surfaces a need for explicit sessions, the table ships as a future migration. Until then, "since last `state set`" is a free boundary that requires no schema change.
