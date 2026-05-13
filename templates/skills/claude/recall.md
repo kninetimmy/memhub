@@ -1,0 +1,156 @@
+---
+name: recall
+description: Look up relevant facts, decisions, and tasks for the current conversation via memhub recall (SQL+RAG hybrid). Prefer this over reading PROJECT_LEDGER.md mid-session.
+framework: memhub
+framework_version: 1.0.0
+last_updated: 2026-05-13
+---
+
+Ask memhub for context. Returns a ranked evidence bundle of facts,
+decisions, and tasks pulled from this repo's `.memhub/project.sqlite`.
+Read-only — no writes, no review staging.
+
+Use this instead of grepping `PROJECT_LEDGER.md` whenever you need
+project context mid-session. `PROJECT.md` is already in your
+session-start context for the big-picture summary; reach for the
+ledger only if recall comes up empty for something you suspect is
+recorded.
+
+## Preconditions
+
+- `.memhub/` exists in the working repo (run `/check-init` if unsure).
+- `memhub` binary on PATH.
+
+If either is missing, surface that and stop; do not run recall.
+
+## Invocation
+
+Default: prefer the `memhub.recall` MCP tool when it's available — it
+returns structured JSON directly and avoids shell quoting.
+
+```
+memhub.recall(query="<one-line natural-language question>")
+```
+
+CLI fallback (no MCP, or you want to pipe to other shell tools):
+
+```bash
+memhub recall "<query>" --json
+```
+
+The CLI also accepts a human-readable form (drop `--json`) when the
+user explicitly asks to see it.
+
+## Filters
+
+Pick a filter only when the question narrows naturally; otherwise let
+the default behavior surface across all three source types.
+
+- `source_types=["fact"]` / `--source-type fact` (repeatable):
+  restrict to one or more of `fact`, `decision`, `task`.
+- `max_results=N` / `--max-results N`: cap the bundle. Default comes
+  from `.memhub/config.toml` (`[retrieval] default_max_results`,
+  usually 6).
+- `mode="fts"` or `"hybrid"` / `--mode fts|hybrid`: override the
+  project default. Only override if the user explicitly asks for one
+  mode; otherwise honor the config.
+- `accepted_only=true` / `--accepted-only`: only rows whose `source`
+  is `user` or `user+agent:<id>`. Use when the user wants
+  "approved-only" context and the repo records `agent:<id>`,
+  `git`, or `observed` rows that would otherwise leak in.
+- `include_stale=true` / `--include-stale`: include facts past the
+  staleness window (90 days unverified). Off by default. Pass when
+  the user is explicitly asking about historical state.
+
+## Interpreting the response
+
+The bundle has the shape:
+
+```json
+{
+  "query": "...",
+  "mode": "fts" | "hybrid",
+  "results": [
+    {
+      "rank": 1,
+      "source_type": "decision",
+      "source_id": 17,
+      "title": "...",
+      "body": "...",
+      "score": 0.91,
+      "fts_score": 0.84,
+      "vector_score": 0.92,
+      "stale": false,
+      "source": "user+agent:claude-code",
+      ...
+    }
+  ],
+  "candidate_count": 41,
+  "returned_count": 6,
+  "warnings": [],
+  "provenance": { "matcher": "recall:hybrid", "elapsed_ms": 12 }
+}
+```
+
+- Use `title` and `body` directly — they are pulled from the durable
+  source tables, not paraphrases.
+- `score` is the blended rank used for ordering. `fts_score` and
+  `vector_score` are the components, both normalized to `[0, 1]`.
+- `stale = true` means a fact past the verification window or a
+  decision marked superseded/draft or a task marked done. Surface
+  staleness when it matters; don't quote a stale fact as current.
+- `source` is the row's provenance string (`user`, `user+agent:X`,
+  `agent:X`, `git`, `observed`). Cite it when the user asks where a
+  claim came from.
+- Empty `results` is a real answer, not a failure — see below.
+
+## Empty results
+
+When `results` is empty:
+
+1. State that recall returned nothing for the query and quote the
+   exact query you ran.
+2. Offer one of: rephrase the query, broaden filters
+   (drop `--accepted-only` or `--source-type`), or — if the question
+   really needs the full ledger — open
+   `agent_docs/PROJECT_LEDGER.md` directly.
+
+Never invent a result to fill an empty bundle.
+
+## Warnings
+
+When `warnings` is non-empty, the most common entry is:
+
+```json
+{ "kind": "stale_embeddings", "stale_count": 12, "total_count": 47,
+  "reason": "missing_embeddings" | "content_drift" | "model_upgrade",
+  "fix": "Run /reindex ..." }
+```
+
+Surface the warning to the user and **ask before invoking `/reindex`**.
+Reindex is a one-time, multi-second operation; the user decides
+whether to run it. Recall results are still usable in the meantime —
+the warning just means hybrid scoring may be undercounting some rows.
+
+## When not to use recall
+
+- For exact file history (who changed `src/foo.rs`), use
+  `memhub search "file:src/foo.rs"` — the file-history matcher.
+- For decision text search with no fact/task crossover, the
+  legacy `memhub search "decision <terms>"` still works but
+  `recall` covers it.
+- For session notes — they are write-only scratch and intentionally
+  not indexed in recall.
+- For commands (build/test/run/lint) — use `memhub get_command` or
+  `memhub list_facts`; recall does not surface the `commands` table.
+
+## Notes
+
+- Read-only. Recall never writes to durable tables, never stages a
+  pending write, never logs to `writes_log`.
+- Default mode comes from `[retrieval] mode` in `.memhub/config.toml`.
+  Repos in `fts` mode (the install default) get FTS-only scoring;
+  switching to `hybrid` requires `memhub index rebuild` to backfill
+  embeddings for pre-existing rows.
+- Recall is the **mid-session** read. Session-start context lives in
+  `agent_docs/PROJECT.md`. The full ledger is the fallback.

@@ -4,6 +4,7 @@ pub mod decision;
 pub mod export;
 pub mod fact;
 pub mod import;
+pub mod index;
 pub mod ingest_git;
 pub mod init;
 pub mod integrations;

@@ -303,6 +303,45 @@ fn narrative_entry_to_json(kind: NarrativeKind, entry: &NarrativeEntry) -> serde
     })
 }
 
+fn index_status_to_json(s: &commands::index::IndexStatusSummary) -> serde_json::Value {
+    json!({
+        "model": s.model,
+        "mode": recall_mode_label(s.mode),
+        "facts": { "total": s.facts_total, "embedded": s.facts_embedded },
+        "decisions": { "total": s.decisions_total, "embedded": s.decisions_embedded },
+        "tasks": { "total": s.tasks_total, "embedded": s.tasks_embedded },
+        "total_embeddings": s.total_embeddings,
+        "missing_count": s.missing_count,
+        "stale_ratio": s.stale_ratio,
+    })
+}
+
+fn print_index_status(s: &commands::index::IndexStatusSummary) {
+    println!("Embedding model: {}", s.model);
+    println!("Retrieval mode:  {}", recall_mode_label(s.mode));
+    println!(
+        "Facts:     {} embedded / {} total",
+        s.facts_embedded, s.facts_total,
+    );
+    println!(
+        "Decisions: {} embedded / {} total",
+        s.decisions_embedded, s.decisions_total,
+    );
+    println!(
+        "Tasks:     {} embedded / {} total",
+        s.tasks_embedded, s.tasks_total,
+    );
+    println!("Total embeddings: {}", s.total_embeddings);
+    println!(
+        "Missing: {} ({:.0}% of source rows lack embeddings)",
+        s.missing_count,
+        s.stale_ratio * 100.0,
+    );
+    if s.missing_count > 0 {
+        println!("Run `memhub index rebuild` (or /reindex) to refresh.");
+    }
+}
+
 fn recall_mode_label(mode: RetrievalMode) -> &'static str {
     match mode {
         RetrievalMode::Fts => "fts",
@@ -523,6 +562,10 @@ pub enum TopLevelCommand {
         command: NarrativeCommand,
     },
     Render,
+    Index {
+        #[command(subcommand)]
+        command: IndexCommand,
+    },
     Recall {
         query: String,
         #[arg(long, value_enum, value_name = "TYPE")]
@@ -537,6 +580,20 @@ pub enum TopLevelCommand {
         accepted_only: bool,
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum IndexCommand {
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    Rebuild {
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        actor: Option<String>,
     },
 }
 
@@ -1364,6 +1421,43 @@ pub fn run(cli: Cli) -> Result<()> {
         TopLevelCommand::Arch { command } => {
             run_narrative(&cwd, NarrativeKind::Arch, command)?;
         }
+        TopLevelCommand::Index { command } => match command {
+            IndexCommand::Status { json: as_json } => {
+                let summary = commands::index::status(&cwd)?;
+                if as_json {
+                    println!("{}", index_status_to_json(&summary));
+                } else {
+                    print_index_status(&summary);
+                }
+            }
+            IndexCommand::Rebuild {
+                json: as_json,
+                actor,
+            } => {
+                let actor = resolve_actor(actor.as_deref())?;
+                let summary = commands::index::rebuild(&cwd, &actor)?;
+                if as_json {
+                    let payload = json!({
+                        "model": summary.model,
+                        "facts": summary.facts,
+                        "decisions": summary.decisions,
+                        "tasks": summary.tasks,
+                        "deleted": summary.deleted,
+                        "elapsed_ms": summary.elapsed_ms,
+                    });
+                    println!("{payload}");
+                } else {
+                    println!(
+                        "Rebuilt embeddings for model {} in {} ms (deleted {})",
+                        summary.model, summary.elapsed_ms, summary.deleted,
+                    );
+                    println!(
+                        "  facts: {}  decisions: {}  tasks: {}",
+                        summary.facts, summary.decisions, summary.tasks,
+                    );
+                }
+            }
+        },
         TopLevelCommand::Recall {
             query,
             source_type,
