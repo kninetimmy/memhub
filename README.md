@@ -115,35 +115,68 @@ cp -R ~/src/memhub/templates/skills/codex/*  ~/.codex/skills/
 
 ## A typical session
 
-memhub doesn't auto-track anything. You decide what's worth remembering.
+The default mode is **agent-driven**: you talk to Claude Code or Codex, and the agent calls memhub via MCP tools or the CLI on your behalf. You rarely need to drop into the terminal.
+
+### What you say → what the agent does
+
+```
+You: "What's in flight on this project?"
+  → list_tasks, list_decisions, status (read tools)
+
+You: "Add a task to refactor the cache layer."
+  → task_add (durable write; tasks are intent, easy to delete)
+
+You: "Mark task 7 as done."
+  → task_done
+
+You: "What's the build command for this repo?"
+  → list_facts (or status, which surfaces top facts)
+
+You: "Note: tried the router rewrite, no measurable diff."
+  → log_session_note (write-only scratch)
+
+You: "Remember the build command is cargo build."
+  → propose_fact (stages in pending_writes for /wrap-up approval)
+
+You: "We're going to use rusqlite bundled mode because <rationale>."
+  → propose_decision (stages for /wrap-up approval)
+
+You: "Re-render the agent_docs."
+  → render
+```
+
+Facts and decisions stage in `pending_writes` instead of going durable directly — that's the "agents are untrusted writers" guardrail. They become durable when you approve them at `/wrap-up`, where the source becomes `user+agent:<your-agent>`.
+
+### End-of-session: `/wrap-up`
+
+Run `/wrap-up` and the agent walks you through:
+
+- New facts / decisions surfaced this session (accept or reject each)
+- Pending MCP proposals to triage
+- Tasks added or closed
+- A short session summary written to `session_notes`
+- An updated state narrative if anything material changed
+- A re-render of `agent_docs/PROJECT.md` and `PROJECT_LEDGER.md`
+
+Each item gets your individual approval before it lands.
+
+### If you'd rather drive from the terminal
+
+Everything the agent does has a CLI equivalent:
 
 ```bash
-# Start of session — orient yourself
-memhub status                       # open tasks, stale facts, pending writes
-memhub task list --status open
-
-# While working — capture the things you'd lose to chat history
+memhub status
+memhub task add "Refactor cache layer"
+memhub task done 7
+memhub fact list
 memhub fact add build-command "cargo build"
 memhub decision add "Use rusqlite bundled mode" \
   --rationale "Avoid system SQLite setup friction."
-memhub task add "Wire up MCP server" --notes "Milestone 3"
-
-# After a verified command — record it so future agents trust the recipe
-cargo test
-memhub command verify test "cargo test" --exit-code 0
-
-# Closing out
-memhub task done 7
-memhub render                       # regenerate agent_docs/PROJECT.md
+memhub note add "Tried router rewrite, no measurable diff."
+memhub render
 ```
 
-**End-of-session wrap-up.** If you installed the skills, run `/wrap-up` and the agent walks you through:
-
-- New facts / decisions / tasks since the last wrap-up
-- Pending MCP proposals to accept or reject
-- A short session summary written to `session_notes`
-
-Each item gets your individual approval before it lands in the DB.
+CLI use is fine — sometimes faster, always available, and what you'll want for batch operations or scripting. The two flows write to the same database; the only difference is the `source` and `actor` columns on each row, which let you tell later who wrote what.
 
 ---
 
@@ -232,10 +265,11 @@ When you accept a pending MCP proposal via `memhub review accept`, the durable r
 
 `memhub serve` starts a stdio MCP server. Tools:
 
-- **Read:** `status`, `search`, `list_tasks`, `list_decisions`, `list_pending_writes`, `get_command`
-- **Write (staged):** `propose_fact`, `propose_decision`, `log_session_note`, `record_command`
+- **Read:** `status`, `search`, `list_tasks`, `list_decisions`, `list_facts`, `list_pending_writes`, `get_command`
+- **Write (direct):** `task_add`, `task_done`, `record_command`, `log_session_note`, `render`
+- **Write (staged for review):** `propose_fact`, `propose_decision`
 
-Proposals don't hit `facts` / `decisions` directly — they queue in `pending_writes` until you approve them with `memhub review accept`. Session notes are write-only (no promotion path).
+Tasks and session notes are direct writes because they're low-stakes (intent and scratch, not claims). Facts and decisions stage in `pending_writes` and only become durable when you approve them — usually through `memhub review accept` during `/wrap-up`. `render` is a thin side-effect tool: it regenerates `agent_docs/PROJECT.md` and backs up the prior version.
 
 Client identity is read from `clientInfo.name` at `initialize` and normalized: Claude Code → `claude-code`, Codex → `codex`. That value lands in `actor` columns automatically.
 

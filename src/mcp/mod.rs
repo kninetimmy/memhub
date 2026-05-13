@@ -17,7 +17,8 @@ use serde_json::Value;
 
 use crate::commands;
 use crate::models::{
-    CommandRecord, Decision, PendingWriteRecord, SearchResult, StatusSummary, Task,
+    CommandRecord, Decision, Fact, PendingWriteRecord, RenderResult, SearchResult, StatusSummary,
+    Task,
 };
 use crate::{MemhubError, Result};
 
@@ -211,6 +212,62 @@ impl MemhubServer {
             title: params.title,
         }))
     }
+
+    async fn task_add_impl(
+        &self,
+        Parameters(params): Parameters<TaskAddParams>,
+        actor: ClientIdentity,
+    ) -> std::result::Result<Json<TaskAddToolResponse>, McpError> {
+        let id = commands::task::add(
+            &self.start,
+            &params.title,
+            params.notes.as_deref(),
+            &actor.normalized,
+        )
+        .map_err(map_tool_error)?;
+
+        Ok(Json(TaskAddToolResponse {
+            id,
+            title: params.title,
+            status: "open".to_string(),
+            actor: actor.normalized,
+            actor_raw: actor.raw,
+        }))
+    }
+
+    async fn task_done_impl(
+        &self,
+        Parameters(params): Parameters<TaskDoneParams>,
+        actor: ClientIdentity,
+    ) -> std::result::Result<Json<TaskDoneToolResponse>, McpError> {
+        commands::task::done(&self.start, params.id, &actor.normalized)
+            .map_err(map_tool_error)?;
+
+        Ok(Json(TaskDoneToolResponse {
+            id: params.id,
+            status: "done".to_string(),
+            actor: actor.normalized,
+            actor_raw: actor.raw,
+        }))
+    }
+
+    async fn list_facts_impl(
+        &self,
+        Parameters(params): Parameters<ListFactsParams>,
+    ) -> std::result::Result<Json<ListFactsToolResponse>, McpError> {
+        let mut facts = commands::fact::list(&self.start).map_err(map_tool_error)?;
+        if let Some(limit) = params.limit {
+            facts.truncate(limit);
+        }
+        Ok(Json(ListFactsToolResponse {
+            facts: facts.into_iter().map(FactToolRecord::from).collect(),
+        }))
+    }
+
+    async fn render_impl(&self) -> std::result::Result<Json<RenderToolResponse>, McpError> {
+        let result = commands::render::run(&self.start).map_err(map_tool_error)?;
+        Ok(Json(RenderToolResponse::from(result)))
+    }
 }
 
 #[tool_router(router = tool_router)]
@@ -330,6 +387,51 @@ impl MemhubServer {
         let actor = current_client_identity(&request_context);
         self.log_session_note_impl(params, actor).await
     }
+
+    #[tool(
+        name = "task_add",
+        description = "Create a task directly in the durable tasks table. Tasks are intent, not claims; the user prunes."
+    )]
+    async fn task_add(
+        &self,
+        params: Parameters<TaskAddParams>,
+        request_context: RequestContext<RoleServer>,
+    ) -> std::result::Result<Json<TaskAddToolResponse>, McpError> {
+        let actor = current_client_identity(&request_context);
+        self.task_add_impl(params, actor).await
+    }
+
+    #[tool(
+        name = "task_done",
+        description = "Mark an existing task as done by id."
+    )]
+    async fn task_done(
+        &self,
+        params: Parameters<TaskDoneParams>,
+        request_context: RequestContext<RoleServer>,
+    ) -> std::result::Result<Json<TaskDoneToolResponse>, McpError> {
+        let actor = current_client_identity(&request_context);
+        self.task_done_impl(params, actor).await
+    }
+
+    #[tool(
+        name = "list_facts",
+        description = "List durable facts. Use this to look up build/test/run commands or other key-value records the user has confirmed."
+    )]
+    async fn list_facts(
+        &self,
+        params: Parameters<ListFactsParams>,
+    ) -> std::result::Result<Json<ListFactsToolResponse>, McpError> {
+        self.list_facts_impl(params).await
+    }
+
+    #[tool(
+        name = "render",
+        description = "Regenerate agent_docs/PROJECT.md and agent_docs/PROJECT_LEDGER.md from the current DB state. Prior files are backed up automatically."
+    )]
+    async fn render(&self) -> std::result::Result<Json<RenderToolResponse>, McpError> {
+        self.render_impl().await
+    }
 }
 
 impl ServerHandler for MemhubServer {
@@ -337,7 +439,7 @@ impl ServerHandler for MemhubServer {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("memhub", env!("CARGO_PKG_VERSION")))
             .with_instructions(
-                "Local-first per-repo project memory. Read tools are direct; writes are limited to explicit verified command recording, staged fact and decision proposals, and free-form session notes (write-only scratch).",
+                "Local-first per-repo project memory. Read tools are direct (status, search, list_tasks, list_decisions, list_facts, list_pending_writes, get_command). Tasks write directly (task_add, task_done) since tasks are intent. Facts and decisions stage via propose_fact / propose_decision and require human acceptance through `memhub review accept`. Session notes are write-only scratch. `render` regenerates agent_docs/PROJECT.md from the DB.",
             )
     }
 
@@ -676,6 +778,98 @@ struct ProposeDecisionToolResponse {
     actor: String,
     actor_raw: String,
     title: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct TaskAddParams {
+    title: String,
+    notes: Option<String>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct TaskAddToolResponse {
+    id: i64,
+    title: String,
+    status: String,
+    actor: String,
+    actor_raw: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct TaskDoneParams {
+    id: i64,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct TaskDoneToolResponse {
+    id: i64,
+    status: String,
+    actor: String,
+    actor_raw: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
+struct ListFactsParams {
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct ListFactsToolResponse {
+    facts: Vec<FactToolRecord>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct FactToolRecord {
+    id: i64,
+    key: String,
+    value: String,
+    confidence: f64,
+    source: String,
+    verified_at: Option<String>,
+    created_at: String,
+    is_stale: bool,
+}
+
+impl From<Fact> for FactToolRecord {
+    fn from(value: Fact) -> Self {
+        Self {
+            id: value.id,
+            key: value.key,
+            value: value.value,
+            confidence: value.confidence,
+            source: value.source,
+            verified_at: value.verified_at,
+            created_at: value.created_at,
+            is_stale: value.is_stale,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct RenderToolResponse {
+    project_md_path: String,
+    ledger_md_path: String,
+    written_files: Vec<String>,
+    backup_files: Vec<String>,
+}
+
+impl From<RenderResult> for RenderToolResponse {
+    fn from(value: RenderResult) -> Self {
+        Self {
+            project_md_path: value.project_md_path.display().to_string(),
+            ledger_md_path: value.ledger_md_path.display().to_string(),
+            written_files: value
+                .written_files
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect(),
+            backup_files: value
+                .backup_files
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1269,5 +1463,122 @@ mod tests {
 
         assert_eq!(writes_log_row.0, "codex");
         assert_eq!(writes_log_row.1, "mcp propose_fact");
+    }
+
+    #[test]
+    fn mcp_task_add_writes_directly_with_agent_attribution() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+
+        let server = MemhubServer::new(temp.path().to_path_buf());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+
+        let result = runtime
+            .block_on(server.task_add_impl(
+                Parameters(TaskAddParams {
+                    title: "Refactor cache layer".to_string(),
+                    notes: Some("Noted mid-session".to_string()),
+                }),
+                ClientIdentity {
+                    normalized: "codex".to_string(),
+                    raw: "openai-codex".to_string(),
+                },
+            ))
+            .expect("task_add");
+
+        assert_eq!(result.0.title, "Refactor cache layer");
+        assert_eq!(result.0.status, "open");
+        assert_eq!(result.0.actor, "codex");
+
+        let tasks = task::list(temp.path(), Some("open")).expect("list tasks");
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].title, "Refactor cache layer");
+    }
+
+    #[test]
+    fn mcp_task_done_marks_existing_task() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let task_id = task::add(temp.path(), "Wire MCP server", None, "cli:user").expect("seed");
+
+        let server = MemhubServer::new(temp.path().to_path_buf());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+
+        let result = runtime
+            .block_on(server.task_done_impl(
+                Parameters(TaskDoneParams { id: task_id }),
+                ClientIdentity {
+                    normalized: "claude-code".to_string(),
+                    raw: "claude-ai".to_string(),
+                },
+            ))
+            .expect("task_done");
+
+        assert_eq!(result.0.id, task_id);
+        assert_eq!(result.0.status, "done");
+
+        let remaining = task::list(temp.path(), Some("open")).expect("open tasks");
+        assert!(remaining.is_empty());
+    }
+
+    #[test]
+    fn mcp_list_facts_returns_durable_rows() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        crate::commands::fact::add(
+            temp.path(),
+            "build-command",
+            "cargo build",
+            "user",
+            "cli:user",
+        )
+        .expect("seed fact");
+
+        let server = MemhubServer::new(temp.path().to_path_buf());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+
+        let result = runtime
+            .block_on(server.list_facts_impl(Parameters(ListFactsParams::default())))
+            .expect("list_facts");
+
+        assert_eq!(result.0.facts.len(), 1);
+        assert_eq!(result.0.facts[0].key, "build-command");
+        assert_eq!(result.0.facts[0].value, "cargo build");
+        assert_eq!(result.0.facts[0].source, "user");
+        assert!(!result.0.facts[0].is_stale);
+    }
+
+    #[test]
+    fn mcp_render_regenerates_agent_docs_from_db() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+
+        let server = MemhubServer::new(temp.path().to_path_buf());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+
+        let result = runtime
+            .block_on(server.render_impl())
+            .expect("render");
+
+        assert!(
+            std::path::Path::new(&result.0.project_md_path).exists(),
+            "PROJECT.md should be written"
+        );
+        assert!(
+            std::path::Path::new(&result.0.ledger_md_path).exists(),
+            "PROJECT_LEDGER.md should be written"
+        );
     }
 }
