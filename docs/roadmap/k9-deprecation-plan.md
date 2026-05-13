@@ -1,9 +1,12 @@
 # K9 framework deprecation plan
 
-Status: Open planning doc. No PRD or roadmap non-goals are modified
-by this document. It captures the direction under consideration, the
-artifacts the transition will require, and the explicit decision
-points that have to land before deprecation can ship.
+Status: All four load-bearing slices have shipped. This document
+remains as the planning anchor and historical record of the
+direction; ongoing PRD-level changes live in
+[`docs/reference/memhub-prd-deprecation-addendum.md`](../reference/memhub-prd-deprecation-addendum.md).
+PRD §2 and the `docs/roadmap/k9-integration.md` non-goals have been
+formally revisited (see the addendum and the revised non-goals
+section in `k9-integration.md`).
 
 ## Direction
 
@@ -41,102 +44,71 @@ Does not decide:
 
 ### 1. `memhub render` — markdown emission from durable state
 
-Phase 2 of the memhub-primary evaluation named this the long pole.
-With K9 retired, memhub still needs to produce markdown humans, PRs,
-and cross-machine collaborators can read without opening the DB. The
-inversion is the key: markdown becomes an *output* of memhub, not an
-*input*.
+**Status: shipped (`c1becc5`, `2757a0a`, `c3fbef0`).**
 
-Open questions: which files to emit (mirror K9's four-file shape, or
-re-shape entirely?); who triggers regeneration (CLI command, hook
-after each write, on-demand `memhub render`?); conflict semantics if
-a human edits the emitted file (refuse to overwrite, three-way merge,
-DB-wins-with-backup?); where the emitted files live (in-repo,
-`.memhub/`, or both?).
-
-Artifact: `docs/roadmap/memhub-render-design.md` (does not exist
-yet). This is the next design doc on the path.
+The design doc at [`docs/roadmap/memhub-render-design.md`](memhub-render-design.md)
+locked the output shape (memhub-native two-file:
+`agent_docs/PROJECT.md` for narrative + `agent_docs/PROJECT_LEDGER.md`
+for the ledger) and resolved the four secondary questions: trigger is
+on-demand only, conflict semantics are DB-wins-with-backup, output
+lives in-repo at the configurable `[render].output_dir` (default
+`agent_docs/`), and state/arch persist as single durable-text blobs
+in new DB tables. Migration `0007_project_narrative` shipped both
+tables together. This slice subsumed slice 3 (state/arch as DB
+content) since the render shape required the DB representation to
+exist first.
 
 ### 2. PRD §2 and the K9-integration non-goals
 
-PRD §2 currently reads markdown as the entry point. Under the
-deprecation direction it inverts. The PRD addendum (or a numbered
-revision) has to spell this out — silently reinterpreting the prior
-wording is the wrong path.
-
-Similarly the non-goals in `docs/roadmap/k9-integration.md` ("no
-bidirectional sync," "no DB mapping of `project_state.md` /
-`project_arch.md`") were boundary conditions for the K9-stays-primary
-era. Each needs explicit re-decision under the deprecation framing.
-
-Artifact: PRD addendum or revision; non-goal carve-outs in the
-roadmap doc. Likely downstream of slice 1 since the render design
-will surface which non-goals actually need to move.
+**Status: shipped (this commit).** Addendum lives at
+[`docs/reference/memhub-prd-deprecation-addendum.md`](../reference/memhub-prd-deprecation-addendum.md);
+revised non-goals live inline at the top of
+[`k9-integration.md`](k9-integration.md). The PRD itself stays
+verbatim per the project guardrail. The four prior non-goals were
+explicitly re-decided: reverse-direction sync, general
+`k9 import/export/sync`, and managed-block writes inside `agent_docs/`
+all stay in force (with clarification on the third); the DB mapping
+of `project_state.md` / `project_arch.md` was overturned, with
+migration `0007_project_narrative` providing the new tables.
 
 ### 3. `project_state.md` and `project_arch.md` as DB content
 
-Currently both files live outside any DB representation by design.
-Under K9-primary that was correct — the markdown narrative is more
-information-dense than a tabular schema can be without losing prose.
-Under memhub-primary, narrative still lives somewhere; the question
-is whether it lives in DB columns (decomposed into discrete fields)
-or as a single durable-text blob (essentially the same markdown,
-persisted in the DB instead of the filesystem).
-
-Open questions: does `state` decompose into "currently building" +
-"next up" + "open questions" columns, or stay as a single free-form
-column? Same for `arch`. How does slice 1's render step reconstruct
-the original markdown shape from whichever representation we pick?
-
-Artifact: probably folded into the `memhub render` design doc unless
-the schema impact is large enough to earn its own slice.
+**Status: shipped — folded into slice 1.** As predicted in the
+original plan, this question was resolved by the render design.
+Both files map to single durable-text blob tables (`project_state`
+and `project_arch`), append-only history, with `memhub state set` /
+`memhub arch set` / `show` / `history` as the CLI surface.
+Decomposed-columns option was rejected; rationale captured as a
+durable decision dated 2026-05-12 in `agent_docs/project_decisions.md`
+and in `docs/roadmap/memhub-render-design.md` §2.
 
 ### 4. Wrap-up routing brain
 
-K9's `/wrap-up.md` is the only place today that orchestrates the
-human-approval gate between session work and durable state. Under
-deprecation, that responsibility migrates. Two routes:
+**Status: shipped (`a2b6606`, `5037033`, `588168b`, `103eea0`,
+`591832f`).** Design doc at
+[`docs/roadmap/wrap-up-design.md`](wrap-up-design.md) locked the
+routing brain as a Claude Code project-level slash command at
+`.claude/commands/wrap-up.md`, not a `memhub wrap-up` CLI
+subcommand. Only new CLI primitive needed was `memhub note add`
+(everything else already shipped via the render slice and prior
+work). M7-001 (slash-command override gap) closed by renaming the
+user-level K9 `wrap-up.md` to `wrap-up-k9.md` after empirical
+discovery that personal-overrides-project is documented Claude Code
+behavior; rename-the-collision is the durable pattern for future
+memhub-aware skills (`/init-project`, `/check-init` if shipped).
+M7-002 (memhub-primary migration of this repo) closed inline during
+the dogfood wrap-up.
 
-- **Into memhub** as a new CLI surface (`memhub wrap-up` walks the
-  same approval flow K9 does today, calling the existing mutating
-  commands internally).
-- **Into a thin shell wrapper** that lives in the user's dotfiles or
-  a small companion tool, with memhub staying dumb durable storage.
+## Sequencing — what actually happened
 
-UX preference (durable): the slash-command ergonomic — typing
-`/wrap-up` at session end — is part of what the user wants
-preserved across the K9 retirement. Memhub-primary should not feel
-like a downgrade to "just a CLI." This biases the design toward a
-Claude Code skill that calls memhub primitives (preserving the
-`/wrap-up` invocation pattern) rather than a pure `memhub wrap-up`
-CLI subcommand. The CLI primitives stay as the underlying surface;
-the skill is the thin ergonomic layer on top. Same logic applies to
-any future replacements for `/init-project` and `/check-init`.
-
-Open questions: which routing-brain location preserves the "memhub
-stays boring" PRD principle? Where do slash-command definitions live
-without K9 (inside memhub as embedded prompts? In a small companion
-repo of memhub-aware skills? Outside memhub entirely as user-owned
-dotfiles?)?
-
-Artifact: design slice TBD, downstream of slices 1-3.
-
-## Sequencing
-
-Sequencing is not committed. Two plausible orderings:
-
-- **Render-first.** Slice 1 ships before any PRD edits; the render
-  doc itself argues for the PRD addendum based on what it needs.
-  Lower per-slice risk because each is small and each can be
-  evaluated on its own merits before the next starts.
-- **PRD-first.** PRD addendum lands first to remove the contradiction
-  between PRD §2's current wording and the deprecation direction.
-  Each downstream slice then proceeds without the "we're violating
-  the PRD" footnote. Higher up-front cost but cleaner narrative for
-  anyone reading the roadmap mid-transition.
-
-The two-option framework applies when the first design slice is
-actually started.
+The render-first ordering was followed. Slice 1 (render) shipped
+first, then slice 4 (wrap-up) including its dogfood (M7-001 + M7-002),
+then slice 2 (the PRD addendum) once render and wrap-up were in real
+use. Slice 3 was folded into slice 1 as predicted. Each slice landed
+as its own design doc + implementation commits + tests, evaluated
+on its own merits before the next started. The render-first
+sequencing kept per-slice risk low and let each slice argue its own
+case under explicit reasoning rather than retroactive justification.
 
 ## Out of scope for this document
 

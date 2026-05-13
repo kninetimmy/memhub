@@ -73,21 +73,40 @@ accordingly:
 - Install is non-destructive: no K9 files are written or modified by memhub
   install.
 
-## Non-goals
+## Non-goals (revised after K9 deprecation track shipped)
 
-- No bidirectional sync. memhub does not re-render `agent_docs/*.md` from
-  database state.
-- No general `k9 import/export/sync` CLI surface. Existing `memhub decision add` /
-  `task add` / `fact add` commands are the steady-state invocation surface.
-  One narrow exception: `memhub integrations bootstrap-k9` is a first-install-only
-  one-shot that parses `project_decisions.md` and `project_backlog.md` into
-  durable rows when the database is empty. It writes through the same `decision::add`
-  and `task::add_with_status` paths with `actor = "k9:bootstrap"` and refuses on
-  any non-empty target. No reverse direction, no general re-sync.
-- No managed-block writes inside `agent_docs/`. memhub continues to manage
-  only the existing block in root `CLAUDE.md` / `AGENTS.md`.
-- No mapping of `project_state.md` or `project_arch.md` into DB tables. Those
-  stay K9-only.
+The non-goals below were authored when memhub was complementary to
+K9. The deprecation addendum (`docs/reference/memhub-prd-deprecation-addendum.md`)
+revisits each one explicitly. Status of each is called out inline.
+
+- **No reverse-direction sync of human edits to rendered markdown.**
+  *Still in force.* `memhub render` is a one-way projection from the
+  DB. There is no parser that reads edits to `agent_docs/PROJECT.md`
+  or `PROJECT_LEDGER.md` back into the DB. Humans who want to change
+  durable content use the CLI (`memhub state set`, `decision add`,
+  etc.). The original wording covered the K9 four-file shape; the
+  same principle now covers the memhub-rendered shape.
+- **No general `k9 import/export/sync` CLI surface.** *Still in
+  force.* `memhub integrations bootstrap-k9` remains the one narrow
+  exception — first-install-only, refuses on any non-empty target,
+  writes through `decision::add` and `task::add_with_status` with
+  `actor = "k9:bootstrap"`. After bootstrap, `memhub render` takes
+  over as steady state. No reverse direction; no general re-sync.
+- **No managed-block writes inside `agent_docs/`.** *Clarified.*
+  The `<!-- memhub:managed:start -->` block (the small at-a-glance
+  status section) is still only emitted into root `CLAUDE.md` /
+  `AGENTS.md` by `memhub sync-md`. Render is a *separate* mechanism
+  with its own marker (`<!-- memhub:rendered -->`) that emits whole
+  files (`PROJECT.md`, `PROJECT_LEDGER.md`) into the configured
+  output directory (default `agent_docs/`). The two surfaces don't
+  overlap; managed blocks and rendered files coexist.
+- **No mapping of `project_state.md` or `project_arch.md` into DB
+  tables.** *Overturned.* Migration `0007_project_narrative` adds
+  `project_state` and `project_arch` tables (single durable-text
+  blobs, append-only history). The K9-canonical narrative files are
+  no longer the source of truth in memhub-primary repos; the DB
+  blobs are, and `memhub render` projects them into `PROJECT.md`.
+  See the addendum §2 for full rationale.
 
 ## Schema fit
 
