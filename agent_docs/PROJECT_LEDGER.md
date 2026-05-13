@@ -1,7 +1,7 @@
 <!-- memhub:rendered -->
 <!-- DO NOT EDIT. Generated from .memhub/project.sqlite. -->
 <!-- To change content, use memhub CLI; then re-run `memhub render`. -->
-<!-- Generated at: 2026-05-13T00:14:23Z by memhub 0.1.0 -->
+<!-- Generated at: 2026-05-13T01:30:09Z by memhub 0.1.0 -->
 
 # memhub — Ledger
 
@@ -91,7 +91,7 @@ Steady-state non-goal of no bulk K9 import stays. First-install bootstrap-k9 is 
 
 ## Backlog
 
-_9 task(s), 3 open. Open first, then by recency._
+_9 task(s), 2 open. Open first, then by recency._
 
 ### T9 — Migrate memhub's own agent_docs from K9 markdown to memhub-rendered files (M7-002)
 
@@ -101,19 +101,19 @@ Blocked on M7-001. Once the memhub-native /wrap-up runs in this repo: (a) popula
 
 ---
 
-### T8 — Investigate .claude/commands/wrap-up.md override gap (M7-001)
-
-**Status:** open • **Updated:** 2026-05-13 00:07:40
-
-Project-level slash command at .claude/commands/wrap-up.md was expected to take precedence over user-level ~/.claude/commands/wrap-up.md when invoked inside the project. Empirically the user-level K9 /wrap-up fired instead during step 3 dogfood. Until this is understood and fixed, the memhub-native wrap-up cannot actually be dogfooded inside the memhub repo. Investigation: check Claude Code docs for skill resolution rules, verify file placement convention (commands/ vs agents/ vs skills/), test with a unique-named project skill to confirm whether project-level loading works at all, then either fix placement or rename to avoid collision while preserving slash-command ergonomics. Gates M7-002.
-
----
-
 ### T5 — M6-004 - Migrate memhub agent_docs to K9 canonical structural delimiters
 
 **Status:** open • **Updated:** 2026-05-12 21:03:09
 
 _No notes._
+
+---
+
+### T8 — Investigate .claude/commands/wrap-up.md override gap (M7-001)
+
+**Status:** done • **Updated:** 2026-05-13 01:30:02
+
+Project-level slash command at .claude/commands/wrap-up.md was expected to take precedence over user-level ~/.claude/commands/wrap-up.md when invoked inside the project. Empirically the user-level K9 /wrap-up fired instead during step 3 dogfood. Until this is understood and fixed, the memhub-native wrap-up cannot actually be dogfooded inside the memhub repo. Investigation: check Claude Code docs for skill resolution rules, verify file placement convention (commands/ vs agents/ vs skills/), test with a unique-named project skill to confirm whether project-level loading works at all, then either fix placement or rename to avoid collision while preserving slash-command ergonomics. Gates M7-002.
 
 ---
 
@@ -173,6 +173,8 @@ _No facts recorded._
 
 | When | Actor | Table | Action | Reason |
 |------|-------|-------|--------|--------|
+| 2026-05-13 01:30:02 | claude:investigation | tasks | update | task done |
+| 2026-05-13 00:14:23 | cli:user | render | render | memhub render |
 | 2026-05-13 00:12:12 | cli:user | markdown_sync | update | sync-md |
 | 2026-05-13 00:07:40 | k9:wrap-up | tasks | insert | task add |
 | 2026-05-13 00:07:40 | k9:wrap-up | tasks | insert | task add |
