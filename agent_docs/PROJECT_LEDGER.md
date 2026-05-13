@@ -1,7 +1,7 @@
 <!-- memhub:rendered -->
 <!-- DO NOT EDIT. Generated from .memhub/project.sqlite. -->
 <!-- To change content, use memhub CLI; then re-run `memhub render`. -->
-<!-- Generated at: 2026-05-13T20:14:30Z by memhub 0.1.0 -->
+<!-- Generated at: 2026-05-13T20:50:02Z by memhub 0.1.0 -->
 
 # memhub — Ledger
 
@@ -445,6 +445,7 @@ _No facts recorded._
 
 | When | Actor | Table | Action | Reason |
 |------|-------|-------|--------|--------|
+| 2026-05-13 20:14:30 | cli:user | render | render | memhub render |
 | 2026-05-13 20:14:27 | claude:wrap-up | session_notes | insert | mcp log_session_note |
 | 2026-05-13 20:14:20 | claude:wrap-up | tasks | insert | task add |
 | 2026-05-13 20:14:20 | claude:wrap-up | tasks | insert | task add |
@@ -494,4 +495,3 @@ _No facts recorded._
 | 2026-05-13 03:28:07 | claude:wrap-up | decisions | insert | decision add |
 | 2026-05-13 03:28:01 | claude:wrap-up | project_state | insert | state set |
 | 2026-05-13 02:22:14 | cli:user | markdown_sync | update | sync-md |
-| 2026-05-13 02:22:14 | cli:user | render | render | memhub render |

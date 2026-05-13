@@ -209,6 +209,49 @@ fn render_logs_a_writes_log_entry() {
 }
 
 #[test]
+fn render_does_not_double_up_section_headings_in_narrative_bodies() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    // Wrap-up bodies are drafted as full mini-docs that lead with the section
+    // heading they belong under. Render should not stack a second copy of the
+    // same heading on top.
+    narrative::set(
+        temp.path(),
+        NarrativeKind::State,
+        "## Currently building\n\nM8 retrieval slice.\n",
+        "cli:user",
+        "cli:user",
+    )
+    .expect("state set");
+    narrative::set(
+        temp.path(),
+        NarrativeKind::Arch,
+        "## Architecture\n\nRust CLI + SQLite.\n",
+        "cli:user",
+        "cli:user",
+    )
+    .expect("arch set");
+
+    let result = render::run(temp.path(), "cli:user").expect("render");
+    let project = read_string(&result.project_md_path);
+
+    let state_heading_count = project.matches("## Currently building").count();
+    assert_eq!(
+        state_heading_count, 1,
+        "expected exactly one '## Currently building' heading, found {state_heading_count}:\n{project}",
+    );
+
+    let arch_heading_count = project.matches("## Architecture").count();
+    assert_eq!(
+        arch_heading_count, 1,
+        "expected exactly one '## Architecture' heading, found {arch_heading_count}:\n{project}",
+    );
+    assert!(project.contains("M8 retrieval slice."));
+    assert!(project.contains("Rust CLI + SQLite."));
+}
+
+#[test]
 fn render_leaves_project_md_untouched_when_ledger_path_is_unwritable() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");

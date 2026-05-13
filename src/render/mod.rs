@@ -336,7 +336,7 @@ fn format_project_md(s: &RenderSnapshot) -> String {
     out.push_str("## Currently building\n\n");
     match &s.state {
         Some(entry) => {
-            out.push_str(entry.body.trim_end());
+            out.push_str(strip_leading_heading(&entry.body, "## Currently building").trim_end());
             out.push('\n');
             out.push('\n');
             out.push_str(&format!(
@@ -354,7 +354,7 @@ fn format_project_md(s: &RenderSnapshot) -> String {
     out.push_str("## Architecture\n\n");
     match &s.arch {
         Some(entry) => {
-            out.push_str(entry.body.trim_end());
+            out.push_str(strip_leading_heading(&entry.body, "## Architecture").trim_end());
             out.push('\n');
             out.push('\n');
             out.push_str(&format!(
@@ -505,8 +505,68 @@ fn collapse_inline(text: &str) -> String {
     text.replace('\n', " ").replace('\r', " ")
 }
 
+/// Wrap-up convention is to draft narrative bodies as standalone mini-docs
+/// that lead with the section heading they belong under. Render adds its own
+/// fixed section wrapper, so if the body also starts with that heading the
+/// output ends up with two identical headings back-to-back. Strip a leading
+/// matching heading (case-sensitive) so either body style renders cleanly.
+fn strip_leading_heading<'a>(body: &'a str, heading: &str) -> &'a str {
+    let trimmed = body.trim_start_matches(['\n', '\r']);
+    let Some(rest) = trimmed.strip_prefix(heading) else {
+        return body;
+    };
+    // Require end-of-string or a line break after the heading so we don't
+    // truncate paragraphs that merely begin with the same text.
+    if rest.is_empty() || rest.starts_with('\n') || rest.starts_with("\r\n") {
+        rest.trim_start_matches(['\n', '\r'])
+    } else {
+        body
+    }
+}
+
 fn escape_table_cell(text: &str) -> String {
     text.replace('|', "\\|")
         .replace('\n', " ")
         .replace('\r', " ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_leading_heading;
+
+    #[test]
+    fn strips_matching_leading_heading() {
+        let body = "## Currently building\n\nM8 details here.\n";
+        assert_eq!(
+            strip_leading_heading(body, "## Currently building"),
+            "M8 details here.\n",
+        );
+    }
+
+    #[test]
+    fn leaves_body_alone_when_heading_does_not_match() {
+        let body = "## Different heading\n\nbody\n";
+        assert_eq!(
+            strip_leading_heading(body, "## Currently building"),
+            body,
+        );
+    }
+
+    #[test]
+    fn tolerates_leading_blank_lines_before_heading() {
+        let body = "\n\n## Architecture\n\nbody\n";
+        assert_eq!(
+            strip_leading_heading(body, "## Architecture"),
+            "body\n",
+        );
+    }
+
+    #[test]
+    fn does_not_strip_when_heading_text_is_only_a_prefix_of_a_paragraph() {
+        let body = "## Currently building tools that...\n";
+        assert_eq!(
+            strip_leading_heading(body, "## Currently building"),
+            body,
+        );
+    }
 }
