@@ -193,8 +193,11 @@ fn insert_commands(tx: &Transaction<'_>, rows: &[v1::Command]) -> Result<()> {
 
 fn insert_pending_writes(tx: &Transaction<'_>, rows: &[v1::PendingWrite]) -> Result<()> {
     let mut stmt = tx.prepare(
-        "INSERT INTO pending_writes(id, project_id, kind, payload_json, rationale, status, actor, actor_raw, created_at, provenance_json)
-         VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO pending_writes(
+             id, project_id, kind, payload_json, rationale, status,
+             actor, actor_raw, created_at, provenance_json, reviewed_at
+         )
+         VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
     )?;
     for pending in rows {
         stmt.execute(params![
@@ -207,6 +210,7 @@ fn insert_pending_writes(tx: &Transaction<'_>, rows: &[v1::PendingWrite]) -> Res
             pending.actor_raw,
             pending.created_at,
             pending.provenance_json,
+            pending.reviewed_at,
         ])?;
     }
     Ok(())

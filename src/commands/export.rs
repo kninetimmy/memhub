@@ -167,7 +167,8 @@ fn read_commands(conn: &Connection) -> Result<Vec<v1::Command>> {
 
 fn read_pending_writes(conn: &Connection) -> Result<Vec<v1::PendingWrite>> {
     let mut stmt = conn.prepare(
-        "SELECT id, kind, payload_json, rationale, status, actor, actor_raw, created_at, provenance_json
+        "SELECT id, kind, payload_json, rationale, status, actor, actor_raw,
+                created_at, provenance_json, reviewed_at
          FROM pending_writes
          WHERE project_id = 1
          ORDER BY id",
@@ -183,6 +184,7 @@ fn read_pending_writes(conn: &Connection) -> Result<Vec<v1::PendingWrite>> {
             actor_raw: row.get(6)?,
             created_at: row.get(7)?,
             provenance_json: row.get(8)?,
+            reviewed_at: row.get(9)?,
         })
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()

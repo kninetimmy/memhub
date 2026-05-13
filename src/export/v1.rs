@@ -87,6 +87,10 @@ pub struct PendingWrite {
     pub actor_raw: String,
     pub created_at: String,
     pub provenance_json: String,
+    /// Added in migration 0005. `#[serde(default)]` lets exports written before
+    /// this field existed import cleanly as `None`.
+    #[serde(default)]
+    pub reviewed_at: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -1,7 +1,7 @@
 use std::fs;
 
 use memhub::MemhubError;
-use memhub::commands::{decision, export, fact, import, init, search, task};
+use memhub::commands::{decision, export, fact, import, init, pending_write, review, search, task};
 use memhub::export::v1;
 use tempfile::tempdir;
 
@@ -179,6 +179,100 @@ fn import_restores_data_into_empty_target() {
     assert_eq!(decisions.len(), 1);
     assert_eq!(tasks.len(), 1);
     assert_eq!(decisions[0].title, "Use rusqlite bundled mode");
+}
+
+#[test]
+fn export_import_round_trips_pending_writes_reviewed_at() {
+    let source = tempdir().expect("source tempdir");
+    init::run(source.path()).expect("source init");
+
+    let pending_id = pending_write::propose_fact(
+        source.path(),
+        "deploy-command",
+        "./deploy.sh",
+        "Looks risky.",
+        "codex",
+        "openai-codex",
+        "{\"source\":\"mcp\"}",
+    )
+    .expect("propose fact");
+    review::reject(
+        source.path(),
+        pending_id,
+        Some("Untrusted source"),
+        "cli:user",
+    )
+    .expect("reject pending");
+
+    let before = review::show(source.path(), pending_id).expect("show before export");
+    let expected_reviewed_at = before.reviewed_at.expect("reject sets reviewed_at");
+
+    let export_path = source.path().join("export.json");
+    export::run(source.path(), &export_path).expect("export");
+
+    let raw = fs::read_to_string(&export_path).expect("read export");
+    let parsed: v1::Export = serde_json::from_str(&raw).expect("parse");
+    assert_eq!(parsed.pending_writes.len(), 1);
+    assert_eq!(
+        parsed.pending_writes[0].reviewed_at.as_deref(),
+        Some(expected_reviewed_at.as_str()),
+        "reviewed_at should survive export"
+    );
+
+    let target = tempdir().expect("target tempdir");
+    init::run(target.path()).expect("target init");
+    import::run(target.path(), &export_path, false).expect("import");
+
+    let restored = review::show(target.path(), pending_id).expect("show after import");
+    assert_eq!(restored.status, "rejected");
+    assert_eq!(
+        restored.reviewed_at.as_deref(),
+        Some(expected_reviewed_at.as_str()),
+        "reviewed_at should survive import"
+    );
+}
+
+#[test]
+fn import_accepts_v1_export_missing_reviewed_at_field() {
+    // Exports written before migration 0005 omit reviewed_at entirely.
+    // serde(default) on the field should let those imports succeed.
+    let target = tempdir().expect("target tempdir");
+    init::run(target.path()).expect("target init");
+
+    let legacy_export = serde_json::json!({
+        "memhub_export_version": 1,
+        "exported_at": "2025-01-01T00:00:00Z",
+        "exported_by": "memhub legacy",
+        "source_schema_version": "1",
+        "project": {
+            "root_path_at_export": target.path().to_string_lossy(),
+            "created_at": "2025-01-01T00:00:00Z",
+        },
+        "facts": [],
+        "decisions": [],
+        "tasks": [],
+        "commands": [],
+        "pending_writes": [{
+            "id": 1,
+            "kind": "fact",
+            "payload_json": "{\"key\":\"k\",\"value\":\"v\"}",
+            "rationale": "legacy",
+            "status": "pending",
+            "actor": "codex",
+            "actor_raw": "openai-codex",
+            "created_at": "2025-01-01T00:00:00Z",
+            "provenance_json": "{}",
+        }],
+        "writes_log": [],
+    });
+    let legacy_path = target.path().join("legacy.json");
+    fs::write(&legacy_path, legacy_export.to_string()).expect("write legacy export");
+
+    import::run(target.path(), &legacy_path, true).expect("legacy import should succeed");
+
+    let restored = review::show(target.path(), 1).expect("show legacy pending");
+    assert_eq!(restored.status, "pending");
+    assert!(restored.reviewed_at.is_none());
 }
 
 #[test]
