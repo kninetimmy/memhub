@@ -98,6 +98,8 @@ pub fn accept(start: &Path, id: i64, actor: &str) -> Result<AcceptOutcome> {
         ))
     })?;
 
+    let derived_source = derive_source_from_pending_actor(&pending.actor);
+
     let (durable_id, durable_table) = match pending.kind.as_str() {
         "fact" => {
             let key = payload
@@ -108,7 +110,7 @@ pub fn accept(start: &Path, id: i64, actor: &str) -> Result<AcceptOutcome> {
                 .get("value")
                 .and_then(Value::as_str)
                 .ok_or_else(|| missing_payload_field(id, "value"))?;
-            let (fact_id, _) = fact::add(start, key, value, "user", actor)?;
+            let (fact_id, _) = fact::add(start, key, value, &derived_source, actor)?;
             (fact_id, "facts")
         }
         "decision" => {
@@ -116,7 +118,8 @@ pub fn accept(start: &Path, id: i64, actor: &str) -> Result<AcceptOutcome> {
                 .get("title")
                 .and_then(Value::as_str)
                 .ok_or_else(|| missing_payload_field(id, "title"))?;
-            let decision_id = decision::add(start, title, &pending.rationale, actor)?;
+            let decision_id =
+                decision::add(start, title, &pending.rationale, &derived_source, actor)?;
             (decision_id, "decisions")
         }
         other => {
@@ -254,4 +257,42 @@ fn missing_payload_field(id: i64, field: &str) -> MemhubError {
     MemhubError::InvalidInput(format!(
         "pending write {id} payload is missing required field '{field}'"
     ))
+}
+
+/// Compose the durable `source` value for a pending write being accepted.
+///
+/// `pending_writes.actor` holds the normalized client identity (e.g. `codex`,
+/// `claude-code`) captured at MCP `initialize` time, or a free-form CLI actor
+/// string. When an agent's claim is accepted by an operator, both signals
+/// matter — the operator endorsed it, and the agent surfaced it. See
+/// `docs/reference/memhub-prd-source-vocabulary-addendum.md` §2.
+fn derive_source_from_pending_actor(actor: &str) -> String {
+    match actor {
+        "" | "user" | "unknown" => "user".to_string(),
+        agent => format!("user+agent:{agent}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::derive_source_from_pending_actor;
+
+    #[test]
+    fn derive_source_handles_user_and_unknown() {
+        assert_eq!(derive_source_from_pending_actor("user"), "user");
+        assert_eq!(derive_source_from_pending_actor("unknown"), "user");
+        assert_eq!(derive_source_from_pending_actor(""), "user");
+    }
+
+    #[test]
+    fn derive_source_composes_agent_identities() {
+        assert_eq!(
+            derive_source_from_pending_actor("codex"),
+            "user+agent:codex"
+        );
+        assert_eq!(
+            derive_source_from_pending_actor("claude-code"),
+            "user+agent:claude-code"
+        );
+    }
 }

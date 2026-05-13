@@ -8,8 +8,8 @@ use crate::db;
 use crate::models::Decision;
 use crate::sync_md;
 
-pub fn add(start: &Path, title: &str, rationale: &str, actor: &str) -> Result<i64> {
-    add_with_decided_at(start, title, rationale, None, actor)
+pub fn add(start: &Path, title: &str, rationale: &str, source: &str, actor: &str) -> Result<i64> {
+    add_with_decided_at(start, title, rationale, None, source, actor)
 }
 
 pub fn add_with_decided_at(
@@ -17,6 +17,7 @@ pub fn add_with_decided_at(
     title: &str,
     rationale: &str,
     decided_at: Option<&str>,
+    source: &str,
     actor: &str,
 ) -> Result<i64> {
     let mut ctx = db::open_project(start)?;
@@ -25,16 +26,16 @@ pub fn add_with_decided_at(
     match decided_at {
         Some(when) => {
             tx.execute(
-                "INSERT INTO decisions(project_id, title, rationale, status, decided_at)
-                 VALUES (1, ?1, ?2, 'active', ?3)",
-                params![title, rationale, when],
+                "INSERT INTO decisions(project_id, title, rationale, status, decided_at, source)
+                 VALUES (1, ?1, ?2, 'active', ?3, ?4)",
+                params![title, rationale, when, source],
             )?;
         }
         None => {
             tx.execute(
-                "INSERT INTO decisions(project_id, title, rationale, status)
-                 VALUES (1, ?1, ?2, 'active')",
-                params![title, rationale],
+                "INSERT INTO decisions(project_id, title, rationale, status, source)
+                 VALUES (1, ?1, ?2, 'active', ?3)",
+                params![title, rationale, source],
             )?;
         }
     }
@@ -58,7 +59,7 @@ pub fn add_with_decided_at(
 pub fn list(start: &Path) -> Result<Vec<Decision>> {
     let ctx = db::open_project(start)?;
     let mut stmt = ctx.conn.prepare(
-        "SELECT id, title, rationale, status, decided_at
+        "SELECT id, title, rationale, status, decided_at, source
          FROM decisions
          ORDER BY decided_at DESC, id DESC",
     )?;
@@ -70,6 +71,7 @@ pub fn list(start: &Path) -> Result<Vec<Decision>> {
             rationale: row.get(2)?,
             status: row.get(3)?,
             decided_at: row.get(4)?,
+            source: row.get(5)?,
         })
     })?;
 
@@ -86,7 +88,7 @@ pub fn list_active_recent(start: &Path, limit: usize) -> Result<Vec<Decision>> {
 
     let ctx = db::open_project(start)?;
     let mut stmt = ctx.conn.prepare(
-        "SELECT id, title, rationale, status, decided_at
+        "SELECT id, title, rationale, status, decided_at, source
          FROM decisions
          WHERE project_id = 1 AND status = 'active'
          ORDER BY decided_at DESC, id DESC
@@ -100,6 +102,7 @@ pub fn list_active_recent(start: &Path, limit: usize) -> Result<Vec<Decision>> {
             rationale: row.get(2)?,
             status: row.get(3)?,
             decided_at: row.get(4)?,
+            source: row.get(5)?,
         })
     })?;
 

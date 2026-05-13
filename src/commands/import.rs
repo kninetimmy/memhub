@@ -137,8 +137,8 @@ fn insert_facts(tx: &Transaction<'_>, rows: &[v1::Fact]) -> Result<()> {
 
 fn insert_decisions(tx: &Transaction<'_>, rows: &[v1::Decision]) -> Result<()> {
     let mut stmt = tx.prepare(
-        "INSERT INTO decisions(id, project_id, title, rationale, status, decided_at, superseded_by)
-         VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO decisions(id, project_id, title, rationale, status, decided_at, superseded_by, source)
+         VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7)",
     )?;
     for decision in rows {
         stmt.execute(params![
@@ -148,6 +148,7 @@ fn insert_decisions(tx: &Transaction<'_>, rows: &[v1::Decision]) -> Result<()> {
             decision.status,
             decision.decided_at,
             decision.superseded_by,
+            decision.source,
         ])?;
     }
     Ok(())

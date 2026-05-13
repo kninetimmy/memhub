@@ -552,6 +552,7 @@ struct DecisionToolRecord {
     rationale: String,
     status: String,
     decided_at: String,
+    source: String,
 }
 
 impl From<Decision> for DecisionToolRecord {
@@ -562,6 +563,7 @@ impl From<Decision> for DecisionToolRecord {
             rationale: value.rationale,
             status: value.status,
             decided_at: value.decided_at,
+            source: value.source,
         }
     }
 }
@@ -851,6 +853,7 @@ mod tests {
             temp.path(),
             "Use indexed MCP lookups",
             "Keep reads predictable.",
+            "user",
             "cli:user",
         )
         .expect("decision");

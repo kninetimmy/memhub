@@ -53,6 +53,7 @@ fn core_records_are_persisted_and_status_counts_change() {
         temp.path(),
         "Use rusqlite bundled mode",
         "Avoid system SQLite setup friction.",
+        "user",
         "cli:user",
     )
     .expect("decision add");

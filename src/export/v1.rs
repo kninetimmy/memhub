@@ -47,6 +47,12 @@ pub struct Decision {
     pub status: String,
     pub decided_at: String,
     pub superseded_by: Option<i64>,
+    #[serde(default = "default_decision_source")]
+    pub source: String,
+}
+
+fn default_decision_source() -> String {
+    "user".to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -56,7 +56,7 @@ fn stats_counts_writes_within_window() {
     init::run(temp.path()).expect("init");
 
     fact::add(temp.path(), "k1", "v1", "user", "cli:user").expect("add fact");
-    decision::add(temp.path(), "d1", "because", "cli:user").expect("add decision");
+    decision::add(temp.path(), "d1", "because", "user", "cli:user").expect("add decision");
 
     let summary = stats::run(temp.path(), stats::StatsWindow::Days(30)).expect("stats");
     assert!(summary.writes_in_window >= 2);

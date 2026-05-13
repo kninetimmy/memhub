@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use crate::Result;
 
-pub const LATEST_VERSION: &str = "0007_project_narrative";
+pub const LATEST_VERSION: &str = "0008_decisions_source";
 
 const MIGRATIONS: &[(&str, &str)] = &[
     (
@@ -32,6 +32,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "0007_project_narrative",
         include_str!("../../migrations/0007_project_narrative.sql"),
+    ),
+    (
+        "0008_decisions_source",
+        include_str!("../../migrations/0008_decisions_source.sql"),
     ),
 ];
 

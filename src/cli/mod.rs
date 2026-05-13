@@ -582,6 +582,8 @@ pub enum DecisionCommand {
         title: String,
         #[arg(long)]
         rationale: String,
+        #[arg(long, default_value = "user")]
+        source: String,
         #[arg(long)]
         json: bool,
         #[arg(long)]
@@ -861,15 +863,17 @@ pub fn run(cli: Cli) -> Result<()> {
             DecisionCommand::Add {
                 title,
                 rationale,
+                source,
                 json: as_json,
                 actor,
             } => {
                 let actor = resolve_actor(actor.as_deref())?;
-                let id = commands::decision::add(&cwd, &title, &rationale, &actor)?;
+                let id = commands::decision::add(&cwd, &title, &rationale, &source, &actor)?;
                 if as_json {
                     let payload = json!({
                         "id": id,
                         "title": title,
+                        "source": source,
                     });
                     println!("{payload}");
                 } else {
@@ -883,11 +887,12 @@ pub fn run(cli: Cli) -> Result<()> {
                 } else {
                     for decision in decisions {
                         println!(
-                            "[{}] {} [{}] at {}\n  rationale: {}",
+                            "[{}] {} [{}] at {} (source: {})\n  rationale: {}",
                             decision.id,
                             decision.title,
                             decision.status,
                             decision.decided_at,
+                            decision.source,
                             decision.rationale
                         );
                     }

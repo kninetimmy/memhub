@@ -15,6 +15,7 @@ fn seed_project(path: &std::path::Path) {
         path,
         "Use rusqlite bundled mode",
         "Avoid system SQLite friction.",
+        "user",
         "cli:user",
     )
     .expect("decision add");
@@ -269,6 +270,7 @@ fn import_preserves_decision_ids_and_supersession_chain() {
         source.path(),
         "Pick library A",
         "Initial choice",
+        "user",
         "cli:user",
     )
     .expect("first decision");
@@ -276,6 +278,7 @@ fn import_preserves_decision_ids_and_supersession_chain() {
         source.path(),
         "Pick library B",
         "Library A had bugs",
+        "user",
         "cli:user",
     )
     .expect("second decision");
@@ -324,6 +327,7 @@ fn import_regenerates_decision_chunks_for_fts_search() {
         source.path(),
         "Adopt the kraken pattern",
         "Sea creatures organize concurrent workloads cleanly.",
+        "user",
         "cli:user",
     )
     .expect("decision add");

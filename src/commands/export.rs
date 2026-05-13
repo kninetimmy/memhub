@@ -102,7 +102,7 @@ fn read_facts(conn: &Connection) -> Result<Vec<v1::Fact>> {
 
 fn read_decisions(conn: &Connection) -> Result<Vec<v1::Decision>> {
     let mut stmt = conn.prepare(
-        "SELECT id, title, rationale, status, decided_at, superseded_by
+        "SELECT id, title, rationale, status, decided_at, superseded_by, source
          FROM decisions
          WHERE project_id = 1
          ORDER BY id",
@@ -115,6 +115,7 @@ fn read_decisions(conn: &Connection) -> Result<Vec<v1::Decision>> {
             status: row.get(3)?,
             decided_at: row.get(4)?,
             superseded_by: row.get(5)?,
+            source: row.get(6)?,
         })
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()

@@ -72,6 +72,7 @@ fn search_indexes_decision_rationales_via_fts() {
         temp.path(),
         "Use bundled rusqlite mode",
         "Avoid SQLite setup friction on Windows and keep onboarding local-first.",
+        "user",
         "cli:user",
     )
     .expect("decision add");
@@ -112,6 +113,7 @@ fn milestone_two_queries_avoid_full_scans() {
         temp.path(),
         "Use SQLite FTS5",
         "Built-in full-text search keeps queries indexed and local.",
+        "user",
         "cli:user",
     )
     .expect("decision add");

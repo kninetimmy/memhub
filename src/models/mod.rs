@@ -31,6 +31,7 @@ pub struct Decision {
     pub rationale: String,
     pub status: String,
     pub decided_at: String,
+    pub source: String,
 }
 
 #[derive(Debug)]

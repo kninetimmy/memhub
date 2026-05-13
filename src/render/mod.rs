@@ -150,7 +150,7 @@ fn load_latest_narrative(conn: &Connection, table: &str) -> Result<Option<Narrat
 
 fn load_decisions(conn: &Connection) -> Result<Vec<Decision>> {
     let mut stmt = conn.prepare(
-        "SELECT id, title, rationale, status, decided_at
+        "SELECT id, title, rationale, status, decided_at, source
          FROM decisions
          WHERE project_id = 1
          ORDER BY decided_at DESC, id DESC",
@@ -163,6 +163,7 @@ fn load_decisions(conn: &Connection) -> Result<Vec<Decision>> {
                 rationale: row.get(2)?,
                 status: row.get(3)?,
                 decided_at: row.get(4)?,
+                source: row.get(5)?,
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -375,8 +376,8 @@ fn format_ledger_md(s: &RenderSnapshot) -> String {
         for d in &s.decisions {
             out.push_str(&format!("### D{} — {}\n\n", d.id, d.title));
             out.push_str(&format!(
-                "**Status:** {} • **Decided:** {}\n\n",
-                d.status, d.decided_at
+                "**Status:** {} • **Decided:** {} • **Source:** {}\n\n",
+                d.status, d.decided_at, d.source
             ));
             if d.rationale.trim().is_empty() {
                 out.push_str("_No rationale recorded._\n\n");

@@ -51,6 +51,7 @@ fn sync_md_renders_db_state_and_creates_backups_for_existing_files() {
         temp.path(),
         "Managed block lives at the bottom",
         "Keep hand-authored instructions visible first.",
+        "user",
         "cli:user",
     )
     .expect("decision add");
@@ -126,6 +127,7 @@ fn sync_md_rejects_invalid_markers_without_writing_any_files() {
         temp.path(),
         "Marker validation should fail closed",
         "Never rewrite malformed managed blocks.",
+        "user",
         "cli:user",
     )
     .expect("decision add");
@@ -159,6 +161,7 @@ fn sync_md_preserves_manual_content_outside_managed_block() {
         temp.path(),
         "Preserve manual content around sync blocks",
         "Only the managed section should change.",
+        "user",
         "cli:user",
     )
     .expect("decision add");
@@ -185,6 +188,7 @@ fn auto_sync_md_updates_markdown_after_writes() {
         temp.path(),
         "Use explicit markdown sync markers",
         "Only rewrite the managed section.",
+        "user",
         "cli:user",
     )
     .expect("decision add");

@@ -69,6 +69,7 @@ fn render_includes_state_arch_decisions_tasks_facts() {
         temp.path(),
         "Adopt two-file render shape",
         "Distinguishes from K9; clean diff cadence.",
+        "user",
         "cli:user",
     )
     .expect("decision");
@@ -113,6 +114,7 @@ fn re_render_after_change_creates_a_backup() {
         temp.path(),
         "Add a decision",
         "Triggers a content change.",
+        "user",
         "cli:user",
     )
     .expect("decision");

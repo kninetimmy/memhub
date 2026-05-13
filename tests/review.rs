@@ -108,7 +108,7 @@ fn review_accept_promotes_fact_and_marks_pending_accepted() {
     assert_eq!(facts.len(), 1);
     assert_eq!(facts[0].key, "build-command");
     assert_eq!(facts[0].value, "cargo build");
-    assert_eq!(facts[0].source, "user");
+    assert_eq!(facts[0].source, "user+agent:codex");
     assert!((facts[0].confidence - 1.0).abs() < f64::EPSILON);
 
     let pending = review::show(temp.path(), pending_id).expect("show");
@@ -139,6 +139,7 @@ fn review_accept_promotes_decision_and_indexes_fts() {
     assert_eq!(decisions.len(), 1);
     assert_eq!(decisions[0].title, "Adopt the kraken pattern");
     assert_eq!(decisions[0].status, "active");
+    assert_eq!(decisions[0].source, "user+agent:claude-code");
 
     let response = search::run(temp.path(), "kraken", 5).expect("search");
     assert!(
