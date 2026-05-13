@@ -91,12 +91,12 @@ fn command_verify_upserts_history_and_updates_status_counts() {
     init::run(temp.path()).expect("init succeeds");
 
     let (command_id, created) =
-        command::verify(temp.path(), "build", "cargo build", 0).expect("command verify insert");
+        command::verify(temp.path(), "build", "cargo build", 0, "cli:user").expect("command verify insert");
     assert!(created);
     assert!(command_id > 0);
 
     let (same_command_id, created) =
-        command::verify(temp.path(), "build", "cargo build", 101).expect("command verify update");
+        command::verify(temp.path(), "build", "cargo build", 101, "cli:user").expect("command verify update");
     assert!(!created);
     assert_eq!(same_command_id, command_id);
 

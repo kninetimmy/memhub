@@ -118,10 +118,16 @@ impl MemhubServer {
     async fn record_command_impl(
         &self,
         Parameters(params): Parameters<RecordCommandParams>,
+        actor: ClientIdentity,
     ) -> std::result::Result<Json<RecordCommandToolResponse>, McpError> {
-        let (id, created) =
-            commands::command::verify(&self.start, &params.kind, &params.cmdline, params.exit_code)
-                .map_err(map_tool_error)?;
+        let (id, created) = commands::command::verify(
+            &self.start,
+            &params.kind,
+            &params.cmdline,
+            params.exit_code,
+            &actor.normalized,
+        )
+        .map_err(map_tool_error)?;
 
         Ok(Json(RecordCommandToolResponse {
             id,
@@ -264,8 +270,12 @@ impl MemhubServer {
         }))
     }
 
-    async fn render_impl(&self) -> std::result::Result<Json<RenderToolResponse>, McpError> {
-        let result = commands::render::run(&self.start).map_err(map_tool_error)?;
+    async fn render_impl(
+        &self,
+        actor: ClientIdentity,
+    ) -> std::result::Result<Json<RenderToolResponse>, McpError> {
+        let result =
+            commands::render::run(&self.start, &actor.normalized).map_err(map_tool_error)?;
         Ok(Json(RenderToolResponse::from(result)))
     }
 }
@@ -331,8 +341,10 @@ impl MemhubServer {
     async fn record_command(
         &self,
         params: Parameters<RecordCommandParams>,
+        request_context: RequestContext<RoleServer>,
     ) -> std::result::Result<Json<RecordCommandToolResponse>, McpError> {
-        self.record_command_impl(params).await
+        let actor = current_client_identity(&request_context);
+        self.record_command_impl(params, actor).await
     }
 
     #[tool(
@@ -429,8 +441,12 @@ impl MemhubServer {
         name = "render",
         description = "Regenerate agent_docs/PROJECT.md and agent_docs/PROJECT_LEDGER.md from the current DB state. Prior files are backed up automatically."
     )]
-    async fn render(&self) -> std::result::Result<Json<RenderToolResponse>, McpError> {
-        self.render_impl().await
+    async fn render(
+        &self,
+        request_context: RequestContext<RoleServer>,
+    ) -> std::result::Result<Json<RenderToolResponse>, McpError> {
+        let actor = current_client_identity(&request_context);
+        self.render_impl(actor).await
     }
 }
 
@@ -1058,7 +1074,7 @@ mod tests {
             "cli:user",
         )
         .expect("task");
-        command::verify(temp.path(), "build", "cargo build", 0).expect("command");
+        command::verify(temp.path(), "build", "cargo build", 0, "cli:user").expect("command");
 
         let server = MemhubServer::new(temp.path().to_path_buf());
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1097,12 +1113,19 @@ mod tests {
             .enable_all()
             .build()
             .expect("runtime");
+        let actor = ClientIdentity {
+            normalized: "codex".to_string(),
+            raw: "openai-codex".to_string(),
+        };
         let result = runtime
-            .block_on(server.record_command_impl(Parameters(RecordCommandParams {
-                kind: "test".to_string(),
-                cmdline: "cargo test".to_string(),
-                exit_code: 0,
-            })))
+            .block_on(server.record_command_impl(
+                Parameters(RecordCommandParams {
+                    kind: "test".to_string(),
+                    cmdline: "cargo test".to_string(),
+                    exit_code: 0,
+                }),
+                actor,
+            ))
             .expect("record command");
 
         assert!(result.0.created);
@@ -1111,6 +1134,19 @@ mod tests {
             .expect("command row");
         assert_eq!(stored.cmdline, "cargo test");
         assert_eq!(stored.last_exit_code, Some(0));
+
+        let ctx = crate::db::open_project(temp.path()).expect("open");
+        let actor_logged: String = ctx
+            .conn
+            .query_row(
+                "SELECT actor FROM writes_log
+                 WHERE table_name = 'commands'
+                 ORDER BY id DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("query writes_log");
+        assert_eq!(actor_logged, "codex");
     }
 
     #[test]
@@ -1568,8 +1604,12 @@ mod tests {
             .build()
             .expect("runtime");
 
+        let actor = ClientIdentity {
+            normalized: "claude-code".to_string(),
+            raw: "claude-ai".to_string(),
+        };
         let result = runtime
-            .block_on(server.render_impl())
+            .block_on(server.render_impl(actor))
             .expect("render");
 
         assert!(
@@ -1580,5 +1620,18 @@ mod tests {
             std::path::Path::new(&result.0.ledger_md_path).exists(),
             "PROJECT_LEDGER.md should be written"
         );
+
+        let ctx = crate::db::open_project(temp.path()).expect("open");
+        let actor_logged: String = ctx
+            .conn
+            .query_row(
+                "SELECT actor FROM writes_log
+                 WHERE table_name = 'render'
+                 ORDER BY id DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("query writes_log");
+        assert_eq!(actor_logged, "claude-code");
     }
 }

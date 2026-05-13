@@ -38,8 +38,8 @@ fn sync_md_renders_db_state_and_creates_backups_for_existing_files() {
 
     let agents_before = fs::read_to_string(temp.path().join("AGENTS.md")).expect("read agents");
 
-    command::verify(temp.path(), "build", "cargo build", 0).expect("build command");
-    command::verify(temp.path(), "test", "cargo test", 0).expect("test command");
+    command::verify(temp.path(), "build", "cargo build", 0, "cli:user").expect("build command");
+    command::verify(temp.path(), "test", "cargo test", 0, "cli:user").expect("test command");
     task::add(
         temp.path(),
         "Implement markdown sync",

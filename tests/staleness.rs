@@ -212,10 +212,10 @@ fn command_confidence_reflects_success_and_failure_counts() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
-    command::verify(temp.path(), "build", "cargo build", 0).expect("ok run");
-    command::verify(temp.path(), "build", "cargo build", 0).expect("ok run");
-    command::verify(temp.path(), "build", "cargo build", 0).expect("ok run");
-    command::verify(temp.path(), "build", "cargo build", 1).expect("fail run");
+    command::verify(temp.path(), "build", "cargo build", 0, "cli:user").expect("ok run");
+    command::verify(temp.path(), "build", "cargo build", 0, "cli:user").expect("ok run");
+    command::verify(temp.path(), "build", "cargo build", 0, "cli:user").expect("ok run");
+    command::verify(temp.path(), "build", "cargo build", 1, "cli:user").expect("fail run");
 
     let record = command::latest_by_kind(temp.path(), "build")
         .expect("latest")
@@ -229,8 +229,8 @@ fn command_confidence_all_failures_is_zero() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
-    command::verify(temp.path(), "build", "cargo build", 1).expect("fail run");
-    command::verify(temp.path(), "build", "cargo build", 2).expect("fail run");
+    command::verify(temp.path(), "build", "cargo build", 1, "cli:user").expect("fail run");
+    command::verify(temp.path(), "build", "cargo build", 2, "cli:user").expect("fail run");
 
     let record = command::latest_by_kind(temp.path(), "build")
         .expect("latest")

@@ -60,7 +60,13 @@ pub fn latest_by_kind(start: &Path, kind: &str) -> Result<Option<CommandRecord>>
         .map_err(Into::into)
 }
 
-pub fn verify(start: &Path, kind: &str, cmdline: &str, exit_code: i64) -> Result<(i64, bool)> {
+pub fn verify(
+    start: &Path,
+    kind: &str,
+    cmdline: &str,
+    exit_code: i64,
+    actor: &str,
+) -> Result<(i64, bool)> {
     let kind = normalize_kind(kind)?;
     let cmdline = cmdline.trim();
     if cmdline.is_empty() {
@@ -123,7 +129,7 @@ pub fn verify(start: &Path, kind: &str, cmdline: &str, exit_code: i64) -> Result
 
     let action = if created { "insert" } else { "update" };
     let reason = format!("command verify ({kind})");
-    db::log_write(&tx, "cli:user", "commands", Some(row_id), action, &reason)?;
+    db::log_write(&tx, actor, "commands", Some(row_id), action, &reason)?;
 
     tx.commit()?;
     sync_md::sync_if_enabled(start)?;

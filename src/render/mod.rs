@@ -41,7 +41,7 @@ struct RenderSnapshot {
     recent_writes: Vec<RecentWrite>,
 }
 
-pub fn render_project(start: &Path) -> Result<RenderResult> {
+pub fn render_project(start: &Path, actor: &str) -> Result<RenderResult> {
     let ctx = db::open_project(start)?;
 
     let snapshot = build_snapshot(&ctx.conn, &ctx.config.project_name)?;
@@ -69,7 +69,7 @@ pub fn render_project(start: &Path) -> Result<RenderResult> {
 
     db::log_write(
         &ctx.conn,
-        "cli:user",
+        actor,
         "render",
         None,
         "render",

@@ -14,7 +14,7 @@ fn render_empty_repo_writes_placeholder_files() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
-    let result = render::run(temp.path()).expect("render");
+    let result = render::run(temp.path(), "cli:user").expect("render");
 
     assert_eq!(
         result.output_dir,
@@ -89,7 +89,7 @@ fn render_includes_state_arch_decisions_tasks_facts() {
     )
     .expect("fact");
 
-    let result = render::run(temp.path()).expect("render");
+    let result = render::run(temp.path(), "cli:user").expect("render");
 
     let project = read_string(&result.project_md_path);
     assert!(project.contains("Currently shipping the render slice."));
@@ -108,7 +108,7 @@ fn render_includes_state_arch_decisions_tasks_facts() {
 fn re_render_after_change_creates_a_backup() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
-    render::run(temp.path()).expect("first render");
+    render::run(temp.path(), "cli:user").expect("first render");
 
     decision::add(
         temp.path(),
@@ -119,7 +119,7 @@ fn re_render_after_change_creates_a_backup() {
     )
     .expect("decision");
 
-    let result = render::run(temp.path()).expect("second render");
+    let result = render::run(temp.path(), "cli:user").expect("second render");
     assert_eq!(
         result.backup_files.len(),
         2,
@@ -148,7 +148,7 @@ fn render_respects_custom_output_dir_from_config() {
     config.render.output_dir = "docs/state".to_string();
     config.save(&config_path).expect("save config");
 
-    let result = render::run(temp.path()).expect("render");
+    let result = render::run(temp.path(), "cli:user").expect("render");
 
     assert_eq!(result.output_dir, temp.path().join("docs").join("state"));
     assert!(result.project_md_path.starts_with(temp.path().join("docs").join("state")));
@@ -161,13 +161,13 @@ fn render_overwrites_human_edit_after_backing_it_up() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
-    let first = render::run(temp.path()).expect("first render");
+    let first = render::run(temp.path(), "cli:user").expect("first render");
 
     fs::write(&first.project_md_path, "# I edited this by hand\n").expect("hand edit");
     let stale_body = read_string(&first.project_md_path);
     assert!(stale_body.contains("I edited this by hand"));
 
-    let second = render::run(temp.path()).expect("second render");
+    let second = render::run(temp.path(), "cli:user").expect("second render");
 
     let restored = read_string(&second.project_md_path);
     assert!(restored.contains("<!-- memhub:rendered -->"));
@@ -193,7 +193,7 @@ fn render_logs_a_writes_log_entry() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
-    render::run(temp.path()).expect("render");
+    render::run(temp.path(), "cli:user").expect("render");
 
     let conn = rusqlite::Connection::open(temp.path().join(".memhub").join("project.sqlite"))
         .expect("open db");

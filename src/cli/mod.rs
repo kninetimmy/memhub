@@ -1018,7 +1018,7 @@ pub fn run(cli: Cli) -> Result<()> {
             } => {
                 let kind_name = kind.as_str();
                 let (id, created) =
-                    commands::command::verify(&cwd, kind_name, &cmdline, exit_code)?;
+                    commands::command::verify(&cwd, kind_name, &cmdline, exit_code, DEFAULT_ACTOR)?;
                 if exit_code == 0 {
                     println!(
                         "{} command {id}: {} => {}",
@@ -1208,7 +1208,7 @@ pub fn run(cli: Cli) -> Result<()> {
             run_narrative(&cwd, NarrativeKind::Arch, command)?;
         }
         TopLevelCommand::Render => {
-            let result = commands::render::run(&cwd)?;
+            let result = commands::render::run(&cwd, DEFAULT_ACTOR)?;
             println!("Rendered to {}", result.output_dir.display());
             for path in &result.written_files {
                 println!("  wrote: {}", path.display());
