@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::Result;
 use crate::db;
@@ -10,7 +10,19 @@ use crate::sync_md;
 pub fn add(start: &Path, key: &str, value: &str, source: &str, actor: &str) -> Result<(i64, bool)> {
     let mut ctx = db::open_project(start)?;
     let tx = ctx.conn.transaction()?;
+    let outcome = add_in_tx(&tx, key, value, source, actor)?;
+    tx.commit()?;
+    sync_md::sync_if_enabled(start)?;
+    Ok(outcome)
+}
 
+pub fn add_in_tx(
+    tx: &Transaction<'_>,
+    key: &str,
+    value: &str,
+    source: &str,
+    actor: &str,
+) -> Result<(i64, bool)> {
     let existing_id: Option<i64> = tx
         .query_row(
             "SELECT id FROM facts WHERE project_id = 1 AND key = ?1",
@@ -37,7 +49,7 @@ pub fn add(start: &Path, key: &str, value: &str, source: &str, actor: &str) -> R
     };
 
     db::log_write(
-        &tx,
+        tx,
         actor,
         "facts",
         Some(row_id),
@@ -45,8 +57,6 @@ pub fn add(start: &Path, key: &str, value: &str, source: &str, actor: &str) -> R
         "fact add",
     )?;
 
-    tx.commit()?;
-    sync_md::sync_if_enabled(start)?;
     Ok((row_id, created))
 }
 

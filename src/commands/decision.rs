@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use rusqlite::params;
+use rusqlite::{Transaction, params};
 
 use crate::Result;
 use crate::commands::search;
@@ -22,7 +22,20 @@ pub fn add_with_decided_at(
 ) -> Result<i64> {
     let mut ctx = db::open_project(start)?;
     let tx = ctx.conn.transaction()?;
+    let row_id = add_with_decided_at_in_tx(&tx, title, rationale, decided_at, source, actor)?;
+    tx.commit()?;
+    sync_md::sync_if_enabled(start)?;
+    Ok(row_id)
+}
 
+pub fn add_with_decided_at_in_tx(
+    tx: &Transaction<'_>,
+    title: &str,
+    rationale: &str,
+    decided_at: Option<&str>,
+    source: &str,
+    actor: &str,
+) -> Result<i64> {
     match decided_at {
         Some(when) => {
             tx.execute(
@@ -40,10 +53,10 @@ pub fn add_with_decided_at(
         }
     }
     let row_id = tx.last_insert_rowid();
-    search::sync_decision_chunks(&tx)?;
+    search::sync_decision_chunks(tx)?;
 
     db::log_write(
-        &tx,
+        tx,
         actor,
         "decisions",
         Some(row_id),
@@ -51,8 +64,6 @@ pub fn add_with_decided_at(
         "decision add",
     )?;
 
-    tx.commit()?;
-    sync_md::sync_if_enabled(start)?;
     Ok(row_id)
 }
 

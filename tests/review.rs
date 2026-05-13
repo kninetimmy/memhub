@@ -170,6 +170,46 @@ fn review_accept_errors_on_non_pending_row() {
 }
 
 #[test]
+fn review_accept_rolls_back_durable_write_when_pending_already_reviewed() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    let pending_id = stage_fact(
+        temp.path(),
+        "deploy-command",
+        "./deploy.sh",
+        "Concurrent reviewer scenario.",
+    );
+
+    // Simulate a concurrent reviewer that finished first (e.g., rejected the row
+    // before this acceptor opens its transaction). The acceptor must not create a
+    // durable facts row when it sees the row is no longer pending.
+    let ctx = memhub::db::open_project(temp.path()).expect("open");
+    ctx.conn
+        .execute(
+            "UPDATE pending_writes
+             SET status = 'rejected', reviewed_at = CURRENT_TIMESTAMP
+             WHERE id = ?1",
+            params![pending_id],
+        )
+        .expect("simulate concurrent reject");
+    drop(ctx);
+
+    match review::accept(temp.path(), pending_id, "cli:user") {
+        Err(MemhubError::InvalidInput(message)) => {
+            assert!(message.contains("already rejected"), "message: {message}");
+        }
+        other => panic!("expected InvalidInput, got {other:?}"),
+    }
+
+    let facts = fact::list(temp.path()).expect("fact list");
+    assert!(
+        facts.is_empty(),
+        "no durable fact should be created when accept errors out",
+    );
+}
+
+#[test]
 fn review_reject_records_reason_in_writes_log() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");

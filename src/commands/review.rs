@@ -1,11 +1,12 @@
 use std::path::Path;
 
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::Value;
 
 use crate::commands::{decision, fact};
 use crate::db;
 use crate::models::{PendingWriteRecord, ReviewExpireSummary};
+use crate::sync_md;
 use crate::{MemhubError, Result};
 
 pub const DEFAULT_LIST_LIMIT: usize = 25;
@@ -84,7 +85,14 @@ pub struct AcceptOutcome {
 }
 
 pub fn accept(start: &Path, id: i64, actor: &str) -> Result<AcceptOutcome> {
-    let pending = load_pending(start, id)?;
+    let mut ctx = db::open_project(start)?;
+    // Immediate behavior acquires the write lock at BEGIN so concurrent acceptors
+    // serialize at the lock instead of both racing past the status check.
+    let tx = ctx
+        .conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let pending = read_pending_in_tx(&tx, id)?;
     if pending.status != "pending" {
         return Err(MemhubError::InvalidInput(format!(
             "pending write {id} is already {}; only pending writes can be accepted",
@@ -110,7 +118,7 @@ pub fn accept(start: &Path, id: i64, actor: &str) -> Result<AcceptOutcome> {
                 .get("value")
                 .and_then(Value::as_str)
                 .ok_or_else(|| missing_payload_field(id, "value"))?;
-            let (fact_id, _) = fact::add(start, key, value, &derived_source, actor)?;
+            let (fact_id, _) = fact::add_in_tx(&tx, key, value, &derived_source, actor)?;
             (fact_id, "facts")
         }
         "decision" => {
@@ -118,8 +126,14 @@ pub fn accept(start: &Path, id: i64, actor: &str) -> Result<AcceptOutcome> {
                 .get("title")
                 .and_then(Value::as_str)
                 .ok_or_else(|| missing_payload_field(id, "title"))?;
-            let decision_id =
-                decision::add(start, title, &pending.rationale, &derived_source, actor)?;
+            let decision_id = decision::add_with_decided_at_in_tx(
+                &tx,
+                title,
+                &pending.rationale,
+                None,
+                &derived_source,
+                actor,
+            )?;
             (decision_id, "decisions")
         }
         other => {
@@ -129,13 +143,29 @@ pub fn accept(start: &Path, id: i64, actor: &str) -> Result<AcceptOutcome> {
         }
     };
 
-    mark_status(
-        start,
-        id,
-        "accepted",
-        &format!("accept pending_write:{id}"),
-        actor,
+    let updated = tx.execute(
+        "UPDATE pending_writes
+         SET status = 'accepted', reviewed_at = CURRENT_TIMESTAMP
+         WHERE project_id = 1 AND id = ?1 AND status = 'pending'",
+        params![id],
     )?;
+    if updated == 0 {
+        return Err(MemhubError::InvalidInput(format!(
+            "pending write {id} could not be updated; it may have been reviewed concurrently"
+        )));
+    }
+
+    db::log_write(
+        &tx,
+        actor,
+        "pending_writes",
+        Some(id),
+        "update",
+        &format!("accept pending_write:{id}"),
+    )?;
+
+    tx.commit()?;
+    sync_md::sync_if_enabled(start)?;
 
     Ok(AcceptOutcome {
         pending_id: id,
@@ -204,6 +234,21 @@ pub fn expire(start: &Path, older_than_days: i64) -> Result<ReviewExpireSummary>
 
 fn load_pending(start: &Path, id: i64) -> Result<PendingWriteRecord> {
     show(start, id)
+}
+
+fn read_pending_in_tx(tx: &Transaction<'_>, id: i64) -> Result<PendingWriteRecord> {
+    let record = tx
+        .query_row(
+            "SELECT id, kind, payload_json, rationale, status, actor, actor_raw,
+                    provenance_json, created_at, reviewed_at
+             FROM pending_writes
+             WHERE project_id = 1 AND id = ?1",
+            params![id],
+            pending_row_to_record,
+        )
+        .optional()?;
+
+    record.ok_or_else(|| MemhubError::InvalidInput(format!("no pending write with id {id}")))
 }
 
 fn mark_status(start: &Path, id: i64, new_status: &str, reason: &str, actor: &str) -> Result<()> {
