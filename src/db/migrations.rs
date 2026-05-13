@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use crate::Result;
 
-pub const LATEST_VERSION: &str = "0008_decisions_source";
+pub const LATEST_VERSION: &str = "0009_retrieval_indexes";
 
 const MIGRATIONS: &[(&str, &str)] = &[
     (
@@ -36,6 +36,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "0008_decisions_source",
         include_str!("../../migrations/0008_decisions_source.sql"),
+    ),
+    (
+        "0009_retrieval_indexes",
+        include_str!("../../migrations/0009_retrieval_indexes.sql"),
     ),
 ];
 
