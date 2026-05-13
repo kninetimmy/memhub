@@ -1,64 +1,79 @@
 <!-- memhub:rendered -->
 <!-- DO NOT EDIT. Generated from .memhub/project.sqlite. -->
 <!-- To change content, use memhub CLI; then re-run `memhub render`. -->
-<!-- Generated at: 2026-05-13T22:23:41Z by memhub 0.1.0 -->
+<!-- Generated at: 2026-05-13T23:19:16Z by memhub 0.1.0 -->
 
 # memhub
 
 ## Currently building
 
-M8 (SQL+RAG hybrid recall) is 5/6 PRs shipped. PR4 and PR5 landed
-this session on main in two atomic commits:
+M8 (SQL+RAG hybrid recall) is **complete**. PR6 landed in `6f89d2f`,
+the README was refreshed to lead with hybrid recall (`5fb4a02`), and
+a latent MCP wiring bug that had been hiding the entire tool surface
+from external MCP clients since the server's inception was fixed in
+`3a3519c`.
 
-- ceb012a — PR4: memhub recall CLI + memhub.recall MCP tool. Hybrid
-  scoring 0.5×fts + 0.5×vec − 0.3×stale_penalty with min-max FTS
-  normalization and brute-force cosine over the active model.
-  Filters: --source-type (repeatable), --max-results, --mode,
-  --include-stale, --accepted-only. RetrievalConfig grew defaults
-  for default_max_results, accepted_only_by_default,
-  include_stale_by_default, and a [retrieval.scoring] sub-block.
-  Stale-embedding detection surfaces warnings without auto-fixing.
-  13 new tests.
-- 204ff70 — PR5: /recall and /reindex skills for both Claude and
-  Codex (4 templates). CLAUDE.md and AGENTS.md Session Continuity
-  sections rewritten: read PROJECT.md at session start, prefer
-  memhub.recall mid-session, treat PROJECT_LEDGER.md as fallback.
-  memhub index status + memhub index rebuild CLI added so the
-  /reindex skill has a real command to run. Rebuild ignores
-  [retrieval] mode so it backfills fts→hybrid migrations. 4 new tests.
+PR6 ships tests/retrieval_golden.json (12 starter queries — 8
+decisions, 2 facts, 1 task, 1 negative safety probe — with
+title_contains / body_contains matchers that survive row-ID shifts),
+src/commands/eval.rs (run_retrieval drives the shared
+retrieval::recall engine and computes Recall@K plus a safety_failures
+count for empty-probe leakage), the `memhub eval retrieval [--golden
+PATH] [--k N] [--mode fts|hybrid] [--json]` CLI, and /eval-recall
+skill templates for both Claude and Codex. Baseline on the memhub
+repo in fts mode: Recall@3 = 11/11 = 100%, zero safety failures.
 
-Test suite at 221 green (was 204 entering the session).
+The MCP fix (`3a3519c`) added #[tool_handler] to the
+`impl ServerHandler for MemhubServer` block. Without it, the default
+list_tools returned `{"tools":[]}` for every client despite
+#[tool_router] internally having registered 15 tools. Prior session
+notes optimistically claiming MCP-client visibility were verifying
+the binary built, not that tools could be enumerated. New regression
+test in tests/mcp_protocol.rs spawns `memhub serve` as a subprocess
+and runs a real handshake.
+
+Free-AI-SSD is now fully wired in hybrid mode end-to-end: config
+flipped to mode = "hybrid", 113 rows embedded (3 facts / 83
+decisions / 27 tasks) in 4.6 sec, eager-embed verified on a new fact
+write, cascade DELETE verified on the embedding trigger. Three real
+recall probes landed at rank 1 — including one pure vector-only
+paraphrase hit ("how do I compile a release binary" → release_build
+fact with zero token overlap).
+
+Test suite at 238 green (was 221 entering the session; +6 PR6
+integration, +9 PR6 unit, +2 MCP regression).
 
 ## Next up
 
-Only PR6 remains in M8:
+M8 is closed. Open follow-ups:
 
-- PR6: tests/retrieval_golden.json with 12 starter queries +
-  `memhub eval retrieval` CLI + `/eval-recall` skill. Acceptance
-  gate: harness exists and reports a Recall@3 baseline that future
-  scoring/model changes must not regress without an explicit
-  override.
-
-Long-standing carryover before any external consumer sees M8:
-reinstall the memhub binary on PATH. ~/.cargo/bin/memhub and the
-~/.local/bin shadow both still predate the M8 work, so MCP and CLI
-invocations from outside this repo miss recall, index, and the new
-retrieval surface entirely.
+- **Recall min-score threshold.** Surfaced during Free-AI-SSD
+  testing: in hybrid mode, pure-nonsense queries return
+  low-similarity hits (~0.32) via brute-force cosine rather than
+  empty bundles. The memhub repo's safety probe passes only because
+  it runs in fts mode. A configurable min-score gate on recall would
+  close this; the golden harness already has the shape to verify it.
+- **Dogfood Codex skills end-to-end** (existing task 10). Now that
+  MCP actually exposes tools, this is a meaningfully different test
+  than before the fix.
+- **Free-AI-SSD golden set.** The shipped tests/retrieval_golden.json
+  is memhub's own dogfood; Free-AI-SSD would benefit from its own
+  ~10-15 queries pulled from its actual DB content.
 
 ## Open questions
 
-- Carryover: PATH ordering for ~/.local/bin/memhub shadow;
-  MEMHUB_ACTOR env var; FACT_STALE_AFTER_DAYS config knob; GC for
-  already-ingested denied paths; clientInfo.name aliases;
-  session_notes in v2 export.
-- M8-specific:
-  - Per-result token estimates in the recall response? (Still not
-    added; defer until consumer demand surfaces.)
-  - Eval harness on CI vs. on-demand via /eval-recall? (PR6 call.)
-  - Peak memory of include_bytes! → to_vec() clone at model load
-    (~130 MB transient). Acceptable for v1; revisit if it surfaces.
+- Should the min-score threshold be a config knob in
+  [retrieval.scoring] or a hard-coded constant? Likely config —
+  agents tune for different corpus sizes.
+- Should the MCP regression test run on every CI invocation or only
+  when src/mcp/** changes? Probably every — failure mode is silent
+  enough to warrant cheap coverage.
+- The latent-since-inception MCP bug raises a process question:
+  how many similar "binary built, surface initialized, prior session
+  notes confirmed" claims in the audit log are actually unvalidated?
+  Worth one explicit pass later.
 
-_Last updated 2026-05-13 22:21:59 by claude:wrap-up._
+_Last updated 2026-05-13 23:18:41 by claude:wrap-up._
 
 ## Architecture
 
@@ -68,7 +83,7 @@ _Last updated 2026-05-13 22:21:59 by claude:wrap-up._
 
 `memhub` is a local-first per-repo memory CLI that gives Codex and Claude Code one shared durable source of project context. The SQLite database under `.memhub/project.sqlite` is the source of truth; rendered markdown is the human-readable view.
 
-By PRD milestone coverage, the current implementation includes the Milestone 1 foundation, Milestone 2 retrieval, the shipped markdown-sync and narrowed MCP/write-policy slices of Milestone 3, Milestone 4 recovery/review/deny/staleness work, the memhub side of K9 interop and deprecation, memhub-native narrative storage and render output, session notes, the Claude/Codex skill templates used to operate those primitives from agent sessions, and the M8 retrieval layer end-to-end (bundled BGE-small embedder, embeddings table, contentless FTS5 over source tables, opt-in eager-embed write path, hybrid `recall` query surface as CLI and MCP tool, and the `index status` + `index rebuild` admin commands).
+By PRD milestone coverage, the current implementation includes the Milestone 1 foundation, Milestone 2 retrieval, the shipped markdown-sync and narrowed MCP/write-policy slices of Milestone 3, Milestone 4 recovery/review/deny/staleness work, the memhub side of K9 interop and deprecation, memhub-native narrative storage and render output, session notes, the Claude/Codex skill templates used to operate those primitives from agent sessions, and the M8 retrieval layer end-to-end (bundled BGE-small embedder, embeddings table, contentless FTS5 over source tables, opt-in eager-embed write path, hybrid `recall` query surface as CLI and MCP tool, the `index status` + `index rebuild` admin commands, and the `eval retrieval` Recall@K acceptance harness with its `/eval-recall` skill).
 
 ## Stack and Versions
 
@@ -88,7 +103,7 @@ By PRD milestone coverage, the current implementation includes the Milestone 1 f
 ## Layout
 
 - `src/cli/` - top-level CLI command definitions and output formatting
-- `src/commands/` - command handlers, including export/import, review, narrative state/arch storage, session notes, render, and index rebuild/status
+- `src/commands/` - command handlers, including export/import, review, narrative state/arch storage, session notes, render, index rebuild/status, and the eval retrieval harness
 - `src/config/` - per-repo config model and read/write helpers, including `[render].output_dir`, `[retrieval].mode`, and `[retrieval.scoring]` weights
 - `src/db/` - path discovery, connection bootstrap, migrations, and `.gitignore` handling
 - `src/export/` - version-tagged on-disk export/import format types
@@ -102,6 +117,8 @@ By PRD milestone coverage, the current implementation includes the Milestone 1 f
 - `docs/` - preserved PRD, implementation notes, architecture, roadmap, and PRD addenda
 - `templates/skills/claude/` - installable Claude Code command templates
 - `templates/skills/codex/` - installable Codex skill templates
+- `tests/retrieval_golden.json` - checked-in 12-query starter golden set used by `memhub eval retrieval` and the `/eval-recall` skill
+- `tests/mcp_protocol.rs` - subprocess regression test that asserts the MCP server actually exposes its tool surface to external clients via the JSON-RPC handshake
 
 ## Key Subsystems
 
@@ -113,7 +130,8 @@ By PRD milestone coverage, the current implementation includes the Milestone 1 f
 - Retrieval (M8) lives under `src/retrieval/`. The BGE-small-en-v1.5 ONNX model and its tokenizer files are bundled into the binary at build time via `build.rs` (auto-download from Hugging Face, SHA256-pinned, cached in `OUT_DIR`). `embeddings.rs` exposes lazy `embed_one` / `embed_batch` over a `OnceLock<Mutex<TextEmbedding>>` with CLS pooling. `persist.rs` exposes `eager_embed_in_tx(tx, mode, source_type, source_id, text)`, a no-op for `RetrievalMode::Fts` that otherwise hashes the embed text with SHA256, looks up the existing embedding for the active model, short-circuits on hash match, or embeds and UPSERTs the row inside the caller's transaction. The fact/decision/task `add` paths and `review::accept` all flow through this helper. Mode is read from `[retrieval]` in `.memhub/config.toml`; `fts` is the default and never loads the model.
 - `recall.rs` is the M8 query surface. It UNIONs FTS5 lookups per source table with brute-force cosine over the active-model embeddings (hybrid mode only), applies filters (source-type allowlist, `include_stale`, `accepted_only` mapped to `source IN ('user', 'user+agent:%')`), blends scores via the `[retrieval.scoring]` knobs (`0.5×fts + 0.5×vec − 0.3×stale_penalty` by default) after min-max FTS normalization, and returns a ranked evidence bundle. Recall is read-only: it never writes durable rows, never stages a pending write, and never logs to `writes_log`. Stale-embedding detection re-hashes the current source body per candidate and surfaces a `stale_embeddings` warning when the active-model embedding is missing or its content_hash drifts; the warning is informational, never auto-fixed.
 - `commands::index` exposes `memhub index status` and `memhub index rebuild`. Status returns per-source-type counts (total vs. embedded), the active model name, and a missing-row count. Rebuild ignores `[retrieval] mode` so it works as the one-shot backfill for `fts → hybrid` migrations and for refreshing all rows after a model upgrade; it wipes embeddings for the active model in a single transaction, re-embeds from current bodies in source-type batches, and logs one summary row to `writes_log` per rebuild (not per source row).
-- The MCP layer serves a local stdio server through `memhub serve`. Read tools: `status`, `search`, `recall`, `list_tasks`, `list_decisions`, `list_facts`, `list_pending_writes`, `get_command`. Write tools split by trust: `task_add`, `task_done`, `render`, `record_command`, and `log_session_note` write directly; `propose_fact` and `propose_decision` stage to `pending_writes` for human review. Client identity is derived from `clientInfo.name`, normalized for known aliases, sanitized before logging, and preserved raw where useful. The server-info hint teaches agents to prefer `recall` over reading the ledger mid-session.
+- `commands::eval` provides the M8 Recall@K acceptance gate. `run_retrieval` loads a versioned golden JSON file, runs each query through the shared `retrieval::recall` engine with `max_results = k`, and evaluates per-query matchers (`title_contains` / `body_contains` case-insensitive substring checks, plus optional `source_type`). `kind: match` queries contribute to Recall@K; `kind: empty` queries fail as safety violations if recall returns any hit. The harness is read-only — no `writes_log` rows, no durable mutation. Exposed as `memhub eval retrieval [--golden PATH] [--k N] [--mode fts|hybrid] [--json]` and via the `/eval-recall` Claude / Codex skill.
+- The MCP layer serves a local stdio server through `memhub serve`. The `impl ServerHandler for MemhubServer` block carries the rmcp `#[tool_handler(router = self.tool_router)]` attribute — without it the default `list_tools` returns empty even with tools registered via `#[tool_router]`, and clients see a working initialize but a zero-tool surface; `tests/mcp_protocol.rs` is the subprocess regression test that asserts the full handshake. Read tools: `status`, `search`, `recall`, `list_tasks`, `list_decisions`, `list_facts`, `list_pending_writes`, `get_command`. Write tools split by trust: `task_add`, `task_done`, `render`, `record_command`, and `log_session_note` write directly; `propose_fact` and `propose_decision` stage to `pending_writes` for human review. Client identity is derived from `clientInfo.name`, normalized for known aliases, sanitized before logging, and preserved raw where useful. The server-info hint teaches agents to prefer `recall` over reading the ledger mid-session.
 - Markdown sync rewrites only explicit managed sections in `AGENTS.md` and `CLAUDE.md`, validates managed-block pairing, creates timestamped backups under `.memhub/backups/markdown/`, and uses temp-file replacement writes. It can run explicitly or after writes when `auto_sync_md` is enabled.
 - Export/import provides the supported recovery path. `memhub export` writes a version-tagged JSON file for durable rows; derived git/search data is excluded. `memhub import` validates the format, refuses on non-empty targets unless forced, restores durable IDs, regenerates decision chunks, logs the restore, and runs sync-md after commit.
 - `memhub init --from-backup <path>` is the single-step recovery convenience UX for clean clones or missing-database cases. It refuses when `.memhub/project.sqlite` already exists.
@@ -123,7 +141,7 @@ By PRD milestone coverage, the current implementation includes the Milestone 1 f
 - `session_notes` provides free-form agent scratch space through `memhub note add`, `memhub note list`, and the MCP `log_session_note` tool. Notes are not promoted automatically, not FTS-indexed, and not included in the v1 export format.
 - `project_state` and `project_arch` store append-only narrative blobs. `memhub state|arch set|show|history` share the same implementation and support inline text or `--from-file`, `--json`, and `--actor`.
 - `memhub render` emits `agent_docs/PROJECT.md` and `agent_docs/PROJECT_LEDGER.md` from the database. Render is DB-wins-with-backup: existing rendered files are copied to `.memhub/backups/rendered/<stamp>/` before temp+rename replacement. Render is on-demand in v1.
-- User-level memhub skills implement the agent-facing workflow around CLI primitives. `/wrap-up`, `/init-project`, `/check-init`, `/recall`, and `/reindex` exist for both Claude and Codex via checked-in templates under `templates/skills/`; installed dotfile copies are runtime artifacts, not repo source. The wrap-up skill gates on `.memhub/`, reads the since-last-state window, drafts updates, waits for per-item approval, writes DB-first with the correct actor/source attribution, then runs `memhub render`. It never commits. The `/recall` skill drives `memhub.recall` / `memhub recall` and is the preferred mid-session read; `/reindex` drives `memhub index rebuild` and always asks before mutating, per the stale-embedding UX rule.
+- User-level memhub skills implement the agent-facing workflow around CLI primitives. `/wrap-up`, `/init-project`, `/check-init`, `/recall`, `/reindex`, and `/eval-recall` exist for both Claude and Codex via checked-in templates under `templates/skills/`; installed dotfile copies are runtime artifacts, not repo source. The wrap-up skill gates on `.memhub/`, reads the since-last-state window, drafts updates, waits for per-item approval, writes DB-first with the correct actor/source attribution, then runs `memhub render`. It never commits. The `/recall` skill drives `memhub.recall` / `memhub recall` and is the preferred mid-session read; `/reindex` drives `memhub index rebuild` and always asks before mutating, per the stale-embedding UX rule; `/eval-recall` drives `memhub eval retrieval` to report a Recall@K baseline and surface failing queries verbatim.
 
 ## Security Invariants
 
@@ -132,6 +150,7 @@ By PRD milestone coverage, the current implementation includes the Milestone 1 f
 - Agent-authored durable truth requires an explicit review or user-approval signal.
 - Rendered markdown is output, not an alternate source of truth.
 - Recall is read-only and never writes to `writes_log` or any durable table.
+- The eval retrieval harness is read-only on the same terms as recall.
 
 ## Runtime Layout
 
@@ -145,13 +164,14 @@ Single local CLI process with an embedded SQLite database plus an on-demand stdi
 - Garbage collection of already-ingested denied paths after a pattern change is not implemented.
 - `session_notes` are omitted from v1 export; a v2 export format can include them if notes become durable.
 - Switching `[retrieval].mode` from `fts` to `hybrid` on a populated DB requires running `memhub index rebuild` (or invoking `/reindex`) to backfill embeddings for pre-existing rows. The rebuild itself is shipped; the mode flip is a user action.
-- The M8 eval harness (`tests/retrieval_golden.json`, `memhub eval retrieval`, `/eval-recall`) is not yet shipped — PR6 territory.
+- Recall has no min-score threshold in hybrid mode; pure-nonsense queries can still surface low-similarity (~0.3) hits via brute-force cosine even when no FTS or semantic match exists. A configurable cutoff in `[retrieval.scoring]` is a known follow-up surfaced during the Free-AI-SSD smoke test.
 - Loading the bundled model clones ~130 MB out of `.rodata` into a `Vec<u8>` (fastembed's `UserDefinedEmbeddingModel::new` takes `Vec<u8>`, not `&[u8]`). Peak transient memory at first embed is roughly 2× the model size; revisit if it becomes a constraint.
 
-_Last updated 2026-05-13 22:23:38 by claude:wrap-up._
+_Last updated 2026-05-13 23:19:12 by claude:wrap-up._
 
 ## Recent session notes
 
+- **2026-05-13 23:19:11** (claude:wrap-up) — Closed M8 end-to-end this session plus a load-bearing latent MCP fix. PR6 (eval harness + /eval-recall skills) landed in 6f89d2f — 12-query golden set, memhub eval retrieval CLI, Recall@3 = 100% baseline on the memhub repo. README refresh in 5fb4a02 promoted hybrid recall to the headline and reworked the agent-driven install prompts to ask FTS-vs-hybrid at install time. While verifying Codex MCP end-to-end, caught and fixed a latent-since-inception bug: impl ServerHandler was missing #[tool_handler] so tools/list returned {"tools":[]} for every client — fix in 3a3519c with a tests/mcp_protocol.rs subprocess regression test. Free-AI-SSD was brought to full hybrid mode out-of-tree (config flip + 113-row backfill + eager-embed and cascade-DELETE verified). Test suite 221 -> 238, all green, three commits pushed to origin/main.
 - **2026-05-13 22:22:39** (claude:wrap-up) — Closed M8 PR4 (ceb012a — memhub recall CLI + memhub.recall MCP tool with hybrid scoring 0.5×fts + 0.5×vec − 0.3×stale_penalty, filters incl. --accepted-only mapped to source IN ('user', 'user+agent:%'); 13 new tests covering FTS normalization, cosine identities, accepted-only exclusion, empty bundle, missing-embedding warning) and M8 PR5 (204ff70 — /recall and /reindex skill templates for both Claude and Codex, CLAUDE.md/AGENTS.md prefer-recall rule, memhub index status + rebuild CLI; 4 new tests). Test suite grew 204 → 221. Only PR6 (Recall@3 eval harness + /eval-recall skill) and the long-standing PATH-shadow binary reinstall remain before M8 is complete.
 - **2026-05-13 21:50:10** (claude:wrap-up) — Shipped M8 PRs 1-3 end-to-end in three atomic commits: 3168c8c (bundle BGE-small-en-v1.5 via build.rs + fastembed-rs UserDefinedEmbeddingModel, 2 smoke tests confirming 384-dim L2-normalized output), cd1ae3f (migration 0009 — embeddings table + contentless FTS5 over facts/decisions/tasks with sync triggers and rebuild backfill, 10 schema tests; FTS5 hyphen-as-NOT gotcha caught and worked around in the test helper), 8d2c59f (eager-embed in fact/decision/task add paths gated on [retrieval] mode = hybrid, migration 0010 for DELETE cascade, SHA256 content_hash short-circuit, 9 embed tests). Test suite grew 175 → 204. The installed memhub binary on PATH still predates this session and needs reinstall before any consumer outside this repo sees the new schema.
 - **2026-05-13 20:55:44** (claude:wrap-up) — Hardening pass before starting M8: validated and fixed all six findings from an external Codex code review of the memhub surface. Six commits, one per finding (605fd59 atomic accept, 57a5f69 MCP actor, e5be353 source validation, d91fc98 export reviewed_at, 3c74cad two-phase render, ae90719 strip leading heading), each with regression tests. Test suite grew from 154 to 175 tests, all green. Branch pushed to origin/main.
@@ -161,4 +181,3 @@ _Last updated 2026-05-13 22:23:38 by claude:wrap-up._
 - **2026-05-13 17:32:55** (claude:wrap-up) — Lifted /wrap-up to user-level (~/.claude/commands/wrap-up.md) so it fires in any memhub-initialized repo, not just ~/memhub — supersedes D13's project-level placement. Migrated Free-AI-SSD's K9 narrative into memhub (state + arch tables) via --from-file and re-rendered. Fully removed K9-Claude-Framework from the machine end-to-end: framework directory, marker file, Codex and Agents skill copies, k9-named Claude command stubs, K9 archive files in this repo, K9 references in ~/.codex/config.toml and this repo's settings.local.json, plus the stale ~/src/memhub duplicate clone. Working tree holds 7 uncommitted changes ready to ship as a single 'remove K9 framework artifacts' commit.
 - **2026-05-13 03:28:11** (claude:wrap-up) — Closed two prior 'Next up' items entirely outside the memhub source tree. (1) Installed memhub on PATH: cargo install --path . produced ~/.cargo/bin/memhub, but a stale ~/.local/bin/memhub shadowed it; copied the fresh binary over the shadow so state/arch/render resolve from any shell. (2) Shipped memhub-native /init-project and /check-init at user-level following the M7-001 rename pattern (lifted to user-level since init/check apply globally rather than inside-memhub-only). No commits this session — all artifacts live in ~/.local/bin/ and ~/.claude/commands/.
 - **2026-05-13 02:22:14** (claude:wrap-up) — Wrote the PRD §2 addendum (docs/reference/memhub-prd-deprecation-addendum.md) closing slice 2 of the K9 deprecation plan. PRD itself stayed verbatim per CLAUDE.md guardrail; addendum is authoritative for the §2 inversion, §6.2 layout extension, §8 data model, and §13 CLI surface additions. Revised k9-integration.md non-goals inline and marked all four deprecation slices shipped in the plan doc. Shipped as 7c162b2. K9 deprecation track is now formally complete end-to-end.
-- **2026-05-13 01:50:34** (claude:wrap-up) — Investigated and closed M7-001 (project-level slash command override gap). Root cause was documented Claude Code precedence (personal > project, filename-resolved), not a bug. Fix: renamed ~/.claude/commands/wrap-up.md to wrap-up-k9.md so the project-level memhub-native /wrap-up no longer collides. Verified via skills registry. Shipped as 103eea0; M7-002 then executed inline this session to fully migrate the repo to memhub-primary.

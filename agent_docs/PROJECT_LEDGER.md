@@ -1,13 +1,37 @@
 <!-- memhub:rendered -->
 <!-- DO NOT EDIT. Generated from .memhub/project.sqlite. -->
 <!-- To change content, use memhub CLI; then re-run `memhub render`. -->
-<!-- Generated at: 2026-05-13T22:23:41Z by memhub 0.1.0 -->
+<!-- Generated at: 2026-05-13T23:19:16Z by memhub 0.1.0 -->
 
 # memhub — Ledger
 
 ## Decisions
 
-_50 decision(s). Most recent first._
+_53 decision(s). Most recent first._
+
+### D53 — Golden queries are keyword-style (3-6 specific terms), not natural-language sentences
+
+**Status:** active • **Decided:** 2026-05-13 23:18:54 • **Source:** user+agent:claude-code
+
+build_fts_match in src/retrieval/recall.rs splits queries on whitespace and ANDs every token in the FTS5 MATCH expression. Natural-language sentences embed stop words ('how', 'does', 'and', 'for') the FTS5 index doesn't carry, so the AND gate produces zero candidates. Golden queries are written as terse 3-6 keyword phrases to play well with the matcher. Documented in tests/retrieval_golden.json description. If recall's tokenizer ever grows stop-word filtering, the golden set can be rewritten in natural form; until then, this is the contract.
+
+---
+
+### D52 — MCP ServerHandler impl requires #[tool_handler] to expose tools
+
+**Status:** active • **Decided:** 2026-05-13 23:18:51 • **Source:** user+agent:claude-code
+
+Without rmcp's #[tool_handler] macro on the impl ServerHandler block, the default list_tools and call_tool methods return empty regardless of how many tools #[tool_router] has registered. This was a latent bug since the MCP server was first written, surfaced and fixed in 3a3519c. Fix passes router = self.tool_router to dispatch through the stored router field rather than re-constructing it per call. tests/mcp_protocol.rs is the regression test — it spawns memhub serve as a subprocess and asserts the full 15-tool surface is enumerable. Future MCP refactors must keep the attribute or replace it with manual list_tools + call_tool overrides.
+
+---
+
+### D51 — memhub eval retrieval is read-only and never writes to writes_log
+
+**Status:** active • **Decided:** 2026-05-13 23:18:48 • **Source:** user+agent:claude-code
+
+Like memhub.recall (decision 48), eval drives the shared retrieval::recall engine, applies golden-query matchers, and returns a Recall@K plus per-query outcome bundle. It never mutates durable rows, never stages pending writes, never logs to writes_log. Codified because the natural temptation for an 'eval ran on these queries' audit trail would distort memhub stats and the writes_log activity metric. If we ever want eval history, it belongs in a separate eval_runs table, not commingled with mutations.
+
+---
 
 ### D50 — CLAUDE.md and AGENTS.md teach agents to prefer recall over the ledger and to ask before /reindex
 
@@ -411,13 +435,13 @@ Steady-state non-goal of no bulk K9 import stays. First-install bootstrap-k9 is 
 
 ## Backlog
 
-_17 task(s), 2 open. Open first, then by recency._
+_18 task(s), 2 open. Open first, then by recency._
 
-### T16 — PR6: eval harness — golden queries + /eval-recall skill
+### T18 — Add min-score threshold to memhub recall in hybrid mode
 
-**Status:** open • **Updated:** 2026-05-13 20:14:20
+**Status:** open • **Updated:** 2026-05-13 23:19:02
 
-tests/retrieval_golden.json with 12 seeded queries. memhub eval retrieval command computes Recall@3. /eval-recall skill invokes it and reports the number. Acceptance gate for M8: harness exists and reports a baseline.
+Free-AI-SSD smoke test surfaced pure-nonsense queries returning low-similarity (~0.32) hits via vector path. Add a configurable cutoff (likely a new [retrieval.scoring] knob with a default around 0.4) so nonsense bundles are empty in hybrid mode the way they are in fts mode. The eval harness already has the shape to verify this — tests/retrieval_golden.json safety probes will start failing under hybrid mode until the threshold lands. Consider whether the threshold should apply to the blended final_score or just the vector_score component when fts_score is zero.
 
 ---
 
@@ -426,6 +450,14 @@ tests/retrieval_golden.json with 12 seeded queries. memhub eval retrieval comman
 **Status:** open • **Updated:** 2026-05-13 18:23:52
 
 Exercise /wrap-up, /init-project, and /check-init from the Codex skill templates after install; verify attribution, render output, and fresh-repo behavior.
+
+---
+
+### T16 — PR6: eval harness — golden queries + /eval-recall skill
+
+**Status:** done • **Updated:** 2026-05-13 23:18:59
+
+tests/retrieval_golden.json with 12 seeded queries. memhub eval retrieval command computes Recall@3. /eval-recall skill invokes it and reports the number. Acceptance gate for M8: harness exists and reports a baseline.
 
 ---
 
@@ -562,6 +594,15 @@ _2 fact(s), 0 stale._
 
 | When | Actor | Table | Action | Reason |
 |------|-------|-------|--------|--------|
+| 2026-05-13 23:19:12 | claude:wrap-up | project_arch | insert | arch set |
+| 2026-05-13 23:19:11 | claude:wrap-up | session_notes | insert | mcp log_session_note |
+| 2026-05-13 23:19:02 | claude:wrap-up | tasks | insert | task add |
+| 2026-05-13 23:18:59 | claude:wrap-up | tasks | update | task done |
+| 2026-05-13 23:18:54 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 23:18:51 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 23:18:48 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 23:18:41 | claude:wrap-up | project_state | insert | state set |
+| 2026-05-13 22:23:41 | cli:user | render | render | memhub render |
 | 2026-05-13 22:23:38 | claude:wrap-up | project_arch | insert | arch set |
 | 2026-05-13 22:22:39 | claude:wrap-up | session_notes | insert | mcp log_session_note |
 | 2026-05-13 22:22:32 | claude:wrap-up | tasks | update | task done |
@@ -603,12 +644,3 @@ _2 fact(s), 0 stale._
 | 2026-05-13 20:14:20 | claude:wrap-up | tasks | insert | task add |
 | 2026-05-13 20:14:20 | claude:wrap-up | tasks | insert | task add |
 | 2026-05-13 20:14:20 | claude:wrap-up | tasks | insert | task add |
-| 2026-05-13 20:14:20 | claude:wrap-up | tasks | insert | task add |
-| 2026-05-13 20:14:20 | claude:wrap-up | tasks | insert | task add |
-| 2026-05-13 20:14:10 | claude:wrap-up | decisions | insert | decision add |
-| 2026-05-13 20:14:10 | claude:wrap-up | decisions | insert | decision add |
-| 2026-05-13 20:14:10 | claude:wrap-up | decisions | insert | decision add |
-| 2026-05-13 20:14:10 | claude:wrap-up | decisions | insert | decision add |
-| 2026-05-13 20:14:10 | claude:wrap-up | decisions | insert | decision add |
-| 2026-05-13 20:14:10 | claude:wrap-up | decisions | insert | decision add |
-| 2026-05-13 20:14:10 | claude:wrap-up | decisions | insert | decision add |
