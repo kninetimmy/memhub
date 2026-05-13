@@ -4,10 +4,21 @@ Local-first Rust CLI for durable per-repo project memory shared between Codex an
 
 ## Session Continuity
 
-At session start, read `agent_docs/project_state.md` first. Load the other continuity files only when the task needs them:
-- `agent_docs/project_arch.md` for the actual implemented architecture
-- `agent_docs/project_decisions.md` for append-only project decisions
-- `agent_docs/project_backlog.md` for staged work and deferred tasks
+This repo is memhub-primary as of M7-002 (2026-05-13). The DB at
+`.memhub/project.sqlite` is the source of truth; rendered markdown is
+the human-readable view.
+
+At session start, read `agent_docs/PROJECT.md` first (state +
+architecture narrative + recent session notes, rendered from the DB).
+Load `agent_docs/PROJECT_LEDGER.md` for full decisions, backlog, facts,
+and recent activity when the task needs them. Re-render after wrap-up
+with `memhub render`.
+
+The four legacy K9 files (`agent_docs/project_state.md`,
+`project_arch.md`, `project_decisions.md`, `project_backlog.md`) are
+historical archive — last accurate at commit `366cc1c`. Do not write
+to them; they are no longer authoritative. K9 integration is disabled
+in `.memhub/config.toml`.
 
 ## Project Guardrails
 
@@ -39,14 +50,14 @@ The repository currently provides Milestone 1 scaffolding and a usable local CLI
 
 **Build:** `n/a`
 **Test:** `n/a`
-**Active tasks:** 3 open, 0 blocked - see `memhub task list --status open`
+**Active tasks:** 0 open, 0 blocked - see `memhub task list --status open`
 
 ### Durable decisions
+- Slash command collision resolution: rename the user-level skill (2026-05-13 01:50:34)
 - Wrap-up session boundary is implicit; no sessions table (2026-05-13 00:07:40)
 - Wrap-up routing brain is a Claude Code skill, not a CLI subcommand (2026-05-13 00:07:39)
 - Render conflict semantics: DB wins, prior file backed up (2026-05-13 00:07:39)
 - Render trigger is on-demand; auto_render is opt-in for later (2026-05-13 00:07:39)
-- State and arch durable storage uses single-blob tables, not decomposed columns (2026-05-13 00:07:39)
 
 ### Known quirks
 - None recorded.

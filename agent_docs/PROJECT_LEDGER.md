@@ -1,13 +1,21 @@
 <!-- memhub:rendered -->
 <!-- DO NOT EDIT. Generated from .memhub/project.sqlite. -->
 <!-- To change content, use memhub CLI; then re-run `memhub render`. -->
-<!-- Generated at: 2026-05-13T01:30:09Z by memhub 0.1.0 -->
+<!-- Generated at: 2026-05-13T01:50:58Z by memhub 0.1.0 -->
 
 # memhub — Ledger
 
 ## Decisions
 
-_10 decision(s). Most recent first._
+_11 decision(s). Most recent first._
+
+### D11 — Slash command collision resolution: rename the user-level skill
+
+**Status:** active • **Decided:** 2026-05-13 01:50:34
+
+Claude Code resolves /command names by filename and applies enterprise > personal > project precedence — personal shadows project. Documented at code.claude.com/docs/en/skills.md, not a bug. There is no /project:<name> namespace escape hatch for non-plugin commands. When a project-level memhub-native skill needs to claim a /command name already used by a user-level skill (typically K9), the resolution is to rename the user-level skill (e.g., wrap-up.md -> wrap-up-k9.md) plus update its frontmatter description. The forward-looking ergonomic (memhub) wins; the deprecating ergonomic (K9) takes the longer name. This pattern applies to any future memhub-native /init-project and /check-init equivalents and is reflected in cross-session memory at feedback_ux_mimic_k9.md. Captured operationally in the M7-001 backlog closure (103eea0).
+
+---
 
 ### D10 — Wrap-up session boundary is implicit; no sessions table
 
@@ -91,11 +99,11 @@ Steady-state non-goal of no bulk K9 import stays. First-install bootstrap-k9 is 
 
 ## Backlog
 
-_9 task(s), 2 open. Open first, then by recency._
+_9 task(s), 0 open. Open first, then by recency._
 
 ### T9 — Migrate memhub's own agent_docs from K9 markdown to memhub-rendered files (M7-002)
 
-**Status:** open • **Updated:** 2026-05-13 00:07:40
+**Status:** done • **Updated:** 2026-05-13 01:50:34
 
 Blocked on M7-001. Once the memhub-native /wrap-up runs in this repo: (a) populate project_state and project_arch tables from current K9 narrative via memhub state set --from-file and memhub arch set --from-file; (b) run memhub render to produce PROJECT.md and PROJECT_LEDGER.md; (c) update CLAUDE.md Session Continuity to point at the new files instead of the K9 four-file set; (d) memhub integrations disable-k9; (e) decide whether to remove or archive the four K9 project_*.md files. Closes the M6-004 dogfood gap by replacing it. Validates the full memhub-primary loop end-to-end.
 
@@ -103,7 +111,7 @@ Blocked on M7-001. Once the memhub-native /wrap-up runs in this repo: (a) popula
 
 ### T5 — M6-004 - Migrate memhub agent_docs to K9 canonical structural delimiters
 
-**Status:** open • **Updated:** 2026-05-12 21:03:09
+**Status:** done • **Updated:** 2026-05-13 01:50:34
 
 _No notes._
 
@@ -173,6 +181,14 @@ _No facts recorded._
 
 | When | Actor | Table | Action | Reason |
 |------|-------|-------|--------|--------|
+| 2026-05-13 01:50:34 | cli:user | config | update | integrations disable k9 |
+| 2026-05-13 01:50:34 | claude:wrap-up | session_notes | insert | mcp log_session_note |
+| 2026-05-13 01:50:34 | claude:wrap-up | tasks | update | task done |
+| 2026-05-13 01:50:34 | claude:wrap-up | tasks | update | task done |
+| 2026-05-13 01:50:34 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 01:50:34 | claude:wrap-up | project_state | insert | state set |
+| 2026-05-13 01:50:34 | claude:wrap-up | project_arch | insert | arch set |
+| 2026-05-13 01:30:09 | cli:user | render | render | memhub render |
 | 2026-05-13 01:30:02 | claude:investigation | tasks | update | task done |
 | 2026-05-13 00:14:23 | cli:user | render | render | memhub render |
 | 2026-05-13 00:12:12 | cli:user | markdown_sync | update | sync-md |
