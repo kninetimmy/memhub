@@ -449,6 +449,108 @@ fn print_recall_human(response: &RecallResponse) {
     }
 }
 
+fn eval_summary_to_json(summary: &commands::eval::EvalSummary) -> serde_json::Value {
+    let outcomes = summary
+        .outcomes
+        .iter()
+        .map(|o| {
+            json!({
+                "id": o.id,
+                "query": o.query,
+                "kind": match o.kind {
+                    commands::eval::GoldenKind::Match => "match",
+                    commands::eval::GoldenKind::Empty => "empty",
+                },
+                "passed": o.passed,
+                "matched_rank": o.matched_rank,
+                "matched_score": o.matched_score,
+                "returned_count": o.returned_count,
+                "failure_reason": o.failure_reason,
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "golden_path": summary.golden_path.display().to_string(),
+        "mode": recall_mode_label(summary.mode),
+        "k": summary.k,
+        "totals": {
+            "queries": summary.total_queries,
+            "match_queries": summary.match_queries,
+            "empty_queries": summary.empty_queries,
+            "match_passes": summary.match_passes,
+            "empty_passes": summary.empty_passes,
+            "safety_failures": summary.safety_failures,
+        },
+        "recall_at_k": summary.recall_at_k,
+        "elapsed_ms": summary.elapsed_ms,
+        "outcomes": outcomes,
+    })
+}
+
+fn print_eval_summary(summary: &commands::eval::EvalSummary) {
+    println!(
+        "memhub eval retrieval — {} ({} queries)",
+        summary.golden_path.display(),
+        summary.total_queries,
+    );
+    println!(
+        "Mode: {}  |  K: {}  |  Elapsed: {} ms",
+        recall_mode_label(summary.mode),
+        summary.k,
+        summary.elapsed_ms,
+    );
+    println!(
+        "Recall@{k}: {passes}/{total} = {pct:.1}%",
+        k = summary.k,
+        passes = summary.match_passes,
+        total = summary.match_queries,
+        pct = summary.recall_at_k * 100.0,
+    );
+    if summary.empty_queries > 0 {
+        println!(
+            "Safety: {pass}/{total} empty-query probes returned no results{failed}",
+            pass = summary.empty_passes,
+            total = summary.empty_queries,
+            failed = if summary.safety_failures > 0 {
+                format!("  [{} FAILED]", summary.safety_failures)
+            } else {
+                String::new()
+            },
+        );
+    }
+    println!();
+    println!("Per-query outcomes:");
+    for outcome in &summary.outcomes {
+        let glyph = if outcome.passed { "PASS" } else { "FAIL" };
+        let kind = match outcome.kind {
+            commands::eval::GoldenKind::Match => "match",
+            commands::eval::GoldenKind::Empty => "empty",
+        };
+        let detail = match outcome.matched_rank {
+            Some(rank) => format!(
+                "rank {rank}, score {score:.3}",
+                rank = rank,
+                score = outcome.matched_score.unwrap_or(0.0),
+            ),
+            None => match outcome.kind {
+                commands::eval::GoldenKind::Empty => {
+                    format!("{} hit(s) returned", outcome.returned_count)
+                }
+                commands::eval::GoldenKind::Match => {
+                    format!("{} hit(s) returned, no match", outcome.returned_count)
+                }
+            },
+        };
+        println!(
+            "  [{glyph}] {id} ({kind}) — {detail}",
+            id = outcome.id,
+        );
+        if let Some(reason) = &outcome.failure_reason {
+            println!("        {reason}");
+        }
+    }
+}
+
 fn print_init_result(result: &InitResult) {
     println!("Initialized memhub at {}", result.repo_root.display());
     println!("Database: {}", result.db_path.display());
@@ -578,6 +680,24 @@ pub enum TopLevelCommand {
         include_stale: bool,
         #[arg(long)]
         accepted_only: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    Eval {
+        #[command(subcommand)]
+        command: EvalCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum EvalCommand {
+    Retrieval {
+        #[arg(long, value_name = "PATH")]
+        golden: Option<PathBuf>,
+        #[arg(long, default_value_t = commands::eval::DEFAULT_K)]
+        k: usize,
+        #[arg(long, value_enum)]
+        mode: Option<RecallModeArg>,
         #[arg(long)]
         json: bool,
     },
@@ -1485,6 +1605,29 @@ pub fn run(cli: Cli) -> Result<()> {
                 print_recall_human(&response);
             }
         }
+        TopLevelCommand::Eval { command } => match command {
+            EvalCommand::Retrieval {
+                golden,
+                k,
+                mode,
+                json: as_json,
+            } => {
+                let golden_path = golden.unwrap_or_else(|| {
+                    cwd.join(commands::eval::DEFAULT_GOLDEN_PATH)
+                });
+                let opts = commands::eval::EvalOptions {
+                    golden_path,
+                    k,
+                    mode: mode.map(|m| m.to_mode()),
+                };
+                let summary = commands::eval::run_retrieval(&cwd, opts)?;
+                if as_json {
+                    println!("{}", eval_summary_to_json(&summary));
+                } else {
+                    print_eval_summary(&summary);
+                }
+            }
+        },
         TopLevelCommand::Render => {
             let result = commands::render::run(&cwd, DEFAULT_ACTOR)?;
             println!("Rendered to {}", result.output_dir.display());

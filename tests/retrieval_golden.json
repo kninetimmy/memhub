@@ -1,0 +1,111 @@
+{
+  "version": 1,
+  "description": "M8 retrieval golden set. Recall@K acceptance for `memhub eval retrieval`. Matchers run case-insensitive substring checks against the recall hit's title and body, so queries survive row-ID shifts and minor wording tweaks. `kind: match` queries contribute to Recall@K; `kind: empty` queries are safety probes that must return zero results. Queries are written keyword-style (3-6 specific terms) to play well with recall's AND-of-tokens FTS5 matcher.",
+  "queries": [
+    {
+      "id": "decision-recall-readonly",
+      "query": "recall read-only writes_log",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": ["recall", "read-only"],
+      "body_contains": ["writes_log"],
+      "notes": "Probes the addendum invariant: recall never logs to writes_log."
+    },
+    {
+      "id": "decision-stale-embedding-warning",
+      "query": "stale embeddings warning reindex",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": ["stale"],
+      "body_contains": ["/reindex"],
+      "notes": "Stale-embedding UX rule: warning surfaced, agent asks before /reindex."
+    },
+    {
+      "id": "decision-prefer-recall-over-ledger",
+      "query": "agents prefer recall ledger",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": ["prefer", "recall"],
+      "body_contains": [],
+      "notes": "Load-bearing decision 34 — token-savings rule that makes M8 worthwhile."
+    },
+    {
+      "id": "decision-fts5-virtual-tables",
+      "query": "FTS5 virtual tables source",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": ["FTS5"],
+      "body_contains": [],
+      "notes": "Decision 26: contentless FTS5 virtual tables over source tables."
+    },
+    {
+      "id": "decision-bundle-bge-model",
+      "query": "bundle BGE-small build.rs download",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": ["BGE-small", "build.rs"],
+      "body_contains": [],
+      "notes": "Decision 42: build.rs downloads + SHA-pins BGE-small into OUT_DIR."
+    },
+    {
+      "id": "decision-eager-embed-on-write",
+      "query": "eager-embed writes transaction",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": ["Eager-embed", "transaction"],
+      "body_contains": [],
+      "notes": "Decision 27: eager embed inside the source-write transaction."
+    },
+    {
+      "id": "decision-recall-at-3-metric",
+      "query": "Recall@3 metric golden",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": ["Recall@3"],
+      "body_contains": ["golden"],
+      "notes": "Self-referential probe: only passes once M8 decisions are themselves indexed and queryable."
+    },
+    {
+      "id": "decision-source-vocabulary-enforcement",
+      "query": "source vocabulary writer-enforced schema",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": ["Source vocabulary"],
+      "body_contains": ["writer"],
+      "notes": "Decision 39: validate_source() at writers, schema stays unconstrained."
+    },
+    {
+      "id": "fact-build-command",
+      "query": "build command cargo",
+      "kind": "match",
+      "source_type": "fact",
+      "title_contains": ["build"],
+      "body_contains": ["cargo build"],
+      "notes": "Fact 1 in the seeded set — the literal build command."
+    },
+    {
+      "id": "fact-test-command",
+      "query": "test command cargo",
+      "kind": "match",
+      "source_type": "fact",
+      "title_contains": ["test"],
+      "body_contains": ["cargo test"],
+      "notes": "Fact 2 in the seeded set — the literal test command."
+    },
+    {
+      "id": "task-pr6-eval-harness",
+      "query": "PR6 eval harness golden queries",
+      "kind": "match",
+      "source_type": "task",
+      "title_contains": ["PR6", "eval"],
+      "body_contains": [],
+      "notes": "Self-referential probe: the eval harness task itself must be findable via recall."
+    },
+    {
+      "id": "negative-nonsense-tokens",
+      "query": "zxqv-pure-nonsense-no-real-token-anywhere-in-this-repo",
+      "kind": "empty",
+      "notes": "Safety probe: gibberish must return an empty bundle, never a hallucinated guess."
+    }
+  ]
+}
