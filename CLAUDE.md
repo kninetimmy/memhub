@@ -53,11 +53,11 @@ The repository currently provides Milestone 1 scaffolding and a usable local CLI
 **Active tasks:** 0 open, 0 blocked - see `memhub task list --status open`
 
 ### Durable decisions
+- PRD evolves via addendum docs; the PRD itself stays verbatim (2026-05-13 02:22:14)
 - Slash command collision resolution: rename the user-level skill (2026-05-13 01:50:34)
 - Wrap-up session boundary is implicit; no sessions table (2026-05-13 00:07:40)
 - Wrap-up routing brain is a Claude Code skill, not a CLI subcommand (2026-05-13 00:07:39)
 - Render conflict semantics: DB wins, prior file backed up (2026-05-13 00:07:39)
-- Render trigger is on-demand; auto_render is opt-in for later (2026-05-13 00:07:39)
 
 ### Known quirks
 - None recorded.

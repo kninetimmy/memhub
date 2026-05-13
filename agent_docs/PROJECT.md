@@ -1,52 +1,56 @@
 <!-- memhub:rendered -->
 <!-- DO NOT EDIT. Generated from .memhub/project.sqlite. -->
 <!-- To change content, use memhub CLI; then re-run `memhub render`. -->
-<!-- Generated at: 2026-05-13T01:50:58Z by memhub 0.1.0 -->
+<!-- Generated at: 2026-05-13T02:22:14Z by memhub 0.1.0 -->
 
 # memhub
 
 ## Currently building
 
-Between tasks. M7-001 (project-level skill override gap) resolved
-in `103eea0` by renaming `~/.claude/commands/wrap-up.md` to
-`wrap-up-k9.md` — Claude Code resolves slash commands by filename
-with documented enterprise > personal > project precedence, so the
-collision had to be broken at one end. The memhub-native /wrap-up
-(this one) is now firing in this repo. M7-002 (full migration off
-K9 four-file markdown to memhub-rendered files) is being executed
-inline this session: state and arch persisted to the DB, CLAUDE.md
-Session Continuity repointed at `agent_docs/PROJECT.md`, K9
-integration disabled. The repo is now fully memhub-primary.
+Between tasks. K9 deprecation track is formally complete end-to-end:
+render slice (`c1becc5`, `2757a0a`, `c3fbef0`), state/arch DB content
+(folded into render via migration `0007_project_narrative`), wrap-up
+slice (`a2b6606`, `5037033`, `588168b`, `103eea0`, `591832f`), and
+PRD §2 addendum (`7c162b2`). Repo is fully memhub-primary: DB is
+source of truth, render emits `agent_docs/PROJECT.md` and
+`PROJECT_LEDGER.md`, K9 integration disabled in `.memhub/config.toml`,
+CLAUDE.md Session Continuity points at the rendered files. All four
+slices of `docs/roadmap/k9-deprecation-plan.md` are marked shipped
+in that doc with commit references.
 
 ## Next up
 
-1. PRD §2 + `docs/roadmap/k9-integration.md` non-goal addendum.
-   With render, wrap-up, and memhub-primary all shipped end-to-end,
-   the PRD can be revised to describe the actual end state.
-2. Optional `/init-project` and `/check-init` memhub-native
+1. Optional `/init-project` and `/check-init` memhub-native
    equivalents (deferred per `wrap-up-design.md` §5; same
    rename-the-collision pattern from M7-001 closure applies).
-3. Decide K9-file fate: keep `agent_docs/project_*.md` in place as
+2. Decide K9-file fate: keep `agent_docs/project_*.md` in place as
    historical archive (current state — CLAUDE.md no longer points
-   at them, but they remain on disk and in git history), or remove
-   in a future cleanup commit.
+   at them), or remove in a future cleanup commit.
+3. PATH `memhub` binary staleness: install the freshly-built binary
+   (`cargo install --path .` or copy `target/debug/memhub` over)
+   so `state` / `arch` / `render` are reachable from any shell.
+4. Otherwise: between tasks. No active milestone in flight.
 
 ## Last session
 
-2026-05-13 — Closed M7-001 (override gap) by renaming the
-user-level K9 wrap-up. Verified live in skills registry. Then
-executed M7-002 inline during this wrap-up: populated
-`project_state` and `project_arch` tables from K9 narrative,
-disabled K9 integration, repointed CLAUDE.md Session Continuity at
-`PROJECT.md`, marked T5 (M6-004) and T9 (M7-002) done in the DB,
-re-rendered. Two-commit session: `103eea0` (M7-001 close) and the
-wrap-up commit that lands these notes.
+2026-05-13 — Wrote the PRD §2 addendum
+(`docs/reference/memhub-prd-deprecation-addendum.md`) per the
+slice 2 plan. The PRD itself stayed verbatim per the CLAUDE.md
+guardrail; the addendum is authoritative for the items it modifies
+(§2 inversion, §6.2 layout extension, §8 data model, §13 CLI
+surface). Revised the non-goals in `docs/roadmap/k9-integration.md`
+inline (three still in force, one overturned). Updated
+`docs/roadmap/k9-deprecation-plan.md` to mark all four slices
+shipped with commit references and reframe the sequencing section
+as historical narrative. Shipped as `7c162b2`.
 
-2026-05-12 — Shipped two design docs and five implementation
-commits across the K9 deprecation track: render-design (`c1becc5`),
-render steps 1+2 (`2757a0a`, `c3fbef0`), wrap-up-design (`a2b6606`),
-wrap-up steps 1+2 (`5037033`, `588168b`), wrap-up routing into
-agent_docs (`366cc1c`). 164 tests green at session end.
+2026-05-13 — Closed M7-001 (override gap) by renaming the
+user-level K9 wrap-up; verified live in skills registry. Then
+executed M7-002 inline during the wrap-up: populated
+`project_state` and `project_arch` tables from K9 narrative,
+disabled K9 integration, repointed CLAUDE.md at `PROJECT.md`,
+marked T5 (M6-004) and T9 (M7-002) done. Two-commit sub-session:
+`103eea0` (M7-001 close) and `591832f` (M7-002 inline migration).
 
 ## Open questions
 
@@ -70,7 +74,7 @@ agent_docs (`366cc1c`). 164 tests green at session end.
   the tool?
 - Should a `v2` export format be introduced to include `session_notes`?
 
-_Last updated 2026-05-13 01:50:34 by claude:wrap-up._
+_Last updated 2026-05-13 02:22:14 by claude:wrap-up._
 
 ## Architecture
 
@@ -147,4 +151,5 @@ _Last updated 2026-05-13 01:50:34 by claude:wrap-up._
 
 ## Recent session notes
 
+- **2026-05-13 02:22:14** (claude:wrap-up) — Wrote the PRD §2 addendum (docs/reference/memhub-prd-deprecation-addendum.md) closing slice 2 of the K9 deprecation plan. PRD itself stayed verbatim per CLAUDE.md guardrail; addendum is authoritative for the §2 inversion, §6.2 layout extension, §8 data model, and §13 CLI surface additions. Revised k9-integration.md non-goals inline and marked all four deprecation slices shipped in the plan doc. Shipped as 7c162b2. K9 deprecation track is now formally complete end-to-end.
 - **2026-05-13 01:50:34** (claude:wrap-up) — Investigated and closed M7-001 (project-level slash command override gap). Root cause was documented Claude Code precedence (personal > project, filename-resolved), not a bug. Fix: renamed ~/.claude/commands/wrap-up.md to wrap-up-k9.md so the project-level memhub-native /wrap-up no longer collides. Verified via skills registry. Shipped as 103eea0; M7-002 then executed inline this session to fully migrate the repo to memhub-primary.

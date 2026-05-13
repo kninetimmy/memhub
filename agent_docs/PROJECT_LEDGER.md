@@ -1,13 +1,21 @@
 <!-- memhub:rendered -->
 <!-- DO NOT EDIT. Generated from .memhub/project.sqlite. -->
 <!-- To change content, use memhub CLI; then re-run `memhub render`. -->
-<!-- Generated at: 2026-05-13T01:50:58Z by memhub 0.1.0 -->
+<!-- Generated at: 2026-05-13T02:22:14Z by memhub 0.1.0 -->
 
 # memhub — Ledger
 
 ## Decisions
 
-_11 decision(s). Most recent first._
+_12 decision(s). Most recent first._
+
+### D12 — PRD evolves via addendum docs; the PRD itself stays verbatim
+
+**Status:** active • **Decided:** 2026-05-13 02:22:14
+
+CLAUDE.md guardrail says 'Keep docs/reference/memhub-prd.md verbatim.' When PRD-level wording needs to change (e.g., the K9 deprecation track inverting §2's 'markdown is entry point' framing), the change ships as a separate addendum doc at docs/reference/memhub-prd-<topic>-addendum.md that is authoritative for the items it modifies. Future addenda follow the same naming pattern. The PRD's structure, design principles, non-goals, and section ordering all stay as they are. Captured in 7c162b2 as the first instance: docs/reference/memhub-prd-deprecation-addendum.md. This pattern keeps the original PRD as a stable canonical artifact while letting the project evolve under explicit, dated revisions readable by anyone tracing the PRD's history.
+
+---
 
 ### D11 — Slash command collision resolution: rename the user-level skill
 
@@ -181,6 +189,11 @@ _No facts recorded._
 
 | When | Actor | Table | Action | Reason |
 |------|-------|-------|--------|--------|
+| 2026-05-13 02:22:14 | claude:wrap-up | session_notes | insert | mcp log_session_note |
+| 2026-05-13 02:22:14 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 02:22:14 | claude:wrap-up | project_state | insert | state set |
+| 2026-05-13 01:53:11 | cli:user | markdown_sync | update | sync-md |
+| 2026-05-13 01:50:58 | cli:user | render | render | memhub render |
 | 2026-05-13 01:50:34 | cli:user | config | update | integrations disable k9 |
 | 2026-05-13 01:50:34 | claude:wrap-up | session_notes | insert | mcp log_session_note |
 | 2026-05-13 01:50:34 | claude:wrap-up | tasks | update | task done |
