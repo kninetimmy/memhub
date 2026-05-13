@@ -15,6 +15,22 @@ use crate::Result;
 
 pub const DEFAULT_RENDER_OUTPUT_DIR: &str = "agent_docs";
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RetrievalMode {
+    /// FTS5-only recall. Embeddings table is not populated on writes.
+    #[default]
+    Fts,
+    /// Hybrid SQL+RAG recall. Writes eagerly embed source rows.
+    Hybrid,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RetrievalConfig {
+    #[serde(default)]
+    pub mode: RetrievalMode,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RenderConfig {
     #[serde(default = "default_render_output_dir")]
@@ -44,6 +60,8 @@ pub struct ProjectConfig {
     pub integrations: IntegrationsConfig,
     #[serde(default)]
     pub render: RenderConfig,
+    #[serde(default)]
+    pub retrieval: RetrievalConfig,
 }
 
 impl ProjectConfig {
@@ -55,6 +73,7 @@ impl ProjectConfig {
             deny_list: DenyList::default(),
             integrations: IntegrationsConfig::default(),
             render: RenderConfig::default(),
+            retrieval: RetrievalConfig::default(),
         }
     }
 

@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use crate::Result;
 
-pub const LATEST_VERSION: &str = "0009_retrieval_indexes";
+pub const LATEST_VERSION: &str = "0010_embeddings_delete_triggers";
 
 const MIGRATIONS: &[(&str, &str)] = &[
     (
@@ -40,6 +40,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "0009_retrieval_indexes",
         include_str!("../../migrations/0009_retrieval_indexes.sql"),
+    ),
+    (
+        "0010_embeddings_delete_triggers",
+        include_str!("../../migrations/0010_embeddings_delete_triggers.sql"),
     ),
 ];
 

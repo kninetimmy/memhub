@@ -21,8 +21,10 @@ pub fn add_with_decided_at(
     actor: &str,
 ) -> Result<i64> {
     let mut ctx = db::open_project(start)?;
+    let mode = ctx.config.retrieval.mode;
     let tx = ctx.conn.transaction()?;
-    let row_id = add_with_decided_at_in_tx(&tx, title, rationale, decided_at, source, actor)?;
+    let row_id =
+        add_with_decided_at_in_tx(&tx, title, rationale, decided_at, source, actor, mode)?;
     tx.commit()?;
     sync_md::sync_if_enabled(start)?;
     Ok(row_id)
@@ -35,6 +37,7 @@ pub fn add_with_decided_at_in_tx(
     decided_at: Option<&str>,
     source: &str,
     actor: &str,
+    mode: crate::config::RetrievalMode,
 ) -> Result<i64> {
     crate::commands::validate_source(source)?;
 
@@ -64,6 +67,15 @@ pub fn add_with_decided_at_in_tx(
         Some(row_id),
         "insert",
         "decision add",
+    )?;
+
+    let embed_text = crate::retrieval::decision_embed_text(title, rationale);
+    crate::retrieval::eager_embed_in_tx(
+        tx,
+        mode,
+        crate::retrieval::SourceType::Decision,
+        row_id,
+        &embed_text,
     )?;
 
     Ok(row_id)

@@ -86,6 +86,7 @@ pub struct AcceptOutcome {
 
 pub fn accept(start: &Path, id: i64, actor: &str) -> Result<AcceptOutcome> {
     let mut ctx = db::open_project(start)?;
+    let mode = ctx.config.retrieval.mode;
     // Immediate behavior acquires the write lock at BEGIN so concurrent acceptors
     // serialize at the lock instead of both racing past the status check.
     let tx = ctx
@@ -118,7 +119,8 @@ pub fn accept(start: &Path, id: i64, actor: &str) -> Result<AcceptOutcome> {
                 .get("value")
                 .and_then(Value::as_str)
                 .ok_or_else(|| missing_payload_field(id, "value"))?;
-            let (fact_id, _) = fact::add_in_tx(&tx, key, value, &derived_source, actor)?;
+            let (fact_id, _) =
+                fact::add_in_tx(&tx, key, value, &derived_source, actor, mode)?;
             (fact_id, "facts")
         }
         "decision" => {
@@ -133,6 +135,7 @@ pub fn accept(start: &Path, id: i64, actor: &str) -> Result<AcceptOutcome> {
                 None,
                 &derived_source,
                 actor,
+                mode,
             )?;
             (decision_id, "decisions")
         }

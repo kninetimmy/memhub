@@ -23,6 +23,7 @@ pub fn add_with_status(
     }
 
     let mut ctx = db::open_project(start)?;
+    let mode = ctx.config.retrieval.mode;
     let tx = ctx.conn.transaction()?;
 
     tx.execute(
@@ -33,6 +34,15 @@ pub fn add_with_status(
     let row_id = tx.last_insert_rowid();
 
     db::log_write(&tx, actor, "tasks", Some(row_id), "insert", "task add")?;
+
+    let embed_text = crate::retrieval::task_embed_text(title, notes);
+    crate::retrieval::eager_embed_in_tx(
+        &tx,
+        mode,
+        crate::retrieval::SourceType::Task,
+        row_id,
+        &embed_text,
+    )?;
 
     tx.commit()?;
     sync_md::sync_if_enabled(start)?;

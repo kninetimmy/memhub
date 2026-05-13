@@ -9,8 +9,9 @@ use crate::sync_md;
 
 pub fn add(start: &Path, key: &str, value: &str, source: &str, actor: &str) -> Result<(i64, bool)> {
     let mut ctx = db::open_project(start)?;
+    let mode = ctx.config.retrieval.mode;
     let tx = ctx.conn.transaction()?;
-    let outcome = add_in_tx(&tx, key, value, source, actor)?;
+    let outcome = add_in_tx(&tx, key, value, source, actor, mode)?;
     tx.commit()?;
     sync_md::sync_if_enabled(start)?;
     Ok(outcome)
@@ -22,6 +23,7 @@ pub fn add_in_tx(
     value: &str,
     source: &str,
     actor: &str,
+    mode: crate::config::RetrievalMode,
 ) -> Result<(i64, bool)> {
     crate::commands::validate_source(source)?;
 
@@ -57,6 +59,15 @@ pub fn add_in_tx(
         Some(row_id),
         if created { "insert" } else { "update" },
         "fact add",
+    )?;
+
+    let embed_text = crate::retrieval::fact_embed_text(key, value);
+    crate::retrieval::eager_embed_in_tx(
+        tx,
+        mode,
+        crate::retrieval::SourceType::Fact,
+        row_id,
+        &embed_text,
     )?;
 
     Ok((row_id, created))

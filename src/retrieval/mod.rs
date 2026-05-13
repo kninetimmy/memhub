@@ -5,5 +5,9 @@
 //! PR1 ships only the embedding primitive.
 
 pub mod embeddings;
+pub mod persist;
 
 pub use embeddings::{EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME, embed_batch, embed_one};
+pub use persist::{
+    SourceType, decision_embed_text, eager_embed_in_tx, fact_embed_text, task_embed_text,
+};
