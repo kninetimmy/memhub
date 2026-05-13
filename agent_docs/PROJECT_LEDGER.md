@@ -1,13 +1,165 @@
 <!-- memhub:rendered -->
 <!-- DO NOT EDIT. Generated from .memhub/project.sqlite. -->
 <!-- To change content, use memhub CLI; then re-run `memhub render`. -->
-<!-- Generated at: 2026-05-13T18:40:36Z by memhub 0.1.0 -->
+<!-- Generated at: 2026-05-13T20:14:30Z by memhub 0.1.0 -->
 
 # memhub — Ledger
 
 ## Decisions
 
-_18 decision(s). Most recent first._
+_37 decision(s). Most recent first._
+
+### D37 — /eval-recall skill runs the harness
+
+**Status:** active • **Decided:** 2026-05-13 20:14:10 • **Source:** user+agent:claude-code
+
+Agent-driven invocation of memhub eval retrieval. Surfaces the Recall@3 number without manual CLI invocation. Stays consistent with the agent-first UX pattern for everything else in M8.
+
+---
+
+### D36 — Eval metric: Recall@3 via tests/retrieval_golden.json
+
+**Status:** active • **Decided:** 2026-05-13 20:14:10 • **Source:** user+agent:claude-code
+
+Single-number test: across golden queries, what fraction had the expected row in the top 3 recall results? Simple to interpret, easy to track across scoring or model changes. 12 starter queries seeded covering decisions, facts, tasks, and negative cases.
+
+---
+
+### D35 — PROJECT.md stays as thin summary; PROJECT_LEDGER.md becomes lazy-loaded
+
+**Status:** active • **Decided:** 2026-05-13 20:14:10 • **Source:** user+agent:claude-code
+
+Render output unchanged in shape, but agent consumption pattern shifts. PROJECT.md is always in session-start context (small). PROJECT_LEDGER.md becomes a fallback the agent reads only when recall is insufficient.
+
+---
+
+### D34 — Agents prefer recall over reading PROJECT_LEDGER.md
+
+**Status:** active • **Decided:** 2026-05-13 20:14:10 • **Source:** user+agent:claude-code
+
+Load-bearing rule for the token-savings win. Encoded in CLAUDE.md and the existing skills: at session start read PROJECT.md only; reach for the ledger only after recall comes up short.
+
+---
+
+### D33 — Zero-result behavior: empty bundle, no automatic fallback
+
+**Status:** active • **Decided:** 2026-05-13 20:14:10 • **Source:** user+agent:claude-code
+
+When recall finds no matches it returns an empty results array, not an automatic dump of PROJECT_LEDGER.md. The agent decides whether to read the ledger as fallback based on the question.
+
+---
+
+### D32 — Output formats: JSON default for MCP, markdown default for CLI
+
+**Status:** active • **Decided:** 2026-05-13 20:14:10 • **Source:** user+agent:claude-code
+
+MCP always returns structured JSON for downstream agent parsing. CLI defaults to human-readable markdown with a --json flag for scripting. Same internal query path produces both.
+
+---
+
+### D31 — /recall and /reindex slash commands for direct user invocation
+
+**Status:** active • **Decided:** 2026-05-13 20:14:10 • **Source:** user+agent:claude-code
+
+Two new Claude Code skills mirror the MCP tools for cases where the user wants to ask memhub directly without going through chat. /reindex used after model upgrades or on stale-embedding warnings.
+
+---
+
+### D30 — memhub.recall MCP tool is the primary agent surface
+
+**Status:** active • **Decided:** 2026-05-13 20:14:10 • **Source:** user+agent:claude-code
+
+Agents call recall via MCP for context retrieval. CLI commands exist but are for humans and admin tasks. Keeps agent-driven UX consistent with the existing task_add/render/list_facts pattern.
+
+---
+
+### D29 — Stale-embedding UX: warning flag plus agent-prompted /reindex
+
+**Status:** active • **Decided:** 2026-05-13 20:14:10 • **Source:** user+agent:claude-code
+
+When recall detects stale embeddings (e.g. after model upgrade) it returns a warnings array. CLAUDE.md rule tells the agent to surface the warning and ask the user before invoking /reindex rather than auto-running.
+
+---
+
+### D28 — content_hash drift detection per embedding
+
+**Status:** active • **Decided:** 2026-05-13 20:13:58 • **Source:** user+agent:claude-code
+
+Store a hash of source body alongside each vector. Mismatch on read marks the embedding stale and triggers re-embed on next eager-embed pass or forces a /reindex prompt.
+
+---
+
+### D27 — Eager-embed on writes inside the same transaction
+
+**Status:** active • **Decided:** 2026-05-13 20:13:58 • **Source:** user+agent:claude-code
+
+Fact, decision, and task add paths re-embed the affected row synchronously. ~50ms write overhead is acceptable for the consistency guarantee. Avoids a background queue and stale-index window.
+
+---
+
+### D26 — FTS5 virtual tables attached to source tables
+
+**Status:** active • **Decided:** 2026-05-13 20:13:58 • **Source:** user+agent:claude-code
+
+Contentless FTS5 over facts.body, decisions.rationale, and tasks.body. Triggers keep FTS indexes synced with source on insert/update/delete. No data duplication.
+
+---
+
+### D25 — No memory_chunks table; embed source rows directly
+
+**Status:** active • **Decided:** 2026-05-13 20:13:58 • **Source:** user+agent:claude-code
+
+Facts, decisions, and tasks are already short enough to be single chunks. Skipping a chunk normalization table avoids the chunk-source-drift problem and a UNION-shaped retrieval query is straightforward.
+
+---
+
+### D24 — Vector storage: SQLite BLOB plus brute-force cosine
+
+**Status:** active • **Decided:** 2026-05-13 20:13:58 • **Source:** user+agent:claude-code
+
+At memhub scale (hundreds to low thousands of rows) brute-force search is sub-10ms. sqlite-vec extension would add loadable-extension packaging complexity across platforms for no real gain at this scale.
+
+---
+
+### D23 — Embedding model: BGE-small-en-v1.5, bundled in binary
+
+**Status:** active • **Decided:** 2026-05-13 20:13:58 • **Source:** user+agent:claude-code
+
+384-dim vectors, ~130MB model file, total binary ~140MB. Chosen over MiniLM (older, weaker semantic quality) and BGE-base (4x size for 2-5% quality gain that does not match memhub content profile).
+
+---
+
+### D22 — Embedding library: fastembed-rs
+
+**Status:** active • **Decided:** 2026-05-13 20:13:58 • **Source:** user+agent:claude-code
+
+Pure Rust plus ONNX runtime, bundles model loading and caching. Chosen over candle (more flexible but overkill) and Ollama (external dependency conflicts with local-first install story).
+
+---
+
+### D21 — Install-time retrieval mode toggle
+
+**Status:** active • **Decided:** 2026-05-13 20:13:58 • **Source:** user+agent:claude-code
+
+Config flag [retrieval] mode = fts | hybrid in config.toml. Both modes share the same recall API; hybrid adds vector scoring on top of FTS plus metadata filters.
+
+---
+
+### D20 — Retrieval stays SQL-first; RAG is a derived layer
+
+**Status:** active • **Decided:** 2026-05-13 20:13:58 • **Source:** user+agent:claude-code
+
+Canonical memory lives in facts/decisions/tasks tables. FTS and vector indexes are rebuildable derived state that never owns truth. Deleting derived state must leave memhub fully functional in FTS-only mode.
+
+---
+
+### D19 — M8 milestone: SQL+RAG hybrid recall
+
+**Status:** active • **Decided:** 2026-05-13 20:13:58 • **Source:** user+agent:claude-code
+
+Self-contained milestone for the retrieval layer with explicit acceptance criteria: recall MCP tool works, eval harness reports Recall@3 metric, agents prefer recall over reading PROJECT_LEDGER.md.
+
+---
 
 ### D18 — State and arch narratives are wrap-up-only; no MCP tools for state_set or arch_set
 
@@ -155,7 +307,55 @@ Steady-state non-goal of no bulk K9 import stays. First-install bootstrap-k9 is 
 
 ## Backlog
 
-_10 task(s), 1 open. Open first, then by recency._
+_16 task(s), 7 open. Open first, then by recency._
+
+### T16 — PR6: eval harness — golden queries + /eval-recall skill
+
+**Status:** open • **Updated:** 2026-05-13 20:14:20
+
+tests/retrieval_golden.json with 12 seeded queries. memhub eval retrieval command computes Recall@3. /eval-recall skill invokes it and reports the number. Acceptance gate for M8: harness exists and reports a baseline.
+
+---
+
+### T15 — PR5: /recall and /reindex skills + CLAUDE.md lazy-ledger update
+
+**Status:** open • **Updated:** 2026-05-13 20:14:20
+
+New Claude Code skills under templates/skills/claude/. CLAUDE.md rule update: agents read PROJECT.md at session start, call memhub.recall mid-session, read PROJECT_LEDGER.md only as fallback. Codex skills mirror the Claude ones.
+
+---
+
+### T14 — PR4: recall CLI command + MCP tool with hybrid scoring
+
+**Status:** open • **Updated:** 2026-05-13 20:14:20
+
+memhub recall <query> command with filters (--source-type, --max-results, --json, --include-stale, --accepted-only). memhub.recall MCP tool. Hybrid scoring: 0.5 FTS + 0.5 vector + stale penalty + filters. Both modes (fts, hybrid) supported. Empty result returns empty bundle.
+
+---
+
+### T13 — PR3: eager-embed on writes (fact/decision/task add paths)
+
+**Status:** open • **Updated:** 2026-05-13 20:14:20
+
+Hook into fact/decision/task add handlers. Re-embed within the same transaction. content_hash short-circuits no-op writes. Target ~50ms write latency. Update paths handle delete-then-insert of the embedding row.
+
+---
+
+### T12 — PR2: schema migration — FTS5 virtual tables + embeddings table
+
+**Status:** open • **Updated:** 2026-05-13 20:14:20
+
+Migration 0009: add embeddings table (source_type, source_id, model_name, dimension, vector BLOB, content_hash, created_at, UNIQUE constraint). Add FTS5 virtual tables over facts.body, decisions.rationale, tasks.body with sync triggers. Backfill on first run.
+
+---
+
+### T11 — PR1: fastembed-rs integration + bundled BGE-small model
+
+**Status:** open • **Updated:** 2026-05-13 20:14:20
+
+Add fastembed-rs dependency. Bundle BGE-small-en-v1.5 ONNX model via include_bytes! (~130MB). Inference wrapper in src/retrieval/embeddings.rs with lazy model load. Smoke test: produce vector for known input, verify dimension=384.
+
+---
 
 ### T10 — Dogfood Codex memhub skills in fresh and existing repos
 
@@ -245,6 +445,34 @@ _No facts recorded._
 
 | When | Actor | Table | Action | Reason |
 |------|-------|-------|--------|--------|
+| 2026-05-13 20:14:27 | claude:wrap-up | session_notes | insert | mcp log_session_note |
+| 2026-05-13 20:14:20 | claude:wrap-up | tasks | insert | task add |
+| 2026-05-13 20:14:20 | claude:wrap-up | tasks | insert | task add |
+| 2026-05-13 20:14:20 | claude:wrap-up | tasks | insert | task add |
+| 2026-05-13 20:14:20 | claude:wrap-up | tasks | insert | task add |
+| 2026-05-13 20:14:20 | claude:wrap-up | tasks | insert | task add |
+| 2026-05-13 20:14:20 | claude:wrap-up | tasks | insert | task add |
+| 2026-05-13 20:14:10 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 20:14:10 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 20:14:10 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 20:14:10 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 20:14:10 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 20:14:10 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 20:14:10 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 20:14:10 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 20:14:10 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 20:13:58 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 20:13:58 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 20:13:58 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 20:13:58 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 20:13:58 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 20:13:58 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 20:13:58 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 20:13:58 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 20:13:58 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 20:13:58 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 20:13:45 | claude:wrap-up | project_state | insert | state set |
+| 2026-05-13 18:40:36 | cli:user | render | render | memhub render |
 | 2026-05-13 18:40:30 | claude:wrap-up | session_notes | insert | mcp log_session_note |
 | 2026-05-13 18:40:26 | claude:wrap-up | decisions | insert | decision add |
 | 2026-05-13 18:40:19 | claude:wrap-up | decisions | insert | decision add |
@@ -267,31 +495,3 @@ _No facts recorded._
 | 2026-05-13 03:28:01 | claude:wrap-up | project_state | insert | state set |
 | 2026-05-13 02:22:14 | cli:user | markdown_sync | update | sync-md |
 | 2026-05-13 02:22:14 | cli:user | render | render | memhub render |
-| 2026-05-13 02:22:14 | claude:wrap-up | session_notes | insert | mcp log_session_note |
-| 2026-05-13 02:22:14 | claude:wrap-up | decisions | insert | decision add |
-| 2026-05-13 02:22:14 | claude:wrap-up | project_state | insert | state set |
-| 2026-05-13 01:53:11 | cli:user | markdown_sync | update | sync-md |
-| 2026-05-13 01:50:58 | cli:user | render | render | memhub render |
-| 2026-05-13 01:50:34 | cli:user | config | update | integrations disable k9 |
-| 2026-05-13 01:50:34 | claude:wrap-up | session_notes | insert | mcp log_session_note |
-| 2026-05-13 01:50:34 | claude:wrap-up | tasks | update | task done |
-| 2026-05-13 01:50:34 | claude:wrap-up | tasks | update | task done |
-| 2026-05-13 01:50:34 | claude:wrap-up | decisions | insert | decision add |
-| 2026-05-13 01:50:34 | claude:wrap-up | project_state | insert | state set |
-| 2026-05-13 01:50:34 | claude:wrap-up | project_arch | insert | arch set |
-| 2026-05-13 01:30:09 | cli:user | render | render | memhub render |
-| 2026-05-13 01:30:02 | claude:investigation | tasks | update | task done |
-| 2026-05-13 00:14:23 | cli:user | render | render | memhub render |
-| 2026-05-13 00:12:12 | cli:user | markdown_sync | update | sync-md |
-| 2026-05-13 00:07:40 | k9:wrap-up | tasks | insert | task add |
-| 2026-05-13 00:07:40 | k9:wrap-up | tasks | insert | task add |
-| 2026-05-13 00:07:40 | k9:wrap-up | decisions | insert | decision add |
-| 2026-05-13 00:07:40 | k9:wrap-up | decisions | insert | decision add |
-| 2026-05-13 00:07:39 | k9:wrap-up | decisions | insert | decision add |
-| 2026-05-13 00:07:39 | k9:wrap-up | decisions | insert | decision add |
-| 2026-05-13 00:07:39 | k9:wrap-up | decisions | insert | decision add |
-| 2026-05-13 00:07:39 | k9:wrap-up | decisions | insert | decision add |
-| 2026-05-12 22:41:15 | cli:user | markdown_sync | update | sync-md |
-| 2026-05-12 22:40:23 | k9:wrap-up | decisions | insert | decision add |
-| 2026-05-12 22:40:23 | k9:wrap-up | tasks | update | task done |
-| 2026-05-12 22:40:23 | k9:wrap-up | tasks | update | task done |
