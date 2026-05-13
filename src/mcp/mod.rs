@@ -10,7 +10,8 @@ use rmcp::model::{
 };
 use rmcp::service::RequestContext;
 use rmcp::{
-    Json, RoleServer, ServerHandler, ServiceExt, schemars, tool, tool_router, transport::stdio,
+    Json, RoleServer, ServerHandler, ServiceExt, schemars, tool, tool_handler, tool_router,
+    transport::stdio,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -24,9 +25,9 @@ use crate::models::{
 use crate::retrieval::{
     self, RecallHit, RecallOptions, RecallResponse, RecallWarning, SourceType,
 };
-use crate::{MemhubError, Result};
+use crate::MemhubError;
 
-pub fn serve(start: &Path) -> Result<()> {
+pub fn serve(start: &Path) -> crate::Result<()> {
     let server = MemhubServer::new(start.to_path_buf());
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -511,6 +512,7 @@ impl MemhubServer {
     }
 }
 
+#[tool_handler(router = self.tool_router)]
 impl ServerHandler for MemhubServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
