@@ -36,6 +36,8 @@ pub fn add_with_decided_at_in_tx(
     source: &str,
     actor: &str,
 ) -> Result<i64> {
+    crate::commands::validate_source(source)?;
+
     match decided_at {
         Some(when) => {
             tx.execute(

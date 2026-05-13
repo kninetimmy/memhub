@@ -23,6 +23,8 @@ pub fn add_in_tx(
     source: &str,
     actor: &str,
 ) -> Result<(i64, bool)> {
+    crate::commands::validate_source(source)?;
+
     let existing_id: Option<i64> = tx
         .query_row(
             "SELECT id FROM facts WHERE project_id = 1 AND key = ?1",

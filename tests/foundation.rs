@@ -1,5 +1,6 @@
 use std::fs;
 
+use memhub::MemhubError;
 use memhub::commands::{command, decision, fact, init, status, task};
 use tempfile::tempdir;
 
@@ -112,4 +113,56 @@ fn command_verify_upserts_history_and_updates_status_counts() {
     assert_eq!(summary.commands, 1);
     assert_eq!(summary.pending_writes, 0);
     assert!(summary.writes_logged >= 2);
+}
+
+#[test]
+fn fact_add_rejects_source_outside_documented_vocabulary() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    // A common typo: "agnet" instead of "agent". Previously this silently
+    // persisted to the durable facts row and corrupted provenance.
+    match fact::add(
+        temp.path(),
+        "build-command",
+        "cargo build",
+        "user+agnet:codex",
+        "cli:user",
+    ) {
+        Err(MemhubError::InvalidInput(message)) => {
+            assert!(
+                message.contains("invalid source"),
+                "expected invalid-source error, got: {message}"
+            );
+        }
+        other => panic!("expected InvalidInput, got {other:?}"),
+    }
+
+    let facts = fact::list(temp.path()).expect("fact list");
+    assert!(facts.is_empty(), "no fact should be written when source is invalid");
+}
+
+#[test]
+fn decision_add_rejects_source_outside_documented_vocabulary() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    match decision::add(
+        temp.path(),
+        "Some decision",
+        "Some rationale",
+        "agent:Codex", // uppercase rejected
+        "cli:user",
+    ) {
+        Err(MemhubError::InvalidInput(message)) => {
+            assert!(
+                message.contains("invalid source"),
+                "expected invalid-source error, got: {message}"
+            );
+        }
+        other => panic!("expected InvalidInput, got {other:?}"),
+    }
+
+    let decisions = decision::list(temp.path()).expect("decision list");
+    assert!(decisions.is_empty(), "no decision should be written when source is invalid");
 }
