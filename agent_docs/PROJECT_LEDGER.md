@@ -1,13 +1,53 @@
 <!-- memhub:rendered -->
 <!-- DO NOT EDIT. Generated from .memhub/project.sqlite. -->
 <!-- To change content, use memhub CLI; then re-run `memhub render`. -->
-<!-- Generated at: 2026-05-13T20:55:49Z by memhub 0.1.0 -->
+<!-- Generated at: 2026-05-13T21:55:37Z by memhub 0.1.0 -->
 
 # memhub — Ledger
 
 ## Decisions
 
-_41 decision(s). Most recent first._
+_46 decision(s). Most recent first._
+
+### D46 — Embed text format: fact key+value, decision title+rationale, task title (+notes when present)
+
+**Status:** active • **Decided:** 2026-05-13 21:49:46 • **Source:** user+agent:claude-code
+
+Fact embed text is 'key: value' so queries can match the key as label and value as body. Decision embed text is 'title\n\nrationale' so the tokenizer sees title and body as distinct segments. Task embed text is 'title\n\nnotes' when notes is present, else 'title' alone. content_hash is computed over the same string the model embeds, so any change to either side triggers re-embed on the next add. Chosen for short-sentence input shape that matches how BGE was trained.
+
+---
+
+### D45 — Embedding deletion cascades via SQL triggers, not app-level cleanup
+
+**Status:** active • **Decided:** 2026-05-13 21:49:43 • **Source:** user+agent:claude-code
+
+embeddings.(source_type, source_id) is a polymorphic key SQLite cannot express as a real FK. Addendum §3.2 suggested 'the application layer is responsible for orphan cleanup,' but v1 has no fact/decision/task delete command, and 0009 already used SQL triggers for FTS sync. Three AFTER DELETE triggers (one per source table) mirror that pattern and stay correct even when raw SQL deletes a row. Rejected requiring an app-level delete helper because no v1 caller exists; the trigger keeps the contract local to the schema.
+
+---
+
+### D44 — Eager-embed is gated by [retrieval] mode in config.toml
+
+**Status:** active • **Decided:** 2026-05-13 21:49:41 • **Source:** user+agent:claude-code
+
+Decision 21 specified an install-time toggle but did not say which side of the write path it controls. The split: mode = fts (default) makes fact/decision/task add a no-op for embeddings — the model never loads, the embeddings table stays empty. mode = hybrid runs eager_embed_in_tx inside each source-write transaction. Rejected always-embed because the BGE-small load cost would push every test through model init. Rejected mode-in-DB because TOML stays canonical and avoids drift. Switching fts → hybrid will require a one-shot memhub index rebuild to backfill — not shipped in PR3.
+
+---
+
+### D43 — SHA256-hex over UTF-8 embed text for embeddings.content_hash
+
+**Status:** active • **Decided:** 2026-05-13 21:49:39 • **Source:** user+agent:claude-code
+
+Addendum §3.2 said 'BLAKE3 (or similar)'. sha2 was already a build-dep for build.rs verification; promoting it to runtime adds no new crate. content_hash is only used for drift detection (skip re-embed when text unchanged), not for cryptographic guarantees. SHA256 also matches the verification mechanism used by build.rs and HF's x-linked-etag.
+
+---
+
+### D42 — Bundle BGE-small via build.rs auto-download into OUT_DIR
+
+**Status:** active • **Decided:** 2026-05-13 21:49:31 • **Source:** user+agent:claude-code
+
+build.rs fetches model.onnx + 4 tokenizer files from BAAI/bge-small-en-v1.5@main on first build, verifies each against a pinned SHA256, and short-circuits on cache hit. Rejected the manual-fetch-script alternative because contributor ergonomics favor zero-setup cargo build. model.onnx SHA256 (828e1496...cf35, 133 MB) came from HF's x-linked-etag; tokenizer file hashes computed locally over downloaded bytes. Decision 23 said 'bundled in binary' without specifying how; this is the implementation choice.
+
+---
 
 ### D41 — MCP-originated writes log under the calling client identity, not cli:user
 
@@ -339,7 +379,7 @@ Steady-state non-goal of no bulk K9 import stays. First-install bootstrap-k9 is 
 
 ## Backlog
 
-_16 task(s), 7 open. Open first, then by recency._
+_17 task(s), 4 open. Open first, then by recency._
 
 ### T16 — PR6: eval harness — golden queries + /eval-recall skill
 
@@ -365,9 +405,25 @@ memhub recall <query> command with filters (--source-type, --max-results, --json
 
 ---
 
+### T10 — Dogfood Codex memhub skills in fresh and existing repos
+
+**Status:** open • **Updated:** 2026-05-13 18:23:52
+
+Exercise /wrap-up, /init-project, and /check-init from the Codex skill templates after install; verify attribution, render output, and fresh-repo behavior.
+
+---
+
+### T17 — Reinstall memhub binary on PATH (M8 PR1-PR3 outdated)
+
+**Status:** done • **Updated:** 2026-05-13 21:55:37
+
+~/.cargo/bin/memhub and the ~/.local/bin/memhub shadow still report schema 0008. Run cargo install --path . to rebuild ~/.cargo/bin/memhub, then copy the result over the ~/.local/bin shadow. Required before any consumer outside this repo (MCP clients, other-repo agents) sees the new embeddings/FTS surface from M8 PR1-PR3.
+
+---
+
 ### T13 — PR3: eager-embed on writes (fact/decision/task add paths)
 
-**Status:** open • **Updated:** 2026-05-13 20:14:20
+**Status:** done • **Updated:** 2026-05-13 21:49:59
 
 Hook into fact/decision/task add handlers. Re-embed within the same transaction. content_hash short-circuits no-op writes. Target ~50ms write latency. Update paths handle delete-then-insert of the embedding row.
 
@@ -375,7 +431,7 @@ Hook into fact/decision/task add handlers. Re-embed within the same transaction.
 
 ### T12 — PR2: schema migration — FTS5 virtual tables + embeddings table
 
-**Status:** open • **Updated:** 2026-05-13 20:14:20
+**Status:** done • **Updated:** 2026-05-13 21:49:57
 
 Migration 0009: add embeddings table (source_type, source_id, model_name, dimension, vector BLOB, content_hash, created_at, UNIQUE constraint). Add FTS5 virtual tables over facts.body, decisions.rationale, tasks.body with sync triggers. Backfill on first run.
 
@@ -383,17 +439,9 @@ Migration 0009: add embeddings table (source_type, source_id, model_name, dimens
 
 ### T11 — PR1: fastembed-rs integration + bundled BGE-small model
 
-**Status:** open • **Updated:** 2026-05-13 20:14:20
+**Status:** done • **Updated:** 2026-05-13 21:49:55
 
 Add fastembed-rs dependency. Bundle BGE-small-en-v1.5 ONNX model via include_bytes! (~130MB). Inference wrapper in src/retrieval/embeddings.rs with lazy model load. Smoke test: produce vector for known input, verify dimension=384.
-
----
-
-### T10 — Dogfood Codex memhub skills in fresh and existing repos
-
-**Status:** open • **Updated:** 2026-05-13 18:23:52
-
-Exercise /wrap-up, /init-project, and /check-init from the Codex skill templates after install; verify attribution, render output, and fresh-repo behavior.
 
 ---
 
@@ -482,6 +530,21 @@ _2 fact(s), 0 stale._
 
 | When | Actor | Table | Action | Reason |
 |------|-------|-------|--------|--------|
+| 2026-05-13 21:55:37 | claude:wrap-up | tasks | update | task done |
+| 2026-05-13 21:50:25 | cli:user | render | render | memhub render |
+| 2026-05-13 21:50:12 | claude:wrap-up | project_arch | insert | arch set |
+| 2026-05-13 21:50:10 | claude:wrap-up | session_notes | insert | mcp log_session_note |
+| 2026-05-13 21:50:01 | claude:wrap-up | tasks | insert | task add |
+| 2026-05-13 21:49:59 | claude:wrap-up | tasks | update | task done |
+| 2026-05-13 21:49:57 | claude:wrap-up | tasks | update | task done |
+| 2026-05-13 21:49:55 | claude:wrap-up | tasks | update | task done |
+| 2026-05-13 21:49:46 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 21:49:43 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 21:49:41 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 21:49:39 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 21:49:31 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 21:49:24 | claude:wrap-up | project_state | insert | state set |
+| 2026-05-13 20:55:49 | cli:user | render | render | memhub render |
 | 2026-05-13 20:55:44 | claude:wrap-up | session_notes | insert | mcp log_session_note |
 | 2026-05-13 20:55:38 | claude:wrap-up | facts | insert | fact add |
 | 2026-05-13 20:55:34 | claude:wrap-up | facts | insert | fact add |
@@ -517,18 +580,3 @@ _2 fact(s), 0 stale._
 | 2026-05-13 20:13:58 | claude:wrap-up | decisions | insert | decision add |
 | 2026-05-13 20:13:58 | claude:wrap-up | decisions | insert | decision add |
 | 2026-05-13 20:13:58 | claude:wrap-up | decisions | insert | decision add |
-| 2026-05-13 20:13:58 | claude:wrap-up | decisions | insert | decision add |
-| 2026-05-13 20:13:45 | claude:wrap-up | project_state | insert | state set |
-| 2026-05-13 18:40:36 | cli:user | render | render | memhub render |
-| 2026-05-13 18:40:30 | claude:wrap-up | session_notes | insert | mcp log_session_note |
-| 2026-05-13 18:40:26 | claude:wrap-up | decisions | insert | decision add |
-| 2026-05-13 18:40:19 | claude:wrap-up | decisions | insert | decision add |
-| 2026-05-13 18:40:13 | claude:wrap-up | project_state | insert | state set |
-| 2026-05-13 18:24:09 | cli:user | render | render | memhub render |
-| 2026-05-13 18:23:59 | codex:wrap-up | project_arch | insert | arch set |
-| 2026-05-13 18:23:57 | codex:wrap-up | session_notes | insert | mcp log_session_note |
-| 2026-05-13 18:23:52 | codex:wrap-up | tasks | insert | task add |
-| 2026-05-13 18:23:38 | codex:wrap-up | decisions | insert | decision add |
-| 2026-05-13 18:23:30 | codex:wrap-up | decisions | insert | decision add |
-| 2026-05-13 18:23:25 | codex:wrap-up | project_state | insert | state set |
-| 2026-05-13 17:33:00 | cli:user | render | render | memhub render |
