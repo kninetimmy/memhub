@@ -1,13 +1,45 @@
 <!-- memhub:rendered -->
 <!-- DO NOT EDIT. Generated from .memhub/project.sqlite. -->
 <!-- To change content, use memhub CLI; then re-run `memhub render`. -->
-<!-- Generated at: 2026-05-13T21:55:37Z by memhub 0.1.0 -->
+<!-- Generated at: 2026-05-13T22:23:41Z by memhub 0.1.0 -->
 
 # memhub — Ledger
 
 ## Decisions
 
-_46 decision(s). Most recent first._
+_50 decision(s). Most recent first._
+
+### D50 — CLAUDE.md and AGENTS.md teach agents to prefer recall over the ledger and to ask before /reindex
+
+**Status:** active • **Decided:** 2026-05-13 22:22:28 • **Source:** user+agent:claude-code
+
+Decision 34 (agents prefer recall over reading PROJECT_LEDGER.md) and decision 35 (PROJECT.md stays thin; ledger becomes lazy-loaded) only materialize as a token-savings win if the per-repo agent instructions actually encode the rule. PR5 rewrites the Session Continuity section in both CLAUDE.md and AGENTS.md: read PROJECT.md at session start, prefer memhub.recall mid-session, treat PROJECT_LEDGER.md as fallback only. Stale-embedding warnings get surfaced and asked-about; agents must not auto-invoke /reindex (per decision 29). This is the load-bearing user-facing artifact that makes the M8 retrieval surface change agent behavior, not just exist as a tool.
+
+---
+
+### D49 — memhub index rebuild ignores [retrieval] mode and logs one writes_log row per rebuild
+
+**Status:** active • **Decided:** 2026-05-13 22:22:20 • **Source:** user+agent:claude-code
+
+Rebuild forces embedding generation regardless of mode = fts or hybrid so it can backfill fts -> hybrid migrations and re-embed after a model upgrade. Single transaction: wipe embeddings for the active model, embed in source-type batches via embed_batch, UPSERT fresh rows. The writes_log gets one summary row attributed to the passed actor, not one per source row, because rebuild is a single semantic action even when it touches dozens of embeddings. Per-row logging would explode the audit table for a use case the user explicitly triggered.
+
+---
+
+### D48 — memhub recall is read-only and never writes to writes_log
+
+**Status:** active • **Decided:** 2026-05-13 22:22:12 • **Source:** user+agent:claude-code
+
+Recall fetches FTS hits per source table, computes brute-force cosine over the active-model embeddings (hybrid only), blends them via the scoring config, and returns a ranked bundle. No row in writes_log, no durable mutation, no pending_writes entry. Addendum §8 says 'read-only' but codifying it as a decision because the natural temptation when adding observability would be to log every recall call, and that would distort memhub stats and writes_log activity metrics. Logging belongs to writers; recall is a reader.
+
+---
+
+### D47 — Recall --accepted-only filters to source IN ('user', 'user+agent:%')
+
+**Status:** active • **Decided:** 2026-05-13 22:22:06 • **Source:** user+agent:claude-code
+
+The M8 addendum's loose phrasing 'status=accepted decisions' does not map to any existing column. The concrete mapping is by source vocabulary: rows whose source is 'user' (CLI-authored) or 'user+agent:<id>' (passed through review acceptance). Consistent across fact/decision/task and matches the user-touched durability story. Rejected coupling to decision.status='active' because it conflates two filter concerns into one flag; if active-only ever becomes useful, ship it as a separate filter.
+
+---
 
 ### D46 — Embed text format: fact key+value, decision title+rationale, task title (+notes when present)
 
@@ -379,7 +411,7 @@ Steady-state non-goal of no bulk K9 import stays. First-install bootstrap-k9 is 
 
 ## Backlog
 
-_17 task(s), 4 open. Open first, then by recency._
+_17 task(s), 2 open. Open first, then by recency._
 
 ### T16 — PR6: eval harness — golden queries + /eval-recall skill
 
@@ -389,9 +421,17 @@ tests/retrieval_golden.json with 12 seeded queries. memhub eval retrieval comman
 
 ---
 
+### T10 — Dogfood Codex memhub skills in fresh and existing repos
+
+**Status:** open • **Updated:** 2026-05-13 18:23:52
+
+Exercise /wrap-up, /init-project, and /check-init from the Codex skill templates after install; verify attribution, render output, and fresh-repo behavior.
+
+---
+
 ### T15 — PR5: /recall and /reindex skills + CLAUDE.md lazy-ledger update
 
-**Status:** open • **Updated:** 2026-05-13 20:14:20
+**Status:** done • **Updated:** 2026-05-13 22:22:32
 
 New Claude Code skills under templates/skills/claude/. CLAUDE.md rule update: agents read PROJECT.md at session start, call memhub.recall mid-session, read PROJECT_LEDGER.md only as fallback. Codex skills mirror the Claude ones.
 
@@ -399,17 +439,9 @@ New Claude Code skills under templates/skills/claude/. CLAUDE.md rule update: ag
 
 ### T14 — PR4: recall CLI command + MCP tool with hybrid scoring
 
-**Status:** open • **Updated:** 2026-05-13 20:14:20
+**Status:** done • **Updated:** 2026-05-13 22:22:32
 
 memhub recall <query> command with filters (--source-type, --max-results, --json, --include-stale, --accepted-only). memhub.recall MCP tool. Hybrid scoring: 0.5 FTS + 0.5 vector + stale penalty + filters. Both modes (fts, hybrid) supported. Empty result returns empty bundle.
-
----
-
-### T10 — Dogfood Codex memhub skills in fresh and existing repos
-
-**Status:** open • **Updated:** 2026-05-13 18:23:52
-
-Exercise /wrap-up, /init-project, and /check-init from the Codex skill templates after install; verify attribution, render output, and fresh-repo behavior.
 
 ---
 
@@ -530,6 +562,17 @@ _2 fact(s), 0 stale._
 
 | When | Actor | Table | Action | Reason |
 |------|-------|-------|--------|--------|
+| 2026-05-13 22:23:38 | claude:wrap-up | project_arch | insert | arch set |
+| 2026-05-13 22:22:39 | claude:wrap-up | session_notes | insert | mcp log_session_note |
+| 2026-05-13 22:22:32 | claude:wrap-up | tasks | update | task done |
+| 2026-05-13 22:22:32 | claude:wrap-up | tasks | update | task done |
+| 2026-05-13 22:22:28 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 22:22:20 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 22:22:12 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 22:22:06 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 22:21:59 | claude:wrap-up | project_state | insert | state set |
+| 2026-05-13 22:21:04 | claude:wrap-up | project_state | insert | state set |
+| 2026-05-13 21:55:37 | cli:user | render | render | memhub render |
 | 2026-05-13 21:55:37 | claude:wrap-up | tasks | update | task done |
 | 2026-05-13 21:50:25 | cli:user | render | render | memhub render |
 | 2026-05-13 21:50:12 | claude:wrap-up | project_arch | insert | arch set |
@@ -569,14 +612,3 @@ _2 fact(s), 0 stale._
 | 2026-05-13 20:14:10 | claude:wrap-up | decisions | insert | decision add |
 | 2026-05-13 20:14:10 | claude:wrap-up | decisions | insert | decision add |
 | 2026-05-13 20:14:10 | claude:wrap-up | decisions | insert | decision add |
-| 2026-05-13 20:14:10 | claude:wrap-up | decisions | insert | decision add |
-| 2026-05-13 20:14:10 | claude:wrap-up | decisions | insert | decision add |
-| 2026-05-13 20:13:58 | claude:wrap-up | decisions | insert | decision add |
-| 2026-05-13 20:13:58 | claude:wrap-up | decisions | insert | decision add |
-| 2026-05-13 20:13:58 | claude:wrap-up | decisions | insert | decision add |
-| 2026-05-13 20:13:58 | claude:wrap-up | decisions | insert | decision add |
-| 2026-05-13 20:13:58 | claude:wrap-up | decisions | insert | decision add |
-| 2026-05-13 20:13:58 | claude:wrap-up | decisions | insert | decision add |
-| 2026-05-13 20:13:58 | claude:wrap-up | decisions | insert | decision add |
-| 2026-05-13 20:13:58 | claude:wrap-up | decisions | insert | decision add |
-| 2026-05-13 20:13:58 | claude:wrap-up | decisions | insert | decision add |
