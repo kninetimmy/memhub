@@ -23,6 +23,8 @@ pub enum MemhubError {
     ExternalCommand { command: String, stderr: String },
     #[error("mcp error: {0}")]
     Mcp(String),
+    #[error("embedding error: {0}")]
+    Embedding(String),
     #[error("feature not implemented yet: {0}")]
     NotImplemented(&'static str),
     #[error(transparent)]

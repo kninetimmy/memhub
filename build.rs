@@ -1,0 +1,153 @@
+// memhub build script
+//
+// Stages the BGE-small-en-v1.5 model files used by the M8 retrieval layer
+// into OUT_DIR so the main crate can include them via include_bytes!.
+//
+// On a clean build this downloads ~127 MB from Hugging Face. On rebuilds
+// the staged files are reused if their SHA256 matches the pinned value.
+//
+// The files come from BAAI/bge-small-en-v1.5@main, repo commit
+// 5c38ec7c405ec4b44b94cc5a9bb96e735b38267a. The model.onnx hash matches
+// the x-linked-etag returned by Hugging Face for that commit; the
+// tokenizer file hashes were computed locally over the downloaded bytes.
+
+use std::env;
+use std::fs;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+
+use sha2::{Digest, Sha256};
+
+const HF_BASE: &str = "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main";
+
+const MODEL_DIR: &str = "bge-small-en-v1.5";
+
+struct ModelFile {
+    /// Path inside the Hugging Face repo, relative to HF_BASE.
+    remote_path: &'static str,
+    /// Filename to use in OUT_DIR/MODEL_DIR/.
+    local_name: &'static str,
+    /// Hex-encoded SHA256 of the expected file contents.
+    sha256: &'static str,
+}
+
+const FILES: &[ModelFile] = &[
+    ModelFile {
+        remote_path: "onnx/model.onnx",
+        local_name: "model.onnx",
+        sha256: "828e1496d7fabb79cfa4dcd84fa38625c0d3d21da474a00f08db0f559940cf35",
+    },
+    ModelFile {
+        remote_path: "tokenizer.json",
+        local_name: "tokenizer.json",
+        sha256: "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66",
+    },
+    ModelFile {
+        remote_path: "config.json",
+        local_name: "config.json",
+        sha256: "094f8e891b932f2000c92cfc663bac4c62069f5d8af5b5278c4306aef3084750",
+    },
+    ModelFile {
+        remote_path: "special_tokens_map.json",
+        local_name: "special_tokens_map.json",
+        sha256: "b6d346be366a7d1d48332dbc9fdf3bf8960b5d879522b7799ddba59e76237ee3",
+    },
+    ModelFile {
+        remote_path: "tokenizer_config.json",
+        local_name: "tokenizer_config.json",
+        sha256: "9261e7d79b44c8195c1cada2b453e55b00aeb81e907a6664974b4d7776172ab3",
+    },
+];
+
+fn main() {
+    println!("cargo:rerun-if-changed=build.rs");
+
+    let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR not set by cargo"));
+    let stage_dir = out_dir.join(MODEL_DIR);
+    fs::create_dir_all(&stage_dir).unwrap_or_else(|e| {
+        panic!("failed to create {}: {e}", stage_dir.display());
+    });
+
+    for file in FILES {
+        let dest = stage_dir.join(file.local_name);
+        ensure_file(&dest, file);
+    }
+}
+
+fn ensure_file(dest: &Path, file: &ModelFile) {
+    if let Ok(actual) = sha256_of(dest) {
+        if actual.eq_ignore_ascii_case(file.sha256) {
+            return;
+        }
+        println!(
+            "cargo:warning=cached {} has unexpected hash {actual}; re-downloading",
+            dest.display()
+        );
+        let _ = fs::remove_file(dest);
+    }
+
+    let url = format!("{HF_BASE}/{}", file.remote_path);
+    println!("cargo:warning=memhub: downloading {} -> {}", url, dest.display());
+
+    let response = ureq::get(&url)
+        .call()
+        .unwrap_or_else(|e| panic!("failed to fetch {url}: {e}"));
+
+    let capacity = response
+        .header("Content-Length")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(0);
+    let mut bytes: Vec<u8> = Vec::with_capacity(capacity);
+    response
+        .into_reader()
+        .read_to_end(&mut bytes)
+        .unwrap_or_else(|e| panic!("failed to read body of {url}: {e}"));
+
+    let actual = hex_sha256(&bytes);
+    if !actual.eq_ignore_ascii_case(file.sha256) {
+        panic!(
+            "{url} sha256 mismatch: expected {}, got {actual}",
+            file.sha256
+        );
+    }
+
+    let tmp = dest.with_extension("download");
+    let mut f = fs::File::create(&tmp)
+        .unwrap_or_else(|e| panic!("failed to create {}: {e}", tmp.display()));
+    f.write_all(&bytes)
+        .unwrap_or_else(|e| panic!("failed to write {}: {e}", tmp.display()));
+    f.sync_all().ok();
+    drop(f);
+    fs::rename(&tmp, dest)
+        .unwrap_or_else(|e| panic!("failed to rename into {}: {e}", dest.display()));
+}
+
+fn sha256_of(path: &Path) -> std::io::Result<String> {
+    let mut f = fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hex_encode(hasher.finalize().as_slice()))
+}
+
+fn hex_sha256(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex_encode(hasher.finalize().as_slice())
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    out
+}

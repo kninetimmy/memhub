@@ -8,6 +8,7 @@ pub mod logging;
 pub mod mcp;
 pub mod models;
 pub mod render;
+pub mod retrieval;
 pub mod sync_md;
 
 pub use errors::{MemhubError, Result};
