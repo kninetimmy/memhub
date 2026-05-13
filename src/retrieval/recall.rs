@@ -15,7 +15,6 @@ use std::time::Instant;
 
 use rusqlite::{Connection, Row, params};
 
-use crate::commands::search;
 use crate::config::{RetrievalMode, RetrievalScoringConfig};
 use crate::db;
 use crate::models::FACT_STALE_AFTER_DAYS;
@@ -144,11 +143,6 @@ fn run(
     scoring: &RetrievalScoringConfig,
 ) -> Result<RecallResponse> {
     let started = Instant::now();
-    // Keep the legacy chunks index aligned for any cross-tooling that
-    // still depends on `chunks`; the recall engine itself uses the
-    // contentless decisions_fts table directly.
-    search::sync_decision_chunks(conn)?;
-
     let mut candidates: HashMap<(SourceType, i64), CandidateRow> = HashMap::new();
 
     let fts_match = build_fts_match(&opts.query);
@@ -628,7 +622,7 @@ fn load_source_row(
         }
         SourceType::Decision => {
             let mut stmt = conn.prepare(
-                "SELECT title, rationale, source, status, decided_at \
+                "SELECT title, rationale, source, decided_at \
                  FROM decisions WHERE id = ?1",
             )?;
             let row: std::result::Result<HydratedSource, rusqlite::Error> =
@@ -636,35 +630,32 @@ fn load_source_row(
                     let title: String = r.get(0)?;
                     let rationale: String = r.get(1)?;
                     let source: String = r.get(2)?;
-                    let status: String = r.get(3)?;
-                    let decided_at: String = r.get(4)?;
+                    let decided_at: String = r.get(3)?;
                     Ok(HydratedSource {
                         title,
                         body: rationale,
                         source,
                         confidence: 1.0,
-                        is_stale: status != "active",
+                        is_stale: false,
                         created_at: decided_at,
                     })
                 });
             row.optional_row().map_err(Into::into)
         }
         SourceType::Task => {
-            let mut stmt = conn.prepare(
-                "SELECT title, notes, status, created_at FROM tasks WHERE id = ?1",
-            )?;
+            let mut stmt =
+                conn.prepare("SELECT title, notes, created_at FROM tasks WHERE id = ?1")?;
             let row: std::result::Result<HydratedSource, rusqlite::Error> =
                 stmt.query_row(params![source_id], |r: &Row<'_>| {
                     let title: String = r.get(0)?;
                     let notes: Option<String> = r.get(1)?;
-                    let status: String = r.get(2)?;
-                    let created_at: String = r.get(3)?;
+                    let created_at: String = r.get(2)?;
                     Ok(HydratedSource {
                         title,
                         body: notes.unwrap_or_default(),
                         source: String::new(),
                         confidence: 1.0,
-                        is_stale: status == "done",
+                        is_stale: false,
                         created_at,
                     })
                 });
@@ -687,15 +678,17 @@ fn parse_source_type(raw: &str) -> Option<SourceType> {
 }
 
 fn score(rows: &[CandidateRow], scoring: &RetrievalScoringConfig) -> Vec<ScoredHit> {
-    let (fts_min, fts_max) = rows.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |acc, c| {
-        match c.fts_raw {
-            Some(raw) => {
-                let pos = -raw; // BM25 is "lower is better"; invert so higher is better.
-                (acc.0.min(pos), acc.1.max(pos))
+    let (fts_min, fts_max) = rows
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |acc, c| {
+            match c.fts_raw {
+                Some(raw) => {
+                    let pos = -raw; // BM25 is "lower is better"; invert so higher is better.
+                    (acc.0.min(pos), acc.1.max(pos))
+                }
+                None => acc,
             }
-            None => acc,
-        }
-    });
+        });
 
     rows.iter()
         .map(|c| {
@@ -704,9 +697,13 @@ fn score(rows: &[CandidateRow], scoring: &RetrievalScoringConfig) -> Vec<ScoredH
                 None => 0.0,
             };
             let vector_score = c.vector_score.unwrap_or(0.0).clamp(0.0, 1.0);
-            let penalty = if c.is_stale { scoring.stale_penalty } else { 0.0 };
-            let score = scoring.fts_weight * fts_score + scoring.vector_weight * vector_score
-                - penalty;
+            let penalty = if c.is_stale {
+                scoring.stale_penalty
+            } else {
+                0.0
+            };
+            let score =
+                scoring.fts_weight * fts_score + scoring.vector_weight * vector_score - penalty;
             ScoredHit {
                 source_type: c.source_type,
                 source_id: c.source_id,
@@ -788,14 +785,7 @@ mod tests {
 
     fn seed(temp: &std::path::Path) {
         init::run(temp).expect("init");
-        fact::add(
-            temp,
-            "build-command",
-            "cargo build",
-            "user",
-            "cli:user",
-        )
-        .expect("fact 1");
+        fact::add(temp, "build-command", "cargo build", "user", "cli:user").expect("fact 1");
         fact::add(
             temp,
             "lint-command",
@@ -894,7 +884,11 @@ mod tests {
                 .iter()
                 .all(|h| is_accepted_source(&h.source)),
             "accepted_only must exclude agent:* rows, got {:?}",
-            response.results.iter().map(|h| h.source.as_str()).collect::<Vec<_>>(),
+            response
+                .results
+                .iter()
+                .map(|h| h.source.as_str())
+                .collect::<Vec<_>>(),
         );
         let has_build = response.results.iter().any(|h| h.title == "build-command");
         assert!(has_build, "user-authored fact must remain visible");
@@ -977,6 +971,102 @@ mod tests {
     }
 
     #[test]
+    fn recall_does_not_mutate_legacy_decision_chunks() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let decision_id = decision::add(
+            temp.path(),
+            "Original decision",
+            "Original rationale",
+            "user",
+            "cli:user",
+        )
+        .expect("decision");
+
+        {
+            let ctx = crate::db::open_project(temp.path()).expect("open");
+            ctx.conn
+                .execute(
+                    "UPDATE decisions
+                     SET rationale = 'freshrecalltoken is only in the source table'
+                     WHERE id = ?1",
+                    params![decision_id],
+                )
+                .expect("direct update");
+        }
+
+        let before: i64 = {
+            let ctx = crate::db::open_project(temp.path()).expect("open");
+            ctx.conn
+                .query_row(
+                    "SELECT COUNT(*) FROM chunks WHERE text LIKE '%freshrecalltoken%'",
+                    params![],
+                    |r| r.get(0),
+                )
+                .expect("count chunks")
+        };
+        assert_eq!(before, 0, "test setup should leave legacy chunks stale");
+
+        let response = recall(
+            temp.path(),
+            RecallOptions {
+                query: "freshrecalltoken".to_string(),
+                mode: Some(RetrievalMode::Fts),
+                max_results: 5,
+                source_types: vec![SourceType::Decision],
+                include_stale: None,
+                accepted_only: None,
+            },
+        )
+        .expect("recall");
+        assert_eq!(response.results.len(), 1);
+
+        let after: i64 = {
+            let ctx = crate::db::open_project(temp.path()).expect("open");
+            ctx.conn
+                .query_row(
+                    "SELECT COUNT(*) FROM chunks WHERE text LIKE '%freshrecalltoken%'",
+                    params![],
+                    |r| r.get(0),
+                )
+                .expect("count chunks")
+        };
+        assert_eq!(after, 0, "recall must not sync or rewrite chunks");
+    }
+
+    #[test]
+    fn recall_keeps_done_tasks_visible_without_include_stale() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let task_id = task::add(
+            temp.path(),
+            "Ship eval harness",
+            Some("golden queries for recall"),
+            "cli:user",
+        )
+        .expect("task");
+        task::done(temp.path(), task_id, "cli:user").expect("done");
+
+        let response = recall(
+            temp.path(),
+            RecallOptions {
+                query: "eval harness".to_string(),
+                mode: Some(RetrievalMode::Fts),
+                max_results: 5,
+                source_types: vec![SourceType::Task],
+                include_stale: None,
+                accepted_only: None,
+            },
+        )
+        .expect("recall");
+
+        assert!(
+            response.results.iter().any(|hit| hit.source_id == task_id),
+            "done task should remain recallable by default"
+        );
+    }
+
+    #[test]
     fn fts_normalization_collapses_to_one_for_single_hit() {
         let v = normalize_fts(-5.0, -5.0, -5.0);
         assert_eq!(v, 1.0);
@@ -1050,9 +1140,26 @@ mod tests {
         init::run(temp.path()).expect("init");
         let cfg_path = temp.path().join(".memhub/config.toml");
         let cfg = ProjectConfig::load(&cfg_path).expect("load");
-        assert_eq!(cfg.retrieval.default_max_results, super::super::super::config::DEFAULT_RECALL_MAX_RESULTS);
-        assert!((cfg.retrieval.scoring.fts_weight - super::super::super::config::DEFAULT_FTS_WEIGHT).abs() < 1e-9);
-        assert!((cfg.retrieval.scoring.vector_weight - super::super::super::config::DEFAULT_VECTOR_WEIGHT).abs() < 1e-9);
-        assert!((cfg.retrieval.scoring.stale_penalty - super::super::super::config::DEFAULT_STALE_PENALTY).abs() < 1e-9);
+        assert_eq!(
+            cfg.retrieval.default_max_results,
+            super::super::super::config::DEFAULT_RECALL_MAX_RESULTS
+        );
+        assert!(
+            (cfg.retrieval.scoring.fts_weight - super::super::super::config::DEFAULT_FTS_WEIGHT)
+                .abs()
+                < 1e-9
+        );
+        assert!(
+            (cfg.retrieval.scoring.vector_weight
+                - super::super::super::config::DEFAULT_VECTOR_WEIGHT)
+                .abs()
+                < 1e-9
+        );
+        assert!(
+            (cfg.retrieval.scoring.stale_penalty
+                - super::super::super::config::DEFAULT_STALE_PENALTY)
+                .abs()
+                < 1e-9
+        );
     }
 }
