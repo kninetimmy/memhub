@@ -275,10 +275,10 @@ pub(crate) fn write_with_replace(path: &Path, updated_content: &str) -> Result<(
     let temp_path = temp_path_for(path)?;
     fs::write(&temp_path, updated_content)?;
 
-    if path.exists() {
-        fs::remove_file(path)?;
-    }
-
+    // `fs::rename` atomically replaces an existing regular file on both Unix
+    // (rename(2)) and Windows (MoveFileExW + MOVEFILE_REPLACE_EXISTING). No
+    // pre-remove step is needed, and removing creates a window where the
+    // destination temporarily does not exist.
     if let Err(err) = fs::rename(&temp_path, path) {
         let _ = fs::remove_file(&temp_path);
         return Err(err.into());
@@ -287,7 +287,7 @@ pub(crate) fn write_with_replace(path: &Path, updated_content: &str) -> Result<(
     Ok(())
 }
 
-fn temp_path_for(path: &Path) -> Result<PathBuf> {
+pub(crate) fn temp_path_for(path: &Path) -> Result<PathBuf> {
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())

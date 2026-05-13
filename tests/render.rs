@@ -207,3 +207,50 @@ fn render_logs_a_writes_log_entry() {
         .expect("count");
     assert_eq!(count, 1);
 }
+
+#[test]
+fn render_leaves_project_md_untouched_when_ledger_path_is_unwritable() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    // Establish a baseline PROJECT.md so we can detect changes after a failed
+    // re-render. After this call both files are present and consistent.
+    render::run(temp.path(), "cli:user").expect("baseline render");
+
+    let agent_docs = temp.path().join("agent_docs");
+    let project_path = agent_docs.join("PROJECT.md");
+    let ledger_path = agent_docs.join("PROJECT_LEDGER.md");
+    let baseline_project = read_string(&project_path);
+
+    // Replace the ledger file with a directory. Backup of a directory via
+    // fs::copy will fail in phase 1, so phase 2 should never run and
+    // PROJECT.md must remain at its baseline content.
+    fs::remove_file(&ledger_path).expect("remove ledger");
+    fs::create_dir(&ledger_path).expect("plant directory at ledger path");
+
+    // Change DB state so a successful render would alter PROJECT.md.
+    decision::add(
+        temp.path(),
+        "Added between renders",
+        "Should not appear in PROJECT.md if render aborts.",
+        "user",
+        "cli:user",
+    )
+    .expect("decision");
+
+    let result = render::run(temp.path(), "cli:user");
+    assert!(
+        result.is_err(),
+        "render should fail when the ledger path is a directory",
+    );
+
+    let after_project = read_string(&project_path);
+    assert_eq!(
+        after_project, baseline_project,
+        "PROJECT.md must remain at its prior snapshot when the ledger write cannot complete",
+    );
+
+    // PROJECT_LEDGER.md is still a directory because the render aborted in
+    // phase 1; recovery is up to the operator.
+    assert!(ledger_path.is_dir());
+}

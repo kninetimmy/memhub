@@ -56,13 +56,31 @@ pub fn render_project(start: &Path, actor: &str) -> Result<RenderResult> {
     let project_path = output_dir.join(PROJECT_FILENAME);
     let ledger_path = output_dir.join(LEDGER_FILENAME);
 
+    // Phase 1 — prepare all files. Backups and temp writes happen up front so
+    // any failure here leaves the existing rendered outputs untouched. Either
+    // both staged files exist or neither destination is at risk.
+    let staged = [
+        stage_rendered_file(&project_path, &project_md, &backup_dir)?,
+        stage_rendered_file(&ledger_path, &ledger_md, &backup_dir)?,
+    ];
+
+    // Phase 2 — commit each temp into place. `fs::rename` is an atomic replace
+    // on both Unix and Windows, so the per-file swap has no missing-file
+    // window. The irreducible inconsistency window is between the two renames,
+    // and the prior content of each file remains recoverable from `backup_dir`.
     let mut written = Vec::new();
     let mut backups = Vec::new();
-
-    for (path, content) in [(&project_path, &project_md), (&ledger_path, &ledger_md)] {
-        let outcome = write_rendered_file(path, content, &backup_dir)?;
-        written.push(outcome.path);
-        if let Some(backup) = outcome.backup_path {
+    for (index, item) in staged.iter().enumerate() {
+        if let Err(err) = fs::rename(&item.temp_path, &item.dest_path) {
+            // Best-effort cleanup of unrenamed temps from this render.
+            let _ = fs::remove_file(&item.temp_path);
+            for later in &staged[index + 1..] {
+                let _ = fs::remove_file(&later.temp_path);
+            }
+            return Err(err.into());
+        }
+        written.push(item.dest_path.clone());
+        if let Some(backup) = item.backup_path.clone() {
             backups.push(backup);
         }
     }
@@ -85,20 +103,29 @@ pub fn render_project(start: &Path, actor: &str) -> Result<RenderResult> {
     })
 }
 
-struct WriteOutcome {
-    path: PathBuf,
+struct StagedFile {
+    dest_path: PathBuf,
+    temp_path: PathBuf,
     backup_path: Option<PathBuf>,
 }
 
-fn write_rendered_file(path: &Path, content: &str, backup_dir: &Path) -> Result<WriteOutcome> {
+fn stage_rendered_file(path: &Path, content: &str, backup_dir: &Path) -> Result<StagedFile> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
     let backup_path = if path.exists() {
         Some(sync_md::create_backup(path, backup_dir)?)
     } else {
         None
     };
-    sync_md::write_with_replace(path, content)?;
-    Ok(WriteOutcome {
-        path: path.to_path_buf(),
+
+    let temp_path = sync_md::temp_path_for(path)?;
+    fs::write(&temp_path, content)?;
+
+    Ok(StagedFile {
+        dest_path: path.to_path_buf(),
+        temp_path,
         backup_path,
     })
 }
