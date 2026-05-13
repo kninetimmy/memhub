@@ -1,80 +1,76 @@
 <!-- memhub:rendered -->
 <!-- DO NOT EDIT. Generated from .memhub/project.sqlite. -->
 <!-- To change content, use memhub CLI; then re-run `memhub render`. -->
-<!-- Generated at: 2026-05-13T02:22:14Z by memhub 0.1.0 -->
+<!-- Generated at: 2026-05-13T17:33:00Z by memhub 0.1.0 -->
 
 # memhub
 
 ## Currently building
 
-Between tasks. K9 deprecation track is formally complete end-to-end:
-render slice (`c1becc5`, `2757a0a`, `c3fbef0`), state/arch DB content
-(folded into render via migration `0007_project_narrative`), wrap-up
-slice (`a2b6606`, `5037033`, `588168b`, `103eea0`, `591832f`), and
-PRD §2 addendum (`7c162b2`). Repo is fully memhub-primary: DB is
-source of truth, render emits `agent_docs/PROJECT.md` and
-`PROJECT_LEDGER.md`, K9 integration disabled in `.memhub/config.toml`,
-CLAUDE.md Session Continuity points at the rendered files. All four
-slices of `docs/roadmap/k9-deprecation-plan.md` are marked shipped
-in that doc with commit references.
+## Currently building
+
+Between tasks. The K9 → memhub transition is fully complete on this
+machine. K9-Claude-Framework is deleted, all auxiliary K9 artifacts
+(marker file, Codex and Agents skill copies, k9-named Claude command
+stubs, the four K9 archive files in this repo) are gone, and the
+surviving config references in ~/.codex/config.toml and this repo's
+.claude/settings.local.json have been cleaned out. The duplicate
+~/src/memhub clone was removed as part of the sweep. Free-AI-SSD has
+also been updated to the current memhub and the K9 narrative there
+is now in the DB (state + arch tables) and rendered into
+agent_docs/PROJECT.md.
+
+The three memhub-native skills — /wrap-up, /init-project,
+/check-init — all now live at user-level (~/.claude/commands/) so
+they fire in any memhub-initialized repo. This session lifted
+/wrap-up to match /init-project and /check-init's placement,
+superseding D13 which had kept it project-level.
 
 ## Next up
 
-1. Optional `/init-project` and `/check-init` memhub-native
-   equivalents (deferred per `wrap-up-design.md` §5; same
-   rename-the-collision pattern from M7-001 closure applies).
-2. Decide K9-file fate: keep `agent_docs/project_*.md` in place as
-   historical archive (current state — CLAUDE.md no longer points
-   at them), or remove in a future cleanup commit.
-3. PATH `memhub` binary staleness: install the freshly-built binary
-   (`cargo install --path .` or copy `target/debug/memhub` over)
-   so `state` / `arch` / `render` are reachable from any shell.
+1. Commit the 7 working-tree changes from this session as a single
+   "remove K9 framework artifacts" commit: project-level wrap-up.md
+   deletion, four K9 archive markdown deletions, and the two
+   re-rendered files (PROJECT.md, PROJECT_LEDGER.md).
+2. Optionally remove the now-empty .claude/commands/ directory in
+   this repo (no project-level skills left).
+3. Dogfood /check-init and /init-project in a fresh repo before the
+   next memhub release — still un-exercised.
 4. Otherwise: between tasks. No active milestone in flight.
 
 ## Last session
 
-2026-05-13 — Wrote the PRD §2 addendum
-(`docs/reference/memhub-prd-deprecation-addendum.md`) per the
-slice 2 plan. The PRD itself stayed verbatim per the CLAUDE.md
-guardrail; the addendum is authoritative for the items it modifies
-(§2 inversion, §6.2 layout extension, §8 data model, §13 CLI
-surface). Revised the non-goals in `docs/roadmap/k9-integration.md`
-inline (three still in force, one overturned). Updated
-`docs/roadmap/k9-deprecation-plan.md` to mark all four slices
-shipped with commit references and reframe the sequencing section
-as historical narrative. Shipped as `7c162b2`.
+2026-05-13 — Lifted /wrap-up to user-level (supersedes D13);
+migrated Free-AI-SSD's K9 narrative into memhub via state set / arch
+set --from-file (~37 KB state + ~12 KB arch); ran the full K9
+framework purge end-to-end. Phase 2 re-verification confirms no
+remaining runtime dependencies on the K9 directory.
 
-2026-05-13 — Closed M7-001 (override gap) by renaming the
-user-level K9 wrap-up; verified live in skills registry. Then
-executed M7-002 inline during the wrap-up: populated
-`project_state` and `project_arch` tables from K9 narrative,
-disabled K9 integration, repointed CLAUDE.md at `PROJECT.md`,
-marked T5 (M6-004) and T9 (M7-002) done. Two-commit sub-session:
-`103eea0` (M7-001 close) and `591832f` (M7-002 inline migration).
+2026-05-13 (earlier) — Closed two prior "Next up" items entirely
+outside the memhub source tree: installed memhub binary on PATH
+(cargo install --path . plus the stale shadow override), shipped
+memhub-native /init-project and /check-init at user-level with the
+M7-001 rename pattern.
 
 ## Open questions
 
-- PATH `memhub` binary is stale (no state/arch/render). Add CI
-  check or pre-commit hook, or document `cargo install --path .`
-  as a per-session ritual?
-- State body schema: render dumps the entire body under the
-  "## Currently building" header, so multi-section state bodies
-  produce slightly nested-looking PROJECT.md output. Refactor the
-  schema (split state into structured columns) or accept the
-  styling quirk?
-- Should `MEMHUB_ACTOR` env var be added as an alternative to
-  `--actor` for skills that fan out many CLI calls?
-- Should `enable-k9 --agent-docs-path` accept any path and create
-  the marker file as part of an explicit "set up K9 here" flow?
-- Should `FACT_STALE_AFTER_DAYS` become a config knob?
-- Should memhub ship a future `gc` slice for ingested denied paths?
-- Which additional `clientInfo.name` values appear in real handshakes?
-- Should memhub ship a `cargo install`-able crate (or homebrew tap)?
-- Should `memhub migrate` become explicit once external users adopt
-  the tool?
-- Should a `v2` export format be introduced to include `session_notes`?
+- Should .claude/commands/ in this repo be removed (now empty)?
+- PATH ordering: the ~/.local/bin/memhub shadow problem could recur
+  after any future cargo install --path .. Worth a docs note or a
+  Makefile target?
+- State body schema: render dumps the entire body under
+  "## Currently building", producing nested-looking PROJECT.md.
+  Refactor schema or accept the styling quirk?
+- MEMHUB_ACTOR env var as alternative to --actor for skills that
+  fan out many CLI calls?
+- FACT_STALE_AFTER_DAYS as a config knob?
+- gc slice for ingested denied paths?
+- Additional clientInfo.name values in real handshakes?
+- Should memhub ship a cargo install / homebrew tap?
+- Should memhub migrate become explicit once external users adopt?
+- Should v2 export format include session_notes?
 
-_Last updated 2026-05-13 02:22:14 by claude:wrap-up._
+_Last updated 2026-05-13 17:32:55 by claude:wrap-up._
 
 ## Architecture
 
@@ -108,7 +104,6 @@ _Last updated 2026-05-13 02:22:14 by claude:wrap-up._
 - `src/sync_md/` - markdown managed-block rendering and file rewrite logic; `create_backup`, `backup_stamp`, and `write_with_replace` are now `pub(crate)` so `src/render/` can share them
 - `migrations/` - numbered SQL files embedded into the binary
 - `docs/` - preserved PRD, implementation notes, architecture, roadmap
-- `.claude/commands/` - project-level Claude Code slash commands; currently houses the memhub-native `wrap-up.md`
 
 ## Key Subsystems
 
@@ -126,7 +121,7 @@ _Last updated 2026-05-13 02:22:14 by claude:wrap-up._
 - `commands::session_note` plus the `session_notes` table (migration `0006_session_notes`) provide free-form agent scratch space per PRD §12. The shape is `(id, project_id, actor, actor_raw, text, created_at)` indexed by `created_at DESC`. Writes go through the MCP `log_session_note` tool (which pulls actor identity from `clientInfo.name` via the same `ClientIdentity` plumbing as `propose_fact` / `propose_decision`) and through the new `memhub note add` CLI surface (`5037033`); both emit a `writes_log` row for audit. Notes remain write-only — no promotion path to facts or decisions, no FTS index, and no inclusion in the v1 `memhub export` format. Reads land in `memhub note list [--limit] [--actor] [--since-days] [--json]`. If notes ever start carrying durable value, a `v2` export format ships separately to include them.
 - `commands::narrative` plus the `project_state` and `project_arch` tables (migration `0007_project_narrative`) provide single-blob durable storage for state and architecture narratives. Both tables share the shape `(id, project_id, body, actor, actor_raw, created_at)` indexed by `created_at DESC`; a single `commands::narrative` module dispatches on `NarrativeKind::State | Arch` to share the implementation. `set` always inserts a new row (append-only history); `show` returns the most recent; `history` lists prior. Bodies validate non-empty after trim and cap at 64K characters. CLI exposes `memhub state set|show|history` and `memhub arch set|show|history` with `--actor`, `--json`, and an inline-text-or-`--from-file` body input pattern (shared with `memhub note add` via `cli::resolve_text_input`). Storage decision rationale: blob-over-decomposed-columns is captured as a durable decision; revisit if querying patterns demand structure later.
 - `src/render` plus `commands::render` build a `RenderSnapshot` from durable DB content (latest `project_state`, latest `project_arch`, all decisions ordered by `decided_at DESC`, all tasks with open-first ordering, all facts alphabetical with stale flag, recent session notes capped at 10, last-30-day `writes_log` slice capped at 50) and emit two files into the configured output dir (default `agent_docs/` per `[render].output_dir`): `PROJECT.md` (narrative — state, arch, recent session notes) and `PROJECT_LEDGER.md` (structured ledger — decisions, backlog, facts table, recent activity table). Each file leads with a `<!-- memhub:rendered -->` marker comment plus an ISO timestamp and the memhub package version. Conflict semantics are DB-wins-with-backup: existing rendered files are unconditionally copied to `.memhub/backups/rendered/<stamp>/` before being overwritten via the temp+rename pattern lifted from `sync_md`. Each `memhub render` invocation appends a `writes_log` row with `table_name = 'render'` for audit. Render is on-demand only in v1; auto-render-on-write is reserved as a future config opt-in. The two-file shape is the contract; broader output customization is out of scope.
-- `.claude/commands/wrap-up.md` is the project-level Claude Code slash command implementing the wrap-up routing brain (`588168b`). Inside this repo `/wrap-up` fires this skill rather than the user-level K9 one because the user-level file was renamed to `wrap-up-k9.md` per the M7-001 closure (`103eea0`). Resolution rule (per `code.claude.com/docs/en/skills.md`): Claude Code resolves slash commands by **filename** with documented enterprise > personal > project precedence, so the rename-the-collision pattern is the durable fix. The skill prompt walks: detect `.memhub/` and `memhub` binary, capture an implicit since-last-`state set` boundary, read state/arch/notes/pending/git window, draft state + decisions + tasks + facts + session note + arch separately, gate on per-item approval, write DB-first with `--actor claude:wrap-up` halting on first failure, then `memhub render` to refresh the two output files. Never auto-commits — `git add` and `git commit` stay explicit user gestures. Memhub itself only gains primitives (`memhub note add` was the only one needed for the skill); the routing logic lives in markdown so it iterates without a Rust recompile. Design captured in `docs/roadmap/wrap-up-design.md`.
+- `~/.claude/commands/wrap-up.md` is the user-level Claude Code slash command implementing the wrap-up routing brain. Lifted from project-level per D14 so it fires in any memhub-initialized repo (gates on `.memhub/` existing). All three memhub-native skills (`/wrap-up`, `/init-project`, `/check-init`) follow the same placement. The skill prompt walks: detect `.memhub/` and `memhub` binary, capture an implicit since-last-`state set` boundary, read state/arch/notes/pending/git window, draft state + decisions + tasks + facts + session note + arch separately, gate on per-item approval, write DB-first with `--actor claude:wrap-up` halting on first failure, then `memhub render` to refresh the two output files. Never auto-commits — `git add` and `git commit` stay explicit user gestures. Memhub itself only gains primitives (`memhub note add` was the only one needed for the skill); the routing logic lives in markdown so it iterates without a Rust recompile. Design captured in `docs/roadmap/wrap-up-design.md`.
 
 ## Security Invariants
 
@@ -147,9 +142,11 @@ Single local CLI process with an embedded SQLite database plus an on-demand stdi
 - Garbage collection of already-ingested denied paths after a pattern change
 - Session notes in the export format (v1 export deliberately omits `session_notes`; a `v2` export would change this if notes become durable)
 
-_Last updated 2026-05-13 01:50:34 by claude:wrap-up._
+_Last updated 2026-05-13 17:32:55 by claude:wrap-up._
 
 ## Recent session notes
 
+- **2026-05-13 17:32:55** (claude:wrap-up) — Lifted /wrap-up to user-level (~/.claude/commands/wrap-up.md) so it fires in any memhub-initialized repo, not just ~/memhub — supersedes D13's project-level placement. Migrated Free-AI-SSD's K9 narrative into memhub (state + arch tables) via --from-file and re-rendered. Fully removed K9-Claude-Framework from the machine end-to-end: framework directory, marker file, Codex and Agents skill copies, k9-named Claude command stubs, K9 archive files in this repo, K9 references in ~/.codex/config.toml and this repo's settings.local.json, plus the stale ~/src/memhub duplicate clone. Working tree holds 7 uncommitted changes ready to ship as a single 'remove K9 framework artifacts' commit.
+- **2026-05-13 03:28:11** (claude:wrap-up) — Closed two prior 'Next up' items entirely outside the memhub source tree. (1) Installed memhub on PATH: cargo install --path . produced ~/.cargo/bin/memhub, but a stale ~/.local/bin/memhub shadowed it; copied the fresh binary over the shadow so state/arch/render resolve from any shell. (2) Shipped memhub-native /init-project and /check-init at user-level following the M7-001 rename pattern (lifted to user-level since init/check apply globally rather than inside-memhub-only). No commits this session — all artifacts live in ~/.local/bin/ and ~/.claude/commands/.
 - **2026-05-13 02:22:14** (claude:wrap-up) — Wrote the PRD §2 addendum (docs/reference/memhub-prd-deprecation-addendum.md) closing slice 2 of the K9 deprecation plan. PRD itself stayed verbatim per CLAUDE.md guardrail; addendum is authoritative for the §2 inversion, §6.2 layout extension, §8 data model, and §13 CLI surface additions. Revised k9-integration.md non-goals inline and marked all four deprecation slices shipped in the plan doc. Shipped as 7c162b2. K9 deprecation track is now formally complete end-to-end.
 - **2026-05-13 01:50:34** (claude:wrap-up) — Investigated and closed M7-001 (project-level slash command override gap). Root cause was documented Claude Code precedence (personal > project, filename-resolved), not a bug. Fix: renamed ~/.claude/commands/wrap-up.md to wrap-up-k9.md so the project-level memhub-native /wrap-up no longer collides. Verified via skills registry. Shipped as 103eea0; M7-002 then executed inline this session to fully migrate the repo to memhub-primary.

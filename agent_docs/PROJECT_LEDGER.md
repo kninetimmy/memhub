@@ -1,13 +1,29 @@
 <!-- memhub:rendered -->
 <!-- DO NOT EDIT. Generated from .memhub/project.sqlite. -->
 <!-- To change content, use memhub CLI; then re-run `memhub render`. -->
-<!-- Generated at: 2026-05-13T02:22:14Z by memhub 0.1.0 -->
+<!-- Generated at: 2026-05-13T17:33:00Z by memhub 0.1.0 -->
 
 # memhub — Ledger
 
 ## Decisions
 
-_12 decision(s). Most recent first._
+_14 decision(s). Most recent first._
+
+### D14 — /wrap-up promoted to user-level skill placement (supersedes D13)
+
+**Status:** active • **Decided:** 2026-05-13 17:32:55
+
+D13 kept /wrap-up at project-level inside ~/memhub/.claude/commands/wrap-up.md on the reasoning that it only fires in memhub-initialized repos — but D13 itself acknowledged /init-project and /check-init are at user-level despite the same .memhub/ precondition. That asymmetry was a bug and caused a real UX gap this session: /wrap-up was not available in Free-AI-SSD, forcing a mid-task lift. Resolution: copied the skill to ~/.claude/commands/wrap-up.md and deleted the project-level copy. All three memhub-native skills now live at user-level (single source of truth, no project-vs-user drift); each gates on .memhub/ existing. The project-level .claude/commands/ directory in this repo is now empty.
+
+---
+
+### D13 — Memhub-native skill placement: /wrap-up is project-level; /init-project and /check-init are user-level
+
+**Status:** active • **Decided:** 2026-05-13 03:28:07
+
+/wrap-up only makes sense in memhub-initialized repos (requires .memhub/), so it ships at .claude/commands/wrap-up.md inside the memhub source repo and only fires there. /init-project creates memhub in any repo and /check-init diagnoses any memhub-using repo, so they must apply globally and live at user-level (~/.claude/commands/). The collision-rename pattern from M7-001 stays the same in both placements: rename the K9 file to -k9.md, drop in the memhub-native version at the original filename. Single rule: the memhub-native skill lives where its trigger makes sense; the K9 collision gets renamed regardless.
+
+---
 
 ### D12 — PRD evolves via addendum docs; the PRD itself stays verbatim
 
@@ -189,6 +205,16 @@ _No facts recorded._
 
 | When | Actor | Table | Action | Reason |
 |------|-------|-------|--------|--------|
+| 2026-05-13 17:32:55 | claude:wrap-up | project_arch | insert | arch set |
+| 2026-05-13 17:32:55 | claude:wrap-up | session_notes | insert | mcp log_session_note |
+| 2026-05-13 17:32:55 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 17:32:55 | claude:wrap-up | project_state | insert | state set |
+| 2026-05-13 03:28:15 | cli:user | render | render | memhub render |
+| 2026-05-13 03:28:11 | claude:wrap-up | session_notes | insert | mcp log_session_note |
+| 2026-05-13 03:28:07 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 03:28:01 | claude:wrap-up | project_state | insert | state set |
+| 2026-05-13 02:22:14 | cli:user | markdown_sync | update | sync-md |
+| 2026-05-13 02:22:14 | cli:user | render | render | memhub render |
 | 2026-05-13 02:22:14 | claude:wrap-up | session_notes | insert | mcp log_session_note |
 | 2026-05-13 02:22:14 | claude:wrap-up | decisions | insert | decision add |
 | 2026-05-13 02:22:14 | claude:wrap-up | project_state | insert | state set |
@@ -229,10 +255,3 @@ _No facts recorded._
 | 2026-05-12 21:03:09 | k9:wrap-up | tasks | insert | task add |
 | 2026-05-12 21:03:09 | k9:wrap-up | tasks | insert | task add |
 | 2026-05-12 21:03:08 | k9:wrap-up | tasks | insert | task add |
-| 2026-05-12 21:03:07 | k9:wrap-up | tasks | insert | task add |
-| 2026-05-12 21:03:01 | k9:wrap-up | decisions | insert | decision add |
-| 2026-05-12 21:02:58 | k9:wrap-up | decisions | insert | decision add |
-| 2026-05-12 19:39:02 | cli:user | markdown_sync | update | sync-md |
-| 2026-05-12 19:38:58 | k9:wrap-up | tasks | update | task done |
-| 2026-05-12 19:38:55 | k9:wrap-up | tasks | insert | task add |
-| 2026-05-12 19:38:52 | k9:wrap-up | decisions | insert | decision add |
