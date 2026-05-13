@@ -1,13 +1,29 @@
 <!-- memhub:rendered -->
 <!-- DO NOT EDIT. Generated from .memhub/project.sqlite. -->
 <!-- To change content, use memhub CLI; then re-run `memhub render`. -->
-<!-- Generated at: 2026-05-13T18:24:09Z by memhub 0.1.0 -->
+<!-- Generated at: 2026-05-13T18:40:36Z by memhub 0.1.0 -->
 
 # memhub — Ledger
 
 ## Decisions
 
-_16 decision(s). Most recent first._
+_18 decision(s). Most recent first._
+
+### D18 — State and arch narratives are wrap-up-only; no MCP tools for state_set or arch_set
+
+**Status:** active • **Decided:** 2026-05-13 18:40:26 • **Source:** user+agent:claude-code
+
+Letting agents rewrite the state narrative mid-session invites drift. The wrap-up approval gate exists for exactly this kind of write, where the agent's draft gets per-item human review before landing. Bigger trust surface than facts/decisions (one row replaces the whole narrative) and used rarely (once per session), so not worth a structured tool that bypasses the gate.
+
+---
+
+### D17 — MCP tool trust split: direct writes for intent, staged writes for claims
+
+**Status:** active • **Decided:** 2026-05-13 18:40:19 • **Source:** user+agent:claude-code
+
+Tasks are intent that the user prunes; session notes are scratch; render regenerates from the DB — all low-trust and worth direct MCP tools. Facts and decisions are claims about reality and need the user-approval staging gate; bypassing it via direct MCP fact_add / decision_add would erode the 'agents are untrusted writers' principle that makes memhub trustworthy as a multi-agent store. Codified by which MCP tools exist in e67167e (task_add, task_done, list_facts, render direct; propose_fact, propose_decision staged).
+
+---
 
 ### D16 — Memhub-native skills ship as installable Claude and Codex templates
 
@@ -229,6 +245,11 @@ _No facts recorded._
 
 | When | Actor | Table | Action | Reason |
 |------|-------|-------|--------|--------|
+| 2026-05-13 18:40:30 | claude:wrap-up | session_notes | insert | mcp log_session_note |
+| 2026-05-13 18:40:26 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 18:40:19 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 18:40:13 | claude:wrap-up | project_state | insert | state set |
+| 2026-05-13 18:24:09 | cli:user | render | render | memhub render |
 | 2026-05-13 18:23:59 | codex:wrap-up | project_arch | insert | arch set |
 | 2026-05-13 18:23:57 | codex:wrap-up | session_notes | insert | mcp log_session_note |
 | 2026-05-13 18:23:52 | codex:wrap-up | tasks | insert | task add |
@@ -274,8 +295,3 @@ _No facts recorded._
 | 2026-05-12 22:40:23 | k9:wrap-up | decisions | insert | decision add |
 | 2026-05-12 22:40:23 | k9:wrap-up | tasks | update | task done |
 | 2026-05-12 22:40:23 | k9:wrap-up | tasks | update | task done |
-| 2026-05-12 21:42:30 | k9:wrap-up | tasks | update | fix title shell-escape leak from wrap-up mirror |
-| 2026-05-12 21:40:30 | cli:user | markdown_sync | update | sync-md |
-| 2026-05-12 21:39:53 | k9:wrap-up | tasks | insert | task add |
-| 2026-05-12 21:39:53 | k9:wrap-up | tasks | insert | task add |
-| 2026-05-12 21:39:53 | k9:wrap-up | tasks | update | task done |

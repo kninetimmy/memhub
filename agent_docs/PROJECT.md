@@ -1,7 +1,7 @@
 <!-- memhub:rendered -->
 <!-- DO NOT EDIT. Generated from .memhub/project.sqlite. -->
 <!-- To change content, use memhub CLI; then re-run `memhub render`. -->
-<!-- Generated at: 2026-05-13T18:24:09Z by memhub 0.1.0 -->
+<!-- Generated at: 2026-05-13T18:40:36Z by memhub 0.1.0 -->
 
 # memhub
 
@@ -9,31 +9,52 @@
 
 ## Currently building
 
-Between tasks. The K9 -> memhub transition is complete on this machine and committed in `f97bcbf`: project-level K9-era artifacts were removed, `/wrap-up` was lifted to user-level, and the repo now uses memhub-rendered `PROJECT.md` + `PROJECT_LEDGER.md` as the human-readable view of `.memhub/project.sqlite`.
-
-Since the previous wrap-up, the Codex-side bridge also landed in `7671f07`: decisions now have source provenance via migration `0008_decisions_source`, fact/decision writes can preserve `user+agent:<id>` source values separately from `writes_log.actor`, and `AGENTS.md` documents Codex-specific `--source` / `--actor` usage. `5e9a0c6` then rewrote the README around the current memhub-first install story and added installable Claude and Codex skill templates under `templates/skills/`.
+Between tasks. The Codex CLI bridge is complete: `/wrap-up`,
+`/check-init`, and `/init-project` skills installed at user-level for
+both Claude Code and Codex; MCP server registered in
+`~/.codex/config.toml`; compound source vocabulary
+(`user`, `agent:<id>`, `user+agent:<id>`) shipped in migration 0008.
+The MCP tool surface now covers the four mid-session gaps — `task_add`,
+`task_done`, `list_facts`, and `render` were added in `e67167e`, with
+the trust split preserved: tasks and render write direct; facts and
+decisions still stage for `/wrap-up` approval.
 
 ## Next up
 
-1. Dogfood the current user-level Codex skills (`/wrap-up`, `/init-project`, `/check-init`) in both this repo and a fresh memhub-initialized repo.
-2. Decide whether the README/template install flow needs release packaging next (`cargo install`, one-shot installer hardening, Homebrew, or similar).
-3. Otherwise: between tasks. No active milestone is in flight and the worktree is clean.
+1. Dogfood the user-level skills end-to-end in both this repo and a
+   fresh memhub-initialized repo. Verify the four new MCP tools work
+   via real Claude Code and Codex sessions (not just unit tests).
+2. Decide whether the README/template install flow needs release
+   packaging next (Homebrew, `cargo install` polish, one-shot installer
+   hardening).
+3. Otherwise: between tasks. No active milestone in flight, worktree
+   clean.
 
 ## Last session
 
-2026-05-13 - committed the K9 artifact cleanup and user-level `/wrap-up` lift (`f97bcbf`), added Codex CLI provenance symmetry and compound source vocabulary (`7671f07`), then rewrote the README and shipped Claude/Codex skill templates (`5e9a0c6`).
+2026-05-13 — added 4 MCP tools (`task_add`, `task_done`, `list_facts`,
+`render`) in `e67167e`, closing the mid-session "must Bash the CLI"
+gaps for agents while preserving the untrusted-writer guardrail on
+claims. README's "typical session" reframed to lead with the
+agent-driven flow ("you say X → agent does Y") and demote CLI to a
+fallback. Binary reinstalled.
 
 ## Open questions
 
-- PATH ordering: the `~/.local/bin/memhub` shadow problem could recur after future local installs. Worth a docs note, Makefile target, or installer guard?
-- State body schema: render currently dumps the state body under `## Currently building`, producing nested-looking `PROJECT.md`. Refactor schema or accept the styling quirk?
-- `MEMHUB_ACTOR` env var as an alternative to repeated `--actor` flags for skills that fan out many CLI calls?
+- PATH ordering: `~/.local/bin/memhub` shadow problem could recur
+  after future local installs. Worth a docs note, Makefile target, or
+  installer guard?
+- State body schema: render currently dumps the state body under
+  `## Currently building`, producing nested-looking `PROJECT.md`.
+  Refactor schema or accept the styling quirk?
+- `MEMHUB_ACTOR` env var as an alternative to repeated `--actor` flags
+  for skills that fan out many CLI calls?
 - `FACT_STALE_AFTER_DAYS` as a config knob?
 - GC slice for already-ingested paths that later become denied?
 - Additional `clientInfo.name` aliases from real MCP handshakes?
 - Should v2 export include `session_notes`?
 
-_Last updated 2026-05-13 18:23:25 by codex:wrap-up._
+_Last updated 2026-05-13 18:40:13 by claude:wrap-up._
 
 ## Architecture
 
@@ -115,6 +136,7 @@ _Last updated 2026-05-13 18:23:59 by codex:wrap-up._
 
 ## Recent session notes
 
+- **2026-05-13 18:40:30** (claude:wrap-up) — This session shipped 4 new MCP tools (task_add, task_done, list_facts, render) in e67167e, closing the four 'mid-session must Bash the CLI' gaps for agents while preserving the trust split — facts and decisions still stage for /wrap-up approval, but tasks and render now go direct. README's 'typical session' was reframed to lead with the agent-driven 'you say X / agent does Y' flow, demoting CLI to a fallback. Binary reinstalled so Codex's MCP client sees the new tool surface.
 - **2026-05-13 18:23:57** (codex:wrap-up) — Since the previous wrap-up, committed the K9 artifact cleanup and user-level /wrap-up lift in f97bcbf, added Codex CLI provenance symmetry plus migration 0008 in 7671f07, and rewrote the README while adding Claude/Codex skill templates in 5e9a0c6. The current wrap-up found no pending reviews, no open tasks, and a clean worktree before drafting these DB updates.
 - **2026-05-13 17:32:55** (claude:wrap-up) — Lifted /wrap-up to user-level (~/.claude/commands/wrap-up.md) so it fires in any memhub-initialized repo, not just ~/memhub — supersedes D13's project-level placement. Migrated Free-AI-SSD's K9 narrative into memhub (state + arch tables) via --from-file and re-rendered. Fully removed K9-Claude-Framework from the machine end-to-end: framework directory, marker file, Codex and Agents skill copies, k9-named Claude command stubs, K9 archive files in this repo, K9 references in ~/.codex/config.toml and this repo's settings.local.json, plus the stale ~/src/memhub duplicate clone. Working tree holds 7 uncommitted changes ready to ship as a single 'remove K9 framework artifacts' commit.
 - **2026-05-13 03:28:11** (claude:wrap-up) — Closed two prior 'Next up' items entirely outside the memhub source tree. (1) Installed memhub on PATH: cargo install --path . produced ~/.cargo/bin/memhub, but a stale ~/.local/bin/memhub shadowed it; copied the fresh binary over the shadow so state/arch/render resolve from any shell. (2) Shipped memhub-native /init-project and /check-init at user-level following the M7-001 rename pattern (lifted to user-level since init/check apply globally rather than inside-memhub-only). No commits this session — all artifacts live in ~/.local/bin/ and ~/.claude/commands/.
