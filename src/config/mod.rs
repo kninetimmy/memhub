@@ -15,6 +15,13 @@ use crate::Result;
 
 pub const DEFAULT_RENDER_OUTPUT_DIR: &str = "agent_docs";
 
+pub const DEFAULT_RECALL_MAX_RESULTS: usize = 6;
+pub const DEFAULT_FTS_WEIGHT: f64 = 0.5;
+pub const DEFAULT_VECTOR_WEIGHT: f64 = 0.5;
+pub const DEFAULT_STALE_PENALTY: f64 = 0.3;
+pub const DEFAULT_ACCEPTED_ONLY: bool = false;
+pub const DEFAULT_INCLUDE_STALE: bool = false;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RetrievalMode {
@@ -25,10 +32,69 @@ pub enum RetrievalMode {
     Hybrid,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetrievalScoringConfig {
+    #[serde(default = "default_fts_weight")]
+    pub fts_weight: f64,
+    #[serde(default = "default_vector_weight")]
+    pub vector_weight: f64,
+    #[serde(default = "default_stale_penalty")]
+    pub stale_penalty: f64,
+}
+
+impl Default for RetrievalScoringConfig {
+    fn default() -> Self {
+        Self {
+            fts_weight: DEFAULT_FTS_WEIGHT,
+            vector_weight: DEFAULT_VECTOR_WEIGHT,
+            stale_penalty: DEFAULT_STALE_PENALTY,
+        }
+    }
+}
+
+fn default_fts_weight() -> f64 {
+    DEFAULT_FTS_WEIGHT
+}
+fn default_vector_weight() -> f64 {
+    DEFAULT_VECTOR_WEIGHT
+}
+fn default_stale_penalty() -> f64 {
+    DEFAULT_STALE_PENALTY
+}
+fn default_max_results() -> usize {
+    DEFAULT_RECALL_MAX_RESULTS
+}
+fn default_accepted_only() -> bool {
+    DEFAULT_ACCEPTED_ONLY
+}
+fn default_include_stale() -> bool {
+    DEFAULT_INCLUDE_STALE
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetrievalConfig {
     #[serde(default)]
     pub mode: RetrievalMode,
+    #[serde(default = "default_max_results")]
+    pub default_max_results: usize,
+    #[serde(default = "default_accepted_only")]
+    pub accepted_only_by_default: bool,
+    #[serde(default = "default_include_stale")]
+    pub include_stale_by_default: bool,
+    #[serde(default)]
+    pub scoring: RetrievalScoringConfig,
+}
+
+impl Default for RetrievalConfig {
+    fn default() -> Self {
+        Self {
+            mode: RetrievalMode::default(),
+            default_max_results: DEFAULT_RECALL_MAX_RESULTS,
+            accepted_only_by_default: DEFAULT_ACCEPTED_ONLY,
+            include_stale_by_default: DEFAULT_INCLUDE_STALE,
+            scoring: RetrievalScoringConfig::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

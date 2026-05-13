@@ -16,9 +16,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::commands;
+use crate::config::RetrievalMode;
 use crate::models::{
     CommandRecord, Decision, Fact, PendingWriteRecord, RenderResult, SearchResult, StatusSummary,
     Task,
+};
+use crate::retrieval::{
+    self, RecallHit, RecallOptions, RecallResponse, RecallWarning, SourceType,
 };
 use crate::{MemhubError, Result};
 
@@ -278,6 +282,52 @@ impl MemhubServer {
             commands::render::run(&self.start, &actor.normalized).map_err(map_tool_error)?;
         Ok(Json(RenderToolResponse::from(result)))
     }
+
+    async fn recall_impl(
+        &self,
+        Parameters(params): Parameters<RecallParams>,
+    ) -> std::result::Result<Json<RecallToolResponse>, McpError> {
+        let mode = match params.mode.as_deref() {
+            Some("fts") => Some(RetrievalMode::Fts),
+            Some("hybrid") => Some(RetrievalMode::Hybrid),
+            Some(other) => {
+                return Err(McpError::invalid_params(
+                    format!("invalid mode '{other}'; expected 'fts' or 'hybrid'"),
+                    None,
+                ));
+            }
+            None => None,
+        };
+        let mut source_types = Vec::new();
+        for raw in params.source_types.as_deref().unwrap_or(&[]) {
+            match raw.as_str() {
+                "fact" => source_types.push(SourceType::Fact),
+                "decision" => source_types.push(SourceType::Decision),
+                "task" => source_types.push(SourceType::Task),
+                other => {
+                    return Err(McpError::invalid_params(
+                        format!(
+                            "invalid source_type '{other}'; expected fact, decision, or task"
+                        ),
+                        None,
+                    ));
+                }
+            }
+        }
+        let response = retrieval::recall(
+            &self.start,
+            RecallOptions {
+                query: params.query,
+                mode,
+                max_results: params.max_results.unwrap_or(0),
+                source_types,
+                include_stale: params.include_stale,
+                accepted_only: params.accepted_only,
+            },
+        )
+        .map_err(map_tool_error)?;
+        Ok(Json(RecallToolResponse::from(response)))
+    }
 }
 
 #[tool_router(router = tool_router)]
@@ -448,6 +498,17 @@ impl MemhubServer {
         let actor = current_client_identity(&request_context);
         self.render_impl(actor).await
     }
+
+    #[tool(
+        name = "recall",
+        description = "Retrieve relevant facts, decisions, and tasks via SQL+RAG hybrid recall (FTS5 + brute-force cosine when hybrid mode is configured). Read-only; prefer this over reading PROJECT_LEDGER.md mid-session."
+    )]
+    async fn recall(
+        &self,
+        params: Parameters<RecallParams>,
+    ) -> std::result::Result<Json<RecallToolResponse>, McpError> {
+        self.recall_impl(params).await
+    }
 }
 
 impl ServerHandler for MemhubServer {
@@ -455,7 +516,7 @@ impl ServerHandler for MemhubServer {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("memhub", env!("CARGO_PKG_VERSION")))
             .with_instructions(
-                "Local-first per-repo project memory. Read tools are direct (status, search, list_tasks, list_decisions, list_facts, list_pending_writes, get_command). Tasks write directly (task_add, task_done) since tasks are intent. Facts and decisions stage via propose_fact / propose_decision and require human acceptance through `memhub review accept`. Session notes are write-only scratch. `render` regenerates agent_docs/PROJECT.md from the DB.",
+                "Local-first per-repo project memory. Read tools are direct (status, search, recall, list_tasks, list_decisions, list_facts, list_pending_writes, get_command). Prefer `recall` over reading PROJECT_LEDGER.md mid-session — it does SQL+RAG hybrid retrieval across facts, decisions, and tasks. Tasks write directly (task_add, task_done) since tasks are intent. Facts and decisions stage via propose_fact / propose_decision and require human acceptance through `memhub review accept`. Session notes are write-only scratch. `render` regenerates agent_docs/PROJECT.md from the DB.",
             )
     }
 
@@ -884,6 +945,114 @@ impl From<RenderResult> for RenderToolResponse {
                 .iter()
                 .map(|p| p.display().to_string())
                 .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct RecallParams {
+    query: String,
+    mode: Option<String>,
+    max_results: Option<usize>,
+    source_types: Option<Vec<String>>,
+    accepted_only: Option<bool>,
+    include_stale: Option<bool>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct RecallToolResponse {
+    query: String,
+    mode: String,
+    results: Vec<RecallToolHit>,
+    candidate_count: usize,
+    returned_count: usize,
+    warnings: Vec<RecallToolWarning>,
+    provenance: RecallToolProvenance,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct RecallToolHit {
+    rank: usize,
+    source_type: String,
+    source_id: i64,
+    title: String,
+    body: String,
+    score: f64,
+    fts_score: f64,
+    vector_score: f64,
+    confidence: f64,
+    stale: bool,
+    source: String,
+    created_at: String,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct RecallToolWarning {
+    kind: String,
+    stale_count: usize,
+    total_count: usize,
+    reason: String,
+    fix: String,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct RecallToolProvenance {
+    matcher: String,
+    elapsed_ms: u128,
+}
+
+impl From<RecallHit> for RecallToolHit {
+    fn from(value: RecallHit) -> Self {
+        Self {
+            rank: value.rank,
+            source_type: value.source_type,
+            source_id: value.source_id,
+            title: value.title,
+            body: value.body,
+            score: value.score,
+            fts_score: value.fts_score,
+            vector_score: value.vector_score,
+            confidence: value.confidence,
+            stale: value.stale,
+            source: value.source,
+            created_at: value.created_at,
+        }
+    }
+}
+
+impl From<RecallWarning> for RecallToolWarning {
+    fn from(value: RecallWarning) -> Self {
+        Self {
+            kind: value.kind,
+            stale_count: value.stale_count,
+            total_count: value.total_count,
+            reason: value.reason,
+            fix: value.fix,
+        }
+    }
+}
+
+impl From<RecallResponse> for RecallToolResponse {
+    fn from(value: RecallResponse) -> Self {
+        let mode = match value.mode {
+            RetrievalMode::Fts => "fts".to_string(),
+            RetrievalMode::Hybrid => "hybrid".to_string(),
+        };
+        Self {
+            query: value.query,
+            mode,
+            results: value.results.into_iter().map(RecallToolHit::from).collect(),
+            candidate_count: value.candidate_count,
+            returned_count: value.returned_count,
+            warnings: value
+                .warnings
+                .into_iter()
+                .map(RecallToolWarning::from)
+                .collect(),
+            provenance: RecallToolProvenance {
+                matcher: value.matcher,
+                elapsed_ms: value.elapsed_ms,
+            },
         }
     }
 }
@@ -1591,6 +1760,74 @@ mod tests {
         assert_eq!(result.0.facts[0].value, "cargo build");
         assert_eq!(result.0.facts[0].source, "user");
         assert!(!result.0.facts[0].is_stale);
+    }
+
+    #[test]
+    fn mcp_recall_returns_ranked_hits_and_provenance() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        decision::add(
+            temp.path(),
+            "Stage agent-originated writes before promotion",
+            "Agents propose facts and decisions but durable rows require human review.",
+            "user+agent:claude-code",
+            "cli:user",
+        )
+        .expect("decision");
+        task::add(
+            temp.path(),
+            "Ship recall surface",
+            Some("PR4 of M8 rolls out recall CLI plus MCP tool."),
+            "cli:user",
+        )
+        .expect("task");
+
+        let server = MemhubServer::new(temp.path().to_path_buf());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+
+        let response = runtime
+            .block_on(server.recall_impl(Parameters(RecallParams {
+                query: "agent originated writes review".to_string(),
+                mode: Some("fts".to_string()),
+                max_results: Some(3),
+                source_types: None,
+                accepted_only: None,
+                include_stale: None,
+            })))
+            .expect("recall");
+
+        assert_eq!(response.0.mode, "fts");
+        assert!(!response.0.results.is_empty());
+        assert_eq!(response.0.results[0].source_type, "decision");
+        assert!(response.0.provenance.matcher.starts_with("recall:"));
+    }
+
+    #[test]
+    fn mcp_recall_rejects_invalid_mode() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let server = MemhubServer::new(temp.path().to_path_buf());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let result = runtime.block_on(server.recall_impl(Parameters(RecallParams {
+            query: "anything".to_string(),
+            mode: Some("turbo".to_string()),
+            max_results: None,
+            source_types: None,
+            accepted_only: None,
+            include_stale: None,
+        })));
+        let err = match result {
+            Ok(_) => panic!("invalid mode should error"),
+            Err(e) => e,
+        };
+        let message = err.message.to_string();
+        assert!(message.contains("turbo"), "unexpected error: {message}");
     }
 
     #[test]

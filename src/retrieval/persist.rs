@@ -23,7 +23,7 @@ use crate::retrieval::embeddings::{EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME, em
 use crate::{MemhubError, Result};
 
 /// Source row kind that an embedding refers back to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SourceType {
     Fact,
     Decision,

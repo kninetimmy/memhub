@@ -8,7 +8,10 @@ use serde_json::json;
 use crate::Result;
 use crate::commands;
 use crate::commands::{DEFAULT_ACTOR, validate_actor};
+use crate::config::RetrievalMode;
 use crate::models::{InitResult, NarrativeEntry, NarrativeKind, PendingWriteRecord, StatsSummary};
+use crate::retrieval;
+use crate::retrieval::{RecallOptions, RecallResponse, SourceType};
 use crate::{MemhubError, commands::narrative::DEFAULT_HISTORY_LIMIT};
 
 fn resolve_actor(actor: Option<&str>) -> Result<String> {
@@ -300,6 +303,113 @@ fn narrative_entry_to_json(kind: NarrativeKind, entry: &NarrativeEntry) -> serde
     })
 }
 
+fn recall_mode_label(mode: RetrievalMode) -> &'static str {
+    match mode {
+        RetrievalMode::Fts => "fts",
+        RetrievalMode::Hybrid => "hybrid",
+    }
+}
+
+fn recall_response_to_json(response: &RecallResponse) -> serde_json::Value {
+    let results = response
+        .results
+        .iter()
+        .map(|hit| {
+            json!({
+                "rank": hit.rank,
+                "source_type": hit.source_type,
+                "source_id": hit.source_id,
+                "title": hit.title,
+                "body": hit.body,
+                "score": hit.score,
+                "fts_score": hit.fts_score,
+                "vector_score": hit.vector_score,
+                "confidence": hit.confidence,
+                "stale": hit.stale,
+                "source": hit.source,
+                "created_at": hit.created_at,
+            })
+        })
+        .collect::<Vec<_>>();
+    let warnings = response
+        .warnings
+        .iter()
+        .map(|w| {
+            json!({
+                "kind": w.kind,
+                "stale_count": w.stale_count,
+                "total_count": w.total_count,
+                "reason": w.reason,
+                "fix": w.fix,
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "query": response.query,
+        "mode": recall_mode_label(response.mode),
+        "results": results,
+        "candidate_count": response.candidate_count,
+        "returned_count": response.returned_count,
+        "warnings": warnings,
+        "provenance": {
+            "matcher": response.matcher,
+            "elapsed_ms": response.elapsed_ms,
+        },
+    })
+}
+
+fn print_recall_human(response: &RecallResponse) {
+    println!(
+        "Query: {}  (mode: {}, matcher: {}, elapsed: {} ms)",
+        response.query,
+        recall_mode_label(response.mode),
+        response.matcher,
+        response.elapsed_ms,
+    );
+    println!(
+        "Candidates: {} | Returned: {}",
+        response.candidate_count, response.returned_count,
+    );
+    if response.results.is_empty() {
+        println!("No matches.");
+    } else {
+        println!();
+        for hit in &response.results {
+            let stale_tag = if hit.stale { " [stale]" } else { "" };
+            let source_label = if hit.source.is_empty() {
+                String::new()
+            } else {
+                format!(" source={}", hit.source)
+            };
+            println!(
+                "#{rank} [{stype}:{sid}] {title}{stale}  score={score:.3} (fts={fts:.3}, vec={vec:.3}){src}",
+                rank = hit.rank,
+                stype = hit.source_type,
+                sid = hit.source_id,
+                title = hit.title,
+                stale = stale_tag,
+                score = hit.score,
+                fts = hit.fts_score,
+                vec = hit.vector_score,
+                src = source_label,
+            );
+            if !hit.body.is_empty() {
+                println!("    {}", hit.body);
+            }
+        }
+    }
+    if !response.warnings.is_empty() {
+        println!();
+        println!("Warnings:");
+        for warn in &response.warnings {
+            println!(
+                "  {} ({}/{}): {} — {}",
+                warn.kind, warn.stale_count, warn.total_count, warn.reason, warn.fix,
+            );
+        }
+    }
+}
+
 fn print_init_result(result: &InitResult) {
     println!("Initialized memhub at {}", result.repo_root.display());
     println!("Database: {}", result.db_path.display());
@@ -413,6 +523,53 @@ pub enum TopLevelCommand {
         command: NarrativeCommand,
     },
     Render,
+    Recall {
+        query: String,
+        #[arg(long, value_enum, value_name = "TYPE")]
+        source_type: Vec<RecallSourceTypeArg>,
+        #[arg(long, value_name = "N")]
+        max_results: Option<usize>,
+        #[arg(long, value_enum)]
+        mode: Option<RecallModeArg>,
+        #[arg(long)]
+        include_stale: bool,
+        #[arg(long)]
+        accepted_only: bool,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+pub enum RecallSourceTypeArg {
+    Fact,
+    Decision,
+    Task,
+}
+
+impl RecallSourceTypeArg {
+    fn to_source_type(&self) -> SourceType {
+        match self {
+            Self::Fact => SourceType::Fact,
+            Self::Decision => SourceType::Decision,
+            Self::Task => SourceType::Task,
+        }
+    }
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+pub enum RecallModeArg {
+    Fts,
+    Hybrid,
+}
+
+impl RecallModeArg {
+    fn to_mode(&self) -> RetrievalMode {
+        match self {
+            Self::Fts => RetrievalMode::Fts,
+            Self::Hybrid => RetrievalMode::Hybrid,
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -1206,6 +1363,33 @@ pub fn run(cli: Cli) -> Result<()> {
         }
         TopLevelCommand::Arch { command } => {
             run_narrative(&cwd, NarrativeKind::Arch, command)?;
+        }
+        TopLevelCommand::Recall {
+            query,
+            source_type,
+            max_results,
+            mode,
+            include_stale,
+            accepted_only,
+            json: as_json,
+        } => {
+            let opts = RecallOptions {
+                query,
+                mode: mode.map(|m| m.to_mode()),
+                max_results: max_results.unwrap_or(0),
+                source_types: source_type
+                    .iter()
+                    .map(RecallSourceTypeArg::to_source_type)
+                    .collect(),
+                include_stale: if include_stale { Some(true) } else { None },
+                accepted_only: if accepted_only { Some(true) } else { None },
+            };
+            let response = retrieval::recall(&cwd, opts)?;
+            if as_json {
+                println!("{}", recall_response_to_json(&response));
+            } else {
+                print_recall_human(&response);
+            }
         }
         TopLevelCommand::Render => {
             let result = commands::render::run(&cwd, DEFAULT_ACTOR)?;
