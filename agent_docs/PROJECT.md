@@ -1,58 +1,73 @@
 <!-- memhub:rendered -->
 <!-- DO NOT EDIT. Generated from .memhub/project.sqlite. -->
 <!-- To change content, use memhub CLI; then re-run `memhub render`. -->
-<!-- Generated at: 2026-05-13T20:50:02Z by memhub 0.1.0 -->
+<!-- Generated at: 2026-05-13T20:55:49Z by memhub 0.1.0 -->
 
 # memhub
 
 ## Currently building
 
-M8 (SQL+RAG hybrid recall) is defined and ready to start. No code
-shipped this session — it was scoping. The retrieval layer will sit
-as a derived index over the existing facts/decisions/tasks tables:
-FTS5 attached to source tables for keyword search, an `embeddings`
-table holding 384-dim BGE-small vectors keyed by (source_type,
-source_id) for semantic search, hybrid scoring (0.5 FTS + 0.5
-vector + stale penalty) gated by an install-time `[retrieval] mode`
-toggle. Agent-facing surface is a new `memhub.recall` MCP tool plus
-`/recall` and `/reindex` skills; CLAUDE.md and existing skills get
-a behavior-change rule so agents prefer `recall` over reading
-PROJECT_LEDGER.md.
+## Currently building
+
+M8 (SQL+RAG hybrid recall) is still the next milestone. Before
+starting it, this session ran a defensive hardening pass driven by
+an external Codex code review of the existing surface — all six
+findings (one High, four Medium, one Low) were validated and fixed
+on main:
+
+1. `review::accept` is now atomic: one Immediate transaction
+   covers the durable insert and the pending-status update.
+   Concurrent acceptors serialize at the write lock; a loser
+   rolls back with no durable side effect.
+2. `command::verify` and `render::render_project` now thread the
+   caller's actor identity, so MCP-originated writes show up in
+   `writes_log` under the calling client instead of `cli:user`.
+3. The fact/decision writer entrypoints enforce the documented
+   source vocabulary (`user`, `git`, `observed`, `agent:<id>`,
+   `user+agent:<id>`); typos like `user+agnet:codex` are rejected
+   before persisting.
+4. `pending_writes.reviewed_at` now round-trips through export
+   and import. Older v1 exports without the field still import
+   cleanly thanks to `#[serde(default)]`.
+5. `memhub render` is two-phase: all backups and temp files are
+   written before any destination rename, so a phase-1 failure
+   leaves both rendered outputs untouched.
+6. Wrap-up state bodies that begin with their own section heading
+   no longer produce duplicate headings; render strips a leading
+   matching heading.
 
 ## Next up
 
-1. Draft `docs/reference/memhub-prd-addendum-m8-retrieval.md`
-   describing the M8 retrieval layer (next turn, after this wrap-up).
+The M8 plan from the prior session is unchanged. In order:
+
+1. Draft `docs/reference/memhub-prd-addendum-m8-retrieval.md`.
 2. PR1: fastembed-rs integration + bundled BGE-small model.
 3. PR2: schema migration — FTS5 virtual tables + embeddings table.
 4. PR3: eager-embed on writes inside fact/decision/task add paths.
 5. PR4: `recall` CLI command + MCP tool with hybrid scoring.
 6. PR5: `/recall` and `/reindex` skills + CLAUDE.md lazy-ledger update.
-7. PR6: eval harness — golden queries (~12 drafted) + `/eval-recall`.
+7. PR6: eval harness — golden queries + `/eval-recall`.
 
 ## Last session
 
-2026-05-13 — planning session, no code shipped. Defined M8: SQL+RAG
-hybrid recall. Locked 19 decisions covering library (fastembed-rs),
-model (BGE-small-en-v1.5, bundled), vector storage (SQLite BLOB +
-brute-force cosine, no extension), schema shape (embed existing rows
-directly, no separate chunks table), index lifecycle (eager on
-writes, content_hash drift), agent UX (MCP-first via `recall`, slash
-commands for direct invocation, stale-embedding warning prompts user
-for `/reindex`), and eval discipline (Recall@3, 12 starter golden
-queries).
+2026-05-13 — hardening pass triggered by an external Codex code
+review of the existing memhub surface. Six bugs validated and
+fixed, one commit each, with regression tests for every fix.
+Test suite went from 154 → 175 tests, all green. Branch pushed
+to origin/main.
 
 ## Open questions
 
-- Carryover: PATH ordering for `~/.local/bin/memhub` shadow; render
-  styling under `## Currently building`; `MEMHUB_ACTOR` env var;
-  `FACT_STALE_AFTER_DAYS` config knob; GC for already-ingested denied
-  paths; `clientInfo.name` aliases; `session_notes` in v2 export.
-- M8-specific: should the `recall` response include per-result token
-  estimates so the agent can budget mid-stream? (decide during PR4.)
+- Carryover: PATH ordering for `~/.local/bin/memhub` shadow;
+  `MEMHUB_ACTOR` env var; `FACT_STALE_AFTER_DAYS` config knob;
+  GC for already-ingested denied paths; `clientInfo.name` aliases;
+  `session_notes` in v2 export.
+- M8-specific: should the `recall` response include per-result
+  token estimates so the agent can budget mid-stream? (decide
+  during PR4.)
 - Eval harness: run on CI or only on-demand via `/eval-recall`?
 
-_Last updated 2026-05-13 20:13:45 by claude:wrap-up._
+_Last updated 2026-05-13 20:54:27 by claude:wrap-up._
 
 ## Architecture
 
@@ -134,6 +149,7 @@ _Last updated 2026-05-13 18:23:59 by codex:wrap-up._
 
 ## Recent session notes
 
+- **2026-05-13 20:55:44** (claude:wrap-up) — Hardening pass before starting M8: validated and fixed all six findings from an external Codex code review of the memhub surface. Six commits, one per finding (605fd59 atomic accept, 57a5f69 MCP actor, e5be353 source validation, d91fc98 export reviewed_at, 3c74cad two-phase render, ae90719 strip leading heading), each with regression tests. Test suite grew from 154 to 175 tests, all green. Branch pushed to origin/main.
 - **2026-05-13 20:14:27** (claude:wrap-up) — Planning session — no code shipped. Defined M8 (SQL+RAG hybrid recall) end-to-end: library (fastembed-rs), model (BGE-small-en-v1.5 bundled, ~140MB binary), vector storage (SQLite BLOB + brute-force cosine, no extension), schema (embed existing rows directly, no chunks table), index lifecycle (eager on writes, content_hash drift, agent-prompted /reindex on staleness), agent surface (MCP recall tool plus /recall and /reindex skills; agents prefer recall over PROJECT_LEDGER.md), and eval discipline (Recall@3, 12 starter golden queries). Routed 19 decisions and 6 PR-shaped tasks into the DB. PRD addendum at docs/reference/memhub-prd-addendum-m8-retrieval.md to follow in a separate turn.
 - **2026-05-13 18:40:30** (claude:wrap-up) — This session shipped 4 new MCP tools (task_add, task_done, list_facts, render) in e67167e, closing the four 'mid-session must Bash the CLI' gaps for agents while preserving the trust split — facts and decisions still stage for /wrap-up approval, but tasks and render now go direct. README's 'typical session' was reframed to lead with the agent-driven 'you say X / agent does Y' flow, demoting CLI to a fallback. Binary reinstalled so Codex's MCP client sees the new tool surface.
 - **2026-05-13 18:23:57** (codex:wrap-up) — Since the previous wrap-up, committed the K9 artifact cleanup and user-level /wrap-up lift in f97bcbf, added Codex CLI provenance symmetry plus migration 0008 in 7671f07, and rewrote the README while adding Claude/Codex skill templates in 5e9a0c6. The current wrap-up found no pending reviews, no open tasks, and a clean worktree before drafting these DB updates.

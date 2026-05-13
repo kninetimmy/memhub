@@ -1,13 +1,45 @@
 <!-- memhub:rendered -->
 <!-- DO NOT EDIT. Generated from .memhub/project.sqlite. -->
 <!-- To change content, use memhub CLI; then re-run `memhub render`. -->
-<!-- Generated at: 2026-05-13T20:50:02Z by memhub 0.1.0 -->
+<!-- Generated at: 2026-05-13T20:55:49Z by memhub 0.1.0 -->
 
 # memhub — Ledger
 
 ## Decisions
 
-_37 decision(s). Most recent first._
+_41 decision(s). Most recent first._
+
+### D41 — MCP-originated writes log under the calling client identity, not cli:user
+
+**Status:** active • **Decided:** 2026-05-13 20:54:51 • **Source:** user+agent:claude-code
+
+command::verify and render::render_project previously hardcoded cli:user in their writes_log entries; when Codex or Claude called the record_command or render MCP tools, the audit log misattributed those writes as human CLI actions, distorting memhub stats. Both functions now accept an actor parameter. CLI entry points pass DEFAULT_ACTOR (preserves prior behavior). MCP wrappers pass the normalized client identity from the request context, the same pattern task_add / task_done / log_session_note already use.
+
+---
+
+### D40 — memhub render is two-phase: prepare all temps and backups before any destination rename
+
+**Status:** active • **Decided:** 2026-05-13 20:54:45 • **Source:** user+agent:claude-code
+
+Previously render walked the two output files one at a time, doing backup, remove, rename per file. A mid-loop failure could leave PROJECT.md replaced while PROJECT_LEDGER.md was missing or stale. Render is now split into phase 1 (backup plus write all temp files) and phase 2 (rename each temp into place). All failable preparation runs before any destination is touched; either both temps exist or no destination is at risk. write_with_replace also drops the redundant pre-rename fs::remove_file because fs::rename atomically replaces existing regular files on Unix and Windows. The irreducible inconsistency window is between the two atomic renames in phase 2.
+
+---
+
+### D39 — Source vocabulary is writer-enforced, schema stays unconstrained TEXT
+
+**Status:** active • **Decided:** 2026-05-13 20:54:39 • **Source:** user+agent:claude-code
+
+The source-vocabulary addendum already specified writer enforcement of the user / git / observed / agent:<id> / user+agent:<id> vocabulary; until this session, CLI and acceptance paths accepted any string, so typos like user+agnet:codex silently persisted. validate_source() now lives in commands::mod and is called from fact::add_in_tx and decision::add_with_decided_at_in_tx, so both CLI writes and review acceptance go through the same gate. The schema stays unconstrained TEXT on purpose: enforcement lives at the writer layer where it can evolve without migrations.
+
+---
+
+### D38 — Review acceptance promotes pending to durable in one Immediate transaction
+
+**Status:** active • **Decided:** 2026-05-13 20:54:33 • **Source:** user+agent:claude-code
+
+Previously the durable insert (via fact::add / decision::add) and the pending status update (via mark_status) lived in separate transactions on separate connections. A crash or concurrent acceptor between commits could leave a durable row with a still-pending pending_writes row, or produce duplicate durable rows. accept now opens one Immediate transaction, performs the durable insert via fact::add_in_tx or decision::add_with_decided_at_in_tx, updates pending_writes inside the same transaction, and commits once. Concurrent acceptors serialize at the write lock; if the row is no longer pending, the whole transaction rolls back with no durable side effect.
+
+---
 
 ### D37 — /eval-recall skill runs the harness
 
@@ -439,12 +471,26 @@ First-install-only memhub integrations bootstrap-k9 [--dry-run] [--json]. Refuse
 
 ## Facts
 
-_No facts recorded._
+_2 fact(s), 0 stale._
+
+| Key | Value | Source | Confidence | Verified | Stale |
+|-----|-------|--------|-----------|----------|-------|
+| build-command | cargo build | user+agent:claude-code | 1.00 | 2026-05-13 20:55:34 | no |
+| test-command | cargo test | user+agent:claude-code | 1.00 | 2026-05-13 20:55:38 | no |
 
 ## Recent activity (last 30 days)
 
 | When | Actor | Table | Action | Reason |
 |------|-------|-------|--------|--------|
+| 2026-05-13 20:55:44 | claude:wrap-up | session_notes | insert | mcp log_session_note |
+| 2026-05-13 20:55:38 | claude:wrap-up | facts | insert | fact add |
+| 2026-05-13 20:55:34 | claude:wrap-up | facts | insert | fact add |
+| 2026-05-13 20:54:51 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 20:54:45 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 20:54:39 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 20:54:33 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-13 20:54:27 | claude:wrap-up | project_state | insert | state set |
+| 2026-05-13 20:50:02 | cli:user | render | render | memhub render |
 | 2026-05-13 20:14:30 | cli:user | render | render | memhub render |
 | 2026-05-13 20:14:27 | claude:wrap-up | session_notes | insert | mcp log_session_note |
 | 2026-05-13 20:14:20 | claude:wrap-up | tasks | insert | task add |
@@ -486,12 +532,3 @@ _No facts recorded._
 | 2026-05-13 18:23:30 | codex:wrap-up | decisions | insert | decision add |
 | 2026-05-13 18:23:25 | codex:wrap-up | project_state | insert | state set |
 | 2026-05-13 17:33:00 | cli:user | render | render | memhub render |
-| 2026-05-13 17:32:55 | claude:wrap-up | project_arch | insert | arch set |
-| 2026-05-13 17:32:55 | claude:wrap-up | session_notes | insert | mcp log_session_note |
-| 2026-05-13 17:32:55 | claude:wrap-up | decisions | insert | decision add |
-| 2026-05-13 17:32:55 | claude:wrap-up | project_state | insert | state set |
-| 2026-05-13 03:28:15 | cli:user | render | render | memhub render |
-| 2026-05-13 03:28:11 | claude:wrap-up | session_notes | insert | mcp log_session_note |
-| 2026-05-13 03:28:07 | claude:wrap-up | decisions | insert | decision add |
-| 2026-05-13 03:28:01 | claude:wrap-up | project_state | insert | state set |
-| 2026-05-13 02:22:14 | cli:user | markdown_sync | update | sync-md |
