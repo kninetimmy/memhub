@@ -176,7 +176,12 @@ fn run(
                 query_vec.len()
             )));
         }
-        let vector_hits = vector_lookup(conn, &opts.source_types, &query_vec)?;
+        let vector_hits = vector_lookup(
+            conn,
+            &opts.source_types,
+            &query_vec,
+            scoring.min_vector_score,
+        )?;
         for hit in &vector_hits {
             let entry = candidates
                 .entry((hit.source_type, hit.source_id))
@@ -383,6 +388,7 @@ fn vector_lookup(
     conn: &Connection,
     source_types: &[SourceType],
     query_vec: &[f32],
+    min_vector_score: f64,
 ) -> Result<Vec<VectorHit>> {
     let mut stmt = conn.prepare(
         "SELECT source_type, source_id, vector \
@@ -415,6 +421,9 @@ fn vector_lookup(
         }
         let candidate_vec = bytes_to_vector(&blob);
         let cosine = cosine_similarity(query_vec, &candidate_vec);
+        if cosine < min_vector_score {
+            continue;
+        }
         out.push(VectorHit {
             source_type,
             source_id: id,
@@ -1160,6 +1169,91 @@ mod tests {
                 - super::super::super::config::DEFAULT_STALE_PENALTY)
                 .abs()
                 < 1e-9
+        );
+        assert!(
+            (cfg.retrieval.scoring.min_vector_score
+                - super::super::super::config::DEFAULT_MIN_VECTOR_SCORE)
+                .abs()
+                < 1e-9
+        );
+    }
+
+    #[test]
+    fn hybrid_min_vector_score_drops_low_confidence_nonsense() {
+        // Seed under hybrid mode so embeddings are persisted, then issue a
+        // pure-nonsense query. The vector path will produce only
+        // low-cosine matches; with min_vector_score above the noise floor,
+        // every vector hit is dropped and FTS finds nothing, so the bundle
+        // must be empty.
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let cfg_path = temp.path().join(".memhub/config.toml");
+        let mut cfg = ProjectConfig::load(&cfg_path).expect("load");
+        cfg.retrieval.mode = RetrievalMode::Hybrid;
+        cfg.save(&cfg_path).expect("save");
+
+        seed(temp.path());
+
+        let response = recall(
+            temp.path(),
+            RecallOptions {
+                query: "zxqv-pure-nonsense-no-real-token-anywhere-in-this-repo".to_string(),
+                mode: Some(RetrievalMode::Hybrid),
+                max_results: 5,
+                source_types: vec![],
+                include_stale: None,
+                accepted_only: None,
+            },
+        )
+        .expect("recall");
+
+        assert_eq!(
+            response.results.len(),
+            0,
+            "nonsense query must return empty bundle in hybrid mode (min_vector_score floor); got {:?}",
+            response
+                .results
+                .iter()
+                .map(|h| (h.source_type.clone(), h.vector_score))
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(response.candidate_count, 0);
+        assert_eq!(response.matcher, "recall:hybrid");
+    }
+
+    #[test]
+    fn hybrid_min_vector_score_zero_keeps_legacy_behavior() {
+        // Inverse check: when the operator opts out by setting
+        // min_vector_score = 0.0, the vector path floods candidates again
+        // (this is the pre-threshold behavior surfaced by the Free-AI-SSD
+        // smoke test). Guards against a future refactor that hard-codes a
+        // floor.
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let cfg_path = temp.path().join(".memhub/config.toml");
+        let mut cfg = ProjectConfig::load(&cfg_path).expect("load");
+        cfg.retrieval.mode = RetrievalMode::Hybrid;
+        cfg.retrieval.scoring.min_vector_score = 0.0;
+        cfg.save(&cfg_path).expect("save");
+
+        seed(temp.path());
+
+        let response = recall(
+            temp.path(),
+            RecallOptions {
+                query: "zxqv-pure-nonsense-no-real-token-anywhere-in-this-repo".to_string(),
+                mode: Some(RetrievalMode::Hybrid),
+                max_results: 5,
+                source_types: vec![],
+                include_stale: None,
+                accepted_only: None,
+            },
+        )
+        .expect("recall");
+
+        assert!(
+            !response.results.is_empty(),
+            "with min_vector_score=0 the vector path should still surface low-confidence hits",
         );
     }
 }

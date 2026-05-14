@@ -19,6 +19,7 @@ pub const DEFAULT_RECALL_MAX_RESULTS: usize = 6;
 pub const DEFAULT_FTS_WEIGHT: f64 = 0.5;
 pub const DEFAULT_VECTOR_WEIGHT: f64 = 0.5;
 pub const DEFAULT_STALE_PENALTY: f64 = 0.3;
+pub const DEFAULT_MIN_VECTOR_SCORE: f64 = 0.7;
 pub const DEFAULT_ACCEPTED_ONLY: bool = false;
 pub const DEFAULT_INCLUDE_STALE: bool = false;
 
@@ -40,6 +41,12 @@ pub struct RetrievalScoringConfig {
     pub vector_weight: f64,
     #[serde(default = "default_stale_penalty")]
     pub stale_penalty: f64,
+    /// Minimum cosine similarity for a row to enter the candidate set via
+    /// the vector path. Rows below this floor are dropped before scoring,
+    /// so pure-nonsense queries don't surface low-confidence vector noise
+    /// in hybrid mode. FTS hits are unaffected. Ignored in fts mode.
+    #[serde(default = "default_min_vector_score")]
+    pub min_vector_score: f64,
 }
 
 impl Default for RetrievalScoringConfig {
@@ -48,6 +55,7 @@ impl Default for RetrievalScoringConfig {
             fts_weight: DEFAULT_FTS_WEIGHT,
             vector_weight: DEFAULT_VECTOR_WEIGHT,
             stale_penalty: DEFAULT_STALE_PENALTY,
+            min_vector_score: DEFAULT_MIN_VECTOR_SCORE,
         }
     }
 }
@@ -60,6 +68,9 @@ fn default_vector_weight() -> f64 {
 }
 fn default_stale_penalty() -> f64 {
     DEFAULT_STALE_PENALTY
+}
+fn default_min_vector_score() -> f64 {
+    DEFAULT_MIN_VECTOR_SCORE
 }
 fn default_max_results() -> usize {
     DEFAULT_RECALL_MAX_RESULTS
