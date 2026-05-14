@@ -59,14 +59,14 @@ The repository currently provides Milestone 1 scaffolding and a usable local CLI
 
 **Build:** `n/a`
 **Test:** `n/a`
-**Active tasks:** 0 open, 0 blocked - see `memhub task list --status open`
+**Active tasks:** 3 open, 0 blocked - see `memhub task list --status open`
 
 ### Durable decisions
-- PRD evolves via addendum docs; the PRD itself stays verbatim (2026-05-13 02:22:14)
-- Slash command collision resolution: rename the user-level skill (2026-05-13 01:50:34)
-- Wrap-up session boundary is implicit; no sessions table (2026-05-13 00:07:40)
-- Wrap-up routing brain is a Claude Code skill, not a CLI subcommand (2026-05-13 00:07:39)
-- Render conflict semantics: DB wins, prior file backed up (2026-05-13 00:07:39)
+- Memhub runtime and render output are machine-local by default (2026-05-14 11:42:08)
+- memhub viz v1 scope: ephemeral launcher + 5 panels + PCA + polling activity feed (2026-05-14 03:30:04)
+- Recall inspector replays pipeline state client-side from a verbose response (2026-05-14 03:29:54)
+- Listening-port invariant extended to allow user-initiated localhost binds (2026-05-14 03:29:45)
+- memhub viz dashboard is read-only and never writes to writes_log (2026-05-14 03:29:36)
 
 ### Known quirks
 - None recorded.
