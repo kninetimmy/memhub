@@ -1,4 +1,7 @@
 /target/
 /.memhub/
 /review_runs/
+/.claude/
 __pycache__/
+agent_docs/PROJECT.md
+agent_docs/PROJECT_LEDGER.md
