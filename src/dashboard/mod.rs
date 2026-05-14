@@ -397,6 +397,7 @@ fn run_recall(start: &Path, query: String) -> Result<RecallPayload> {
             source_types: Vec::new(),
             include_stale: Some(true),
             accepted_only: None,
+            use_reranker: None,
         },
     )?;
     Ok(RecallPayload {

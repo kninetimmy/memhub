@@ -102,6 +102,7 @@ fn run_retrieval_returns_full_recall_on_seeded_db() {
             golden_path: golden,
             k: 3,
             mode: None,
+            use_reranker: None,
         },
     )
     .expect("eval");
@@ -146,6 +147,7 @@ fn empty_query_with_matching_results_is_safety_failure() {
             golden_path: golden,
             k: 3,
             mode: None,
+            use_reranker: None,
         },
     )
     .expect("eval");
@@ -194,6 +196,7 @@ fn unmatched_query_drives_recall_below_one() {
             golden_path: golden,
             k: 3,
             mode: None,
+            use_reranker: None,
         },
     )
     .expect("eval");
@@ -222,6 +225,7 @@ fn missing_golden_path_returns_invalid_input_error() {
             golden_path: bogus,
             k: 3,
             mode: None,
+            use_reranker: None,
         },
     )
     .expect_err("missing golden");
@@ -239,6 +243,7 @@ fn k_must_be_positive() {
             golden_path: temp.path().join("anything.json"),
             k: 0,
             mode: None,
+            use_reranker: None,
         },
     )
     .expect_err("k=0");
@@ -256,9 +261,13 @@ fn shipped_golden_file_parses_cleanly() {
     let parsed: memhub::commands::eval::GoldenFile = serde_json::from_slice(&bytes)
         .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
     assert_eq!(parsed.version, 1);
-    assert_eq!(
-        parsed.queries.len(),
-        12,
+    // Addendum §9 fixed a 12-query baseline (11 keyword match + 1 safety).
+    // Decision 69 expanded the set with `semantic-` prefixed
+    // natural-language queries so the cross-encoder bake-off (task #20)
+    // had headroom above the keyword baseline. The new contract: keep
+    // the original 12 *and* preserve both query styles.
+    assert!(
+        parsed.queries.len() >= 12,
         "starter golden set must keep its 12-query baseline per addendum §9; got {}",
         parsed.queries.len(),
     );
@@ -270,5 +279,23 @@ fn shipped_golden_file_parses_cleanly() {
     assert!(
         empties >= 1,
         "starter golden set must include at least one safety (empty) probe",
+    );
+    let semantic = parsed
+        .queries
+        .iter()
+        .filter(|q| q.id.starts_with("semantic-"))
+        .count();
+    assert!(
+        semantic >= 1,
+        "starter golden set must include at least one `semantic-` prefixed query per decision 69",
+    );
+    let keyword = parsed
+        .queries
+        .iter()
+        .filter(|q| !q.id.starts_with("semantic-") && q.kind == GoldenKind::Match)
+        .count();
+    assert!(
+        keyword >= 11,
+        "starter golden set must keep the 11 keyword-style match queries per addendum §9; got {keyword}",
     );
 }

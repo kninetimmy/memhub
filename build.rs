@@ -1,15 +1,24 @@
 // memhub build script
 //
-// Stages the BGE-small-en-v1.5 model files used by the M8 retrieval layer
-// into OUT_DIR so the main crate can include them via include_bytes!.
+// Stages the bundled retrieval model files into OUT_DIR so the main crate
+// can include them via include_bytes!. Two models are bundled:
 //
-// On a clean build this downloads ~127 MB from Hugging Face. On rebuilds
-// the staged files are reused if their SHA256 matches the pinned value.
+//   * BGE-small-en-v1.5 — bi-encoder used by the M8 hybrid recall path.
+//     ~127 MB. Source: BAAI/bge-small-en-v1.5@main, commit
+//     5c38ec7c405ec4b44b94cc5a9bb96e735b38267a.
 //
-// The files come from BAAI/bge-small-en-v1.5@main, repo commit
-// 5c38ec7c405ec4b44b94cc5a9bb96e735b38267a. The model.onnx hash matches
-// the x-linked-etag returned by Hugging Face for that commit; the
-// tokenizer file hashes were computed locally over the downloaded bytes.
+//   * ms-marco-MiniLM-L-6-v2 — cross-encoder re-ranker bundled by the
+//     task-#21 work. ~91 MB. Source: Xenova/ms-marco-MiniLM-L-6-v2@main
+//     (an ONNX export of cross-encoder/ms-marco-MiniLM-L-6-v2). Selected
+//     over BGE-reranker-v2-m3 in the bake-off (decisions 68–70): +17.7pp
+//     Recall@1 over baseline, 15× faster than BGE-v2-m3, no keyword
+//     regressions.
+//
+// On a clean build this downloads ~218 MB total from Hugging Face. On
+// rebuilds the staged files are reused if their SHA256 matches the
+// pinned value. All hashes were computed locally over the downloaded
+// bytes (or, for BGE-small's model.onnx, match the x-linked-etag
+// returned by Hugging Face for the pinned commit).
 
 use std::env;
 use std::fs;
@@ -18,63 +27,108 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-const HF_BASE: &str = "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main";
-
-const MODEL_DIR: &str = "bge-small-en-v1.5";
-
 struct ModelFile {
-    /// Path inside the Hugging Face repo, relative to HF_BASE.
+    /// Path inside the Hugging Face repo, relative to the model's base URL.
     remote_path: &'static str,
-    /// Filename to use in OUT_DIR/MODEL_DIR/.
+    /// Filename to use under OUT_DIR/<model_dir>/.
     local_name: &'static str,
     /// Hex-encoded SHA256 of the expected file contents.
     sha256: &'static str,
 }
 
-const FILES: &[ModelFile] = &[
-    ModelFile {
-        remote_path: "onnx/model.onnx",
-        local_name: "model.onnx",
-        sha256: "828e1496d7fabb79cfa4dcd84fa38625c0d3d21da474a00f08db0f559940cf35",
-    },
-    ModelFile {
-        remote_path: "tokenizer.json",
-        local_name: "tokenizer.json",
-        sha256: "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66",
-    },
-    ModelFile {
-        remote_path: "config.json",
-        local_name: "config.json",
-        sha256: "094f8e891b932f2000c92cfc663bac4c62069f5d8af5b5278c4306aef3084750",
-    },
-    ModelFile {
-        remote_path: "special_tokens_map.json",
-        local_name: "special_tokens_map.json",
-        sha256: "b6d346be366a7d1d48332dbc9fdf3bf8960b5d879522b7799ddba59e76237ee3",
-    },
-    ModelFile {
-        remote_path: "tokenizer_config.json",
-        local_name: "tokenizer_config.json",
-        sha256: "9261e7d79b44c8195c1cada2b453e55b00aeb81e907a6664974b4d7776172ab3",
-    },
-];
+struct ModelBundle {
+    /// Subdirectory under OUT_DIR where the files are staged.
+    local_dir: &'static str,
+    /// Hugging Face base URL (resolve/main).
+    base_url: &'static str,
+    files: &'static [ModelFile],
+}
+
+const BGE_SMALL: ModelBundle = ModelBundle {
+    local_dir: "bge-small-en-v1.5",
+    base_url: "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main",
+    files: &[
+        ModelFile {
+            remote_path: "onnx/model.onnx",
+            local_name: "model.onnx",
+            sha256: "828e1496d7fabb79cfa4dcd84fa38625c0d3d21da474a00f08db0f559940cf35",
+        },
+        ModelFile {
+            remote_path: "tokenizer.json",
+            local_name: "tokenizer.json",
+            sha256: "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66",
+        },
+        ModelFile {
+            remote_path: "config.json",
+            local_name: "config.json",
+            sha256: "094f8e891b932f2000c92cfc663bac4c62069f5d8af5b5278c4306aef3084750",
+        },
+        ModelFile {
+            remote_path: "special_tokens_map.json",
+            local_name: "special_tokens_map.json",
+            sha256: "b6d346be366a7d1d48332dbc9fdf3bf8960b5d879522b7799ddba59e76237ee3",
+        },
+        ModelFile {
+            remote_path: "tokenizer_config.json",
+            local_name: "tokenizer_config.json",
+            sha256: "9261e7d79b44c8195c1cada2b453e55b00aeb81e907a6664974b4d7776172ab3",
+        },
+    ],
+};
+
+const RERANKER: ModelBundle = ModelBundle {
+    local_dir: "ms-marco-MiniLM-L-6-v2",
+    base_url: "https://huggingface.co/Xenova/ms-marco-MiniLM-L-6-v2/resolve/main",
+    files: &[
+        ModelFile {
+            remote_path: "onnx/model.onnx",
+            local_name: "model.onnx",
+            sha256: "c623d0bcb99f4622beb413eaef00cfbe5db20df9f1dd982da4b4f26022881870",
+        },
+        // tokenizer.json and special_tokens_map.json are byte-identical to
+        // BGE-small's (shared BERT WordPiece vocab); SHAs match accordingly.
+        ModelFile {
+            remote_path: "tokenizer.json",
+            local_name: "tokenizer.json",
+            sha256: "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66",
+        },
+        ModelFile {
+            remote_path: "config.json",
+            local_name: "config.json",
+            sha256: "d827779a72d27ae68cf878a6fc2e954542663fe21ca515d9f4783fc96be2d37e",
+        },
+        ModelFile {
+            remote_path: "special_tokens_map.json",
+            local_name: "special_tokens_map.json",
+            sha256: "b6d346be366a7d1d48332dbc9fdf3bf8960b5d879522b7799ddba59e76237ee3",
+        },
+        ModelFile {
+            remote_path: "tokenizer_config.json",
+            local_name: "tokenizer_config.json",
+            sha256: "0b29c7bfc889e53b36d9dd3e686dd4300f6525110eaa98c76a5dafceb2029f53",
+        },
+    ],
+};
+
+const BUNDLES: &[&ModelBundle] = &[&BGE_SMALL, &RERANKER];
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR not set by cargo"));
-    let stage_dir = out_dir.join(MODEL_DIR);
-    fs::create_dir_all(&stage_dir).unwrap_or_else(|e| {
-        panic!("failed to create {}: {e}", stage_dir.display());
-    });
-
-    for file in FILES {
-        let dest = stage_dir.join(file.local_name);
-        ensure_file(&dest, file);
+    for bundle in BUNDLES {
+        let stage_dir = out_dir.join(bundle.local_dir);
+        fs::create_dir_all(&stage_dir).unwrap_or_else(|e| {
+            panic!("failed to create {}: {e}", stage_dir.display());
+        });
+        for file in bundle.files {
+            let dest = stage_dir.join(file.local_name);
+            ensure_file(&dest, bundle.base_url, file);
+        }
     }
 }
 
-fn ensure_file(dest: &Path, file: &ModelFile) {
+fn ensure_file(dest: &Path, base_url: &str, file: &ModelFile) {
     if let Ok(actual) = sha256_of(dest) {
         if actual.eq_ignore_ascii_case(file.sha256) {
             return;
@@ -86,7 +140,7 @@ fn ensure_file(dest: &Path, file: &ModelFile) {
         let _ = fs::remove_file(dest);
     }
 
-    let url = format!("{HF_BASE}/{}", file.remote_path);
+    let url = format!("{base_url}/{}", file.remote_path);
     println!("cargo:warning=memhub: downloading {} -> {}", url, dest.display());
 
     let response = ureq::get(&url)

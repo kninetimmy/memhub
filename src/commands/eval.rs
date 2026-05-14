@@ -55,6 +55,10 @@ pub struct EvalOptions {
     pub golden_path: PathBuf,
     pub k: usize,
     pub mode: Option<RetrievalMode>,
+    /// Optional override of `[retrieval] use_reranker`. None = use project
+    /// config; Some(false) forces the re-ranker off for the run; Some(true)
+    /// forces it on regardless of config. Used for A/B harness runs.
+    pub use_reranker: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -108,6 +112,7 @@ pub fn run_retrieval(start: &Path, opts: EvalOptions) -> Result<EvalSummary> {
             source_types: Vec::new(),
             include_stale: None,
             accepted_only: None,
+            use_reranker: opts.use_reranker,
         };
         let response = retrieval::recall(start, recall_opts)?;
         if resolved_mode.is_none() {

@@ -23,6 +23,8 @@ pub enum MemhubError {
     Mcp(String),
     #[error("embedding error: {0}")]
     Embedding(String),
+    #[error("rerank error: {0}")]
+    Rerank(String),
     #[error("feature not implemented yet: {0}")]
     NotImplemented(&'static str),
     #[error(transparent)]

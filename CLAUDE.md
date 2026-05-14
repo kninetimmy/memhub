@@ -117,6 +117,25 @@ cargo run -- init
 cargo run -- status
 ```
 
+## Retrieval
+
+Hybrid recall (the default) combines FTS5 BM25 and BGE-small embeddings,
+then by default runs a bundled cross-encoder re-ranker
+(ms-marco-MiniLM-L-6-v2) over the top `[retrieval] rerank_candidate_pool`
+candidates before truncating to `max_results`. The re-ranker adds
+~275 ms per recall at pool=20 in exchange for ~+17 percentage points of
+Recall@1 on memhub's own golden set (decision 68).
+
+Toggle per-call with `memhub recall <query> --no-rerank`, or globally
+with `[retrieval] use_reranker = false` in `.memhub/config.toml`. The
+re-ranker is bundled into the binary unconditionally (no Cargo feature
+flag) — turning it off in config skips the inference cost but doesn't
+strip the model from disk. FTS-only mode bypasses the re-ranker
+entirely.
+
+For A/B testing in any repo: `memhub eval retrieval` vs
+`memhub eval retrieval --no-rerank`.
+
 ## Current Build Focus
 
 The repository currently provides Milestone 1 scaffolding and a usable local CLI foundation. Future work should extend from these boundaries instead of replacing them.

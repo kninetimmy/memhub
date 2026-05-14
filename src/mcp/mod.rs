@@ -319,6 +319,7 @@ impl MemhubServer {
                 source_types,
                 include_stale: params.include_stale,
                 accepted_only: params.accepted_only,
+                use_reranker: None,
             },
         )
         .map_err(map_tool_error)?;

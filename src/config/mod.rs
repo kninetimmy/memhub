@@ -22,6 +22,8 @@ pub const DEFAULT_STALE_PENALTY: f64 = 0.3;
 pub const DEFAULT_MIN_VECTOR_SCORE: f64 = 0.7;
 pub const DEFAULT_ACCEPTED_ONLY: bool = false;
 pub const DEFAULT_INCLUDE_STALE: bool = false;
+pub const DEFAULT_USE_RERANKER: bool = true;
+pub const DEFAULT_RERANK_CANDIDATE_POOL: usize = 20;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -81,6 +83,12 @@ fn default_accepted_only() -> bool {
 fn default_include_stale() -> bool {
     DEFAULT_INCLUDE_STALE
 }
+fn default_use_reranker() -> bool {
+    DEFAULT_USE_RERANKER
+}
+fn default_rerank_candidate_pool() -> usize {
+    DEFAULT_RERANK_CANDIDATE_POOL
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetrievalConfig {
@@ -92,6 +100,17 @@ pub struct RetrievalConfig {
     pub accepted_only_by_default: bool,
     #[serde(default = "default_include_stale")]
     pub include_stale_by_default: bool,
+    /// Apply the bundled cross-encoder re-ranker (ms-marco-MiniLM-L-6-v2)
+    /// to hybrid recall results. Adds ~275 ms per recall at pool=20 and
+    /// lifts Recall@1 by ~17pp on memhub's own golden set (decision 68).
+    /// Ignored in fts mode. On by default; set to `false` to skip.
+    #[serde(default = "default_use_reranker")]
+    pub use_reranker: bool,
+    /// Number of top-blended candidates to feed into the cross-encoder
+    /// before the final truncate to `max_results`. Only consulted when
+    /// `use_reranker = true` and mode = hybrid.
+    #[serde(default = "default_rerank_candidate_pool")]
+    pub rerank_candidate_pool: usize,
     #[serde(default)]
     pub scoring: RetrievalScoringConfig,
 }
@@ -103,6 +122,8 @@ impl Default for RetrievalConfig {
             default_max_results: DEFAULT_RECALL_MAX_RESULTS,
             accepted_only_by_default: DEFAULT_ACCEPTED_ONLY,
             include_stale_by_default: DEFAULT_INCLUDE_STALE,
+            use_reranker: DEFAULT_USE_RERANKER,
+            rerank_candidate_pool: DEFAULT_RERANK_CANDIDATE_POOL,
             scoring: RetrievalScoringConfig::default(),
         }
     }

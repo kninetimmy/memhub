@@ -22,6 +22,7 @@ use crate::retrieval::embeddings::{EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME, em
 use crate::retrieval::persist::{
     SourceType, decision_embed_text, fact_embed_text, task_embed_text,
 };
+use crate::retrieval::rerank;
 use crate::{MemhubError, Result};
 
 const PER_SOURCE_FTS_LIMIT: i64 = 50;
@@ -40,6 +41,9 @@ pub struct RecallOptions {
     pub include_stale: Option<bool>,
     /// Override of `accepted_only_by_default`.
     pub accepted_only: Option<bool>,
+    /// Override of `[retrieval] use_reranker`. None = use project config.
+    /// Ignored when mode resolves to fts (re-ranker only runs on hybrid).
+    pub use_reranker: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -95,6 +99,10 @@ struct ResolvedOptions {
     source_types: Vec<SourceType>,
     include_stale: bool,
     accepted_only: bool,
+    /// Effective rerank toggle; honored only when mode = hybrid.
+    use_reranker: bool,
+    /// Effective candidate pool size for the cross-encoder when active.
+    rerank_candidate_pool: usize,
 }
 
 impl ResolvedOptions {
@@ -133,6 +141,8 @@ impl ResolvedOptions {
             source_types,
             include_stale: opts.include_stale.unwrap_or(cfg.include_stale_by_default),
             accepted_only: opts.accepted_only.unwrap_or(cfg.accepted_only_by_default),
+            use_reranker: opts.use_reranker.unwrap_or(cfg.use_reranker),
+            rerank_candidate_pool: cfg.rerank_candidate_pool.max(max_results),
         })
     }
 }
@@ -238,6 +248,29 @@ fn run(
             .then_with(|| a.source_type.as_str().cmp(b.source_type.as_str()))
             .then_with(|| a.source_id.cmp(&b.source_id))
     });
+
+    // Optional cross-encoder re-rank pass (decision 68). Only runs on
+    // hybrid mode and only when the operator hasn't opted out. Takes the
+    // top `rerank_candidate_pool` by blended score, reorders them by the
+    // cross-encoder, then truncates to `max_results`. fts-only callers
+    // and trivially short candidate sets bypass entirely.
+    let reranked =
+        opts.mode == RetrievalMode::Hybrid && opts.use_reranker && scored.len() > 1;
+    if reranked {
+        scored.truncate(opts.rerank_candidate_pool);
+        let docs: Vec<String> = scored
+            .iter()
+            .map(|h| format!("{}\n\n{}", h.title, h.body))
+            .collect();
+        let order = rerank::rerank(&opts.query, &docs)?;
+        let mut reshuffled: Vec<ScoredHit> = Vec::with_capacity(scored.len());
+        for &idx in &order {
+            if let Some(hit) = scored.get(idx) {
+                reshuffled.push(hit.clone());
+            }
+        }
+        scored = reshuffled;
+    }
     scored.truncate(opts.max_results);
 
     let mut results = Vec::with_capacity(scored.len());
@@ -261,7 +294,13 @@ fn run(
     let returned_count = results.len();
     let matcher = match opts.mode {
         RetrievalMode::Fts => "recall:fts".to_string(),
-        RetrievalMode::Hybrid => "recall:hybrid".to_string(),
+        RetrievalMode::Hybrid => {
+            if reranked {
+                "recall:hybrid+rerank".to_string()
+            } else {
+                "recall:hybrid".to_string()
+            }
+        }
     };
 
     Ok(RecallResponse {
@@ -313,6 +352,7 @@ impl CandidateRow {
     }
 }
 
+#[derive(Clone)]
 struct ScoredHit {
     source_type: SourceType,
     source_id: i64,
@@ -834,6 +874,7 @@ mod tests {
                 source_types: vec![],
                 include_stale: None,
                 accepted_only: None,
+                use_reranker: None,
             },
         )
         .expect("recall");
@@ -862,6 +903,7 @@ mod tests {
                 source_types: vec![SourceType::Decision],
                 include_stale: None,
                 accepted_only: None,
+                use_reranker: None,
             },
         )
         .expect("recall");
@@ -883,6 +925,7 @@ mod tests {
                 source_types: vec![SourceType::Fact],
                 include_stale: None,
                 accepted_only: Some(true),
+                use_reranker: None,
             },
         )
         .expect("recall");
@@ -916,6 +959,7 @@ mod tests {
                 source_types: vec![],
                 include_stale: None,
                 accepted_only: None,
+                use_reranker: None,
             },
         )
         .expect_err("empty query");
@@ -936,6 +980,7 @@ mod tests {
                 source_types: vec![],
                 include_stale: None,
                 accepted_only: None,
+                use_reranker: None,
             },
         )
         .expect("recall");
@@ -971,6 +1016,7 @@ mod tests {
                 source_types: vec![SourceType::Fact],
                 include_stale: None,
                 accepted_only: None,
+                use_reranker: None,
             },
         )
         .expect("recall");
@@ -1025,6 +1071,7 @@ mod tests {
                 source_types: vec![SourceType::Decision],
                 include_stale: None,
                 accepted_only: None,
+                use_reranker: None,
             },
         )
         .expect("recall");
@@ -1065,6 +1112,7 @@ mod tests {
                 source_types: vec![SourceType::Task],
                 include_stale: None,
                 accepted_only: None,
+                use_reranker: None,
             },
         )
         .expect("recall");
@@ -1129,6 +1177,7 @@ mod tests {
                 source_types: vec![SourceType::Fact],
                 include_stale: None,
                 accepted_only: None,
+                use_reranker: None,
             },
         )
         .expect("recall");
@@ -1203,6 +1252,7 @@ mod tests {
                 source_types: vec![],
                 include_stale: None,
                 accepted_only: None,
+                use_reranker: None,
             },
         )
         .expect("recall");
@@ -1247,6 +1297,7 @@ mod tests {
                 source_types: vec![],
                 include_stale: None,
                 accepted_only: None,
+                use_reranker: None,
             },
         )
         .expect("recall");

@@ -688,6 +688,11 @@ pub enum TopLevelCommand {
         include_stale: bool,
         #[arg(long)]
         accepted_only: bool,
+        /// Disable the cross-encoder re-ranker for this call. By default
+        /// the value of `[retrieval] use_reranker` is honored; this flag
+        /// forces the re-ranker off without touching config.
+        #[arg(long)]
+        no_rerank: bool,
         #[arg(long)]
         json: bool,
     },
@@ -706,6 +711,10 @@ pub enum EvalCommand {
         k: usize,
         #[arg(long, value_enum)]
         mode: Option<RecallModeArg>,
+        /// Disable the cross-encoder re-ranker for every query in this
+        /// eval run. Use for A/B comparisons against the rerank-on baseline.
+        #[arg(long)]
+        no_rerank: bool,
         #[arg(long)]
         json: bool,
     },
@@ -1608,6 +1617,7 @@ pub fn run(cli: Cli) -> Result<()> {
             mode,
             include_stale,
             accepted_only,
+            no_rerank,
             json: as_json,
         } => {
             let opts = RecallOptions {
@@ -1620,6 +1630,7 @@ pub fn run(cli: Cli) -> Result<()> {
                     .collect(),
                 include_stale: if include_stale { Some(true) } else { None },
                 accepted_only: if accepted_only { Some(true) } else { None },
+                use_reranker: if no_rerank { Some(false) } else { None },
             };
             let response = retrieval::recall(&cwd, opts)?;
             if as_json {
@@ -1633,6 +1644,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 golden,
                 k,
                 mode,
+                no_rerank,
                 json: as_json,
             } => {
                 let golden_path = golden.unwrap_or_else(|| {
@@ -1642,6 +1654,7 @@ pub fn run(cli: Cli) -> Result<()> {
                     golden_path,
                     k,
                     mode: mode.map(|m| m.to_mode()),
+                    use_reranker: if no_rerank { Some(false) } else { None },
                 };
                 let summary = commands::eval::run_retrieval(&cwd, opts)?;
                 if as_json {

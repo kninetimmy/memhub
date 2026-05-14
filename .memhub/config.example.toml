@@ -7,11 +7,13 @@
 # per-machine override that doesn't sync via git.
 #
 # Fields that should NOT drift across machines (commit changes here):
-#   - deny_list.patterns      (security boundary)
-#   - retrieval.mode          (recall behavior)
-#   - retrieval.scoring.*     (reproducible recall)
-#   - integrations.k9.*       (project property)
-#   - render.output_dir       (project property)
+#   - deny_list.patterns               (security boundary)
+#   - retrieval.mode                   (recall behavior)
+#   - retrieval.use_reranker           (recall behavior)
+#   - retrieval.rerank_candidate_pool  (recall behavior)
+#   - retrieval.scoring.*              (reproducible recall)
+#   - integrations.k9.*                (project property)
+#   - render.output_dir                (project property)
 #
 # Fields that are per-machine preferences (override locally without
 # committing back to the example):
@@ -59,6 +61,11 @@ mode = "hybrid"
 default_max_results = 6
 accepted_only_by_default = false
 include_stale_by_default = false
+# Cross-encoder re-ranker (ms-marco-MiniLM-L-6-v2). Adds ~275 ms per
+# recall at pool=20; lifted Recall@1 by ~17pp on memhub's golden set in
+# the bake-off (decision 68). Ignored in fts mode.
+use_reranker = true
+rerank_candidate_pool = 20
 
 [retrieval.scoring]
 fts_weight = 0.5
