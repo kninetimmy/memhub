@@ -1,13 +1,45 @@
 <!-- memhub:rendered -->
 <!-- DO NOT EDIT. Generated from .memhub/project.sqlite. -->
 <!-- To change content, use memhub CLI; then re-run `memhub render`. -->
-<!-- Generated at: 2026-05-13T23:19:16Z by memhub 0.1.0 -->
+<!-- Generated at: 2026-05-14T02:46:50Z by memhub 0.1.0 -->
 
 # memhub — Ledger
 
 ## Decisions
 
-_53 decision(s). Most recent first._
+_57 decision(s). Most recent first._
+
+### D57 — Hybrid min_vector_score gates raw vector cosine, not blended score
+
+**Status:** active • **Decided:** 2026-05-14 02:46:32 • **Source:** user+agent:claude-code
+
+Two designs were on the table: (A) a floor on the blended final_score (single knob, one number to reason about) or (B) a floor on raw vector cosine that gates the vector candidate set before scoring. Picked B. Rationale: the failure mode is specifically the vector path solo-producing low-confidence candidates against nonsense queries — gating raw cosine targets that mode directly, leaves FTS hits untouched, and avoids conflating two independent knobs (vector_weight and a separate min_score) into a single mental model. A blended-score floor would either over-filter legit hybrid hits or under-filter nonsense depending on the relative weight of fts_score vs vector_score. The numeric default (0.7) is recorded in fact #4, calibrated empirically against the live corpus.
+
+---
+
+### D56 — Index rebuild preserves newer eager embeddings
+
+**Status:** active • **Decided:** 2026-05-14 00:37:22 • **Source:** user+agent:codex
+
+Rebuild embeds from a snapshot but verifies the current source hash before each upsert and prunes only orphaned active-model embeddings. This avoids overwriting a fresher eager embedding written by a concurrent fact/decision/task update.
+
+---
+
+### D55 — Recall staleness filtering applies to fact freshness, not task/decision lifecycle
+
+**Status:** active • **Decided:** 2026-05-14 00:37:15 • **Source:** user+agent:codex
+
+include_stale=false should hide stale facts, not completed tasks or inactive decisions. Done tasks and superseded/draft decisions can still be relevant historical evidence and should remain recallable unless a future explicit status filter is added.
+
+---
+
+### D54 — Recall must not maintain legacy chunks
+
+**Status:** active • **Decided:** 2026-05-14 00:37:09 • **Source:** user+agent:codex
+
+memhub recall is a read surface and must not mutate durable or derived tables. Legacy decision chunks maintenance belongs to write/import/search-maintenance paths, not recall/eval, so read-only behavior remains true even on read-only DB mounts.
+
+---
 
 ### D53 — Golden queries are keyword-style (3-6 specific terms), not natural-language sentences
 
@@ -435,21 +467,21 @@ Steady-state non-goal of no bulk K9 import stays. First-install bootstrap-k9 is 
 
 ## Backlog
 
-_18 task(s), 2 open. Open first, then by recency._
-
-### T18 — Add min-score threshold to memhub recall in hybrid mode
-
-**Status:** open • **Updated:** 2026-05-13 23:19:02
-
-Free-AI-SSD smoke test surfaced pure-nonsense queries returning low-similarity (~0.32) hits via vector path. Add a configurable cutoff (likely a new [retrieval.scoring] knob with a default around 0.4) so nonsense bundles are empty in hybrid mode the way they are in fts mode. The eval harness already has the shape to verify this — tests/retrieval_golden.json safety probes will start failing under hybrid mode until the threshold lands. Consider whether the threshold should apply to the blended final_score or just the vector_score component when fts_score is zero.
-
----
+_18 task(s), 1 open. Open first, then by recency._
 
 ### T10 — Dogfood Codex memhub skills in fresh and existing repos
 
 **Status:** open • **Updated:** 2026-05-13 18:23:52
 
 Exercise /wrap-up, /init-project, and /check-init from the Codex skill templates after install; verify attribution, render output, and fresh-repo behavior.
+
+---
+
+### T18 — Add min-score threshold to memhub recall in hybrid mode
+
+**Status:** done • **Updated:** 2026-05-14 02:39:25
+
+Free-AI-SSD smoke test surfaced pure-nonsense queries returning low-similarity (~0.32) hits via vector path. Add a configurable cutoff (likely a new [retrieval.scoring] knob with a default around 0.4) so nonsense bundles are empty in hybrid mode the way they are in fts mode. The eval harness already has the shape to verify this — tests/retrieval_golden.json safety probes will start failing under hybrid mode until the threshold lands. Consider whether the threshold should apply to the blended final_score or just the vector_score component when fts_score is zero.
 
 ---
 
@@ -583,17 +615,35 @@ First-install-only memhub integrations bootstrap-k9 [--dry-run] [--json]. Refuse
 
 ## Facts
 
-_2 fact(s), 0 stale._
+_4 fact(s), 0 stale._
 
 | Key | Value | Source | Confidence | Verified | Stale |
 |-----|-------|--------|-----------|----------|-------|
 | build-command | cargo build | user+agent:claude-code | 1.00 | 2026-05-13 20:55:34 | no |
+| install-command | cargo install --path . --force && cp ~/.cargo/bin/memhub ~/.local/bin/memhub | user+agent:codex | 1.00 | 2026-05-14 00:37:33 | no |
+| retrieval.min_vector_score-calibration | Default raw-cosine floor on the hybrid vector path is 0.7. Calibrated 2026-05-13 against the live .memhub/project.sqlite: nonsense queries (e.g. zxqv-pure-nonsense...) peak at cosine ~0.67; legitimate top-1 matches sit at >=0.78. 0.7 gives ~0.08 headroom on both sides while keeping Recall@3 at 11/11 and safety 1/1 in eval retrieval --mode hybrid. The task-note value of ~0.4 was actually the blended final_score (0.5*0 + 0.5*0.67), not the raw cosine — do not regress to 0.4. Re-tune if BGE-small is swapped for a model with a different cosine noise floor. | user+agent:claude-code | 1.00 | 2026-05-14 02:41:41 | no |
 | test-command | cargo test | user+agent:claude-code | 1.00 | 2026-05-13 20:55:38 | no |
 
 ## Recent activity (last 30 days)
 
 | When | Actor | Table | Action | Reason |
 |------|-------|-------|--------|--------|
+| 2026-05-14 02:46:44 | claude:wrap-up | project_arch | insert | arch set |
+| 2026-05-14 02:46:38 | claude:wrap-up | session_notes | insert | mcp log_session_note |
+| 2026-05-14 02:46:32 | claude:wrap-up | decisions | insert | decision add |
+| 2026-05-14 02:46:23 | claude:wrap-up | project_state | insert | state set |
+| 2026-05-14 02:41:41 | cli:claude-code | facts | insert | fact add |
+| 2026-05-14 02:39:25 | cli:user | tasks | update | task done |
+| 2026-05-14 00:37:54 | cli:user | render | render | memhub render |
+| 2026-05-14 00:37:46 | codex:wrap-up | project_arch | insert | arch set |
+| 2026-05-14 00:37:40 | codex:wrap-up | session_notes | insert | mcp log_session_note |
+| 2026-05-14 00:37:33 | codex:wrap-up | facts | insert | fact add |
+| 2026-05-14 00:37:22 | codex:wrap-up | decisions | insert | decision add |
+| 2026-05-14 00:37:15 | codex:wrap-up | decisions | insert | decision add |
+| 2026-05-14 00:37:09 | codex:wrap-up | decisions | insert | decision add |
+| 2026-05-14 00:36:59 | codex:wrap-up | project_state | insert | state set |
+| 2026-05-13 23:58:52 | codex:configure-hybrid | embeddings | rebuild | index rebuild: model=bge-small-en-v1.5 facts=2 decisions=53 tasks=18 |
+| 2026-05-13 23:19:16 | cli:user | render | render | memhub render |
 | 2026-05-13 23:19:12 | claude:wrap-up | project_arch | insert | arch set |
 | 2026-05-13 23:19:11 | claude:wrap-up | session_notes | insert | mcp log_session_note |
 | 2026-05-13 23:19:02 | claude:wrap-up | tasks | insert | task add |
@@ -628,19 +678,3 @@ _2 fact(s), 0 stale._
 | 2026-05-13 21:49:39 | claude:wrap-up | decisions | insert | decision add |
 | 2026-05-13 21:49:31 | claude:wrap-up | decisions | insert | decision add |
 | 2026-05-13 21:49:24 | claude:wrap-up | project_state | insert | state set |
-| 2026-05-13 20:55:49 | cli:user | render | render | memhub render |
-| 2026-05-13 20:55:44 | claude:wrap-up | session_notes | insert | mcp log_session_note |
-| 2026-05-13 20:55:38 | claude:wrap-up | facts | insert | fact add |
-| 2026-05-13 20:55:34 | claude:wrap-up | facts | insert | fact add |
-| 2026-05-13 20:54:51 | claude:wrap-up | decisions | insert | decision add |
-| 2026-05-13 20:54:45 | claude:wrap-up | decisions | insert | decision add |
-| 2026-05-13 20:54:39 | claude:wrap-up | decisions | insert | decision add |
-| 2026-05-13 20:54:33 | claude:wrap-up | decisions | insert | decision add |
-| 2026-05-13 20:54:27 | claude:wrap-up | project_state | insert | state set |
-| 2026-05-13 20:50:02 | cli:user | render | render | memhub render |
-| 2026-05-13 20:14:30 | cli:user | render | render | memhub render |
-| 2026-05-13 20:14:27 | claude:wrap-up | session_notes | insert | mcp log_session_note |
-| 2026-05-13 20:14:20 | claude:wrap-up | tasks | insert | task add |
-| 2026-05-13 20:14:20 | claude:wrap-up | tasks | insert | task add |
-| 2026-05-13 20:14:20 | claude:wrap-up | tasks | insert | task add |
-| 2026-05-13 20:14:20 | claude:wrap-up | tasks | insert | task add |
