@@ -57,6 +57,11 @@ pub struct Decision {
     pub superseded_by: Option<i64>,
     #[serde(default = "default_decision_source")]
     pub source: String,
+    /// Optional natural-language paraphrase. Added in migration 0011
+    /// (decision 72 / task #23). `#[serde(default)]` keeps older exports
+    /// importable cleanly.
+    #[serde(default)]
+    pub summary: Option<String>,
 }
 
 fn default_decision_source() -> String {

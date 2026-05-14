@@ -318,6 +318,108 @@ fn review_accept_embeds_fact_in_hybrid_mode() {
 }
 
 #[test]
+fn decision_add_with_summary_embeds_augmented_text() {
+    // The bi-encoder's content_hash is computed over the embed text. When
+    // a summary is set, the embed text gets a paraphrase prefix, so the
+    // hash differs from the no-summary baseline. Covers migration 0011 /
+    // decision 72.
+    use memhub::retrieval::decision_embed_text;
+
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+    switch_to_hybrid(temp.path());
+
+    let plain_id = decision::add(
+        temp.path(),
+        "content_hash drift detection",
+        "Store a hash of source body alongside each vector.",
+        "user",
+        "cli:user",
+    )
+    .expect("plain decision");
+
+    let augmented_id = decision::add_with_decided_at(
+        temp.path(),
+        "content_hash drift detection — augmented row",
+        "Store a hash of source body alongside each vector.",
+        None,
+        Some("How does memhub know when an embedding has gone stale?"),
+        "user",
+        "cli:user",
+    )
+    .expect("augmented decision");
+
+    let ctx = db::open_project(temp.path()).expect("open project");
+    let (_, plain_hash, _) = embedding_metadata(&ctx.conn, "decision", plain_id);
+    let (_, augmented_hash, _) = embedding_metadata(&ctx.conn, "decision", augmented_id);
+
+    assert_ne!(
+        plain_hash, augmented_hash,
+        "augmented embed text must produce a different content_hash"
+    );
+
+    // Sanity: the augmented hash matches a manual call to decision_embed_text
+    // with the same summary input.
+    let expected_text = decision_embed_text(
+        "content_hash drift detection — augmented row",
+        "Store a hash of source body alongside each vector.",
+        Some("How does memhub know when an embedding has gone stale?"),
+    );
+    assert!(
+        expected_text.starts_with("How does memhub know"),
+        "augmented embed text should start with the summary"
+    );
+}
+
+#[test]
+fn decision_set_summary_re_embeds_existing_row() {
+    // Backfill path: decision::set_summary updates the row's summary and
+    // re-embeds inside the same transaction. Content_hash before and
+    // after must differ; clearing the summary back to empty restores the
+    // baseline hash.
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+    switch_to_hybrid(temp.path());
+
+    let id = decision::add(
+        temp.path(),
+        "Zero-result behavior: empty bundle, no automatic fallback",
+        "Recall returns an empty results array when nothing matches.",
+        "user",
+        "cli:user",
+    )
+    .expect("decision");
+
+    let baseline_hash = {
+        let ctx = db::open_project(temp.path()).expect("open project");
+        embedding_metadata(&ctx.conn, "decision", id).1
+    };
+
+    decision::set_summary(
+        temp.path(),
+        id,
+        Some("What does memhub return when a query matches nothing?"),
+        "cli:user",
+    )
+    .expect("set_summary");
+
+    let augmented_hash = {
+        let ctx = db::open_project(temp.path()).expect("open project");
+        embedding_metadata(&ctx.conn, "decision", id).1
+    };
+    assert_ne!(baseline_hash, augmented_hash);
+
+    // Clearing the summary (empty string -> None) must restore the
+    // baseline content_hash so the embed text round-trips.
+    decision::set_summary(temp.path(), id, None, "cli:user").expect("clear summary");
+    let restored_hash = {
+        let ctx = db::open_project(temp.path()).expect("open project");
+        embedding_metadata(&ctx.conn, "decision", id).1
+    };
+    assert_eq!(restored_hash, baseline_hash);
+}
+
+#[test]
 fn config_round_trip_preserves_retrieval_section() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");

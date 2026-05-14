@@ -144,6 +144,16 @@ The rerank-score band is similarly noisy on memhub's own corpus, so
 `memhub recall --min-rerank-score <F>` or `memhub eval retrieval
 --min-rerank-score=<F>` (use the `=` form for negative values).
 
+Decisions can carry an optional natural-language `summary` (migration
+0011, decision 72). When set, the summary is prepended to BOTH the
+bi-encoder's embed text and the cross-encoder's rerank input, letting
+jargon-titled decisions surface for plain-English queries. On memhub's
+own golden set, backfilling summaries on four jargon-titled decisions
+lifted Recall@3 from 76.5% to 100% with the safety probe still
+passing. Set at write time with `memhub decision add --summary "..."`
+or backfill an existing row with `memhub decision set-summary <ID>
+"..."` (empty string clears it back to NULL).
+
 For A/B testing in any repo: `memhub eval retrieval` vs
 `memhub eval retrieval --no-rerank`.
 

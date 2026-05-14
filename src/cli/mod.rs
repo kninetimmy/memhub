@@ -948,8 +948,24 @@ pub enum DecisionCommand {
         title: String,
         #[arg(long)]
         rationale: String,
+        /// Optional natural-language paraphrase. Prepended to the embed
+        /// text and cross-encoder rerank input so jargon-titled
+        /// decisions surface for plain-English queries (decision 72).
+        #[arg(long)]
+        summary: Option<String>,
         #[arg(long, default_value = "user")]
         source: String,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// Backfill (or overwrite) the natural-language summary on an
+    /// existing decision. Empty string clears the summary back to NULL.
+    /// Re-embeds the row inside the same transaction.
+    SetSummary {
+        id: i64,
+        summary: String,
         #[arg(long)]
         json: bool,
         #[arg(long)]
@@ -1232,21 +1248,56 @@ pub fn run(cli: Cli) -> Result<()> {
             DecisionCommand::Add {
                 title,
                 rationale,
+                summary,
                 source,
                 json: as_json,
                 actor,
             } => {
                 let actor = resolve_actor(actor.as_deref())?;
-                let id = commands::decision::add(&cwd, &title, &rationale, &source, &actor)?;
+                let id = commands::decision::add_with_decided_at(
+                    &cwd,
+                    &title,
+                    &rationale,
+                    None,
+                    summary.as_deref(),
+                    &source,
+                    &actor,
+                )?;
                 if as_json {
                     let payload = json!({
                         "id": id,
                         "title": title,
                         "source": source,
+                        "summary": summary,
                     });
                     println!("{payload}");
                 } else {
                     println!("Created decision {id}: {title}");
+                }
+            }
+            DecisionCommand::SetSummary {
+                id,
+                summary,
+                json: as_json,
+                actor,
+            } => {
+                let actor = resolve_actor(actor.as_deref())?;
+                let summary_opt = if summary.trim().is_empty() {
+                    None
+                } else {
+                    Some(summary.as_str())
+                };
+                commands::decision::set_summary(&cwd, id, summary_opt, &actor)?;
+                if as_json {
+                    let payload = json!({
+                        "id": id,
+                        "summary": summary_opt,
+                    });
+                    println!("{payload}");
+                } else if summary_opt.is_some() {
+                    println!("Set summary on decision {id}");
+                } else {
+                    println!("Cleared summary on decision {id}");
                 }
             }
             DecisionCommand::List => {

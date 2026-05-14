@@ -280,9 +280,18 @@ fn run(
         opts.mode == RetrievalMode::Hybrid && opts.use_reranker && scored.len() > 1;
     if reranked {
         scored.truncate(opts.rerank_candidate_pool);
+        // Cross-encoder input mirrors the bi-encoder's embed text shape:
+        // prepend the row's natural-language summary when present so the
+        // re-ranker can score paraphrase matches, not just title+body
+        // surface tokens (decision 72 / task #23).
         let docs: Vec<String> = scored
             .iter()
-            .map(|h| format!("{}\n\n{}", h.title, h.body))
+            .map(|h| match h.summary.as_deref() {
+                Some(s) if !s.trim().is_empty() => {
+                    format!("{}\n\n{}\n\n{}", s, h.title, h.body)
+                }
+                _ => format!("{}\n\n{}", h.title, h.body),
+            })
             .collect();
         let scored_order = rerank::rerank(&opts.query, &docs)?;
         let mut reshuffled: Vec<ScoredHit> = Vec::with_capacity(scored.len());
@@ -351,6 +360,11 @@ struct CandidateRow {
     vector_score: Option<f64>,
     title: String,
     body: String,
+    /// Optional augmenting paraphrase. When `Some`, the cross-encoder
+    /// rerank input is built as `summary\n\ntitle\n\nbody`; otherwise
+    /// the existing `title\n\nbody` shape is preserved. Today only
+    /// populated for decisions (migration 0011 / decision 72).
+    summary: Option<String>,
     source: String,
     confidence: f64,
     is_stale: bool,
@@ -367,6 +381,7 @@ impl CandidateRow {
             vector_score: None,
             title: String::new(),
             body: String::new(),
+            summary: None,
             source: String::new(),
             confidence: 1.0,
             is_stale: false,
@@ -386,6 +401,11 @@ struct ScoredHit {
     source_id: i64,
     title: String,
     body: String,
+    /// Carried forward from the candidate row so the cross-encoder
+    /// rerank input can be built as `summary\n\ntitle\n\nbody` when
+    /// present (decision 72). Not exposed on the public RecallHit
+    /// shape — callers see only title/body/score/etc.
+    summary: Option<String>,
     score: f64,
     fts_score: f64,
     vector_score: f64,
@@ -605,13 +625,14 @@ fn current_embed_text(
             }
         }
         SourceType::Decision => {
-            let row: std::result::Result<(String, String), rusqlite::Error> = conn.query_row(
-                "SELECT title, rationale FROM decisions WHERE id = ?1",
-                params![source_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            );
+            let row: std::result::Result<(String, String, Option<String>), rusqlite::Error> = conn
+                .query_row(
+                    "SELECT title, rationale, summary FROM decisions WHERE id = ?1",
+                    params![source_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                );
             match row.optional_row()? {
-                Some((t, r)) => Ok(Some(decision_embed_text(&t, &r))),
+                Some((t, r, s)) => Ok(Some(decision_embed_text(&t, &r, s.as_deref()))),
                 None => Ok(None),
             }
         }
@@ -646,6 +667,7 @@ fn hydrate_sources(
                 if let Some(entry) = candidates.get_mut(&(st, id)) {
                     entry.title = row.title;
                     entry.body = row.body;
+                    entry.summary = row.summary;
                     entry.source = row.source;
                     entry.confidence = row.confidence;
                     entry.is_stale = row.is_stale;
@@ -661,6 +683,8 @@ fn hydrate_sources(
 struct HydratedSource {
     title: String,
     body: String,
+    /// Only populated for decisions (migration 0011 / decision 72).
+    summary: Option<String>,
     source: String,
     confidence: f64,
     is_stale: bool,
@@ -694,6 +718,7 @@ fn load_source_row(
                     Ok(HydratedSource {
                         title: key,
                         body: value,
+                        summary: None,
                         source,
                         confidence,
                         is_stale: stale_int != 0,
@@ -704,7 +729,7 @@ fn load_source_row(
         }
         SourceType::Decision => {
             let mut stmt = conn.prepare(
-                "SELECT title, rationale, source, decided_at \
+                "SELECT title, rationale, source, decided_at, summary \
                  FROM decisions WHERE id = ?1",
             )?;
             let row: std::result::Result<HydratedSource, rusqlite::Error> =
@@ -713,9 +738,11 @@ fn load_source_row(
                     let rationale: String = r.get(1)?;
                     let source: String = r.get(2)?;
                     let decided_at: String = r.get(3)?;
+                    let summary: Option<String> = r.get(4)?;
                     Ok(HydratedSource {
                         title,
                         body: rationale,
+                        summary,
                         source,
                         confidence: 1.0,
                         is_stale: false,
@@ -735,6 +762,7 @@ fn load_source_row(
                     Ok(HydratedSource {
                         title,
                         body: notes.unwrap_or_default(),
+                        summary: None,
                         source: String::new(),
                         confidence: 1.0,
                         is_stale: false,
@@ -791,6 +819,7 @@ fn score(rows: &[CandidateRow], scoring: &RetrievalScoringConfig) -> Vec<ScoredH
                 source_id: c.source_id,
                 title: c.title.clone(),
                 body: c.body.clone(),
+                summary: c.summary.clone(),
                 score,
                 fts_score,
                 vector_score,

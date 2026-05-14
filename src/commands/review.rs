@@ -133,6 +133,7 @@ pub fn accept(start: &Path, id: i64, actor: &str) -> Result<AcceptOutcome> {
                 title,
                 &pending.rationale,
                 None,
+                None,
                 &derived_source,
                 actor,
                 mode,

@@ -121,10 +121,10 @@ pub fn rebuild(start: &Path, actor: &str) -> Result<RebuildSummary> {
         let texts: Vec<String> = rows
             .decisions
             .iter()
-            .map(|(_, t, r)| decision_embed_text(t, r))
+            .map(|(_, t, r, s)| decision_embed_text(t, r, s.as_deref()))
             .collect();
         let vectors = embed_batch(&texts)?;
-        for ((id, _, _), (text, vector)) in rows
+        for ((id, _, _, _), (text, vector)) in rows
             .decisions
             .iter()
             .zip(texts.into_iter().zip(vectors.into_iter()))
@@ -185,7 +185,7 @@ pub fn rebuild(start: &Path, actor: &str) -> Result<RebuildSummary> {
 
 struct CollectedRows {
     facts: Vec<(i64, String, String)>,
-    decisions: Vec<(i64, String, String)>,
+    decisions: Vec<(i64, String, String, Option<String>)>,
     tasks: Vec<(i64, String, Option<String>)>,
 }
 
@@ -204,12 +204,14 @@ fn collect_source_rows(conn: &Connection) -> Result<CollectedRows> {
     }
 
     let mut decisions = Vec::new();
-    let mut stmt = conn.prepare("SELECT id, title, rationale FROM decisions ORDER BY id")?;
+    let mut stmt =
+        conn.prepare("SELECT id, title, rationale, summary FROM decisions ORDER BY id")?;
     let rows = stmt.query_map([], |row| {
         Ok((
             row.get::<_, i64>(0)?,
             row.get::<_, String>(1)?,
             row.get::<_, String>(2)?,
+            row.get::<_, Option<String>>(3)?,
         ))
     })?;
     for row in rows {
@@ -315,11 +317,11 @@ fn count_current_fact_embeddings(conn: &Connection, rows: &[(i64, String, String
 
 fn count_current_decision_embeddings(
     conn: &Connection,
-    rows: &[(i64, String, String)],
+    rows: &[(i64, String, String, Option<String>)],
 ) -> Result<i64> {
     let mut count = 0;
-    for (id, title, rationale) in rows {
-        let text = decision_embed_text(title, rationale);
+    for (id, title, rationale, summary) in rows {
+        let text = decision_embed_text(title, rationale, summary.as_deref());
         if embedding_matches(conn, SourceType::Decision, *id, &text)? {
             count += 1;
         }
@@ -386,12 +388,13 @@ fn current_source_hash(
             .optional()?,
         SourceType::Decision => tx
             .query_row(
-                "SELECT title, rationale FROM decisions WHERE id = ?1",
+                "SELECT title, rationale, summary FROM decisions WHERE id = ?1",
                 params![source_id],
                 |row| {
                     let title: String = row.get(0)?;
                     let rationale: String = row.get(1)?;
-                    Ok(decision_embed_text(&title, &rationale))
+                    let summary: Option<String> = row.get(2)?;
+                    Ok(decision_embed_text(&title, &rationale, summary.as_deref()))
                 },
             )
             .optional()?,

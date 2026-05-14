@@ -32,6 +32,10 @@ pub struct Decision {
     pub status: String,
     pub decided_at: String,
     pub source: String,
+    /// Optional natural-language paraphrase. Prepended to the embed text
+    /// and the cross-encoder re-rank input so jargon-titled decisions
+    /// surface for plain-English queries. See decision 72.
+    pub summary: Option<String>,
 }
 
 #[derive(Debug)]

@@ -177,7 +177,7 @@ fn load_latest_narrative(conn: &Connection, table: &str) -> Result<Option<Narrat
 
 fn load_decisions(conn: &Connection) -> Result<Vec<Decision>> {
     let mut stmt = conn.prepare(
-        "SELECT id, title, rationale, status, decided_at, source
+        "SELECT id, title, rationale, status, decided_at, source, summary
          FROM decisions
          WHERE project_id = 1
          ORDER BY decided_at DESC, id DESC",
@@ -191,6 +191,7 @@ fn load_decisions(conn: &Connection) -> Result<Vec<Decision>> {
                 status: row.get(3)?,
                 decided_at: row.get(4)?,
                 source: row.get(5)?,
+                summary: row.get(6)?,
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;

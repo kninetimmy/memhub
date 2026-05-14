@@ -46,10 +46,16 @@ pub fn fact_embed_text(key: &str, value: &str) -> String {
     format!("{key}: {value}")
 }
 
-/// Build the embed text for a decision. Title and rationale are separated
-/// by a blank line so the tokenizer sees them as distinct segments.
-pub fn decision_embed_text(title: &str, rationale: &str) -> String {
-    format!("{title}\n\n{rationale}")
+/// Build the embed text for a decision. When `summary` is present and
+/// non-empty, it is prepended so the bi-encoder picks up the natural-
+/// language framing in addition to the (often jargon-heavy) title. Title
+/// and rationale are separated by a blank line so the tokenizer sees
+/// them as distinct segments. See decision 72 / task #23.
+pub fn decision_embed_text(title: &str, rationale: &str, summary: Option<&str>) -> String {
+    match summary {
+        Some(s) if !s.trim().is_empty() => format!("{s}\n\n{title}\n\n{rationale}"),
+        _ => format!("{title}\n\n{rationale}"),
+    }
 }
 
 /// Build the embed text for a task. Notes are optional; when present they
@@ -140,4 +146,45 @@ fn vector_to_le_bytes(v: &[f32]) -> Vec<u8> {
         out.extend_from_slice(&f.to_le_bytes());
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decision_embed_text_without_summary_matches_legacy_format() {
+        let out = decision_embed_text("Title", "Rationale body", None);
+        assert_eq!(out, "Title\n\nRationale body");
+    }
+
+    #[test]
+    fn decision_embed_text_with_summary_prepends_it() {
+        let out = decision_embed_text(
+            "content_hash drift detection per embedding",
+            "Store a hash of source body alongside each vector.",
+            Some("How does memhub know when an embedding has gone stale?"),
+        );
+        assert_eq!(
+            out,
+            "How does memhub know when an embedding has gone stale?\n\n\
+             content_hash drift detection per embedding\n\n\
+             Store a hash of source body alongside each vector."
+        );
+    }
+
+    #[test]
+    fn decision_embed_text_treats_empty_or_whitespace_summary_as_absent() {
+        // Empty and whitespace-only summaries must not pollute the embed
+        // text with a leading blank, which would change content_hash and
+        // force a spurious re-embed across every machine.
+        assert_eq!(
+            decision_embed_text("T", "R", Some("")),
+            "T\n\nR"
+        );
+        assert_eq!(
+            decision_embed_text("T", "R", Some("   \n  ")),
+            "T\n\nR"
+        );
+    }
 }

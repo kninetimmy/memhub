@@ -107,6 +107,13 @@ bundles. This replaces the legacy `min_vector_score` cosine floor
 (decisions 70, 71). Override per-call with `--min-rerank-score=<F>`
 (use the `=` form for negative values).
 
+Decisions support an optional `summary` field (migration 0011,
+decision 72). When set, the summary is prepended to both the embed
+text and the cross-encoder rerank input, so jargon-titled decisions
+surface for plain-English queries. Set with `memhub decision add
+--summary "..."` or backfill with `memhub decision set-summary <ID>
+"..."`. Decision 72 covers the empirical lift this produced.
+
 For A/B testing in any repo: `memhub eval retrieval` vs
 `memhub eval retrieval --no-rerank`.
 

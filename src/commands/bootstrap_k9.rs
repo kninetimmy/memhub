@@ -100,6 +100,7 @@ pub fn run(start: &Path, dry_run: bool) -> Result<BootstrapSummary> {
                 &d.title,
                 &d.rationale,
                 d.decided_at.as_deref(),
+                None,
                 "user",
                 BOOTSTRAP_ACTOR,
             )?;

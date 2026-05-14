@@ -45,6 +45,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0010_embeddings_delete_triggers",
         include_str!("../../migrations/0010_embeddings_delete_triggers.sql"),
     ),
+    (
+        "0011_decision_summary",
+        include_str!("../../migrations/0011_decision_summary.sql"),
+    ),
 ];
 
 pub fn apply_all(conn: &mut Connection) -> Result<Vec<String>> {
