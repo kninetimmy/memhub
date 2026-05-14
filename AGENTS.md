@@ -8,9 +8,9 @@ This file is the Codex counterpart to `CLAUDE.md`. The two exist so Codex CLI an
 
 This repo is **memhub-primary** as of M7-002 (2026-05-13). The DB at `.memhub/project.sqlite` is the source of truth; rendered markdown is the human-readable view.
 
-At session start, read `agent_docs/PROJECT.md` only — it carries the "currently building / next up / open questions" state plus the architecture narrative plus recent session notes, all rendered from the DB.
+At session start, read `.memhub/rendered/PROJECT.md` only — it carries the "currently building / next up / open questions" state plus the architecture narrative plus recent session notes, all rendered from the DB.
 
-**Mid-session, prefer `memhub.recall` (or `/recall`) over reading `agent_docs/PROJECT_LEDGER.md`.** Recall is the SQL+RAG hybrid query surface over facts, decisions, and tasks; it returns a focused evidence bundle for the question you actually have, instead of you re-scanning the full ledger. Read `PROJECT_LEDGER.md` only as a fallback when recall comes up empty for something you suspect is recorded, or when the user explicitly asks for the full ledger.
+**Mid-session, prefer `memhub.recall` (or `/recall`) over reading `.memhub/rendered/PROJECT_LEDGER.md`.** Recall is the SQL+RAG hybrid query surface over facts, decisions, and tasks; it returns a focused evidence bundle for the question you actually have, instead of you re-scanning the full ledger. Read `PROJECT_LEDGER.md` only as a fallback when recall comes up empty for something you suspect is recorded, or when the user explicitly asks for the full ledger.
 
 If recall returns a `warnings[].kind == "stale_embeddings"` entry, surface it and ask the user before invoking `/reindex`. Recall results stay usable in the meantime — the warning means hybrid scoring may be undercounting some rows, not that retrieval is broken.
 
