@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>memhub viz</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>memhub viz</h1>
+        <p id="project-meta">Loading project</p>
+        <p class="live-line"><span class="live-dot"></span><span id="live-status">Connecting</span></p>
+      </div>
+      <nav class="tabs" aria-label="Dashboard views">
+        <button class="tab active" data-panel="overview">Overview</button>
+        <button class="tab" data-panel="map">Embedding Map</button>
+        <button class="tab" data-panel="recall">Recall Inspector</button>
+        <button class="tab" data-panel="activity">Activity</button>
+        <button class="tab" data-panel="audit">Audit</button>
+      </nav>
+    </header>
+
+    <main>
+      <section id="overview" class="panel active">
+        <div class="metrics" id="overview-counts"></div>
+        <div class="overview-strip">
+          <div>
+            <span>Latest writes</span>
+            <strong id="latest-write-count">0</strong>
+          </div>
+          <div>
+            <span>Retrieval mode</span>
+            <strong id="retrieval-mode">n/a</strong>
+          </div>
+          <div>
+            <span>Schema</span>
+            <strong id="schema-version">n/a</strong>
+          </div>
+        </div>
+        <div class="grid two">
+          <section class="surface">
+            <h2>Current State</h2>
+            <p id="state-body" class="prose"></p>
+          </section>
+          <section class="surface">
+            <h2>Architecture</h2>
+            <p id="arch-body" class="prose"></p>
+          </section>
+        </div>
+      </section>
+
+      <section id="map" class="panel">
+        <div class="toolbar">
+          <div>
+            <span id="map-meta"></span>
+            <div class="legend" id="map-legend"></div>
+          </div>
+          <select id="map-filter" aria-label="Filter source type">
+            <option value="all">All rows</option>
+            <option value="fact">Facts</option>
+            <option value="decision">Decisions</option>
+            <option value="task">Tasks</option>
+          </select>
+        </div>
+        <div class="map-wrap">
+          <canvas id="embedding-map" width="1200" height="620"></canvas>
+          <aside id="point-detail" class="detail">Select a point.</aside>
+        </div>
+      </section>
+
+      <section id="recall" class="panel">
+        <form id="recall-form" class="search">
+          <input id="recall-query" type="search" placeholder="Query durable memory" />
+          <button type="submit">Run</button>
+        </form>
+        <div class="query-chips" id="query-chips"></div>
+        <div id="recall-summary" class="summary"></div>
+        <ol id="recall-results" class="results"></ol>
+      </section>
+
+      <section id="activity" class="panel">
+        <div class="grid two">
+          <section class="surface">
+            <h2>Writes By Actor</h2>
+            <div id="actor-bars"></div>
+          </section>
+          <section class="surface">
+            <h2>Writes By Table</h2>
+            <div id="table-bars"></div>
+          </section>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Actor</th>
+              <th>Table</th>
+              <th>Action</th>
+              <th>Reason</th>
+            </tr>
+          </thead>
+          <tbody id="activity-rows"></tbody>
+        </table>
+      </section>
+
+      <section id="audit" class="panel">
+        <div class="grid three">
+          <section class="surface">
+            <h2>Sources</h2>
+            <div id="source-bars"></div>
+          </section>
+          <section class="surface">
+            <h2>Confidence</h2>
+            <div id="confidence-bars"></div>
+          </section>
+          <section class="surface">
+            <h2>Embedding Coverage</h2>
+            <div id="coverage-bars"></div>
+          </section>
+        </div>
+        <div id="audit-summary" class="summary"></div>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

@@ -610,6 +610,14 @@ pub enum TopLevelCommand {
     },
     SyncMd,
     Serve,
+    Viz {
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        #[arg(long, default_value_t = 0)]
+        port: u16,
+        #[arg(long)]
+        open: bool,
+    },
     IngestGit {
         #[arg(long)]
         since: Option<String>,
@@ -1090,6 +1098,9 @@ pub fn run(cli: Cli) -> Result<()> {
         }
         TopLevelCommand::Serve => {
             crate::mcp::serve(&cwd)?;
+        }
+        TopLevelCommand::Viz { host, port, open } => {
+            run_viz(&cwd, host, port, open)?;
         }
         TopLevelCommand::IngestGit { since } => {
             let summary = commands::ingest_git::run(&cwd, since.as_deref())?;
@@ -1708,4 +1719,19 @@ pub fn run(cli: Cli) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(feature = "viz")]
+fn run_viz(cwd: &std::path::Path, host: String, port: u16, open: bool) -> Result<()> {
+    crate::dashboard::serve_blocking(
+        cwd,
+        crate::dashboard::DashboardOptions { host, port, open },
+    )
+}
+
+#[cfg(not(feature = "viz"))]
+fn run_viz(_cwd: &std::path::Path, _host: String, _port: u16, _open: bool) -> Result<()> {
+    Err(MemhubError::InvalidInput(
+        "`memhub viz` was compiled out; rebuild with `--features viz`".to_string(),
+    ))
 }
