@@ -112,8 +112,8 @@ When `results` is empty:
    exact query you ran.
 2. Offer one of: rephrase the query, broaden filters
    (drop `--accepted-only` or `--source-type`), or — if the question
-   really needs the full ledger — open
-   `agent_docs/PROJECT_LEDGER.md` directly.
+   really needs the full ledger — open the configured rendered
+   `PROJECT_LEDGER.md` directly.
 
 Never invent a result to fill an empty bundle.
 
@@ -153,4 +153,5 @@ the warning just means hybrid scoring may be undercounting some rows.
   switching to `hybrid` requires `memhub index rebuild` to backfill
   embeddings for pre-existing rows.
 - Recall is the **mid-session** read. Session-start context lives in
-  `agent_docs/PROJECT.md`. The full ledger is the fallback.
+  the configured rendered `PROJECT.md` when present. The full ledger
+  is the fallback.

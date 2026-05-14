@@ -8,8 +8,9 @@ last_updated: 2026-05-12
 
 Wrap up the current session against the memhub repo. Memhub's SQLite
 database is the source of truth; the rendered markdown files
-(`agent_docs/PROJECT.md` and `agent_docs/PROJECT_LEDGER.md`) are an
-output of `memhub render`, not a parallel narrative. Your job is to
+(`.memhub/rendered/PROJECT.md` and
+`.memhub/rendered/PROJECT_LEDGER.md` by default) are local output of
+`memhub render`, not a parallel narrative. Your job is to
 draft updates, get approval per item, write to the DB, then re-render.
 
 This is the project-level memhub-native wrap-up. It overrides the
@@ -163,9 +164,9 @@ After all approved DB writes succeed, run:
 memhub render
 ```
 
-This emits fresh `agent_docs/PROJECT.md` and
-`agent_docs/PROJECT_LEDGER.md` from the new DB state, backing up the
-prior versions under `.memhub/backups/rendered/<stamp>/`.
+This emits fresh local `PROJECT.md` and `PROJECT_LEDGER.md` files from
+the new DB state, backing up the prior versions under
+`.memhub/backups/rendered/<stamp>/`.
 
 Surface what got written and any backup paths.
 
@@ -175,8 +176,9 @@ Tell me:
 - That I can audit what landed via
   `memhub stats --window 7d` (writes by actor and table) or
   `memhub note list --since-days 1`.
-- That the rendered files are now updated and ready to be committed
-  with `git add agent_docs/PROJECT.md agent_docs/PROJECT_LEDGER.md`.
+- That the rendered files are local generated output and are not meant
+  to be committed unless this repo explicitly opts into a tracked
+  render path.
 - That I can start a new session whenever (`/clear` or restart).
 
 **Do not run `git commit` yourself.** That is my call. The local-vs-shared

@@ -1,7 +1,7 @@
 use std::fs;
 
-use memhub::MemhubError;
 use memhub::commands::{command, decision, fact, init, status, task};
+use memhub::MemhubError;
 use tempfile::tempdir;
 
 #[test]
@@ -13,26 +13,32 @@ fn init_creates_memhub_layout_and_gitignore_entry() {
 
     assert!(result.db_path.exists());
     assert!(temp.path().join(".memhub").join("config.toml").exists());
-    assert!(
-        result
-            .migrations_applied
-            .contains(&"0004_pending_write_provenance".to_string())
-    );
+    assert!(result
+        .migrations_applied
+        .contains(&"0004_pending_write_provenance".to_string()));
 
     let gitignore = fs::read_to_string(temp.path().join(".gitignore")).expect("read gitignore");
     assert!(gitignore.contains(".memhub/"));
+    assert!(gitignore.contains("agent_docs/PROJECT.md"));
+    assert!(gitignore.contains("agent_docs/PROJECT_LEDGER.md"));
 }
 
 #[test]
-fn init_does_not_duplicate_existing_memhub_gitignore_entry() {
+fn init_does_not_duplicate_existing_memhub_gitignore_entries() {
     let temp = tempdir().expect("tempdir");
-    fs::write(temp.path().join(".gitignore"), "/target/\n/.memhub/\n").expect("seed gitignore");
+    fs::write(
+        temp.path().join(".gitignore"),
+        "/target/\n/.memhub/\nagent_docs/PROJECT.md\n/agent_docs/PROJECT_LEDGER.md\n",
+    )
+    .expect("seed gitignore");
 
     let result = init::run(temp.path()).expect("init succeeds");
     let gitignore = fs::read_to_string(temp.path().join(".gitignore")).expect("read gitignore");
 
     assert!(!result.gitignore_updated);
     assert_eq!(gitignore.matches(".memhub/").count(), 1);
+    assert_eq!(gitignore.matches("agent_docs/PROJECT.md").count(), 1);
+    assert_eq!(gitignore.matches("PROJECT_LEDGER.md").count(), 1);
 }
 
 #[test]
@@ -91,13 +97,14 @@ fn command_verify_upserts_history_and_updates_status_counts() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init succeeds");
 
-    let (command_id, created) =
-        command::verify(temp.path(), "build", "cargo build", 0, "cli:user").expect("command verify insert");
+    let (command_id, created) = command::verify(temp.path(), "build", "cargo build", 0, "cli:user")
+        .expect("command verify insert");
     assert!(created);
     assert!(command_id > 0);
 
     let (same_command_id, created) =
-        command::verify(temp.path(), "build", "cargo build", 101, "cli:user").expect("command verify update");
+        command::verify(temp.path(), "build", "cargo build", 101, "cli:user")
+            .expect("command verify update");
     assert!(!created);
     assert_eq!(same_command_id, command_id);
 
@@ -139,7 +146,10 @@ fn fact_add_rejects_source_outside_documented_vocabulary() {
     }
 
     let facts = fact::list(temp.path()).expect("fact list");
-    assert!(facts.is_empty(), "no fact should be written when source is invalid");
+    assert!(
+        facts.is_empty(),
+        "no fact should be written when source is invalid"
+    );
 }
 
 #[test]
@@ -164,5 +174,8 @@ fn decision_add_rejects_source_outside_documented_vocabulary() {
     }
 
     let decisions = decision::list(temp.path()).expect("decision list");
-    assert!(decisions.is_empty(), "no decision should be written when source is invalid");
+    assert!(
+        decisions.is_empty(),
+        "no decision should be written when source is invalid"
+    );
 }

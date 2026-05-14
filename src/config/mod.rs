@@ -6,14 +6,14 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-pub use deny::{DenyList, PathMatcher, default_patterns};
+pub use deny::{default_patterns, DenyList, PathMatcher};
 pub use integrations::{
-    DEFAULT_AGENT_DOCS_PATH, IntegrationsConfig, K9_DETECTION_FILENAME, K9Config, detect_k9,
+    detect_k9, IntegrationsConfig, K9Config, DEFAULT_AGENT_DOCS_PATH, K9_DETECTION_FILENAME,
 };
 
 use crate::Result;
 
-pub const DEFAULT_RENDER_OUTPUT_DIR: &str = "agent_docs";
+pub const DEFAULT_RENDER_OUTPUT_DIR: &str = ".memhub/rendered";
 
 pub const DEFAULT_RECALL_MAX_RESULTS: usize = 6;
 pub const DEFAULT_FTS_WEIGHT: f64 = 0.5;

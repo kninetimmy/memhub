@@ -416,10 +416,10 @@ below).
 The token-savings motivation for M8 only materializes if agents
 actually use `recall`. Decision 34 and 35 encode the rule:
 
-> At session start, read `agent_docs/PROJECT.md` only — it's the
-> thin summary. When you need decisions, facts, or tasks beyond
-> what's in the summary, call `memhub.recall` rather than reading
-> `agent_docs/PROJECT_LEDGER.md`. Read the ledger only as a
+> At session start, read the configured rendered `PROJECT.md` when
+> present — it's the thin summary. When you need decisions, facts, or
+> tasks beyond what's in the summary, call `memhub.recall` rather
+> than reading `PROJECT_LEDGER.md`. Read the ledger only as a
 > fallback when `recall` doesn't return enough.
 
 Implementation:
@@ -434,10 +434,9 @@ Implementation:
   not via `recall`, because the wrap-up authoritative read needs
   exactness, not similarity.
 
-`PROJECT.md` and `PROJECT_LEDGER.md` continue to render as today
-(K9-deprecation addendum §1, §4). The render output shape is
-unchanged. What shifts is the **agent consumption pattern**, not
-the render contract.
+`PROJECT.md` and `PROJECT_LEDGER.md` continue to render as local
+generated output (K9-deprecation addendum §1, §4). What shifts here
+is the **agent consumption pattern**, not the recall contract.
 
 ## 11. Open implementation questions
 

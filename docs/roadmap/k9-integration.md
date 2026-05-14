@@ -98,7 +98,8 @@ revisits each one explicitly. Status of each is called out inline.
   `AGENTS.md` by `memhub sync-md`. Render is a *separate* mechanism
   with its own marker (`<!-- memhub:rendered -->`) that emits whole
   files (`PROJECT.md`, `PROJECT_LEDGER.md`) into the configured
-  output directory (default `agent_docs/`). The two surfaces don't
+  output directory (default `.memhub/rendered/` as of 2026-05-14).
+  The two surfaces don't
   overlap; managed blocks and rendered files coexist.
 - **No mapping of `project_state.md` or `project_arch.md` into DB
   tables.** *Overturned.* Migration `0007_project_narrative` adds

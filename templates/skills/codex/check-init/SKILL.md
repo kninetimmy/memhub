@@ -53,7 +53,9 @@ the labelled lines.
 
 ## Render output check
 
-For each of `agent_docs/PROJECT.md` and `agent_docs/PROJECT_LEDGER.md`:
+For each rendered file in the configured `[render].output_dir`
+(`.memhub/rendered/PROJECT.md` and
+`.memhub/rendered/PROJECT_LEDGER.md` by default):
 
 1. **File presence.** Missing → **Red**. Suggested fix:
    `memhub render`.

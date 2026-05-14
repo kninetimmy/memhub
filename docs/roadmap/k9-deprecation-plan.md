@@ -48,15 +48,15 @@ Does not decide:
 
 The design doc at [`docs/roadmap/memhub-render-design.md`](memhub-render-design.md)
 locked the output shape (memhub-native two-file:
-`agent_docs/PROJECT.md` for narrative + `agent_docs/PROJECT_LEDGER.md`
-for the ledger) and resolved the four secondary questions: trigger is
-on-demand only, conflict semantics are DB-wins-with-backup, output
-lives in-repo at the configurable `[render].output_dir` (default
-`agent_docs/`), and state/arch persist as single durable-text blobs
-in new DB tables. Migration `0007_project_narrative` shipped both
-tables together. This slice subsumed slice 3 (state/arch as DB
-content) since the render shape required the DB representation to
-exist first.
+`PROJECT.md` for narrative + `PROJECT_LEDGER.md` for the ledger) and
+resolved the four secondary questions: trigger is on-demand only,
+conflict semantics are DB-wins-with-backup, output lives at the
+configurable `[render].output_dir` (default changed to
+`.memhub/rendered/` on 2026-05-14), and state/arch persist as single
+durable-text blobs in new DB tables. Migration
+`0007_project_narrative` shipped both tables together. This slice
+subsumed slice 3 (state/arch as DB content) since the render shape
+required the DB representation to exist first.
 
 ### 2. PRD §2 and the K9-integration non-goals
 

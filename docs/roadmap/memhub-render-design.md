@@ -181,6 +181,15 @@ back into the DB — that path stays a non-goal.
 
 ## 5. Output location and gitignore behavior
 
+**Update, 2026-05-14:** The original recommendation below has been
+superseded by the machine-local rule. The default render output is now
+`.memhub/rendered/`, which is covered by the default `.memhub/`
+gitignore entry. `memhub init` also ignores the legacy
+`agent_docs/PROJECT.md` and `agent_docs/PROJECT_LEDGER.md` paths so
+old configs do not keep generating Git churn. Repos that want a
+committed render view can still opt in with `[render].output_dir` and
+matching `.gitignore` changes.
+
 Where do the rendered files live, and are they committed?
 
 - **A. In-repo under `agent_docs/`, committed.** Same directory K9
@@ -191,20 +200,18 @@ Where do the rendered files live, and are they committed?
   DB. User opts in to commit by editing `.gitignore` themselves.
   Default keeps `.memhub/` self-contained.
 
-**Recommendation: A.** The whole reason render exists is so humans
-who don't have memhub installed (PR reviewers, fresh clones, casual
-browsers) can read project state. That requires the files to be in
-git by default. `agent_docs/` is the conventional location for this
-kind of content and the filenames (`PROJECT.md` / `PROJECT_LEDGER.md`)
-don't collide with K9's `project_*.md` set, so a transition repo can
-hold both side-by-side until the K9 files are removed.
+**Original recommendation: A. Superseded by the 2026-05-14 update.**
+In practice, committing rendered output from multiple machines created
+avoidable Git conflicts because the files are generated from
+machine-local DB state. The current default chooses B: render output
+stays local unless a repo explicitly opts in to tracked markdown.
 
 The render directory is configurable in `.memhub/config.toml` for
 users who prefer a different layout:
 
 ```toml
 [render]
-output_dir = "agent_docs"   # default
+output_dir = ".memhub/rendered"   # default
 ```
 
 ## 6. Bootstrap-k9 in the new world

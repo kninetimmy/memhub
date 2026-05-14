@@ -10,7 +10,7 @@ Claude Code and Codex each have their own notes systems, and they don't talk to 
 
 memhub is a small Rust CLI that puts one structured store per repo. Facts, decisions, tasks, recent commands, session notes — all in SQLite, queryable, with attribution. As of M8, it also ships a bundled embedding model (`bge-small-en-v1.5`, ~130 MB inside the binary) so agents can do **semantic recall** without any network, account, or vector-DB infrastructure.
 
-Rendered markdown at `agent_docs/PROJECT.md` and `agent_docs/PROJECT_LEDGER.md` is the human-readable view (and what you commit). The database is the source of truth. Agents read `PROJECT.md` at session start for the thin summary, then call `memhub.recall` mid-session for the cited evidence bundle — they don't re-grep the ledger.
+Rendered markdown is a local human-readable view generated from the DB, stored under `.memhub/rendered/` by default and ignored by Git. The database is the source of truth, but it is machine-local too; use export/import for intentional moves between machines rather than committing DB, embeddings, or render output.
 
 **Four things matter:**
 
@@ -66,8 +66,8 @@ Please install memhub for me, then turn on hybrid recall.
    so I can see the recall surface working end-to-end.
 
 Don't touch any files in this repo other than what `memhub init` writes
-(.memhub/ and a .gitignore line) and the .memhub/config.toml edit in
-step 6.
+(.memhub/ and the generated-output .gitignore entries) and the
+.memhub/config.toml edit in step 6.
 ```
 
 ### Install via Codex CLI (agent-driven)
@@ -109,8 +109,8 @@ Please install memhub for me, then turn on hybrid recall.
    so I can see the recall surface working end-to-end.
 
 Don't touch any files in this repo other than what `memhub init` writes
-(.memhub/ and a .gitignore line) and the .memhub/config.toml edit in
-step 7.
+(.memhub/ and the generated-output .gitignore entries) and the
+.memhub/config.toml edit in step 7.
 ```
 
 ### Install by hand
@@ -179,15 +179,15 @@ You: "Remember the build command is cargo build."
 You: "We're going to use rusqlite bundled mode because <rationale>."
   → propose_decision (stages for /wrap-up approval)
 
-You: "Re-render the agent_docs."
+You: "Re-render the local memhub docs."
   → render
 ```
 
 Facts and decisions stage in `pending_writes` instead of going durable directly — that's the "agents are untrusted writers" guardrail. They become durable when you approve them at `/wrap-up`, where the source becomes `user+agent:<your-agent>`.
 
-### Mid-session context: `/recall` over the ledger
+### Mid-session context: `/recall` over rendered files
 
-When the agent needs project context, the rule is: read `PROJECT.md` at session start for the thin summary, then call `memhub.recall` mid-session for anything deeper. The full `PROJECT_LEDGER.md` is a fallback for when recall comes up empty.
+When the agent needs project context, the rule is: read the local rendered `PROJECT.md` if it exists, then call `memhub.recall` mid-session for anything deeper. The full `PROJECT_LEDGER.md` is a fallback for when recall comes up empty.
 
 Recall returns a cited evidence bundle — title, body, score, source, staleness flag — pulled from the durable tables. It's read-only and never logs to `writes_log`. Empty bundles are honest answers, not failures.
 
@@ -200,7 +200,7 @@ Run `/wrap-up` and the agent walks you through:
 - Tasks added or closed
 - A short session summary written to `session_notes`
 - An updated state narrative if anything material changed
-- A re-render of `agent_docs/PROJECT.md` and `PROJECT_LEDGER.md`
+- A re-render of the configured local `PROJECT.md` and `PROJECT_LEDGER.md`
 
 Each item gets your individual approval before it lands.
 
@@ -277,7 +277,7 @@ Stale embeddings (model upgrade, content drift, or pre-existing rows that haven'
 | `memhub ingest-git` | Pull commit + file history into the DB |
 | `memhub search <query>` | Indexed search over decisions and file history (legacy; prefer recall) |
 | `memhub review list/accept/reject` | Triage agent-proposed writes |
-| `memhub render` | Emit `agent_docs/PROJECT.md` and `PROJECT_LEDGER.md` from the DB |
+| `memhub render` | Emit local `PROJECT.md` and `PROJECT_LEDGER.md` from the DB |
 | `memhub index status/rebuild` | Embedding coverage; one-shot backfill for `fts → hybrid` migrations |
 | `memhub eval retrieval` | Run the Recall@K harness against `tests/retrieval_golden.json` |
 | `memhub stats --window 7d` | Write activity by actor, review rate, stale-fact counts |
@@ -328,12 +328,12 @@ observed                     Reserved for observed signals
 ### One database, one truth, two views
 
 ```
-.memhub/project.sqlite        ← source of truth (durable, gitignored)
-agent_docs/PROJECT.md         ← rendered narrative (committed)
-agent_docs/PROJECT_LEDGER.md  ← rendered structured view (committed)
+.memhub/project.sqlite          ← source of truth (durable, gitignored)
+.memhub/rendered/PROJECT.md        ← local rendered narrative (gitignored)
+.memhub/rendered/PROJECT_LEDGER.md ← local rendered structured view (gitignored)
 ```
 
-`memhub render` regenerates the markdown from the DB. The markdown is one-way output: there's no parser that reads human edits back into the DB. To change durable content, use the CLI (or have an agent do it via `/wrap-up`).
+`memhub render` regenerates the markdown from the DB. The markdown is one-way output: there's no parser that reads human edits back into the DB. To change durable content, use the CLI (or have an agent do it via `/wrap-up`). If you want render output committed for a specific repo, set `[render].output_dir` to an in-repo path and remove that path from `.gitignore`; that is opt-in.
 
 ### How attribution works
 
@@ -366,7 +366,7 @@ If recall detects any candidate row whose embedding is missing or whose `content
 - **Write (direct):** `task_add`, `task_done`, `record_command`, `log_session_note`, `render`
 - **Write (staged for review):** `propose_fact`, `propose_decision`
 
-Tasks and session notes are direct writes because they're low-stakes (intent and scratch, not claims). Facts and decisions stage in `pending_writes` and only become durable when you approve them — usually through `memhub review accept` during `/wrap-up`. `render` is a thin side-effect tool: it regenerates `agent_docs/PROJECT.md` and backs up the prior version.
+Tasks and session notes are direct writes because they're low-stakes (intent and scratch, not claims). Facts and decisions stage in `pending_writes` and only become durable when you approve them — usually through `memhub review accept` during `/wrap-up`. `render` is a thin side-effect tool: it regenerates the configured local `PROJECT.md` and backs up the prior version.
 
 Client identity is read from `clientInfo.name` at `initialize` and normalized: Claude Code → `claude-code`, Codex → `codex`. That value lands in `actor` columns automatically.
 
@@ -418,7 +418,7 @@ memhub import <path>                   # restore into an existing repo
 memhub import <path> --force           # overwrite live data
 ```
 
-Export covers facts, decisions, tasks, commands, pending writes, and writes_log. Git ingestion, FTS chunks, and embeddings are derived state and regenerate on demand. Session notes are not in the v1 export format.
+Export covers facts, decisions, tasks, commands, pending writes, and writes_log. Git ingestion, FTS chunks, embeddings, `.memhub/config.toml`, and rendered markdown are local or derived state and are not committed by default. Session notes are not in the v1 export format.
 
 ---
 
@@ -440,7 +440,7 @@ memhub CLI / MCP
        └── SQLite (.memhub/project.sqlite) + git CLI + bundled BGE-small ONNX
 ```
 
-Schema is at migration `0010_embeddings_delete_triggers` (FTS5 source-table indexes + `embeddings` table + cascade triggers). Architecture details in [`agent_docs/PROJECT.md`](agent_docs/PROJECT.md).
+Schema is at migration `0010_embeddings_delete_triggers` (FTS5 source-table indexes + `embeddings` table + cascade triggers). Run `memhub render` for a local `.memhub/rendered/PROJECT.md` architecture snapshot.
 
 ---
 
@@ -450,7 +450,7 @@ Schema is at migration `0010_embeddings_delete_triggers` (FTS5 source-table inde
 
 - CLI for facts / decisions / tasks / commands / state / arch / notes / review / stats
 - Stdio MCP server with client-identity auto-attribution
-- `memhub render` emits `agent_docs/PROJECT.md` + `PROJECT_LEDGER.md`
+- `memhub render` emits local `PROJECT.md` + `PROJECT_LEDGER.md` under `.memhub/rendered/` by default
 - Portable JSON export/import with single-step `init --from-backup`
 - Compound source vocabulary for multi-agent attribution
 - Per-repo deny list for sensitive paths
@@ -487,5 +487,5 @@ PRD authority: [`docs/reference/memhub-prd.md`](docs/reference/memhub-prd.md) (k
 - [M8 hybrid retrieval addendum](docs/reference/memhub-prd-addendum-m8-retrieval.md)
 - [Source vocabulary addendum](docs/reference/memhub-prd-source-vocabulary-addendum.md)
 - [K9 deprecation addendum](docs/reference/memhub-prd-deprecation-addendum.md) — memhub used to coexist with the K9 markdown framework; that integration is retired as of 2026-05-13. K9 markdown files in older repos are historical archive.
-- [Project state (rendered)](agent_docs/PROJECT.md)
-- [Project ledger (rendered)](agent_docs/PROJECT_LEDGER.md)
+- Local project state: run `memhub render`, then read `.memhub/rendered/PROJECT.md`
+- Local project ledger: run `memhub render`, then read `.memhub/rendered/PROJECT_LEDGER.md`

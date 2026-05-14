@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use log::debug;
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 
 use crate::config::ProjectConfig;
 use crate::models::InitResult;
@@ -180,7 +180,11 @@ pub fn discover_paths(start: &Path) -> Result<ProjectPaths> {
 
 fn ensure_gitignore(repo_root: &Path) -> Result<bool> {
     let gitignore_path = repo_root.join(".gitignore");
-    let entry = ".memhub/";
+    let entries = [
+        ".memhub/",
+        "agent_docs/PROJECT.md",
+        "agent_docs/PROJECT_LEDGER.md",
+    ];
 
     let existing = if gitignore_path.exists() {
         fs::read_to_string(&gitignore_path)?
@@ -188,10 +192,18 @@ fn ensure_gitignore(repo_root: &Path) -> Result<bool> {
         String::new()
     };
 
-    if existing
-        .lines()
-        .any(|line| normalize_gitignore_entry(line) == normalize_gitignore_entry(entry))
-    {
+    let existing_entries: Vec<_> = existing.lines().map(normalize_gitignore_entry).collect();
+    let missing: Vec<_> = entries
+        .iter()
+        .copied()
+        .filter(|entry| {
+            !existing_entries
+                .iter()
+                .any(|line| line == &normalize_gitignore_entry(entry))
+        })
+        .collect();
+
+    if missing.is_empty() {
         return Ok(false);
     }
 
@@ -199,8 +211,10 @@ fn ensure_gitignore(repo_root: &Path) -> Result<bool> {
     if !updated.is_empty() && !updated.ends_with('\n') {
         updated.push('\n');
     }
-    updated.push_str(entry);
-    updated.push('\n');
+    for entry in missing {
+        updated.push_str(entry);
+        updated.push('\n');
+    }
 
     fs::write(gitignore_path, updated)?;
     Ok(true)

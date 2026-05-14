@@ -163,8 +163,9 @@ skip. The rows that landed before the failure are durable in
 memhub render
 ```
 
-Verify both `agent_docs/PROJECT.md` and `agent_docs/PROJECT_LEDGER.md`
-exist. Surface the paths to the user.
+Verify both `.memhub/rendered/PROJECT.md` and
+`.memhub/rendered/PROJECT_LEDGER.md` exist, unless the project config
+sets a different `[render].output_dir`. Surface the paths to the user.
 
 ## Optional context-file update
 
@@ -184,10 +185,9 @@ check whether one exists at repo root:
   ## Session Continuity
 
   memhub is the source of truth at `.memhub/project.sqlite`.
-  The rendered files at `agent_docs/PROJECT.md` (state + architecture)
-  and `agent_docs/PROJECT_LEDGER.md` (decisions / backlog / facts)
-  are the human-readable view. Re-render after `/wrap-up` with
-  `memhub render`.
+  The rendered files under `.memhub/rendered/` are the local
+  human-readable view. They are generated from the DB and ignored by
+  Git by default. Re-render after `/wrap-up` with `memhub render`.
 
   ## Agent attribution
 
@@ -215,10 +215,11 @@ Tell the user:
 - `.memhub/project.sqlite` was created at schema version X. Row
   counts: state=1, arch=1 (or 0 if skipped), facts=N, decisions=N,
   tasks=N (only N > 0 if `bootstrap-k9` ran).
-- `agent_docs/PROJECT.md` and `agent_docs/PROJECT_LEDGER.md` are the
-  rendered output. The DB file `.memhub/project.sqlite` is gitignored
-  by default; the rendered markdown is the committed view.
-- Suggested commit: `git add agent_docs/ .memhub/.gitignore AGENTS.md`
+- `.memhub/rendered/PROJECT.md` and
+  `.memhub/rendered/PROJECT_LEDGER.md` are local generated output.
+  `.memhub/` and the legacy `agent_docs/PROJECT*.md` render paths are
+  gitignored by default.
+- Suggested commit: `git add .gitignore AGENTS.md`
   (drop AGENTS.md if no new context file was written).
 - `/check-init` runs a read-only health check anytime.
 - `/wrap-up` is the session-end routing brain.

@@ -2,7 +2,7 @@
 
 **Author:** Elswick
 **Status:** Addendum to [`memhub-prd.md`](memhub-prd.md) (Draft v2). Authoritative for the items it modifies.
-**Last updated:** 2026-05-13
+**Last updated:** 2026-05-14
 
 This document supplements `memhub-prd.md` rather than replacing it.
 The PRD stays verbatim per the project guardrail in `CLAUDE.md`.
@@ -17,7 +17,7 @@ continues to read from the PRD as-written.
 | PRD section | Status after addendum | Reason |
 |---|---|---|
 | §2 "Why this exists" — final paragraph (markdown as entry point) | **Inverted.** Markdown is now an *output* of the DB. | K9 deprecation track. |
-| §6.2 "Layout per repo" — `agent_docs/` not previously listed | **Extended.** `agent_docs/PROJECT.md` and `PROJECT_LEDGER.md` are emitted by `memhub render` as the human-readable view. | Render slice (`c3fbef0`). |
+| §6.2 "Layout per repo" — local render output not previously listed | **Extended.** `memhub render` emits `PROJECT.md` and `PROJECT_LEDGER.md` into `.memhub/rendered/` by default. Render output is local generated state, not committed by default. | Render slice (`c3fbef0`), machine-local default update (2026-05-14). |
 | §8 "Data model" — `project_state` and `project_arch` tables not present | **Extended.** Migration `0007_project_narrative` added both as durable-text-blob tables. | Render slice step 1 (`2757a0a`). |
 | §13 "CLI surface" — no `state`, `arch`, `render`, `note add` commands | **Extended.** All four ship; full list in §3 below. | Render slice + wrap-up step 1 (`5037033`). |
 | §16 "Milestones" — Milestone 5+ list | **Extended.** "Milestone 6: K9 deprecation" added with shipped slices listed. | This addendum. |
@@ -37,7 +37,7 @@ PRD §2's final paragraph reads:
 
 **Replace the bolded sentence with:**
 
-> The DB is the source of truth. Markdown is generated from the DB by `memhub render` and lives at `agent_docs/PROJECT.md` (narrative view) and `agent_docs/PROJECT_LEDGER.md` (structured view); humans, PR reviewers, and cross-machine collaborators read those files. The agent `CLAUDE.md` / `AGENTS.md` files remain at the repo root as project instructions, with their managed `<!-- memhub:managed:start -->` block still rendered by `memhub sync-md` for at-a-glance status. Session-start convention is to read `agent_docs/PROJECT.md` first, then `PROJECT_LEDGER.md` as needed.
+> The DB is the source of truth. Markdown is generated from the DB by `memhub render` and lives at `.memhub/rendered/PROJECT.md` (narrative view) and `.memhub/rendered/PROJECT_LEDGER.md` (structured view) by default. These files are local generated state, ignored with `.memhub/`, and should not be committed unless a repo explicitly opts into a tracked render path. The agent `CLAUDE.md` / `AGENTS.md` files remain at the repo root as project instructions, with their managed `<!-- memhub:managed:start -->` block still rendered by `memhub sync-md` for at-a-glance status. Session-start convention is to read the local rendered `PROJECT.md` if present, then use `memhub recall` for deeper context.
 
 The original "two places to hand-maintain" framing was a property of
 the K9-coexistence era. Under deprecation, there is one place: the DB.
@@ -92,7 +92,7 @@ memhub note add [TEXT] [--from-file PATH] [--actor NAME] [--json]
 brain (§5 below) requires. `state` and `arch` are the durable
 storage for what was previously `project_state.md` and
 `project_arch.md`. `render` emits `PROJECT.md` and `PROJECT_LEDGER.md`
-into the configured output dir (default `agent_docs/`, configurable
+into the configured output dir (default `.memhub/rendered/`, configurable
 via `[render].output_dir` in `.memhub/config.toml`).
 
 ## 4. Render is one-way; conflict semantics are DB-wins-with-backup
@@ -167,9 +167,9 @@ These PRD-level commitments hold without modification:
 - **Boring tech** (PRD §3.5). No new dependencies introduced by the
   render or wrap-up slices beyond what was already in the tree.
 - **One DB file = one repo** (PRD §3.6). The new tables live in the
-  same `.memhub/project.sqlite`. No new files outside `.memhub/`
-  except the rendered output, which is owned by the DB and
-  reproducible from it.
+  same `.memhub/project.sqlite`. Render output, backups, config,
+  embeddings, and the database are machine-local by default under
+  `.memhub/`; Git is not the synchronization layer for those files.
 - **Non-goals §4.** All six PRD non-goals (multi-user sync, replacing
   git/GitHub/agents, becoming a general knowledge base, embeddings,
   auto-compaction, cloud) remain in force.
@@ -194,8 +194,10 @@ These PRD-level commitments hold without modification:
 For a fresh repo (no K9 history): `memhub init` then start using
 `memhub state set` / `memhub arch set` / `memhub decision add` /
 `memhub task add`. Run `memhub render` at session end (or from
-`/wrap-up`). `agent_docs/PROJECT.md` and `PROJECT_LEDGER.md` are the
-output you commit.
+`/wrap-up`). `.memhub/rendered/PROJECT.md` and
+`.memhub/rendered/PROJECT_LEDGER.md` are local generated output; do
+not commit them unless the repo explicitly opts into a tracked render
+path.
 
 For an existing K9 repo that wants to migrate to memhub-primary:
 
@@ -205,9 +207,9 @@ For an existing K9 repo that wants to migrate to memhub-primary:
    `decisions` and `tasks`.
 3. `memhub state set --from-file agent_docs/project_state.md`
 4. `memhub arch set --from-file agent_docs/project_arch.md`
-5. `memhub render` (emits `PROJECT.md` and `PROJECT_LEDGER.md`).
-6. Update `CLAUDE.md` Session Continuity to point at the rendered
-   files instead of the four `project_*.md` files.
+5. `memhub render` (emits local `PROJECT.md` and `PROJECT_LEDGER.md`).
+6. Update `CLAUDE.md` Session Continuity to point at local rendered
+   files or at `memhub recall` instead of the four `project_*.md` files.
 7. `memhub integrations disable-k9`.
 8. Decide whether to remove the four legacy `project_*.md` files or
    keep them as historical archive (gitignored or in-tree).

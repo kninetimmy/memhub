@@ -6,12 +6,13 @@ Local-first Rust CLI for durable per-repo project memory shared between Codex an
 
 This repo is memhub-primary as of M7-002 (2026-05-13). The DB at
 `.memhub/project.sqlite` is the source of truth; rendered markdown is
-the human-readable view.
+the local human-readable view under `.memhub/rendered/`.
 
-At session start, read `.memhub/rendered/PROJECT.md` only — it carries the
-"currently building / next up / open questions" state plus the
-architecture narrative plus recent session notes, all rendered from
-the DB.
+At session start, read `.memhub/rendered/PROJECT.md` if present — it
+carries the "currently building / next up / open questions" state plus
+the architecture narrative plus recent session notes, all rendered
+from the DB. If it is missing, use `memhub recall` / `memhub status`
+and run `memhub render` when a local view is useful.
 
 **Mid-session, prefer `memhub.recall` (or `/recall`) over reading
 `.memhub/rendered/PROJECT_LEDGER.md`.** Recall is the SQL+RAG hybrid query

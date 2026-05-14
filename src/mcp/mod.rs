@@ -16,16 +16,14 @@ use rmcp::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::MemhubError;
 use crate::commands;
 use crate::config::RetrievalMode;
 use crate::models::{
     CommandRecord, Decision, Fact, PendingWriteRecord, RenderResult, SearchResult, StatusSummary,
     Task,
 };
-use crate::retrieval::{
-    self, RecallHit, RecallOptions, RecallResponse, RecallWarning, SourceType,
-};
-use crate::MemhubError;
+use crate::retrieval::{self, RecallHit, RecallOptions, RecallResponse, RecallWarning, SourceType};
 
 pub fn serve(start: &Path) -> crate::Result<()> {
     let server = MemhubServer::new(start.to_path_buf());
@@ -251,8 +249,7 @@ impl MemhubServer {
         Parameters(params): Parameters<TaskDoneParams>,
         actor: ClientIdentity,
     ) -> std::result::Result<Json<TaskDoneToolResponse>, McpError> {
-        commands::task::done(&self.start, params.id, &actor.normalized)
-            .map_err(map_tool_error)?;
+        commands::task::done(&self.start, params.id, &actor.normalized).map_err(map_tool_error)?;
 
         Ok(Json(TaskDoneToolResponse {
             id: params.id,
@@ -307,9 +304,7 @@ impl MemhubServer {
                 "task" => source_types.push(SourceType::Task),
                 other => {
                     return Err(McpError::invalid_params(
-                        format!(
-                            "invalid source_type '{other}'; expected fact, decision, or task"
-                        ),
+                        format!("invalid source_type '{other}'; expected fact, decision, or task"),
                         None,
                     ));
                 }
@@ -490,7 +485,7 @@ impl MemhubServer {
 
     #[tool(
         name = "render",
-        description = "Regenerate agent_docs/PROJECT.md and agent_docs/PROJECT_LEDGER.md from the current DB state. Prior files are backed up automatically."
+        description = "Regenerate the configured local PROJECT.md and PROJECT_LEDGER.md render outputs from the current DB state. Prior files are backed up automatically."
     )]
     async fn render(
         &self,
@@ -518,7 +513,7 @@ impl ServerHandler for MemhubServer {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("memhub", env!("CARGO_PKG_VERSION")))
             .with_instructions(
-                "Local-first per-repo project memory. Read tools are direct (status, search, recall, list_tasks, list_decisions, list_facts, list_pending_writes, get_command). Prefer `recall` over reading PROJECT_LEDGER.md mid-session — it does SQL+RAG hybrid retrieval across facts, decisions, and tasks. Tasks write directly (task_add, task_done) since tasks are intent. Facts and decisions stage via propose_fact / propose_decision and require human acceptance through `memhub review accept`. Session notes are write-only scratch. `render` regenerates agent_docs/PROJECT.md from the DB.",
+                "Local-first per-repo project memory. Read tools are direct (status, search, recall, list_tasks, list_decisions, list_facts, list_pending_writes, get_command). Prefer `recall` over reading PROJECT_LEDGER.md mid-session — it does SQL+RAG hybrid retrieval across facts, decisions, and tasks. Tasks write directly (task_add, task_done) since tasks are intent. Facts and decisions stage via propose_fact / propose_decision and require human acceptance through `memhub review accept`. Session notes are write-only scratch. `render` regenerates the configured local PROJECT.md from the DB.",
             )
     }
 
@@ -1833,7 +1828,7 @@ mod tests {
     }
 
     #[test]
-    fn mcp_render_regenerates_agent_docs_from_db() {
+    fn mcp_render_regenerates_local_docs_from_db() {
         let temp = tempdir().expect("tempdir");
         init::run(temp.path()).expect("init");
 
@@ -1847,9 +1842,7 @@ mod tests {
             normalized: "claude-code".to_string(),
             raw: "claude-ai".to_string(),
         };
-        let result = runtime
-            .block_on(server.render_impl(actor))
-            .expect("render");
+        let result = runtime.block_on(server.render_impl(actor)).expect("render");
 
         assert!(
             std::path::Path::new(&result.0.project_md_path).exists(),

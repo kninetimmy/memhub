@@ -18,8 +18,8 @@ fn render_empty_repo_writes_placeholder_files() {
 
     assert_eq!(
         result.output_dir,
-        temp.path().join("agent_docs"),
-        "default output dir should be agent_docs"
+        temp.path().join(".memhub").join("rendered"),
+        "default output dir should be local memhub rendered dir"
     );
     assert!(result.project_md_path.exists());
     assert!(result.ledger_md_path.exists());
@@ -151,7 +151,9 @@ fn render_respects_custom_output_dir_from_config() {
     let result = render::run(temp.path(), "cli:user").expect("render");
 
     assert_eq!(result.output_dir, temp.path().join("docs").join("state"));
-    assert!(result.project_md_path.starts_with(temp.path().join("docs").join("state")));
+    assert!(result
+        .project_md_path
+        .starts_with(temp.path().join("docs").join("state")));
     assert!(result.project_md_path.exists());
     assert!(result.ledger_md_path.exists());
 }
@@ -260,9 +262,9 @@ fn render_leaves_project_md_untouched_when_ledger_path_is_unwritable() {
     // re-render. After this call both files are present and consistent.
     render::run(temp.path(), "cli:user").expect("baseline render");
 
-    let agent_docs = temp.path().join("agent_docs");
-    let project_path = agent_docs.join("PROJECT.md");
-    let ledger_path = agent_docs.join("PROJECT_LEDGER.md");
+    let rendered_dir = temp.path().join(".memhub").join("rendered");
+    let project_path = rendered_dir.join("PROJECT.md");
+    let ledger_path = rendered_dir.join("PROJECT_LEDGER.md");
     let baseline_project = read_string(&project_path);
 
     // Replace the ledger file with a directory. Backup of a directory via
