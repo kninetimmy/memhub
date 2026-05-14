@@ -33,3 +33,6 @@ ureq = { version = "2.10", default-features = false, features = ["tls"] }
 
 [dev-dependencies]
 tempfile = "3.20.0"
+# Used only by examples/rerank_bakeoff.rs (task #20 bake-off harness).
+anyhow = "1"
+ureq = { version = "2.10", default-features = false, features = ["tls"] }

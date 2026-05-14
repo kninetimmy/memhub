@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "M8 retrieval golden set. Recall@K acceptance for `memhub eval retrieval`. Matchers run case-insensitive substring checks against the recall hit's title and body, so queries survive row-ID shifts and minor wording tweaks. `kind: match` queries contribute to Recall@K; `kind: empty` queries are safety probes that must return zero results. Queries are written keyword-style (3-6 specific terms) to play well with recall's AND-of-tokens FTS5 matcher.",
+  "description": "M8 retrieval golden set. Recall@K acceptance for `memhub eval retrieval`. Matchers run case-insensitive substring checks against the recall hit's title and body, so queries survive row-ID shifts and minor wording tweaks. `kind: match` queries contribute to Recall@K; `kind: empty` queries are safety probes that must return zero results. Two query styles are mixed: keyword-style (3-6 specific terms, ids without a prefix) that play well with FTS5's AND-of-tokens matcher, and `semantic-` prefixed queries written as natural-language sentences that intentionally avoid the durable surface vocabulary — added for re-ranker bake-off (task #20) so headroom exists above the keyword baseline.",
   "queries": [
     {
       "id": "decision-recall-readonly",
@@ -100,6 +100,60 @@
       "title_contains": ["PR6", "eval"],
       "body_contains": [],
       "notes": "Self-referential probe: the eval harness task itself must be findable via recall."
+    },
+    {
+      "id": "semantic-decision-stale-embedding",
+      "query": "how does memhub know an embedding is out of date",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": ["content_hash", "drift"],
+      "body_contains": [],
+      "notes": "Semantic phrasing for decision 28 (content_hash drift detection). Natural 'out of date' vs durable 'content_hash drift' — minimal keyword overlap, designed to exercise a re-ranker. Matcher uses title only because D28's body says 'Mismatch on read marks the embedding stale' without the word 'drift'."
+    },
+    {
+      "id": "semantic-decision-agent-trust",
+      "query": "why doesn't memhub trust what an agent claims as truth",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": ["trust split"],
+      "body_contains": [],
+      "notes": "Semantic phrasing for decision 17 (MCP tool trust split). Natural 'trust what an agent claims' vs durable 'staged writes for claims'."
+    },
+    {
+      "id": "semantic-decision-cross-machine-transfer",
+      "query": "can I move my project memory from one machine to another",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": ["Export format"],
+      "body_contains": ["Cross-machine"],
+      "notes": "Semantic phrasing for decision 66 (export covers narratives). Natural 'move from one machine' vs durable 'Cross-machine memory transfer'."
+    },
+    {
+      "id": "semantic-decision-empty-result",
+      "query": "what does memhub return when nothing matches my question",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": ["Zero-result"],
+      "body_contains": [],
+      "notes": "Semantic phrasing for decision 33 (zero-result behavior). Natural 'nothing matches' vs durable 'Zero-result behavior: empty bundle'. Matcher uses title only because D33's body says 'empty results array' not 'empty bundle'."
+    },
+    {
+      "id": "semantic-decision-read-only-audit",
+      "query": "does reading from memhub leave a trace in the audit log",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": ["recall", "read-only"],
+      "body_contains": ["writes_log"],
+      "notes": "Semantic phrasing for decision 48 (recall is read-only). Natural 'audit log' vs durable 'writes_log'."
+    },
+    {
+      "id": "semantic-decision-machine-local",
+      "query": "what files stay on my laptop and aren't pushed to git",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": ["machine-local"],
+      "body_contains": [],
+      "notes": "Semantic phrasing for decision 64 (memhub runtime is machine-local). Natural 'stay on my laptop, not pushed to git' vs durable 'machine-local by default'."
     },
     {
       "id": "negative-nonsense-tokens",
