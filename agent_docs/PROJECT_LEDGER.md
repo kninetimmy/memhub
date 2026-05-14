@@ -1,13 +1,61 @@
 <!-- memhub:rendered -->
 <!-- DO NOT EDIT. Generated from .memhub/project.sqlite. -->
 <!-- To change content, use memhub CLI; then re-run `memhub render`. -->
-<!-- Generated at: 2026-05-14T02:46:50Z by memhub 0.1.0 -->
+<!-- Generated at: 2026-05-14T03:32:00Z by memhub 0.1.0 -->
 
 # memhub — Ledger
 
 ## Decisions
 
-_57 decision(s). Most recent first._
+_63 decision(s). Most recent first._
+
+### D63 — memhub viz v1 scope: ephemeral launcher + 5 panels + PCA + polling activity feed
+
+**Status:** active • **Decided:** 2026-05-14 03:30:04 • **Source:** user+agent:claude-code
+
+v1 ships: 'memhub viz' ephemeral one-shot launcher; panels for Overview (counts + schema + recent writes), Embedding map (PCA projection — boring, deterministic, no UMAP dependency), Recall inspector with replay animation, Activity feed (polling at 2s tail of writes_log), Audit (provenance views over source and confidence); localhost bind + one-time token in URL; new src/dashboard/ module; optional feature flag (--features viz) so the default binary stays slim. Estimated 3-5 days of work. v2 adds UMAP, the projects registry + multi-project sidebar, SSE push for the activity feed, and the 'pin a row, see neighbors' interaction in the embedding map. v3 nice-to-haves (workspace cross-project view, decisions force-directed graph, eval timeline) are explicitly out of scope until v1+v2 land and produce real usage signal.
+
+---
+
+### D62 — Recall inspector replays pipeline state client-side from a verbose response
+
+**Status:** active • **Decided:** 2026-05-14 03:29:54 • **Source:** user+agent:claude-code
+
+When the user submits a query to the recall inspector panel, the server runs the full recall pipeline server-side and returns a verbose response containing every intermediate stage's state — tokenization, fts hits, vector candidates, min_vector_score filter, blend, top-K. The SPA animates through these stages client-side. Simpler than streaming intermediate state from a long-running query, more useful in practice (pause, scrub, inspect a specific stage), and avoids needing to introduce checkpointing into the live recall code path. The replay shape composes cleanly with the existing recall::run; the only change there is an opt-in 'verbose' mode that retains intermediate values for the response. Live tap into in-flight queries is explicitly out of scope.
+
+---
+
+### D61 — Listening-port invariant extended to allow user-initiated localhost binds
+
+**Status:** active • **Decided:** 2026-05-14 03:29:45 • **Source:** user+agent:claude-code
+
+The arch's 'No background services, listening ports, or external APIs' line was true when 'memhub serve' MCP was the only port-binding command. With 'memhub viz' it becomes 'No background services or external APIs; listening ports are localhost-only, started explicitly by the user — memhub serve for MCP, memhub viz for dashboard.' Both bind 127.0.0.1, both are user-initiated foreground processes, both are token-or-stdio gated. The product is still local-first and offline; this is a clarifying refinement of the invariant, not a posture shift.
+
+---
+
+### D60 — memhub viz dashboard is read-only and never writes to writes_log
+
+**Status:** active • **Decided:** 2026-05-14 03:29:36 • **Source:** user+agent:claude-code
+
+Every panel reads through existing read paths (state show, arch show, note list, recall, plus new SELECTs over embeddings and writes_log). No endpoint stages pending writes, mutates durable rows, or records to writes_log. Mirrors the existing read-only contract on recall and on the eval retrieval harness, and keeps the dashboard from accumulating its own audit obligations. If a future panel needs to mutate (e.g. 'accept pending write from the UI'), that is a v3 decision worth re-litigating; v1 stays strictly read-only.
+
+---
+
+### D59 — memhub viz discovery is project-scoped in v1, registry in v2
+
+**Status:** active • **Decided:** 2026-05-14 03:29:27 • **Source:** user+agent:claude-code
+
+v1 anchors 'memhub viz' to the cwd's .memhub/ the same way 'memhub render' and 'memhub recall' do — one server, one project, no global state. Multi-project viewing in v1 means launching the command in another shell against another project on a different port. v2 will add a ~/.memhub/projects.toml registry populated explicitly via 'memhub viz register <path>' (or auto-appended on 'memhub init'), and 'memhub viz --all' will open a sidebar-switcher view across registered projects. Filesystem scanning was rejected on privacy and noise grounds — a user should opt in to having a project visible in the dashboard, not have it auto-discovered from a $HOME walk.
+
+---
+
+### D58 — memhub viz is ephemeral, not a persistent daemon
+
+**Status:** active • **Decided:** 2026-05-14 03:29:17 • **Source:** user+agent:claude-code
+
+The dashboard server runs as a one-shot foreground process: 'memhub viz' binds a random localhost port, prints the URL with a one-time token, optionally opens the browser, and lives until Ctrl-C. No PID files, no auto-restart, no lock files, no log rotation. Matches how 'memhub render' and 'memhub recall' are invoked (anchored to a CLI call) and minimizes the departure from the existing no-persistent-listening-ports arch invariant. A daemon mode can be added later if always-on observability proves valuable, but on-demand value is enough for v1 and the global state cost of a daemon is real (PID management, restart-after-reboot, port reuse, log rotation).
+
+---
 
 ### D57 — Hybrid min_vector_score gates raw vector cosine, not blended score
 
@@ -467,7 +515,23 @@ Steady-state non-goal of no bulk K9 import stays. First-install bootstrap-k9 is 
 
 ## Backlog
 
-_18 task(s), 1 open. Open first, then by recency._
+_20 task(s), 3 open. Open first, then by recency._
+
+### T20 — Add cross-encoder re-ranker for hybrid recall
+
+**Status:** open • **Updated:** 2026-05-14 03:15:08
+
+Standard bi-encoder→cross-encoder pipeline. Bundle a re-ranker ONNX via build.rs same as BGE-small (model choice TBD: ms-marco-MiniLM-L-6-v2 ~80MB lower quality faster, or bge-reranker-v2-m3 ~280MB higher quality slower). New src/retrieval/rerank.rs module. recall::run flow: fetch top-N (default 20) by current blend, run pairs through reranker, sort by rerank score, truncate to K. Opt-in via [retrieval] use_reranker=false default, with [retrieval] rerank_candidate_pool=20. Validate via memhub eval retrieval — Recall@3 expected to climb, safety probes must still pass with the floor in place. Adds 50-200ms per recall in hybrid+rerank mode. Open question: model size/quality trade-off should be settled by running both candidates through eval harness against current golden set before committing the bundle.
+
+---
+
+### T19 — Add memhub viz dashboard — local visualization for the RAG database
+
+**Status:** open • **Updated:** 2026-05-14 03:15:04
+
+Localhost-only ephemeral webserver (axum + token-gated) that visualizes a project's memhub DB. Core panels: 2D embedding-space projection (UMAP/PCA) colored by source_type, writes_log timeline by actor, per-query recall inspector showing fts/vector/blend contributions, stale/drift canary, confidence histogram. Design questions to resolve in planning session: multi-project discovery model (filesystem scan vs registry file vs explicit add), tab/window model (one tab with sidebar switcher vs tab-per-project vs workspace cross-project view), refresh model (static vs polling vs WebSocket push), recall-replay interactive mode (animate the pipeline step by step), invocation lifecycle (ephemeral one-shot vs persistent daemon). Implementation: new src/dashboard/ module, axum + tower-http, static SPA bundled via include_bytes!, optional feature flag to keep default binary slim. Read-only on the same terms as recall — no writes_log entries. Caveat: first time memhub binds a port; arch's no-listening-ports invariant becomes no-persistent-listening-ports.
+
+---
 
 ### T10 — Dogfood Codex memhub skills in fresh and existing repos
 
@@ -615,7 +679,7 @@ First-install-only memhub integrations bootstrap-k9 [--dry-run] [--json]. Refuse
 
 ## Facts
 
-_4 fact(s), 0 stale._
+_5 fact(s), 0 stale._
 
 | Key | Value | Source | Confidence | Verified | Stale |
 |-----|-------|--------|-----------|----------|-------|
@@ -623,11 +687,23 @@ _4 fact(s), 0 stale._
 | install-command | cargo install --path . --force && cp ~/.cargo/bin/memhub ~/.local/bin/memhub | user+agent:codex | 1.00 | 2026-05-14 00:37:33 | no |
 | retrieval.min_vector_score-calibration | Default raw-cosine floor on the hybrid vector path is 0.7. Calibrated 2026-05-13 against the live .memhub/project.sqlite: nonsense queries (e.g. zxqv-pure-nonsense...) peak at cosine ~0.67; legitimate top-1 matches sit at >=0.78. 0.7 gives ~0.08 headroom on both sides while keeping Recall@3 at 11/11 and safety 1/1 in eval retrieval --mode hybrid. The task-note value of ~0.4 was actually the blended final_score (0.5*0 + 0.5*0.67), not the raw cosine — do not regress to 0.4. Re-tune if BGE-small is swapped for a model with a different cosine noise floor. | user+agent:claude-code | 1.00 | 2026-05-14 02:41:41 | no |
 | test-command | cargo test | user+agent:claude-code | 1.00 | 2026-05-13 20:55:38 | no |
+| viz.theme | Dark mode with neon purples. Aim for visually polished, not utilitarian — this is something the user looks at, not just a debug surface. Synthwave/cyberpunk-adjacent without being noisy; the embedding map should feel like a constellation, not a scatter plot. | user+agent:claude-code | 1.00 | 2026-05-14 03:30:13 | no |
 
 ## Recent activity (last 30 days)
 
 | When | Actor | Table | Action | Reason |
 |------|-------|-------|--------|--------|
+| 2026-05-14 03:30:23 | claude:planning | session_notes | insert | mcp log_session_note |
+| 2026-05-14 03:30:13 | claude:planning | facts | insert | fact add |
+| 2026-05-14 03:30:04 | claude:planning | decisions | insert | decision add |
+| 2026-05-14 03:29:54 | claude:planning | decisions | insert | decision add |
+| 2026-05-14 03:29:45 | claude:planning | decisions | insert | decision add |
+| 2026-05-14 03:29:36 | claude:planning | decisions | insert | decision add |
+| 2026-05-14 03:29:27 | claude:planning | decisions | insert | decision add |
+| 2026-05-14 03:29:17 | claude:planning | decisions | insert | decision add |
+| 2026-05-14 03:15:08 | cli:user | tasks | insert | task add |
+| 2026-05-14 03:15:04 | cli:user | tasks | insert | task add |
+| 2026-05-14 02:46:50 | cli:user | render | render | memhub render |
 | 2026-05-14 02:46:44 | claude:wrap-up | project_arch | insert | arch set |
 | 2026-05-14 02:46:38 | claude:wrap-up | session_notes | insert | mcp log_session_note |
 | 2026-05-14 02:46:32 | claude:wrap-up | decisions | insert | decision add |
@@ -667,14 +743,3 @@ _4 fact(s), 0 stale._
 | 2026-05-13 21:55:37 | claude:wrap-up | tasks | update | task done |
 | 2026-05-13 21:50:25 | cli:user | render | render | memhub render |
 | 2026-05-13 21:50:12 | claude:wrap-up | project_arch | insert | arch set |
-| 2026-05-13 21:50:10 | claude:wrap-up | session_notes | insert | mcp log_session_note |
-| 2026-05-13 21:50:01 | claude:wrap-up | tasks | insert | task add |
-| 2026-05-13 21:49:59 | claude:wrap-up | tasks | update | task done |
-| 2026-05-13 21:49:57 | claude:wrap-up | tasks | update | task done |
-| 2026-05-13 21:49:55 | claude:wrap-up | tasks | update | task done |
-| 2026-05-13 21:49:46 | claude:wrap-up | decisions | insert | decision add |
-| 2026-05-13 21:49:43 | claude:wrap-up | decisions | insert | decision add |
-| 2026-05-13 21:49:41 | claude:wrap-up | decisions | insert | decision add |
-| 2026-05-13 21:49:39 | claude:wrap-up | decisions | insert | decision add |
-| 2026-05-13 21:49:31 | claude:wrap-up | decisions | insert | decision add |
-| 2026-05-13 21:49:24 | claude:wrap-up | project_state | insert | state set |
