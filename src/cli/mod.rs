@@ -1082,9 +1082,9 @@ pub fn run(cli: Cli) -> Result<()> {
         TopLevelCommand::SyncMd => {
             let result = commands::sync_md::run(&cwd)?;
             if result.updated_files.is_empty() {
-                println!("Managed markdown is already up to date.");
+                println!("Rendered markdown is already up to date.");
             } else {
-                println!("Updated managed markdown:");
+                println!("Updated rendered markdown:");
                 for path in result.updated_files {
                     println!("  {}", path.display());
                 }
@@ -1312,6 +1312,9 @@ pub fn run(cli: Cli) -> Result<()> {
             println!("  commands: {}", summary.commands);
             println!("  pending writes: {}", summary.pending_writes);
             println!("  writes log entries: {}", summary.writes_log);
+            println!("  session notes: {}", summary.session_notes);
+            println!("  project state entries: {}", summary.project_state);
+            println!("  project arch entries: {}", summary.project_arch);
         }
         TopLevelCommand::Import { path, force } => {
             let summary = commands::import::run(&cwd, &path, force)?;
@@ -1327,6 +1330,15 @@ pub fn run(cli: Cli) -> Result<()> {
             println!("  commands: {}", summary.commands);
             println!("  pending writes: {}", summary.pending_writes);
             println!("  writes log entries: {}", summary.writes_log);
+            println!("  session notes: {}", summary.session_notes);
+            println!("  project state entries: {}", summary.project_state);
+            println!("  project arch entries: {}", summary.project_arch);
+            println!();
+            println!("Next steps:");
+            println!(
+                "  Embeddings for imported rows are not yet built. Run `memhub index` to"
+            );
+            println!("  enable vector recall on this machine.");
         }
         TopLevelCommand::Command { command } => match command {
             CommandCommand::List => {

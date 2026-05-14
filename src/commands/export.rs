@@ -15,6 +15,9 @@ pub struct ExportSummary {
     pub commands: usize,
     pub pending_writes: usize,
     pub writes_log: usize,
+    pub session_notes: usize,
+    pub project_state: usize,
+    pub project_arch: usize,
 }
 
 pub fn run(start: &Path, destination: &Path) -> Result<ExportSummary> {
@@ -30,6 +33,9 @@ pub fn run(start: &Path, destination: &Path) -> Result<ExportSummary> {
     let commands = read_commands(conn)?;
     let pending_writes = read_pending_writes(conn)?;
     let writes_log = read_writes_log(conn)?;
+    let session_notes = read_session_notes(conn)?;
+    let project_state = read_narrative(conn, "project_state")?;
+    let project_arch = read_narrative(conn, "project_arch")?;
 
     let summary = ExportSummary {
         destination: destination.to_path_buf(),
@@ -39,6 +45,9 @@ pub fn run(start: &Path, destination: &Path) -> Result<ExportSummary> {
         commands: commands.len(),
         pending_writes: pending_writes.len(),
         writes_log: writes_log.len(),
+        session_notes: session_notes.len(),
+        project_state: project_state.len(),
+        project_arch: project_arch.len(),
     };
 
     let payload = Export {
@@ -56,6 +65,9 @@ pub fn run(start: &Path, destination: &Path) -> Result<ExportSummary> {
         commands,
         pending_writes,
         writes_log,
+        session_notes,
+        project_state,
+        project_arch,
     };
 
     if let Some(parent) = destination.parent() {
@@ -207,6 +219,50 @@ fn read_writes_log(conn: &Connection) -> Result<Vec<v1::WriteLogEntry>> {
             action: row.get(4)?,
             reason: row.get(5)?,
             at: row.get(6)?,
+        })
+    })?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(Into::into)
+}
+
+fn read_session_notes(conn: &Connection) -> Result<Vec<v1::SessionNote>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, actor, actor_raw, text, created_at
+         FROM session_notes
+         WHERE project_id = 1
+         ORDER BY id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(v1::SessionNote {
+            id: row.get(0)?,
+            actor: row.get(1)?,
+            actor_raw: row.get(2)?,
+            text: row.get(3)?,
+            created_at: row.get(4)?,
+        })
+    })?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(Into::into)
+}
+
+fn read_narrative(conn: &Connection, table: &str) -> Result<Vec<v1::NarrativeEntry>> {
+    // `table` is a static caller-controlled identifier from this module — never
+    // user input — so format-interpolating it is safe. SQLite does not allow
+    // table names as bind parameters.
+    let sql = format!(
+        "SELECT id, body, actor, actor_raw, created_at
+         FROM {table}
+         WHERE project_id = 1
+         ORDER BY id"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |row| {
+        Ok(v1::NarrativeEntry {
+            id: row.get(0)?,
+            body: row.get(1)?,
+            actor: row.get(2)?,
+            actor_raw: row.get(3)?,
+            created_at: row.get(4)?,
         })
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()

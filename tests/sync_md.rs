@@ -1,42 +1,48 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use memhub::MemhubError;
 use memhub::commands::{command, decision, fact, init, sync_md, task};
 use memhub::config::ProjectConfig;
 use tempfile::tempdir;
 
-#[test]
-fn init_creates_managed_markdown_and_preserves_manual_content() {
-    let temp = tempdir().expect("tempdir");
-    fs::write(
-        temp.path().join("AGENTS.md"),
-        "# Local notes\n\nKeep this content.\n",
-    )
-    .expect("seed agents");
+fn rendered_agents(repo_root: &Path) -> PathBuf {
+    repo_root.join(".memhub").join("rendered").join("AGENTS.md")
+}
 
-    init::run(temp.path()).expect("init succeeds");
-
-    let agents = fs::read_to_string(temp.path().join("AGENTS.md")).expect("read agents");
-    let claude = fs::read_to_string(temp.path().join("CLAUDE.md")).expect("read claude");
-
-    assert!(agents.starts_with("# Local notes\n\nKeep this content.\n"));
-    assert!(agents.contains("<!-- memhub:managed:start -->"));
-    assert!(agents.contains("## Project state (auto-generated)"));
-    assert!(claude.contains("<!-- memhub:managed:start -->"));
-    assert!(claude.contains("### Durable decisions"));
-
-    let backups = markdown_backup_files(temp.path());
-    assert_eq!(backups.len(), 1);
-    assert!(backups[0].display().to_string().contains("AGENTS.md"));
+fn rendered_claude(repo_root: &Path) -> PathBuf {
+    repo_root.join(".memhub").join("rendered").join("CLAUDE.md")
 }
 
 #[test]
-fn sync_md_renders_db_state_and_creates_backups_for_existing_files() {
+fn init_writes_rendered_markdown_under_memhub_rendered() {
     let temp = tempdir().expect("tempdir");
+    // A pre-existing repo-root CLAUDE.md must NOT be modified by memhub init or
+    // sync — those tracked files are the user's static guardrails.
+    fs::write(
+        temp.path().join("CLAUDE.md"),
+        "# Tracked guardrails\n\nKeep this as-is.\n",
+    )
+    .expect("seed claude");
+
     init::run(temp.path()).expect("init succeeds");
 
-    let agents_before = fs::read_to_string(temp.path().join("AGENTS.md")).expect("read agents");
+    let tracked = fs::read_to_string(temp.path().join("CLAUDE.md")).expect("read tracked claude");
+    assert_eq!(tracked, "# Tracked guardrails\n\nKeep this as-is.\n");
+    assert!(!temp.path().join("AGENTS.md").exists());
+
+    let agents = fs::read_to_string(rendered_agents(temp.path())).expect("read rendered agents");
+    let claude = fs::read_to_string(rendered_claude(temp.path())).expect("read rendered claude");
+    assert!(agents.contains("# Project state (machine-local"));
+    assert!(agents.contains("## Durable decisions"));
+    assert!(claude.contains("## Known quirks"));
+
+    assert!(markdown_backup_files(temp.path()).is_empty());
+}
+
+#[test]
+fn sync_md_renders_db_state_to_rendered_dir() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init succeeds");
 
     command::verify(temp.path(), "build", "cargo build", 0, "cli:user").expect("build command");
     command::verify(temp.path(), "test", "cargo test", 0, "cli:user").expect("test command");
@@ -49,8 +55,8 @@ fn sync_md_renders_db_state_and_creates_backups_for_existing_files() {
     .expect("task add");
     decision::add(
         temp.path(),
-        "Managed block lives at the bottom",
-        "Keep hand-authored instructions visible first.",
+        "Rendered markdown lives under .memhub/rendered/",
+        "Keep tracked files machine-agnostic.",
         "user",
         "cli:user",
     )
@@ -64,15 +70,18 @@ fn sync_md_renders_db_state_and_creates_backups_for_existing_files() {
     )
     .expect("fact add");
 
+    let agents_before =
+        fs::read_to_string(rendered_agents(temp.path())).expect("read rendered agents before");
+
     let result = sync_md::run(temp.path()).expect("sync");
-    let agents = fs::read_to_string(temp.path().join("AGENTS.md")).expect("read agents");
+    let agents = fs::read_to_string(rendered_agents(temp.path())).expect("read rendered agents");
 
     assert_eq!(result.updated_files.len(), 2);
     assert_eq!(result.backup_files.len(), 2);
     assert!(agents.contains("**Build:** `cargo build`"));
     assert!(agents.contains("**Test:** `cargo test`"));
     assert!(agents.contains("**Active tasks:** 1 open, 0 blocked"));
-    assert!(agents.contains("- Managed block lives at the bottom"));
+    assert!(agents.contains("- Rendered markdown lives under .memhub/rendered/"));
     assert!(
         agents.contains("- quirk.windows-toolchain: Windows builds require the MSVC toolchain.")
     );
@@ -99,83 +108,55 @@ fn sync_md_does_not_create_backup_for_brand_new_files() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init succeeds");
 
-    fs::remove_file(temp.path().join("AGENTS.md")).expect("remove agents");
-    fs::remove_file(temp.path().join("CLAUDE.md")).expect("remove claude");
+    fs::remove_file(rendered_agents(temp.path())).expect("remove rendered agents");
+    fs::remove_file(rendered_claude(temp.path())).expect("remove rendered claude");
 
     let result = sync_md::run(temp.path()).expect("sync");
 
     assert_eq!(result.updated_files.len(), 2);
     assert!(result.backup_files.is_empty());
-    assert!(temp.path().join("AGENTS.md").exists());
-    assert!(temp.path().join("CLAUDE.md").exists());
+    assert!(rendered_agents(temp.path()).exists());
+    assert!(rendered_claude(temp.path()).exists());
     assert!(markdown_backup_files(temp.path()).is_empty());
 }
 
 #[test]
-fn sync_md_rejects_invalid_markers_without_writing_any_files() {
+fn sync_md_never_touches_tracked_repo_root_files() {
     let temp = tempdir().expect("tempdir");
-    init::run(temp.path()).expect("init succeeds");
-
-    let claude_before = fs::read_to_string(temp.path().join("CLAUDE.md")).expect("read claude");
     fs::write(
         temp.path().join("AGENTS.md"),
-        "# Notes\n\n<!-- memhub:managed:start -->\nBroken\n",
+        "# Tracked AGENTS\n\nHand-authored.\n",
     )
-    .expect("write invalid agents");
-
-    decision::add(
-        temp.path(),
-        "Marker validation should fail closed",
-        "Never rewrite malformed managed blocks.",
-        "user",
-        "cli:user",
+    .expect("seed agents");
+    fs::write(
+        temp.path().join("CLAUDE.md"),
+        "# Tracked CLAUDE\n\nHand-authored.\n",
     )
-    .expect("decision add");
+    .expect("seed claude");
 
-    let expected_agents = fs::read_to_string(temp.path().join("AGENTS.md")).expect("read agents");
-    let err = sync_md::run(temp.path()).expect_err("sync should fail");
-
-    assert!(matches!(err, MemhubError::InvalidManagedMarkdown { .. }));
-    assert_eq!(
-        fs::read_to_string(temp.path().join("AGENTS.md")).expect("read agents"),
-        expected_agents
-    );
-    assert_eq!(
-        fs::read_to_string(temp.path().join("CLAUDE.md")).expect("read claude"),
-        claude_before
-    );
-    assert!(markdown_backup_files(temp.path()).is_empty());
-}
-
-#[test]
-fn sync_md_preserves_manual_content_outside_managed_block() {
-    let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init succeeds");
-
-    let existing = fs::read_to_string(temp.path().join("AGENTS.md")).expect("read agents");
-    let customized =
-        format!("# Manual intro\n\nKeep this.\n\n{existing}\n\n## Manual footer\nDo not remove.\n");
-    fs::write(temp.path().join("AGENTS.md"), customized).expect("customize agents");
-
     decision::add(
         temp.path(),
-        "Preserve manual content around sync blocks",
-        "Only the managed section should change.",
+        "Tracked files stay tracked",
+        "Machine-local content goes to .memhub/rendered/ only.",
         "user",
         "cli:user",
     )
     .expect("decision add");
-
     sync_md::run(temp.path()).expect("sync");
 
-    let agents = fs::read_to_string(temp.path().join("AGENTS.md")).expect("read agents");
-    assert!(agents.starts_with("# Manual intro\n\nKeep this.\n\n"));
-    assert!(agents.contains("\n\n## Manual footer\nDo not remove.\n"));
-    assert!(agents.contains("- Preserve manual content around sync blocks"));
+    assert_eq!(
+        fs::read_to_string(temp.path().join("AGENTS.md")).expect("read tracked agents"),
+        "# Tracked AGENTS\n\nHand-authored.\n"
+    );
+    assert_eq!(
+        fs::read_to_string(temp.path().join("CLAUDE.md")).expect("read tracked claude"),
+        "# Tracked CLAUDE\n\nHand-authored.\n"
+    );
 }
 
 #[test]
-fn auto_sync_md_updates_markdown_after_writes() {
+fn auto_sync_md_updates_rendered_markdown_after_writes() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init succeeds");
 
@@ -186,15 +167,16 @@ fn auto_sync_md_updates_markdown_after_writes() {
 
     decision::add(
         temp.path(),
-        "Use explicit markdown sync markers",
-        "Only rewrite the managed section.",
+        "Auto-sync writes the rendered copy",
+        "Keep machine-local markdown fresh without manual sync.",
         "user",
         "cli:user",
     )
     .expect("decision add");
 
-    let agents = fs::read_to_string(temp.path().join("AGENTS.md")).expect("read agents");
-    assert!(agents.contains("- Use explicit markdown sync markers"));
+    let agents =
+        fs::read_to_string(rendered_agents(temp.path())).expect("read rendered agents");
+    assert!(agents.contains("- Auto-sync writes the rendered copy"));
 }
 
 fn markdown_backup_files(repo_root: &Path) -> Vec<PathBuf> {

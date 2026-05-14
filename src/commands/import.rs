@@ -19,6 +19,9 @@ pub struct ImportSummary {
     pub commands: usize,
     pub pending_writes: usize,
     pub writes_log: usize,
+    pub session_notes: usize,
+    pub project_state: usize,
+    pub project_arch: usize,
 }
 
 pub fn run(start: &Path, source: &Path, force: bool) -> Result<ImportSummary> {
@@ -52,6 +55,9 @@ pub fn run(start: &Path, source: &Path, force: bool) -> Result<ImportSummary> {
         payload.commands.len(),
         payload.pending_writes.len(),
         payload.writes_log.len(),
+        payload.session_notes.len(),
+        payload.project_state.len(),
+        payload.project_arch.len(),
     );
 
     let tx = ctx.conn.transaction()?;
@@ -64,6 +70,9 @@ pub fn run(start: &Path, source: &Path, force: bool) -> Result<ImportSummary> {
     insert_commands(&tx, &payload.commands)?;
     insert_pending_writes(&tx, &payload.pending_writes)?;
     insert_writes_log(&tx, &payload.writes_log)?;
+    insert_session_notes(&tx, &payload.session_notes)?;
+    insert_narrative(&tx, "project_state", &payload.project_state)?;
+    insert_narrative(&tx, "project_arch", &payload.project_arch)?;
 
     search::sync_decision_chunks(&tx)?;
 
@@ -88,12 +97,24 @@ pub fn run(start: &Path, source: &Path, force: bool) -> Result<ImportSummary> {
         commands: summary_counts.3,
         pending_writes: summary_counts.4,
         writes_log: summary_counts.5,
+        session_notes: summary_counts.6,
+        project_state: summary_counts.7,
+        project_arch: summary_counts.8,
     })
 }
 
 fn count_durable_rows(conn: &rusqlite::Connection) -> Result<i64> {
     let mut total: i64 = 0;
-    for table in ["facts", "decisions", "tasks", "commands", "pending_writes"] {
+    for table in [
+        "facts",
+        "decisions",
+        "tasks",
+        "commands",
+        "pending_writes",
+        "session_notes",
+        "project_state",
+        "project_arch",
+    ] {
         let count: i64 = conn.query_row(
             &format!("SELECT COUNT(*) FROM {table} WHERE project_id = 1"),
             [],
@@ -109,7 +130,16 @@ fn wipe_durable_tables(tx: &Transaction<'_>) -> Result<()> {
         "DELETE FROM chunks WHERE project_id = 1 AND source_type = 'decision'",
         [],
     )?;
-    for table in ["writes_log", "pending_writes", "commands", "tasks", "facts"] {
+    for table in [
+        "writes_log",
+        "pending_writes",
+        "commands",
+        "tasks",
+        "facts",
+        "session_notes",
+        "project_state",
+        "project_arch",
+    ] {
         tx.execute(&format!("DELETE FROM {table} WHERE project_id = 1"), [])?;
     }
     tx.execute("DELETE FROM decisions WHERE project_id = 1", [])?;
@@ -230,6 +260,46 @@ fn insert_writes_log(tx: &Transaction<'_>, rows: &[v1::WriteLogEntry]) -> Result
             entry.action,
             entry.reason,
             entry.at,
+        ])?;
+    }
+    Ok(())
+}
+
+fn insert_session_notes(tx: &Transaction<'_>, rows: &[v1::SessionNote]) -> Result<()> {
+    let mut stmt = tx.prepare(
+        "INSERT INTO session_notes(id, project_id, actor, actor_raw, text, created_at)
+         VALUES (?1, 1, ?2, ?3, ?4, ?5)",
+    )?;
+    for note in rows {
+        stmt.execute(params![
+            note.id,
+            note.actor,
+            note.actor_raw,
+            note.text,
+            note.created_at,
+        ])?;
+    }
+    Ok(())
+}
+
+fn insert_narrative(
+    tx: &Transaction<'_>,
+    table: &str,
+    rows: &[v1::NarrativeEntry],
+) -> Result<()> {
+    // `table` is a static caller-controlled identifier — never user input.
+    let sql = format!(
+        "INSERT INTO {table}(id, project_id, body, actor, actor_raw, created_at)
+         VALUES (?1, 1, ?2, ?3, ?4, ?5)"
+    );
+    let mut stmt = tx.prepare(&sql)?;
+    for entry in rows {
+        stmt.execute(params![
+            entry.id,
+            entry.body,
+            entry.actor,
+            entry.actor_raw,
+            entry.created_at,
         ])?;
     }
     Ok(())

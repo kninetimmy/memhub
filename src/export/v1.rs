@@ -20,6 +20,14 @@ pub struct Export {
     pub commands: Vec<Command>,
     pub pending_writes: Vec<PendingWrite>,
     pub writes_log: Vec<WriteLogEntry>,
+    /// Added after the initial v1 schema. `#[serde(default)]` lets older
+    /// exports that predate these fields import cleanly as empty arrays.
+    #[serde(default)]
+    pub session_notes: Vec<SessionNote>,
+    #[serde(default)]
+    pub project_state: Vec<NarrativeEntry>,
+    #[serde(default)]
+    pub project_arch: Vec<NarrativeEntry>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -102,4 +110,24 @@ pub struct WriteLogEntry {
     pub action: String,
     pub reason: Option<String>,
     pub at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SessionNote {
+    pub id: i64,
+    pub actor: String,
+    pub actor_raw: String,
+    pub text: String,
+    pub created_at: String,
+}
+
+/// Shared shape for `project_state` and `project_arch`. Both tables hold
+/// append-only narrative history with the same columns.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct NarrativeEntry {
+    pub id: i64,
+    pub body: String,
+    pub actor: String,
+    pub actor_raw: String,
+    pub created_at: String,
 }

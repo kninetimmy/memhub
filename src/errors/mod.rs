@@ -17,8 +17,6 @@ pub enum MemhubError {
     },
     #[error("invalid input: {0}")]
     InvalidInput(String),
-    #[error("invalid managed markdown in {path}: {reason}")]
-    InvalidManagedMarkdown { path: String, reason: String },
     #[error("{command} failed: {stderr}")]
     ExternalCommand { command: String, stderr: String },
     #[error("mcp error: {0}")]

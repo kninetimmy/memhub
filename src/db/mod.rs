@@ -13,6 +13,14 @@ use crate::{MemhubError, Result};
 pub const MEMHUB_DIR: &str = ".memhub";
 pub const DB_FILENAME: &str = "project.sqlite";
 pub const CONFIG_FILENAME: &str = "config.toml";
+pub const CONFIG_EXAMPLE_FILENAME: &str = "config.example.toml";
+
+/// The latest schema version this build will migrate a DB to. Exposed so
+/// tests can verify that `open_project` brought a DB up to head without
+/// hand-coding the version string in every assertion.
+pub fn latest_schema_version() -> &'static str {
+    migrations::LATEST_VERSION
+}
 
 #[derive(Debug, Clone)]
 pub struct ProjectPaths {
@@ -57,7 +65,14 @@ fn init_project_inner(
     let paths = ProjectPaths::for_repo_root(repo_root);
     let memhub_preexisting = paths.memhub_dir.exists();
 
-    if memhub_preexisting && !paths.db_path.exists() && !allow_missing_db_recovery {
+    // Guard against "user accidentally deleted their DB but still has a
+    // live local config that points at memory we don't want to silently
+    // recreate." The presence of `.memhub/config.toml` (the gitignored
+    // live config) is the signal of in-use state. A repo that's only
+    // freshly cloned will have `.memhub/` with the tracked
+    // `config.example.toml` but no `config.toml` — that's a legitimate
+    // fresh-init scenario, not a data-loss case.
+    if paths.config_path.exists() && !paths.db_path.exists() && !allow_missing_db_recovery {
         return Err(MemhubError::MissingDatabase {
             memhub_dir: paths.memhub_dir.clone(),
             db_path: paths.db_path.clone(),
@@ -72,13 +87,7 @@ fn init_project_inner(
         .and_then(|name| name.to_str())
         .unwrap_or("memhub");
 
-    let config_created = if paths.config_path.exists() {
-        false
-    } else {
-        let config = ProjectConfig::default_for_repo_name(repo_name);
-        config.save(&paths.config_path)?;
-        true
-    };
+    let config_created = create_config_if_missing(&paths.memhub_dir, &paths.config_path, repo_name)?;
 
     let config = ProjectConfig::load(&paths.config_path)?;
     let mut conn = open_connection(&paths.db_path)?;
@@ -120,7 +129,7 @@ pub fn open_project(start: &Path) -> Result<ProjectContext> {
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("memhub");
-        ProjectConfig::default_for_repo_name(repo_name).save(&paths.config_path)?;
+        create_config_if_missing(&paths.memhub_dir, &paths.config_path, repo_name)?;
     }
 
     let config = ProjectConfig::load(&paths.config_path)?;
@@ -133,6 +142,38 @@ pub fn open_project(start: &Path) -> Result<ProjectContext> {
         config,
         conn,
     })
+}
+
+/// Seed `.memhub/config.toml` if it is missing.
+///
+/// On a fresh machine the canonical config can travel with the repo as
+/// `.memhub/config.example.toml` (tracked in git). When that file is
+/// present we copy it verbatim, validating it parses as a
+/// `ProjectConfig` first so a corrupt example fails fast instead of
+/// writing garbage. When the example is absent, fall back to the
+/// code-defined defaults seeded with the repo directory name.
+///
+/// Returns `true` iff the config file was newly created.
+fn create_config_if_missing(
+    memhub_dir: &Path,
+    config_path: &Path,
+    repo_name: &str,
+) -> Result<bool> {
+    if config_path.exists() {
+        return Ok(false);
+    }
+
+    let example_path = memhub_dir.join(CONFIG_EXAMPLE_FILENAME);
+    if example_path.exists() {
+        let raw = fs::read_to_string(&example_path)?;
+        // Validate so a corrupt example doesn't write nonsense that errors
+        // on the very next `ProjectConfig::load` call.
+        let _: ProjectConfig = toml::from_str(&raw)?;
+        fs::write(config_path, raw)?;
+    } else {
+        ProjectConfig::default_for_repo_name(repo_name).save(config_path)?;
+    }
+    Ok(true)
 }
 
 fn open_connection(path: &Path) -> Result<Connection> {

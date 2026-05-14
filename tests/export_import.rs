@@ -1,8 +1,12 @@
 use std::fs;
 
 use memhub::MemhubError;
-use memhub::commands::{decision, export, fact, import, init, pending_write, review, search, task};
+use memhub::commands::{
+    decision, export, fact, import, init, narrative, pending_write, review, search, session_note,
+    task,
+};
 use memhub::export::v1;
+use memhub::models::NarrativeKind;
 use tempfile::tempdir;
 
 fn seed_project(path: &std::path::Path) {
@@ -438,6 +442,162 @@ fn import_regenerates_decision_chunks_for_fts_search() {
         !response.results.is_empty(),
         "FTS search should find imported decision after chunk regeneration"
     );
+}
+
+#[test]
+fn export_import_round_trips_session_notes_and_narratives() {
+    let source = tempdir().expect("source tempdir");
+    init::run(source.path()).expect("source init");
+
+    session_note::add(
+        source.path(),
+        "Picked back up after lunch; focusing on retrieval scoring.",
+        "user",
+        "cli:user",
+    )
+    .expect("first note");
+    session_note::add(
+        source.path(),
+        "Embeddings cache may be stale — verify before reindex.",
+        "codex",
+        "openai-codex",
+    )
+    .expect("second note");
+
+    narrative::set(
+        source.path(),
+        NarrativeKind::State,
+        "Currently building cross-machine export coverage.",
+        "user",
+        "cli:user",
+    )
+    .expect("state entry");
+    narrative::set(
+        source.path(),
+        NarrativeKind::Arch,
+        "Recall pipeline: SQL+RAG hybrid with stale-penalty.",
+        "user",
+        "cli:user",
+    )
+    .expect("arch entry");
+
+    let export_path = source.path().join("export.json");
+    let export_summary = export::run(source.path(), &export_path).expect("export succeeds");
+    assert_eq!(export_summary.session_notes, 2);
+    assert_eq!(export_summary.project_state, 1);
+    assert_eq!(export_summary.project_arch, 1);
+
+    let target = tempdir().expect("target tempdir");
+    init::run(target.path()).expect("target init");
+    let import_summary =
+        import::run(target.path(), &export_path, false).expect("import succeeds");
+    assert_eq!(import_summary.session_notes, 2);
+    assert_eq!(import_summary.project_state, 1);
+    assert_eq!(import_summary.project_arch, 1);
+
+    let notes = session_note::list(target.path(), 50, None, None).expect("list notes");
+    let note_texts: Vec<_> = notes.iter().map(|n| n.text.as_str()).collect();
+    assert!(
+        note_texts
+            .iter()
+            .any(|t| t.contains("Picked back up after lunch"))
+    );
+    assert!(
+        note_texts
+            .iter()
+            .any(|t| t.contains("Embeddings cache may be stale"))
+    );
+
+    let state = narrative::show(target.path(), NarrativeKind::State)
+        .expect("state show")
+        .expect("state present");
+    assert!(state.body.contains("cross-machine export coverage"));
+
+    let arch = narrative::show(target.path(), NarrativeKind::Arch)
+        .expect("arch show")
+        .expect("arch present");
+    assert!(arch.body.contains("SQL+RAG hybrid"));
+}
+
+#[test]
+fn import_accepts_legacy_export_without_session_notes_or_narratives() {
+    // Exports written before session_notes/project_state/project_arch were
+    // added to the format must continue to import cleanly.
+    let target = tempdir().expect("target tempdir");
+    init::run(target.path()).expect("target init");
+
+    let legacy_export = serde_json::json!({
+        "memhub_export_version": 1,
+        "exported_at": "2025-01-01T00:00:00Z",
+        "exported_by": "memhub legacy",
+        "source_schema_version": "1",
+        "project": {
+            "root_path_at_export": target.path().to_string_lossy(),
+            "created_at": "2025-01-01T00:00:00Z",
+        },
+        "facts": [],
+        "decisions": [],
+        "tasks": [],
+        "commands": [],
+        "pending_writes": [],
+        "writes_log": []
+    });
+    let legacy_path = target.path().join("legacy.json");
+    fs::write(&legacy_path, legacy_export.to_string()).expect("write legacy export");
+
+    let summary = import::run(target.path(), &legacy_path, true).expect("legacy import");
+    assert_eq!(summary.session_notes, 0);
+    assert_eq!(summary.project_state, 0);
+    assert_eq!(summary.project_arch, 0);
+}
+
+#[test]
+fn import_refuses_when_only_session_notes_exist_without_force() {
+    // Without force, import must refuse if the target has any durable data —
+    // including session notes or narratives, which used to be ignored by
+    // count_durable_rows.
+    let source = tempdir().expect("source tempdir");
+    seed_project(source.path());
+    let export_path = source.path().join("backup.json");
+    export::run(source.path(), &export_path).expect("export succeeds");
+
+    let target = tempdir().expect("target tempdir");
+    init::run(target.path()).expect("target init");
+    session_note::add(target.path(), "I exist already.", "user", "cli:user")
+        .expect("seed note");
+
+    let result = import::run(target.path(), &export_path, false);
+    assert!(
+        result.is_err(),
+        "import should refuse when target has session notes"
+    );
+
+    let notes = session_note::list(target.path(), 50, None, None).expect("list notes");
+    assert_eq!(notes.len(), 1);
+    assert!(notes[0].text.contains("I exist already"));
+}
+
+#[test]
+fn export_excludes_embeddings_and_chunks_to_keep_format_portable() {
+    let source = tempdir().expect("source tempdir");
+    seed_project(source.path());
+    let dest = source.path().join("export.json");
+    export::run(source.path(), &dest).expect("export succeeds");
+
+    let raw = fs::read_to_string(&dest).expect("read export");
+    let object = serde_json::from_str::<serde_json::Value>(&raw)
+        .expect("parse json")
+        .as_object()
+        .expect("top-level object")
+        .clone();
+
+    for derived in ["embeddings", "chunks"] {
+        assert!(
+            !object.contains_key(derived),
+            "export should not include derived table '{}'",
+            derived
+        );
+    }
 }
 
 #[test]

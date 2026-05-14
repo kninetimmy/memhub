@@ -1157,11 +1157,7 @@ fn sanitize_for_log(value: &str) -> String {
 
 fn map_tool_error(err: MemhubError) -> McpError {
     match err {
-        MemhubError::InvalidInput(message)
-        | MemhubError::InvalidManagedMarkdown {
-            path: _,
-            reason: message,
-        } => McpError::invalid_params(message, None),
+        MemhubError::InvalidInput(message) => McpError::invalid_params(message, None),
         other => McpError::internal_error(other.to_string(), None),
     }
 }

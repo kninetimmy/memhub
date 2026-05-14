@@ -1,0 +1,67 @@
+# Canonical memhub config for this repo. Tracked in git.
+#
+# A fresh `memhub init` (or any `open_project` call on a machine with no
+# `.memhub/config.toml`) copies this file verbatim into the local
+# `.memhub/config.toml`, which is gitignored. Edit this file to change
+# the baseline for every machine; edit `.memhub/config.toml` to make a
+# per-machine override that doesn't sync via git.
+#
+# Fields that should NOT drift across machines (commit changes here):
+#   - deny_list.patterns      (security boundary)
+#   - retrieval.mode          (recall behavior)
+#   - retrieval.scoring.*     (reproducible recall)
+#   - integrations.k9.*       (project property)
+#   - render.output_dir       (project property)
+#
+# Fields that are per-machine preferences (override locally without
+# committing back to the example):
+#   - auto_sync_md
+#   - log_level
+#   - retrieval.default_max_results
+#   - retrieval.accepted_only_by_default
+#   - retrieval.include_stale_by_default
+
+project_name = "memhub"
+auto_sync_md = false
+log_level = "info"
+
+[deny_list]
+patterns = [
+    ".env",
+    ".env.*",
+    "*.pem",
+    "*.key",
+    "*.p12",
+    "*.pfx",
+    "id_rsa",
+    "id_rsa.*",
+    "id_dsa",
+    "id_dsa.*",
+    "id_ecdsa",
+    "id_ecdsa.*",
+    "id_ed25519",
+    "id_ed25519.*",
+    "secrets/**",
+    ".aws/credentials",
+    ".gcloud/credentials*",
+    ".gnupg/**",
+]
+
+[integrations.k9]
+enabled = false
+agent_docs_path = "agent_docs"
+
+[render]
+output_dir = ".memhub/rendered"
+
+[retrieval]
+mode = "hybrid"
+default_max_results = 6
+accepted_only_by_default = false
+include_stale_by_default = false
+
+[retrieval.scoring]
+fts_weight = 0.5
+vector_weight = 0.5
+stale_penalty = 0.3
+min_vector_score = 0.7
