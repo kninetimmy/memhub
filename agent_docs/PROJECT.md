@@ -1,46 +1,53 @@
 <!-- memhub:rendered -->
 <!-- DO NOT EDIT. Generated from .memhub/project.sqlite. -->
 <!-- To change content, use memhub CLI; then re-run `memhub render`. -->
-<!-- Generated at: 2026-05-14T03:32:00Z by memhub 0.1.0 -->
+<!-- Generated at: 2026-05-14T03:39:37Z by memhub 0.1.0 -->
 
 # memhub
 
 ## Currently building
 
-M8 retrieval is closed. The follow-up min-score gap from the prior state
-is now shipped: `min_vector_score` floors the hybrid vector path so
-pure-nonsense queries return an empty bundle even in hybrid mode.
+Between work. Wrapping a planning session that locked the design for
+two upcoming features but shipped no production code.
 
-`cc78a18 Add min_vector_score floor to hybrid recall` filters vector
-candidates below a configurable cosine threshold in `vector_lookup`,
-before scoring. FTS hits are unaffected. Default is 0.7, calibrated
-against the live corpus (nonsense ceiling ~0.67, legitimate top-1 ≥0.78).
-The eval harness under `--mode hybrid` now reports Recall@3 = 11/11 AND
-safety = 1/1 (was 0/1 before).
+The session produced six decisions covering memhub viz dashboard
+design (#58–63): ephemeral one-shot lifecycle, project-scoped
+discovery in v1 with a global registry as a v2 add, read-only
+dashboard contract mirroring recall, listening-port invariant
+clarified to allow user-initiated localhost binds, recall inspector
+as client-side replay of a verbose server response, and v1 scope of
+ephemeral launcher + 5 panels + PCA projection + polling activity
+feed. Fact #5 (viz.theme) records the visual style — dark mode with
+neon purples, synthwave-adjacent.
 
-The task note's "default around 0.4" was actually the blended `final_score`
-(0.5*0 + 0.5*0.67 ≈ 0.33), not the raw cosine. Fact #4
-(`retrieval.min_vector_score-calibration`) records the empirical
-calibration so a future bump (e.g., model swap) starts from the right
-number.
+The latest render was committed in fe60d29 and pushed.
 
 ## Next up
 
-- **Dogfood Codex skills end-to-end** (task #10) is the last named
-  follow-up. Exercise /wrap-up, /init-project, /check-init from the
-  Codex skill templates in fresh and existing repos.
-- **Free-AI-SSD golden set** remains nice-to-have once that repo wants
-  its own Recall@K baseline.
+- **Implement memhub viz v1** (task #19). Decision #63 has the build
+  list. New src/dashboard/ module, axum server, static SPA bundled
+  via include_bytes!. Estimated 3–5 days.
+- **Cross-encoder re-ranker bake-off** (task #20). Can run in
+  parallel — independent code path. Pick between
+  ms-marco-MiniLM-L-6-v2 (~80MB, faster) and bge-reranker-v2-m3
+  (~280MB, higher quality) by running both against the eval harness
+  on the current 12-query golden set.
+- **Dogfood Codex skills** (task #10) remains, still unscheduled.
 
 ## Open questions
 
-- `min_vector_score` is a raw-cosine floor. If BGE-small is ever
-  swapped for a model with a different similarity-noise floor, the 0.7
-  default needs re-tuning — fact #4 captures the calibration method.
-- `accepted_only_by_default` still false; task provenance/acceptance
-  rules remain deferred from the prior state.
+- min_vector_score is a raw-cosine floor; recalibration needed if
+  BGE-small is ever swapped — fact #4 captures the calibration
+  method.
+- accepted_only_by_default still false; task provenance/acceptance
+  rules remain deferred.
+- For the dashboard: UMAP vs PCA in v1 (decision #63 picked PCA;
+  cheapest knob to revisit once we see how clusters look on real
+  data).
+- For the re-ranker: bundle one model and ship, or feature-flag both
+  and let users pick at install time?
 
-_Last updated 2026-05-14 02:46:23 by claude:wrap-up._
+_Last updated 2026-05-14 03:39:25 by claude:wrap-up._
 
 ## Architecture
 
@@ -137,6 +144,7 @@ _Last updated 2026-05-14 02:46:44 by claude:wrap-up._
 
 ## Recent session notes
 
+- **2026-05-14 03:39:31** (claude:wrap-up) — Closed a planning session for tasks #19 (memhub viz dashboard) and #20 (cross-encoder re-ranker). No production code shipped; six decisions (#58-63) lock the dashboard design and fact #5 records the visual style. Rendered the planning context into PROJECT docs (fe60d29) and pushed. Implementation work for either task is unblocked and can start in the AM.
 - **2026-05-14 03:30:23** (claude:planning) — Closed planning session for tasks #19 (memhub viz dashboard) and #20 (cross-encoder re-ranker). Six decisions (#58-63) capture the dashboard design forks: ephemeral lifecycle, project-scoped discovery in v1 / registry in v2, read-only contract, listening-port invariant clarification, recall inspector as client-side replay of a verbose server response, and v1 scope (5 panels + PCA + polling activity + ephemeral launcher, ~3-5 days). Visual style is dark mode + neon purples per fact #5 (viz.theme). AM resumption: read task #19 notes plus decision #63 (v1 scope) for the build list. Task #20 (re-ranker) is independent and can be picked up in parallel — model size/quality trade-off between ms-marco-MiniLM-L-6-v2 (~80MB) and bge-reranker-v2-m3 (~280MB) still needs an eval-harness pass before the build.rs bundle decision. No production code shipped this session beyond the cc78a18 calibration commit earlier.
 - **2026-05-14 02:46:38** (claude:wrap-up) — Shipped the recall min-score floor in cc78a18, closing the last named M8 follow-up. min_vector_score (default 0.7, configurable in [retrieval.scoring]) gates the raw cosine of the hybrid vector path so nonsense queries return an empty bundle without affecting FTS hits. Calibrated empirically against the live corpus — fact #4 records the method so a future model swap re-derives correctly. Eval harness under --mode hybrid now reports Recall@3 11/11 + safety 1/1 (was 0/1). Test suite 86+ lib tests green; commit is local, not pushed.
 - **2026-05-14 00:37:40** (codex:wrap-up) — Codex shipped RAG consistency hardening in 90fda15: recall no longer mutates legacy chunks, done tasks remain recallable by default, index status detects content-hash drift, and rebuild avoids overwriting newer eager embeddings. The updated binary was installed to ~/.cargo/bin and copied over the active ~/.local/bin/memhub shadow, then verified in Free-AI-SSD with hybrid mode and 113/113 embeddings. This memhub repo was also switched to hybrid mode locally and backfilled to 73/73 embeddings, with hybrid recall verified.
@@ -146,4 +154,3 @@ _Last updated 2026-05-14 02:46:44 by claude:wrap-up._
 - **2026-05-13 20:55:44** (claude:wrap-up) — Hardening pass before starting M8: validated and fixed all six findings from an external Codex code review of the memhub surface. Six commits, one per finding (605fd59 atomic accept, 57a5f69 MCP actor, e5be353 source validation, d91fc98 export reviewed_at, 3c74cad two-phase render, ae90719 strip leading heading), each with regression tests. Test suite grew from 154 to 175 tests, all green. Branch pushed to origin/main.
 - **2026-05-13 20:14:27** (claude:wrap-up) — Planning session — no code shipped. Defined M8 (SQL+RAG hybrid recall) end-to-end: library (fastembed-rs), model (BGE-small-en-v1.5 bundled, ~140MB binary), vector storage (SQLite BLOB + brute-force cosine, no extension), schema (embed existing rows directly, no chunks table), index lifecycle (eager on writes, content_hash drift, agent-prompted /reindex on staleness), agent surface (MCP recall tool plus /recall and /reindex skills; agents prefer recall over PROJECT_LEDGER.md), and eval discipline (Recall@3, 12 starter golden queries). Routed 19 decisions and 6 PR-shaped tasks into the DB. PRD addendum at docs/reference/memhub-prd-addendum-m8-retrieval.md to follow in a separate turn.
 - **2026-05-13 18:40:30** (claude:wrap-up) — This session shipped 4 new MCP tools (task_add, task_done, list_facts, render) in e67167e, closing the four 'mid-session must Bash the CLI' gaps for agents while preserving the trust split — facts and decisions still stage for /wrap-up approval, but tasks and render now go direct. README's 'typical session' was reframed to lead with the agent-driven 'you say X / agent does Y' flow, demoting CLI to a fallback. Binary reinstalled so Codex's MCP client sees the new tool surface.
-- **2026-05-13 18:23:57** (codex:wrap-up) — Since the previous wrap-up, committed the K9 artifact cleanup and user-level /wrap-up lift in f97bcbf, added Codex CLI provenance symmetry plus migration 0008 in 7671f07, and rewrote the README while adding Claude/Codex skill templates in 5e9a0c6. The current wrap-up found no pending reviews, no open tasks, and a clean worktree before drafting these DB updates.

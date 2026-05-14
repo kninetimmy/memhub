@@ -1,7 +1,7 @@
 <!-- memhub:rendered -->
 <!-- DO NOT EDIT. Generated from .memhub/project.sqlite. -->
 <!-- To change content, use memhub CLI; then re-run `memhub render`. -->
-<!-- Generated at: 2026-05-14T03:32:00Z by memhub 0.1.0 -->
+<!-- Generated at: 2026-05-14T03:39:37Z by memhub 0.1.0 -->
 
 # memhub — Ledger
 
@@ -693,6 +693,9 @@ _5 fact(s), 0 stale._
 
 | When | Actor | Table | Action | Reason |
 |------|-------|-------|--------|--------|
+| 2026-05-14 03:39:31 | claude:wrap-up | session_notes | insert | mcp log_session_note |
+| 2026-05-14 03:39:25 | claude:wrap-up | project_state | insert | state set |
+| 2026-05-14 03:32:00 | cli:user | render | render | memhub render |
 | 2026-05-14 03:30:23 | claude:planning | session_notes | insert | mcp log_session_note |
 | 2026-05-14 03:30:13 | claude:planning | facts | insert | fact add |
 | 2026-05-14 03:30:04 | claude:planning | decisions | insert | decision add |
@@ -740,6 +743,3 @@ _5 fact(s), 0 stale._
 | 2026-05-13 22:21:59 | claude:wrap-up | project_state | insert | state set |
 | 2026-05-13 22:21:04 | claude:wrap-up | project_state | insert | state set |
 | 2026-05-13 21:55:37 | cli:user | render | render | memhub render |
-| 2026-05-13 21:55:37 | claude:wrap-up | tasks | update | task done |
-| 2026-05-13 21:50:25 | cli:user | render | render | memhub render |
-| 2026-05-13 21:50:12 | claude:wrap-up | project_arch | insert | arch set |
