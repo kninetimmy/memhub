@@ -367,6 +367,7 @@ fn recall_response_to_json(response: &RecallResponse) -> serde_json::Value {
                 "stale": hit.stale,
                 "source": hit.source,
                 "created_at": hit.created_at,
+                "rerank_score": hit.rerank_score,
             })
         })
         .collect::<Vec<_>>();
@@ -693,6 +694,12 @@ pub enum TopLevelCommand {
         /// forces the re-ranker off without touching config.
         #[arg(long)]
         no_rerank: bool,
+        /// Override `[retrieval.scoring] min_rerank_score` for this
+        /// call. Ignored in fts mode and when the re-ranker is off.
+        /// Negative values disable the floor; positive values tighten
+        /// nonsense rejection.
+        #[arg(long, value_name = "F")]
+        min_rerank_score: Option<f32>,
         #[arg(long)]
         json: bool,
     },
@@ -715,6 +722,14 @@ pub enum EvalCommand {
         /// eval run. Use for A/B comparisons against the rerank-on baseline.
         #[arg(long)]
         no_rerank: bool,
+        /// Override `[retrieval.scoring] min_rerank_score` for every
+        /// query in this eval run. Used to sweep the cross-encoder
+        /// score floor (decisions 70, 71). Ignored when mode resolves
+        /// to fts or when the re-ranker is disabled. Negative values
+        /// disable the floor; positive values tighten nonsense
+        /// rejection at the cost of recall on borderline matches.
+        #[arg(long, value_name = "F")]
+        min_rerank_score: Option<f32>,
         #[arg(long)]
         json: bool,
     },
@@ -1618,6 +1633,7 @@ pub fn run(cli: Cli) -> Result<()> {
             include_stale,
             accepted_only,
             no_rerank,
+            min_rerank_score,
             json: as_json,
         } => {
             let opts = RecallOptions {
@@ -1631,6 +1647,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 include_stale: if include_stale { Some(true) } else { None },
                 accepted_only: if accepted_only { Some(true) } else { None },
                 use_reranker: if no_rerank { Some(false) } else { None },
+                min_rerank_score,
             };
             let response = retrieval::recall(&cwd, opts)?;
             if as_json {
@@ -1645,6 +1662,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 k,
                 mode,
                 no_rerank,
+                min_rerank_score,
                 json: as_json,
             } => {
                 let golden_path = golden.unwrap_or_else(|| {
@@ -1655,6 +1673,7 @@ pub fn run(cli: Cli) -> Result<()> {
                     k,
                     mode: mode.map(|m| m.to_mode()),
                     use_reranker: if no_rerank { Some(false) } else { None },
+                    min_rerank_score,
                 };
                 let summary = commands::eval::run_retrieval(&cwd, opts)?;
                 if as_json {

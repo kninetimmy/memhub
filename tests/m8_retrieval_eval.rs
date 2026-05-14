@@ -103,6 +103,7 @@ fn run_retrieval_returns_full_recall_on_seeded_db() {
             k: 3,
             mode: None,
             use_reranker: None,
+            min_rerank_score: None,
         },
     )
     .expect("eval");
@@ -148,6 +149,7 @@ fn empty_query_with_matching_results_is_safety_failure() {
             k: 3,
             mode: None,
             use_reranker: None,
+            min_rerank_score: None,
         },
     )
     .expect("eval");
@@ -197,6 +199,7 @@ fn unmatched_query_drives_recall_below_one() {
             k: 3,
             mode: None,
             use_reranker: None,
+            min_rerank_score: None,
         },
     )
     .expect("eval");
@@ -226,6 +229,7 @@ fn missing_golden_path_returns_invalid_input_error() {
             k: 3,
             mode: None,
             use_reranker: None,
+            min_rerank_score: None,
         },
     )
     .expect_err("missing golden");
@@ -244,6 +248,7 @@ fn k_must_be_positive() {
             k: 0,
             mode: None,
             use_reranker: None,
+            min_rerank_score: None,
         },
     )
     .expect_err("k=0");

@@ -398,6 +398,7 @@ fn run_recall(start: &Path, query: String) -> Result<RecallPayload> {
             include_stale: Some(true),
             accepted_only: None,
             use_reranker: None,
+            min_rerank_score: None,
         },
     )?;
     Ok(RecallPayload {

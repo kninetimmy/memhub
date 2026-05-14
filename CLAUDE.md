@@ -133,6 +133,17 @@ flag) — turning it off in config skips the inference cost but doesn't
 strip the model from disk. FTS-only mode bypasses the re-ranker
 entirely.
 
+Candidates whose cross-encoder logit falls below
+`[retrieval.scoring] min_rerank_score` (default 2.0) are dropped
+after re-ranking, primarily to keep gibberish queries returning empty
+bundles. This replaces the legacy `min_vector_score` cosine floor
+(decisions 70, 71) — the cosine band of nonsense overlapped borderline
+semantic queries, so a vector-path floor had no safe sweet spot.
+The rerank-score band is similarly noisy on memhub's own corpus, so
+2.0 is a parity calibration rather than an improvement; override with
+`memhub recall --min-rerank-score <F>` or `memhub eval retrieval
+--min-rerank-score=<F>` (use the `=` form for negative values).
+
 For A/B testing in any repo: `memhub eval retrieval` vs
 `memhub eval retrieval --no-rerank`.
 

@@ -71,4 +71,9 @@ rerank_candidate_pool = 20
 fts_weight = 0.5
 vector_weight = 0.5
 stale_penalty = 0.3
-min_vector_score = 0.7
+# Cross-encoder relevance floor (replaces the legacy min_vector_score
+# cosine floor — see decisions 70, 71). Calibrated empirically against
+# memhub's golden set: gibberish probe scores ~+1.25, next legitimate
+# match drops out at +2.5; 2.0 sits in the middle of the safe band.
+# Only applied when re-ranker runs (hybrid + use_reranker).
+min_rerank_score = 2.0

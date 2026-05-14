@@ -44,6 +44,12 @@ pub struct RecallOptions {
     /// Override of `[retrieval] use_reranker`. None = use project config.
     /// Ignored when mode resolves to fts (re-ranker only runs on hybrid).
     pub use_reranker: Option<bool>,
+    /// Override of `[retrieval.scoring] min_rerank_score`. None = use
+    /// project config. Ignored when mode resolves to fts or when the
+    /// re-ranker is disabled (the floor only applies to rerank scores).
+    /// Exists primarily to support `memhub eval retrieval
+    /// --min-rerank-score` calibration sweeps (decisions 70, 71).
+    pub min_rerank_score: Option<f32>,
 }
 
 #[derive(Debug, Clone)]
@@ -60,6 +66,12 @@ pub struct RecallHit {
     pub stale: bool,
     pub source: String,
     pub created_at: String,
+    /// Cross-encoder relevance score. Some(score) when the re-ranker ran
+    /// for this query (hybrid mode + `use_reranker`), None otherwise.
+    /// Positive = relevant; nonsense candidates score negative and are
+    /// dropped by `[retrieval.scoring] min_rerank_score` before this
+    /// hit ever surfaces (decisions 70, 71).
+    pub rerank_score: Option<f32>,
 }
 
 #[derive(Debug, Clone)]
@@ -103,6 +115,13 @@ struct ResolvedOptions {
     use_reranker: bool,
     /// Effective candidate pool size for the cross-encoder when active.
     rerank_candidate_pool: usize,
+    /// Effective cross-encoder score floor; honored only when mode =
+    /// hybrid and the re-ranker actually runs. Replaces the prior
+    /// `min_vector_score` floor (D70, D71): MiniLM gives positive logits
+    /// to relevant docs and negative logits to nonsense, so a single
+    /// rerank-score cutoff cleanly separates the two without the
+    /// cosine-band overlap that doomed the vector-path floor.
+    min_rerank_score: f32,
 }
 
 impl ResolvedOptions {
@@ -143,6 +162,9 @@ impl ResolvedOptions {
             accepted_only: opts.accepted_only.unwrap_or(cfg.accepted_only_by_default),
             use_reranker: opts.use_reranker.unwrap_or(cfg.use_reranker),
             rerank_candidate_pool: cfg.rerank_candidate_pool.max(max_results),
+            min_rerank_score: opts
+                .min_rerank_score
+                .unwrap_or(cfg.scoring.min_rerank_score),
         })
     }
 }
@@ -186,12 +208,10 @@ fn run(
                 query_vec.len()
             )));
         }
-        let vector_hits = vector_lookup(
-            conn,
-            &opts.source_types,
-            &query_vec,
-            scoring.min_vector_score,
-        )?;
+        // No vector-path floor — D70/D71 retired `min_vector_score` after
+        // the MiniLM bundle landed. Nonsense rejection now lives in the
+        // rerank-score filter applied below.
+        let vector_hits = vector_lookup(conn, &opts.source_types, &query_vec, 0.0)?;
         for hit in &vector_hits {
             let entry = candidates
                 .entry((hit.source_type, hit.source_id))
@@ -252,8 +272,10 @@ fn run(
     // Optional cross-encoder re-rank pass (decision 68). Only runs on
     // hybrid mode and only when the operator hasn't opted out. Takes the
     // top `rerank_candidate_pool` by blended score, reorders them by the
-    // cross-encoder, then truncates to `max_results`. fts-only callers
-    // and trivially short candidate sets bypass entirely.
+    // cross-encoder, drops anything below `min_rerank_score` (D71 — the
+    // nonsense-rejection floor that replaced `min_vector_score`), then
+    // truncates to `max_results`. fts-only callers and trivially short
+    // candidate sets bypass entirely.
     let reranked =
         opts.mode == RetrievalMode::Hybrid && opts.use_reranker && scored.len() > 1;
     if reranked {
@@ -262,11 +284,16 @@ fn run(
             .iter()
             .map(|h| format!("{}\n\n{}", h.title, h.body))
             .collect();
-        let order = rerank::rerank(&opts.query, &docs)?;
+        let scored_order = rerank::rerank(&opts.query, &docs)?;
         let mut reshuffled: Vec<ScoredHit> = Vec::with_capacity(scored.len());
-        for &idx in &order {
+        for (idx, score) in scored_order {
+            if score < opts.min_rerank_score {
+                continue;
+            }
             if let Some(hit) = scored.get(idx) {
-                reshuffled.push(hit.clone());
+                let mut hit = hit.clone();
+                hit.rerank_score = Some(score);
+                reshuffled.push(hit);
             }
         }
         scored = reshuffled;
@@ -288,6 +315,7 @@ fn run(
             stale: hit.stale,
             source: hit.source,
             created_at: hit.created_at,
+            rerank_score: hit.rerank_score,
         });
     }
 
@@ -365,6 +393,11 @@ struct ScoredHit {
     stale: bool,
     source: String,
     created_at: String,
+    /// Cross-encoder relevance score, populated only when the re-ranker
+    /// ran (hybrid mode + use_reranker + non-trivial candidate set).
+    /// Used both as the final ordering key and as the nonsense-rejection
+    /// floor (`min_rerank_score`). See decisions 68, 70, 71.
+    rerank_score: Option<f32>,
 }
 
 fn build_fts_match(query: &str) -> Option<String> {
@@ -765,6 +798,7 @@ fn score(rows: &[CandidateRow], scoring: &RetrievalScoringConfig) -> Vec<ScoredH
                 stale: c.is_stale,
                 source: c.source.clone(),
                 created_at: c.created_at.clone(),
+                rerank_score: None,
             }
         })
         .collect()
@@ -875,6 +909,7 @@ mod tests {
                 include_stale: None,
                 accepted_only: None,
                 use_reranker: None,
+                min_rerank_score: None,
             },
         )
         .expect("recall");
@@ -904,6 +939,7 @@ mod tests {
                 include_stale: None,
                 accepted_only: None,
                 use_reranker: None,
+                min_rerank_score: None,
             },
         )
         .expect("recall");
@@ -926,6 +962,7 @@ mod tests {
                 include_stale: None,
                 accepted_only: Some(true),
                 use_reranker: None,
+                min_rerank_score: None,
             },
         )
         .expect("recall");
@@ -960,6 +997,7 @@ mod tests {
                 include_stale: None,
                 accepted_only: None,
                 use_reranker: None,
+                min_rerank_score: None,
             },
         )
         .expect_err("empty query");
@@ -981,6 +1019,7 @@ mod tests {
                 include_stale: None,
                 accepted_only: None,
                 use_reranker: None,
+                min_rerank_score: None,
             },
         )
         .expect("recall");
@@ -1017,6 +1056,7 @@ mod tests {
                 include_stale: None,
                 accepted_only: None,
                 use_reranker: None,
+                min_rerank_score: None,
             },
         )
         .expect("recall");
@@ -1072,6 +1112,7 @@ mod tests {
                 include_stale: None,
                 accepted_only: None,
                 use_reranker: None,
+                min_rerank_score: None,
             },
         )
         .expect("recall");
@@ -1113,6 +1154,7 @@ mod tests {
                 include_stale: None,
                 accepted_only: None,
                 use_reranker: None,
+                min_rerank_score: None,
             },
         )
         .expect("recall");
@@ -1178,6 +1220,7 @@ mod tests {
                 include_stale: None,
                 accepted_only: None,
                 use_reranker: None,
+                min_rerank_score: None,
             },
         )
         .expect("recall");
@@ -1220,20 +1263,19 @@ mod tests {
                 < 1e-9
         );
         assert!(
-            (cfg.retrieval.scoring.min_vector_score
-                - super::super::super::config::DEFAULT_MIN_VECTOR_SCORE)
+            (cfg.retrieval.scoring.min_rerank_score
+                - super::super::super::config::DEFAULT_MIN_RERANK_SCORE)
                 .abs()
-                < 1e-9
+                < 1e-6
         );
     }
 
     #[test]
-    fn hybrid_min_vector_score_drops_low_confidence_nonsense() {
-        // Seed under hybrid mode so embeddings are persisted, then issue a
-        // pure-nonsense query. The vector path will produce only
-        // low-cosine matches; with min_vector_score above the noise floor,
-        // every vector hit is dropped and FTS finds nothing, so the bundle
-        // must be empty.
+    fn hybrid_min_rerank_score_drops_nonsense_when_reranker_runs() {
+        // With hybrid + use_reranker on (project defaults) and the
+        // min_rerank_score floor at its default near 0, MiniLM's negative
+        // logits on a pure-nonsense query drop every candidate, so the
+        // bundle must be empty.
         let temp = tempdir().expect("tempdir");
         init::run(temp.path()).expect("init");
         let cfg_path = temp.path().join(".memhub/config.toml");
@@ -1253,6 +1295,7 @@ mod tests {
                 include_stale: None,
                 accepted_only: None,
                 use_reranker: None,
+                min_rerank_score: None,
             },
         )
         .expect("recall");
@@ -1260,30 +1303,27 @@ mod tests {
         assert_eq!(
             response.results.len(),
             0,
-            "nonsense query must return empty bundle in hybrid mode (min_vector_score floor); got {:?}",
+            "nonsense query must return empty bundle once the rerank-score floor drops negative-logit candidates; got {:?}",
             response
                 .results
                 .iter()
-                .map(|h| (h.source_type.clone(), h.vector_score))
+                .map(|h| (h.source_type.clone(), h.rerank_score))
                 .collect::<Vec<_>>(),
         );
-        assert_eq!(response.candidate_count, 0);
-        assert_eq!(response.matcher, "recall:hybrid");
+        assert_eq!(response.matcher, "recall:hybrid+rerank");
     }
 
     #[test]
-    fn hybrid_min_vector_score_zero_keeps_legacy_behavior() {
-        // Inverse check: when the operator opts out by setting
-        // min_vector_score = 0.0, the vector path floods candidates again
-        // (this is the pre-threshold behavior surfaced by the Free-AI-SSD
-        // smoke test). Guards against a future refactor that hard-codes a
-        // floor.
+    fn hybrid_negative_min_rerank_score_keeps_every_candidate() {
+        // Inverse check: when the operator opts out of the rerank floor
+        // by setting it to a value below any cross-encoder logit (-1000.0),
+        // the bundle re-fills with nonsense hits. Guards against a future
+        // refactor that hard-codes a floor.
         let temp = tempdir().expect("tempdir");
         init::run(temp.path()).expect("init");
         let cfg_path = temp.path().join(".memhub/config.toml");
         let mut cfg = ProjectConfig::load(&cfg_path).expect("load");
         cfg.retrieval.mode = RetrievalMode::Hybrid;
-        cfg.retrieval.scoring.min_vector_score = 0.0;
         cfg.save(&cfg_path).expect("save");
 
         seed(temp.path());
@@ -1298,13 +1338,14 @@ mod tests {
                 include_stale: None,
                 accepted_only: None,
                 use_reranker: None,
+                min_rerank_score: Some(-1000.0),
             },
         )
         .expect("recall");
 
         assert!(
             !response.results.is_empty(),
-            "with min_vector_score=0 the vector path should still surface low-confidence hits",
+            "with the rerank floor pinned below every possible logit, hybrid recall should still surface low-confidence vector hits",
         );
     }
 }

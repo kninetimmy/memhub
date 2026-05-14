@@ -320,6 +320,7 @@ impl MemhubServer {
                 include_stale: params.include_stale,
                 accepted_only: params.accepted_only,
                 use_reranker: None,
+                min_rerank_score: None,
             },
         )
         .map_err(map_tool_error)?;

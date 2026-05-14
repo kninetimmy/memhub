@@ -19,7 +19,13 @@ pub const DEFAULT_RECALL_MAX_RESULTS: usize = 6;
 pub const DEFAULT_FTS_WEIGHT: f64 = 0.5;
 pub const DEFAULT_VECTOR_WEIGHT: f64 = 0.5;
 pub const DEFAULT_STALE_PENALTY: f64 = 0.3;
-pub const DEFAULT_MIN_VECTOR_SCORE: f64 = 0.7;
+/// Default cross-encoder score floor for hybrid-mode candidates after
+/// re-ranking. Calibrated empirically against memhub's own golden set
+/// (decision 71, task #22): the gibberish safety probe rerank-scores at
+/// ~+1.25; the next legitimate match drops out at 2.5. 2.0 sits in the
+/// middle of the safe band [1.5, 2.4]. Gives parity with the retired
+/// `min_vector_score = 0.7` floor on R@3 and safety probe pass.
+pub const DEFAULT_MIN_RERANK_SCORE: f32 = 2.0;
 pub const DEFAULT_ACCEPTED_ONLY: bool = false;
 pub const DEFAULT_INCLUDE_STALE: bool = false;
 pub const DEFAULT_USE_RERANKER: bool = true;
@@ -43,12 +49,14 @@ pub struct RetrievalScoringConfig {
     pub vector_weight: f64,
     #[serde(default = "default_stale_penalty")]
     pub stale_penalty: f64,
-    /// Minimum cosine similarity for a row to enter the candidate set via
-    /// the vector path. Rows below this floor are dropped before scoring,
-    /// so pure-nonsense queries don't surface low-confidence vector noise
-    /// in hybrid mode. FTS hits are unaffected. Ignored in fts mode.
-    #[serde(default = "default_min_vector_score")]
-    pub min_vector_score: f64,
+    /// Minimum cross-encoder relevance score for a candidate to survive
+    /// the re-rank pass. MiniLM gives positive logits to relevant docs
+    /// and negative logits to nonsense; a floor near 0 cleanly separates
+    /// the two without the cosine-band overlap that doomed the legacy
+    /// `min_vector_score` knob (decisions 70, 71). Ignored in fts mode
+    /// and when `use_reranker = false`.
+    #[serde(default = "default_min_rerank_score")]
+    pub min_rerank_score: f32,
 }
 
 impl Default for RetrievalScoringConfig {
@@ -57,7 +65,7 @@ impl Default for RetrievalScoringConfig {
             fts_weight: DEFAULT_FTS_WEIGHT,
             vector_weight: DEFAULT_VECTOR_WEIGHT,
             stale_penalty: DEFAULT_STALE_PENALTY,
-            min_vector_score: DEFAULT_MIN_VECTOR_SCORE,
+            min_rerank_score: DEFAULT_MIN_RERANK_SCORE,
         }
     }
 }
@@ -71,8 +79,8 @@ fn default_vector_weight() -> f64 {
 fn default_stale_penalty() -> f64 {
     DEFAULT_STALE_PENALTY
 }
-fn default_min_vector_score() -> f64 {
-    DEFAULT_MIN_VECTOR_SCORE
+fn default_min_rerank_score() -> f32 {
+    DEFAULT_MIN_RERANK_SCORE
 }
 fn default_max_results() -> usize {
     DEFAULT_RECALL_MAX_RESULTS

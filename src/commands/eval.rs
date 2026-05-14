@@ -59,6 +59,11 @@ pub struct EvalOptions {
     /// config; Some(false) forces the re-ranker off for the run; Some(true)
     /// forces it on regardless of config. Used for A/B harness runs.
     pub use_reranker: Option<bool>,
+    /// Optional override of `[retrieval.scoring] min_rerank_score`. None
+    /// = use project config. Ignored when mode resolves to fts or when
+    /// the re-ranker is disabled. Used for cross-encoder floor
+    /// calibration sweeps (decisions 70, 71).
+    pub min_rerank_score: Option<f32>,
 }
 
 #[derive(Debug, Clone)]
@@ -113,6 +118,7 @@ pub fn run_retrieval(start: &Path, opts: EvalOptions) -> Result<EvalSummary> {
             include_stale: None,
             accepted_only: None,
             use_reranker: opts.use_reranker,
+            min_rerank_score: opts.min_rerank_score,
         };
         let response = retrieval::recall(start, recall_opts)?;
         if resolved_mode.is_none() {
@@ -390,6 +396,7 @@ mod tests {
             stale: false,
             source: "user".to_string(),
             created_at: "2026-05-13".to_string(),
+            rerank_score: None,
         }
     }
 

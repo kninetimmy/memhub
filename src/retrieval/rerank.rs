@@ -67,13 +67,16 @@ fn shared() -> Result<&'static Mutex<TextRerank>> {
     Ok(MODEL.get_or_init(|| Mutex::new(model)))
 }
 
-/// Score (query, doc) pairs with the bundled cross-encoder and return a
-/// permutation of `0..docs.len()` sorted by descending relevance.
+/// Score (query, doc) pairs with the bundled cross-encoder and return
+/// `(input_index, score)` pairs sorted by descending relevance.
 ///
-/// `docs[i]` is the document originally at input position `i`; the
-/// returned ordering tells the caller how to reorder them. Empty input
-/// returns an empty Vec without loading the model.
-pub fn rerank(query: &str, docs: &[String]) -> Result<Vec<usize>> {
+/// `docs[i]` is the document originally at input position `i`. The
+/// returned `input_index` tells the caller how to reorder them; the
+/// `score` is the cross-encoder relevance logit (positive = relevant,
+/// negative = irrelevant — see decision 70 follow-up on rerank-score-
+/// based nonsense rejection). Empty input returns an empty Vec without
+/// loading the model.
+pub fn rerank(query: &str, docs: &[String]) -> Result<Vec<(usize, f32)>> {
     if docs.is_empty() {
         return Ok(Vec::new());
     }
@@ -85,7 +88,7 @@ pub fn rerank(query: &str, docs: &[String]) -> Result<Vec<usize>> {
     let results = model
         .rerank(query, &doc_refs, false, None)
         .map_err(|e| MemhubError::Rerank(format!("rerank failed: {e}")))?;
-    Ok(results.into_iter().map(|r| r.index).collect())
+    Ok(results.into_iter().map(|r| (r.index, r.score)).collect())
 }
 
 #[cfg(test)]
@@ -108,12 +111,16 @@ mod tests {
             "Cats are domesticated felines kept as household pets".to_string(),
             "The borrow checker enforces ownership rules at compile time".to_string(),
         ];
-        let order = rerank("how does rust prevent memory bugs", &docs).expect("rerank");
-        assert_eq!(order.len(), docs.len());
-        let mut sorted = order.clone();
-        sorted.sort();
-        assert_eq!(sorted, vec![0, 1, 2], "must be a permutation");
+        let scored = rerank("how does rust prevent memory bugs", &docs).expect("rerank");
+        assert_eq!(scored.len(), docs.len());
+        let mut indices: Vec<usize> = scored.iter().map(|(i, _)| *i).collect();
+        indices.sort();
+        assert_eq!(indices, vec![0, 1, 2], "must be a permutation");
         // The cat doc (index 1) is clearly unrelated; it should not rank #1.
-        assert_ne!(order[0], 1, "off-topic doc should not be top-ranked");
+        assert_ne!(scored[0].0, 1, "off-topic doc should not be top-ranked");
+        // Scores must be sorted descending — the top is the highest-relevance.
+        for w in scored.windows(2) {
+            assert!(w[0].1 >= w[1].1, "rerank scores must be descending");
+        }
     }
 }
