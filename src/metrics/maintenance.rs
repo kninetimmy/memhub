@@ -182,5 +182,105 @@ pub fn prune_old(conn: &Connection, retention_days: u32) -> Result<(usize, usize
         params![modifier],
     )?;
 
+    // Per-turn rows (migration 0013) live exactly as long as their
+    // parent session: prune by the session whose row was just removed,
+    // not by the turn's own ts. This keeps the invariant simple (no
+    // orphaned turn history, ever) and also sweeps any turn rows left
+    // behind by an edge-case where a session_metrics row vanished
+    // without going through this pruner. Not separately reported — it
+    // is a derived consequence of the session prune above.
+    conn.execute(
+        "DELETE FROM session_turn_metrics \
+         WHERE session_id NOT IN (SELECT session_id FROM session_metrics)",
+        [],
+    )?;
+
     Ok((recalls, sessions))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pruning_an_old_session_also_drops_its_turn_history() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::commands::init::run(temp.path()).expect("init");
+        let ctx = crate::db::open_project(temp.path()).expect("open");
+        let conn = &ctx.conn;
+
+        // One stale session (ended 100 days ago) with two turn rows,
+        // and one fresh session with one turn row.
+        conn.execute(
+            "INSERT INTO session_metrics \
+                (session_id, agent, started_at, ended_at) \
+             VALUES \
+                ('old', 'claude-code', datetime('now','-101 days'), \
+                 datetime('now','-100 days')), \
+                ('new', 'claude-code', datetime('now','-1 hour'), \
+                 datetime('now'))",
+            [],
+        )
+        .expect("seed sessions");
+        conn.execute(
+            "INSERT INTO session_turn_metrics (session_id, ts, input_tokens) \
+             VALUES ('old', datetime('now','-100 days'), 1), \
+                    ('old', datetime('now','-100 days'), 2), \
+                    ('new', datetime('now'), 3)",
+            [],
+        )
+        .expect("seed turns");
+
+        let (_, sessions) = prune_old(conn, 90).expect("prune");
+        assert_eq!(sessions, 1, "the stale session is pruned");
+
+        let remaining: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM session_turn_metrics",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(
+            remaining, 1,
+            "old session's 2 turn rows go with it; fresh one stays"
+        );
+        let orphans: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM session_turn_metrics \
+                 WHERE session_id = 'old'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count orphans");
+        assert_eq!(orphans, 0);
+    }
+
+    #[test]
+    fn retention_zero_keeps_everything_including_turns() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::commands::init::run(temp.path()).expect("init");
+        let ctx = crate::db::open_project(temp.path()).expect("open");
+        let conn = &ctx.conn;
+        conn.execute(
+            "INSERT INTO session_metrics (session_id, agent, started_at, ended_at) \
+             VALUES ('s', 'claude-code', datetime('now','-999 days'), \
+                     datetime('now','-999 days'))",
+            [],
+        )
+        .expect("seed");
+        conn.execute(
+            "INSERT INTO session_turn_metrics (session_id, ts, input_tokens) \
+             VALUES ('s', datetime('now','-999 days'), 5)",
+            [],
+        )
+        .expect("seed turn");
+
+        let (r, s) = prune_old(conn, 0).expect("prune");
+        assert_eq!((r, s), (0, 0), "retention 0 = keep forever");
+        let turns: i64 = conn
+            .query_row("SELECT COUNT(*) FROM session_turn_metrics", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(turns, 1);
+    }
 }

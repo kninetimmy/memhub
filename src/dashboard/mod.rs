@@ -98,6 +98,7 @@ fn router(state: AppState) -> Router {
         .route("/api/activity", get(api_activity))
         .route("/api/audit", get(api_audit))
         .route("/api/metrics", get(api_metrics))
+        .route("/api/metrics/series", get(api_metrics_series))
         .route("/api/recall", get(api_recall))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -142,6 +143,12 @@ struct RecallQuery {
     q: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct SeriesQuery {
+    token: Option<String>,
+    window: Option<String>,
+}
+
 async fn api_overview(
     State(state): State<AppState>,
     Query(query): Query<TokenQuery>,
@@ -180,6 +187,17 @@ async fn api_metrics(
 ) -> std::result::Result<Json<MetricsPayload>, ApiError> {
     authorize(&state, query.token.as_deref())?;
     Ok(Json(read_metrics(&state.repo_root)?))
+}
+
+async fn api_metrics_series(
+    State(state): State<AppState>,
+    Query(query): Query<SeriesQuery>,
+) -> std::result::Result<Json<SeriesPayload>, ApiError> {
+    authorize(&state, query.token.as_deref())?;
+    let window = crate::commands::metrics::SeriesWindow::parse(
+        query.window.as_deref().unwrap_or("7d"),
+    );
+    Ok(Json(read_series(&state.repo_root, window)?))
 }
 
 async fn api_recall(
@@ -360,6 +378,54 @@ struct SessionPayload {
     input_tokens: i64,
     output_tokens: i64,
     recall_calls: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct SeriesPayload {
+    enabled: bool,
+    window: String,
+    granularity: String,
+    session_id: Option<String>,
+    has_recall_signal: bool,
+    points: Vec<SeriesPointPayload>,
+}
+
+#[derive(Debug, Serialize)]
+struct SeriesPointPayload {
+    x: i64,
+    label: String,
+    actual: i64,
+    counterfactual: i64,
+    delta: i64,
+    recall_offset: i64,
+    recalls: i64,
+}
+
+fn read_series(
+    start: &Path,
+    window: crate::commands::metrics::SeriesWindow,
+) -> Result<SeriesPayload> {
+    let d = crate::commands::metrics::query_series(start, window)?;
+    Ok(SeriesPayload {
+        enabled: d.enabled,
+        window: d.window,
+        granularity: d.granularity,
+        session_id: d.session_id,
+        has_recall_signal: d.has_recall_signal,
+        points: d
+            .points
+            .into_iter()
+            .map(|p| SeriesPointPayload {
+                x: p.x,
+                label: p.label,
+                actual: p.actual,
+                counterfactual: p.counterfactual,
+                delta: p.delta,
+                recall_offset: p.recall_offset,
+                recalls: p.recalls,
+            })
+            .collect(),
+    })
 }
 
 fn read_metrics(start: &Path) -> Result<MetricsPayload> {
@@ -991,5 +1057,72 @@ mod tests {
             Some(25.0),
             "250/1000 should be 25%"
         );
+    }
+
+    #[test]
+    fn series_payload_is_empty_and_disabled_when_metrics_off() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::commands::init::run(temp.path()).expect("init");
+        let payload = read_series(
+            temp.path(),
+            crate::commands::metrics::SeriesWindow::Days(7),
+        )
+        .expect("read_series");
+        assert!(!payload.enabled);
+        assert!(payload.points.is_empty());
+        assert_eq!(payload.window, "7d");
+        assert_eq!(payload.granularity, "session");
+    }
+
+    #[test]
+    fn series_payload_maps_per_turn_points_and_counterfactual() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::commands::init::run(temp.path()).expect("init");
+        crate::commands::metrics::enable(temp.path()).expect("enable");
+        {
+            let ctx = crate::db::open_project(temp.path()).expect("open");
+            ctx.conn
+                .execute(
+                    "INSERT INTO session_metrics \
+                     (session_id, agent, started_at, ended_at, \
+                      input_tokens, output_tokens) \
+                     VALUES ('dash-s', 'claude-code', \
+                             '2026-05-15T10:00:00.000Z', \
+                             '2026-05-15T10:05:00.000Z', 400, 100)",
+                    [],
+                )
+                .expect("session");
+            ctx.conn
+                .execute(
+                    "INSERT INTO session_turn_metrics \
+                     (session_id, ts, input_tokens, output_tokens) VALUES \
+                     ('dash-s', '2026-05-15T10:00:00.000Z', 100, 20), \
+                     ('dash-s', '2026-05-15T10:05:00.000Z', 280, 80)",
+                    [],
+                )
+                .expect("turns");
+            ctx.conn
+                .execute(
+                    "INSERT INTO recall_metrics \
+                     (ts, session_id, query_hash, bundle_tokens, \
+                      ledger_tokens, rerank_used, result_count) \
+                     VALUES ('2026-05-15 10:06:00', 'dash-s', 'h', 50, 950, 1, 4)",
+                    [],
+                )
+                .expect("recall");
+        }
+        let payload = read_series(
+            temp.path(),
+            crate::commands::metrics::SeriesWindow::Session,
+        )
+        .expect("read_series");
+        assert!(payload.enabled);
+        assert_eq!(payload.session_id.as_deref(), Some("dash-s"));
+        assert_eq!(payload.points.len(), 2);
+        assert_eq!(payload.points[0].actual, 120);
+        assert_eq!(payload.points[1].actual, 480);
+        // recall ts 10:06 is after both turns → flushed onto last turn.
+        assert_eq!(payload.points[1].counterfactual, 480 + 900);
+        assert!(payload.has_recall_signal);
     }
 }

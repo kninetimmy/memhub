@@ -123,6 +123,19 @@ fn scrape_claude_dir(conn: &Connection, dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// One usage-bearing assistant line, captured verbatim for the
+/// per-turn (`session_turn_metrics`) curve. The session-level
+/// aggregate still comes from the summed `Delta` fields below; this is
+/// purely additional granularity, not a replacement.
+#[derive(Default)]
+struct TurnRecord {
+    ts: Option<String>,
+    input: i64,
+    output: i64,
+    cache_read: i64,
+    cache_creation: i64,
+}
+
 /// Accumulated token deltas + timestamp bounds for a single scrape
 /// pass over one file's newly appended bytes.
 #[derive(Default)]
@@ -136,6 +149,8 @@ struct Delta {
     consumed: u64,
     parse_skips: u64,
     lines_with_usage: u64,
+    /// One entry per usage-bearing line, in transcript (consume) order.
+    turns: Vec<TurnRecord>,
 }
 
 fn scrape_claude_file(conn: &Connection, path: &Path) -> Result<()> {
@@ -183,6 +198,14 @@ fn scrape_claude_file(conn: &Connection, path: &Path) -> Result<()> {
                 cache_read_tokens = 0, cache_creation_tokens = 0, \
                 last_scanned_offset = 0 \
              WHERE session_id = ?1",
+            params![session_id],
+        )?;
+        // The per-turn rows mirror the consumed prefix; a from-zero
+        // re-scan would re-insert all of them, so drop this session's
+        // turn history too. The session_metrics row is kept (zeroed)
+        // because its recall_calls is owned by the reconciler.
+        conn.execute(
+            "DELETE FROM session_turn_metrics WHERE session_id = ?1",
             params![session_id],
         )?;
         let _ = log_write(
@@ -261,6 +284,33 @@ fn scrape_claude_file(conn: &Connection, path: &Path) -> Result<()> {
         ],
     )?;
 
+    // Per-turn granularity (migration 0013). Done AFTER the
+    // offset-advancing UPSERT on purpose: if these inserts fail the
+    // offset has already moved, so the pass under-counts the curve by
+    // a few turns rather than re-reading the bytes next pass and
+    // double-inserting. Under-count is the conservative direction for
+    // an advisory subsystem, matching this module's "never fatal".
+    // Each consumed usage line maps to exactly one row (rows are never
+    // updated), so plain INSERTs stay idempotent across resumes.
+    if !d.turns.is_empty() {
+        let mut stmt = conn.prepare(
+            "INSERT INTO session_turn_metrics \
+                (session_id, ts, input_tokens, output_tokens, \
+                 cache_read_tokens, cache_creation_tokens) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )?;
+        for turn in &d.turns {
+            stmt.execute(params![
+                session_id,
+                turn.ts,
+                turn.input,
+                turn.output,
+                turn.cache_read,
+                turn.cache_creation,
+            ])?;
+        }
+    }
+
     if d.parse_skips > 0 {
         // One summary row per file per pass — never one per bad line,
         // which could flood writes_log on a foreign-format file.
@@ -302,8 +352,12 @@ fn ingest_line(line: &str, d: &mut Delta) {
 
     // Timestamp bounds track *every* line (user + assistant), so a
     // session with only user turns so far still gets a sane window.
-    if let Some(ts) = v.get("timestamp").and_then(Value::as_str) {
-        let ts = ts.to_string();
+    // The same value is later pinned onto this line's TurnRecord.
+    let line_ts: Option<String> = v
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    if let Some(ts) = line_ts.clone() {
         if d.min_ts.as_ref().is_none_or(|m| ts < *m) {
             d.min_ts = Some(ts.clone());
         }
@@ -331,11 +385,23 @@ fn ingest_line(line: &str, d: &mut Delta) {
         usage.get(key).and_then(Value::as_i64).unwrap_or(0)
     };
 
-    d.input += n("input_tokens");
-    d.output += n("output_tokens");
-    d.cache_read += n("cache_read_input_tokens");
-    d.cache_creation += n("cache_creation_input_tokens");
+    let input = n("input_tokens");
+    let output = n("output_tokens");
+    let cache_read = n("cache_read_input_tokens");
+    let cache_creation = n("cache_creation_input_tokens");
+
+    d.input += input;
+    d.output += output;
+    d.cache_read += cache_read;
+    d.cache_creation += cache_creation;
     d.lines_with_usage += 1;
+    d.turns.push(TurnRecord {
+        ts: line_ts,
+        input,
+        output,
+        cache_read,
+        cache_creation,
+    });
 }
 
 #[cfg(test)]
@@ -397,5 +463,154 @@ mod tests {
         ]);
         assert_eq!(d.input, 7);
         assert_eq!(d.output, 3);
+    }
+
+    #[test]
+    fn captures_one_turn_record_per_usage_line_with_its_own_ts() {
+        let d = d_after(&[
+            r#"{"type":"user","timestamp":"2026-05-15T09:00:00.000Z","message":{"role":"user"}}"#,
+            r#"{"type":"assistant","timestamp":"2026-05-15T09:00:05.000Z","message":{"role":"assistant","usage":{"input_tokens":120,"output_tokens":40}}}"#,
+            r#"{"type":"assistant","timestamp":"2026-05-15T09:01:00.000Z","message":{"role":"assistant","usage":{"input_tokens":200,"output_tokens":60,"cache_read_input_tokens":10}}}"#,
+        ]);
+        // Per-turn rows: one per usage line, NOT one per transcript line.
+        assert_eq!(d.turns.len(), 2);
+        assert_eq!(d.turns[0].ts.as_deref(), Some("2026-05-15T09:00:05.000Z"));
+        assert_eq!(d.turns[0].input, 120);
+        assert_eq!(d.turns[0].output, 40);
+        assert_eq!(d.turns[1].ts.as_deref(), Some("2026-05-15T09:01:00.000Z"));
+        assert_eq!(d.turns[1].cache_read, 10);
+        // Aggregate is still the sum — per-turn is purely additive.
+        assert_eq!(d.input, 320);
+        assert_eq!(d.output, 100);
+    }
+
+    #[test]
+    fn non_usage_and_malformed_lines_produce_no_turn_records() {
+        let d = d_after(&[
+            r#"{"type":"user","message":{"role":"user","content":"hi"}}"#,
+            r#"{not json"#,
+            r#"{"type":"summary","summary":"..."}"#,
+        ]);
+        assert!(d.turns.is_empty());
+    }
+
+    fn write(path: &std::path::Path, lines: &[&str]) {
+        let mut body = lines.join("\n");
+        body.push('\n');
+        std::fs::write(path, body).expect("write transcript");
+    }
+
+    #[test]
+    fn scrape_persists_per_turn_rows_alongside_session_aggregate() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::commands::init::run(temp.path()).expect("init");
+        let ctx = crate::db::open_project(temp.path()).expect("open");
+        let conn = &ctx.conn;
+
+        let file = temp.path().join("sess-A.jsonl");
+        write(
+            &file,
+            &[
+                r#"{"type":"user","timestamp":"2026-05-15T10:00:00.000Z","message":{"role":"user"}}"#,
+                r#"{"type":"assistant","timestamp":"2026-05-15T10:00:01.000Z","message":{"usage":{"input_tokens":100,"output_tokens":20}}}"#,
+                r#"{"type":"assistant","timestamp":"2026-05-15T10:00:09.000Z","message":{"usage":{"input_tokens":300,"output_tokens":40}}}"#,
+            ],
+        );
+        scrape_claude_file(conn, &file).expect("scrape");
+
+        let (turns, sum_in, sum_out): (i64, i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), COALESCE(SUM(input_tokens),0), \
+                        COALESCE(SUM(output_tokens),0) \
+                 FROM session_turn_metrics WHERE session_id = 'sess-A'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("turn query");
+        assert_eq!(turns, 2, "one row per usage line");
+        assert_eq!(sum_in, 400);
+        assert_eq!(sum_out, 60);
+
+        // The aggregate session row must match the per-turn sum.
+        let (agg_in, agg_out): (i64, i64) = conn
+            .query_row(
+                "SELECT input_tokens, output_tokens FROM session_metrics \
+                 WHERE session_id = 'sess-A'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("session query");
+        assert_eq!(agg_in, 400);
+        assert_eq!(agg_out, 60);
+    }
+
+    #[test]
+    fn rescanning_appended_bytes_does_not_double_insert_turns() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::commands::init::run(temp.path()).expect("init");
+        let ctx = crate::db::open_project(temp.path()).expect("open");
+        let conn = &ctx.conn;
+        let file = temp.path().join("sess-B.jsonl");
+
+        write(
+            &file,
+            &[r#"{"type":"assistant","timestamp":"2026-05-15T11:00:00.000Z","message":{"usage":{"input_tokens":10,"output_tokens":5}}}"#],
+        );
+        scrape_claude_file(conn, &file).expect("scrape 1");
+
+        // Append a second turn; the resume should only read the new line.
+        write(
+            &file,
+            &[
+                r#"{"type":"assistant","timestamp":"2026-05-15T11:00:00.000Z","message":{"usage":{"input_tokens":10,"output_tokens":5}}}"#,
+                r#"{"type":"assistant","timestamp":"2026-05-15T11:05:00.000Z","message":{"usage":{"input_tokens":20,"output_tokens":7}}}"#,
+            ],
+        );
+        scrape_claude_file(conn, &file).expect("scrape 2");
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM session_turn_metrics WHERE session_id = 'sess-B'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(count, 2, "incremental resume must not re-insert turn 1");
+    }
+
+    #[test]
+    fn file_shrink_resets_turn_history_so_rescan_cannot_double_count() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::commands::init::run(temp.path()).expect("init");
+        let ctx = crate::db::open_project(temp.path()).expect("open");
+        let conn = &ctx.conn;
+        let file = temp.path().join("sess-C.jsonl");
+
+        write(
+            &file,
+            &[
+                r#"{"type":"assistant","timestamp":"2026-05-15T12:00:00.000Z","message":{"usage":{"input_tokens":111,"output_tokens":22}}}"#,
+                r#"{"type":"assistant","timestamp":"2026-05-15T12:01:00.000Z","message":{"usage":{"input_tokens":222,"output_tokens":33}}}"#,
+            ],
+        );
+        scrape_claude_file(conn, &file).expect("scrape 1");
+
+        // Rewrite shorter (rotation): one different line, fewer bytes.
+        write(
+            &file,
+            &[r#"{"type":"assistant","timestamp":"2026-05-15T13:00:00.000Z","message":{"usage":{"input_tokens":9,"output_tokens":1}}}"#],
+        );
+        scrape_claude_file(conn, &file).expect("scrape 2");
+
+        let (count, sum_in): (i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), COALESCE(SUM(input_tokens),0) \
+                 FROM session_turn_metrics WHERE session_id = 'sess-C'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("turn query");
+        assert_eq!(count, 1, "old turn rows must be cleared on shrink");
+        assert_eq!(sum_in, 9, "only the rewritten content counts");
     }
 }

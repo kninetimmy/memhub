@@ -7,8 +7,14 @@ const state = {
   refreshing: false,
   lastEmbeddingRefresh: 0,
   metrics: null,
-  metricsSig: "",
   uplot: null,
+  metricsRange: "7d",
+  seriesPayload: null,
+  seriesPoints: [],
+  seriesSig: "",
+  seriesWindowDrawn: "",
+  metricsZoomed: false,
+  seriesInFlight: false,
 };
 
 const LIVE_REFRESH_MS = 2000;
@@ -81,7 +87,7 @@ function setupTabs() {
       button.classList.add("active");
       document.getElementById(button.dataset.panel).classList.add("active");
       if (button.dataset.panel === "map") drawMap();
-      if (button.dataset.panel === "metrics") drawBurnup(true);
+      if (button.dataset.panel === "metrics") refreshSeries({ refit: true });
     });
   });
 }
@@ -91,28 +97,8 @@ function fmtNum(value) {
   return n.toLocaleString("en-US");
 }
 
-// Session timestamps are stored localtime ("YYYY-MM-DD HH:MM:SS", no tz).
-// Treat the space form as local time by swapping in the ISO 'T'.
-function parseLocalTs(value) {
-  if (!value) return NaN;
-  const ms = Date.parse(String(value).replace(" ", "T"));
-  return Number.isNaN(ms) ? NaN : Math.floor(ms / 1000);
-}
-
 function periodEmpty(t) {
   return !t || (t.recalls === 0 && t.sessions === 0);
-}
-
-function metricsSignature(p) {
-  const top = p.sessions[0];
-  return [
-    p.enabled,
-    p.sessions.length,
-    top ? top.session_id : "",
-    top ? top.input_tokens + top.output_tokens : 0,
-    p.totals_7d.recalls,
-    p.totals_30d.recalls,
-  ].join(":");
 }
 
 function offsetLabel(t) {
@@ -130,7 +116,7 @@ function renderMetricsPanel(payload) {
     banner.innerHTML =
       "<strong>Token accounting is off</strong> for this machine. Enable it (opt-in, per-machine) with <code>memhub metrics enable</code>.";
     body.classList.add("hidden");
-    destroyBurnup();
+    destroyChart();
     return;
   }
 
@@ -141,7 +127,7 @@ function renderMetricsPanel(payload) {
   if (empty) {
     banner.textContent = "Metrics enabled — no recall or session data captured yet.";
     body.classList.add("hidden");
-    destroyBurnup();
+    destroyChart();
     return;
   }
 
@@ -151,14 +137,68 @@ function renderMetricsPanel(payload) {
     ` · session accounting: ${payload.session_accounting ? "on" : "off"}${scrape}`;
   body.classList.remove("hidden");
   renderMetricCards(payload);
+  renderMetricsHelp(payload);
   renderSessionRows(payload.sessions);
 
-  const sig = metricsSignature(payload);
-  const active = document.querySelector(".panel.active")?.id === "metrics";
-  if (sig !== state.metricsSig) {
-    state.metricsSig = sig;
-    if (active) drawBurnup(true);
+  if (document.querySelector(".panel.active")?.id === "metrics") {
+    refreshSeries();
   }
+}
+
+// Plain-English glossary for every card + chart series. Wording is
+// bound by the proxy contract (CLAUDE.md): the offset is a
+// counterfactual "vs full-ledger baseline", never "tokens saved", and
+// tiktoken cl100k counts are ±10% of Anthropic's real tokenizer.
+function renderMetricsHelp(payload) {
+  const dl = document.getElementById("metrics-help");
+  if (!dl || dl.dataset.filled === "1") return;
+  const entries = [
+    [
+      "Context offset 7d / 30d",
+      "Size of the recall bundle actually returned as a percentage of " +
+        "loading the entire PROJECT_LEDGER.md instead. A counterfactual " +
+        "baseline, not “tokens saved” — the agent would not necessarily " +
+        "have loaded the whole ledger.",
+    ],
+    ["Recalls", "Number of memhub recall calls logged in the window."],
+    [
+      "Sessions",
+      "Claude Code sessions scraped from the transcript JSONL in the window.",
+    ],
+    [
+      "Real tokens",
+      "Actual input + output tokens Claude Code burned, read from the " +
+        "transcript (not memhub’s own writes).",
+    ],
+    [
+      "With memhub (actual)",
+      "Cumulative real token spend over time — per turn for the current " +
+        "session, per session for the windowed ranges.",
+    ],
+    [
+      "Without memhub (est.)",
+      "The same curve plus, for each recall, the extra context it would " +
+        "have cost to load the full ledger instead of the targeted " +
+        "bundle. An estimate; it only diverges from actual where recall " +
+        "logging exists.",
+    ],
+    [
+      "Tokenizer caveat",
+      "Counts use tiktoken cl100k, ±10% vs Anthropic’s real tokenizer. " +
+        "Ratios are sound (same yardstick both sides); treat absolute " +
+        "token counts as estimates.",
+    ],
+  ];
+  dl.innerHTML = "";
+  for (const [term, def] of entries) {
+    const dt = document.createElement("dt");
+    dt.textContent = term;
+    const dd = document.createElement("dd");
+    dd.textContent = def;
+    dl.appendChild(dt);
+    dl.appendChild(dd);
+  }
+  dl.dataset.filled = "1";
 }
 
 function renderMetricCards(payload) {
@@ -216,93 +256,259 @@ function renderSessionRows(sessions) {
   }
 }
 
-function destroyBurnup() {
+const ACTUAL_COLOR = "#53bce8";
+const COUNTER_COLOR = "#b48cff";
+
+function destroyChart() {
   if (state.uplot) {
     state.uplot.destroy();
     state.uplot = null;
   }
+  state.seriesWindowDrawn = "";
+  hideChartTooltip();
 }
 
-// Cumulative token burn-up across scraped sessions, oldest → newest.
-// ccburn-style: filled area under a rising cumulative line.
-function drawBurnup(force = false) {
+function seriesSignature(p) {
+  const n = p.points.length;
+  const last = n ? p.points[n - 1] : null;
+  return [
+    p.window,
+    p.granularity,
+    n,
+    last ? last.actual : 0,
+    last ? last.counterfactual : 0,
+    p.session_id || "",
+  ].join(":");
+}
+
+// Pull /api/metrics/series for the selected range and (re)draw. The
+// 2s dashboard poll calls this with no args (incremental); the range
+// dropdown / tab-activate / Reset pass { refit:true } to rebuild and
+// autoscale. A user-applied zoom is preserved across incremental
+// updates and only cleared by Reset or double-click.
+async function refreshSeries(opts = {}) {
+  const active = document.querySelector(".panel.active")?.id === "metrics";
+  if (!active && !opts.refit) return;
+  if (state.seriesInFlight) return;
+  state.seriesInFlight = true;
+  try {
+    const payload = await api("/api/metrics/series", {
+      window: state.metricsRange,
+    });
+    state.seriesPayload = payload;
+    drawSeriesChart(payload, opts);
+  } catch (error) {
+    const note = document.getElementById("metrics-series-note");
+    if (note) note.textContent = `Chart unavailable: ${error.message}`;
+  } finally {
+    state.seriesInFlight = false;
+  }
+}
+
+function buildSeriesData(points) {
+  const xs = [];
+  const actual = [];
+  const counter = [];
+  let lastX = -Infinity;
+  const aligned = [];
+  for (const p of points) {
+    let x = Number(p.x) || 0;
+    if (x <= lastX) x = lastX + 1; // uPlot needs strictly increasing x
+    lastX = x;
+    xs.push(x);
+    actual.push(p.actual);
+    counter.push(p.counterfactual);
+    aligned.push(p);
+  }
+  state.seriesPoints = aligned;
+  return [xs, actual, counter];
+}
+
+function chartTooltipPlugin() {
+  const tip = document.getElementById("metrics-tooltip");
+  return {
+    hooks: {
+      setCursor: (u) => {
+        const idx = u.cursor.idx;
+        if (idx == null || !tip) {
+          hideChartTooltip();
+          return;
+        }
+        const p = state.seriesPoints[idx];
+        if (!p) {
+          hideChartTooltip();
+          return;
+        }
+        const rows = [
+          `<strong>${p.label}</strong>`,
+          `with memhub: <b>${fmtNum(p.actual)}</b>`,
+          `without memhub (est.): <b>${fmtNum(p.counterfactual)}</b>`,
+          `this point: ${fmtNum(p.delta)} tok`,
+        ];
+        if (p.recall_offset > 0) {
+          rows.push(
+            `est. ledger offset: ${fmtNum(p.recall_offset)} · recalls ${fmtNum(
+              p.recalls,
+            )}`,
+          );
+        }
+        tip.innerHTML = rows.join("<br>");
+        tip.classList.remove("hidden");
+        const left = u.cursor.left ?? 0;
+        const top = u.cursor.top ?? 0;
+        const stage = tip.parentElement;
+        const maxL = (stage ? stage.clientWidth : 0) - tip.offsetWidth - 12;
+        tip.style.left = `${Math.max(8, Math.min(left + 16, maxL))}px`;
+        tip.style.top = `${Math.max(8, top - 8)}px`;
+      },
+    },
+  };
+}
+
+function hideChartTooltip() {
+  const tip = document.getElementById("metrics-tooltip");
+  if (tip) tip.classList.add("hidden");
+}
+
+function drawSeriesChart(payload, opts = {}) {
   const host = document.getElementById("metrics-burnup");
+  const sub = document.getElementById("metrics-burnup-sub");
+  const note = document.getElementById("metrics-series-note");
   if (!host) return;
-  const payload = state.metrics;
-  if (!payload || !payload.enabled) return;
+  if (!payload || !payload.enabled) {
+    destroyChart();
+    return;
+  }
   const width = host.clientWidth;
   if (width === 0) return; // panel hidden; redrawn on tab activate
-  if (state.uplot && !force) return;
 
-  const sub = document.getElementById("metrics-burnup-sub");
   if (typeof uPlot === "undefined") {
-    destroyBurnup();
+    destroyChart();
     host.textContent = "Chart library failed to load.";
     return;
   }
 
-  const chrono = [...payload.sessions].reverse();
-  const xs = [];
-  const ys = [];
-  let cumulative = 0;
-  let prevX = -Infinity;
-  for (const s of chrono) {
-    let x = parseLocalTs(s.started_at);
-    if (Number.isNaN(x)) continue;
-    if (x <= prevX) x = prevX + 1; // uPlot needs strictly increasing x
-    prevX = x;
-    cumulative += (s.input_tokens || 0) + (s.output_tokens || 0);
-    xs.push(x);
-    ys.push(cumulative);
-  }
-
-  destroyBurnup();
-  host.innerHTML = "";
-  if (xs.length === 0) {
-    host.innerHTML = `<p class="empty-state">No session timestamps to chart yet.</p>`;
+  const points = payload.points || [];
+  if (points.length === 0) {
+    destroyChart();
+    host.innerHTML = `<p class="empty-state">No ${
+      payload.granularity === "turn" ? "turns in the current session" : "sessions in this range"
+    } to chart yet.</p>`;
     if (sub) sub.textContent = "";
+    if (note) note.textContent = "";
     return;
   }
+
+  const data = buildSeriesData(points);
+  const last = points[points.length - 1];
   if (sub) {
-    sub.textContent = `${xs.length} session${xs.length === 1 ? "" : "s"} · ${fmtNum(
-      ys[ys.length - 1],
-    )} cumulative tokens`;
+    const unit = payload.granularity === "turn" ? "turn" : "session";
+    sub.textContent = `${points.length} ${unit}${
+      points.length === 1 ? "" : "s"
+    } · ${fmtNum(last.actual)} cumulative tokens`;
+  }
+  if (note) {
+    note.textContent = payload.has_recall_signal
+      ? `Dashed line: estimated context without memhub (full-ledger baseline) — ${fmtNum(
+          last.counterfactual,
+        )} est. vs ${fmtNum(last.actual)} actual. Estimate, ±10% tokenizer.`
+      : "No recall offset logged in this range yet — the estimate line tracks actual until recalls are recorded.";
   }
 
-  const accent = "#53bce8";
-  const opts = {
+  const sig = seriesSignature(payload);
+  const windowChanged = state.seriesWindowDrawn !== payload.window;
+  const rebuild = opts.refit || windowChanged || !state.uplot;
+
+  if (!rebuild) {
+    if (sig === state.seriesSig) return; // nothing new
+    state.seriesSig = sig;
+    // Preserve a user-applied zoom across the live poll; otherwise let
+    // uPlot autoscale so the growing curve stays in frame.
+    state.uplot.setData(data, !state.metricsZoomed);
+    return;
+  }
+
+  destroyChart();
+  host.innerHTML = "";
+  state.metricsZoomed = false;
+  state.seriesSig = sig;
+  state.seriesWindowDrawn = payload.window;
+
+  const axisStyle = {
+    stroke: "#9ca7b7",
+    grid: { stroke: "#222936", width: 1 },
+    ticks: { stroke: "#323a49", width: 1 },
+  };
+  const chartOpts = {
     width,
-    height: 300,
-    cursor: { y: false },
+    height: 320,
+    cursor: { y: false, drag: { x: true, y: false } },
     legend: { show: true },
     scales: { x: { time: true } },
+    plugins: [chartTooltipPlugin()],
+    hooks: {
+      setSelect: [
+        (u) => {
+          if (u.select.width > 0) state.metricsZoomed = true;
+        },
+      ],
+    },
     axes: [
+      axisStyle,
       {
-        stroke: "#9ca7b7",
-        grid: { stroke: "#222936", width: 1 },
-        ticks: { stroke: "#323a49", width: 1 },
-      },
-      {
-        stroke: "#9ca7b7",
-        grid: { stroke: "#222936", width: 1 },
-        ticks: { stroke: "#323a49", width: 1 },
-        size: 64,
+        ...axisStyle,
+        size: 70,
         values: (u, splits) => splits.map((v) => fmtNum(v)),
       },
     ],
     series: [
       {},
       {
-        label: "cumulative tokens",
-        stroke: accent,
+        label: "with memhub (actual)",
+        stroke: ACTUAL_COLOR,
         width: 2,
         fill: "rgba(83, 188, 232, 0.16)",
-        points: { show: true, size: 6, stroke: accent, fill: "#0d1016", width: 2 },
+        points: { show: true, size: 6, stroke: ACTUAL_COLOR, fill: "#0d1016", width: 2 },
+        value: (u, v) => (v == null ? "—" : fmtNum(v)),
+      },
+      {
+        label: "without memhub (est.)",
+        stroke: COUNTER_COLOR,
+        width: 2,
+        dash: [6, 4],
+        points: { show: false },
         value: (u, v) => (v == null ? "—" : fmtNum(v)),
       },
     ],
   };
-  state.uplot = new uPlot(opts, [xs, ys], host);
+  state.uplot = new uPlot(chartOpts, data, host);
+}
+
+function setupMetricsControls() {
+  const select = document.getElementById("metrics-range");
+  if (select) {
+    select.value = state.metricsRange;
+    select.addEventListener("change", (event) => {
+      state.metricsRange = event.target.value;
+      state.metricsZoomed = false;
+      refreshSeries({ refit: true });
+    });
+  }
+  const reset = document.getElementById("metrics-zoom-reset");
+  if (reset) {
+    reset.addEventListener("click", () => {
+      state.metricsZoomed = false;
+      if (state.seriesPayload) drawSeriesChart(state.seriesPayload, { refit: true });
+    });
+  }
+  // uPlot resets scales on its own dblclick; just clear our flag so
+  // the next poll doesn't re-pin the old zoom.
+  const stage = document.getElementById("metrics-burnup");
+  if (stage) {
+    stage.addEventListener("dblclick", () => {
+      state.metricsZoomed = false;
+    });
+  }
 }
 
 function renderMetrics(counts) {
@@ -603,6 +809,7 @@ async function load() {
   setupMap();
   setupRecall();
   setupQueryChips();
+  setupMetricsControls();
   renderLegend();
 
   await refreshDashboard({ includeEmbeddings: true });
@@ -613,7 +820,9 @@ async function load() {
   window.addEventListener("resize", () => {
     if (document.querySelector(".panel.active")?.id !== "metrics") return;
     clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(() => drawBurnup(true), 150);
+    resizeTimer = setTimeout(() => {
+      if (state.seriesPayload) drawSeriesChart(state.seriesPayload, { refit: true });
+    }, 150);
   });
 }
 

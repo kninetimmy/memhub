@@ -466,6 +466,106 @@ td {
   overflow: hidden;
 }
 
+.chart-head {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.chart-controls {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.control-label {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.control-label select {
+  min-height: 32px;
+  text-transform: none;
+}
+
+.chart-hint {
+  margin: 6px 0 10px;
+  font-size: 12px;
+}
+
+.chart-stage {
+  position: relative;
+}
+
+.chart-tooltip {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+  max-width: 280px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(13, 16, 22, 0.94);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+#metrics-series-note {
+  margin-top: 10px;
+  font-size: 12px;
+}
+
+.help-block {
+  margin: -4px 0 16px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #121722;
+}
+
+.help-block > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.help-block dl {
+  display: grid;
+  grid-template-columns: minmax(140px, 220px) 1fr;
+  gap: 6px 16px;
+  margin: 12px 0 2px;
+}
+
+.help-block dt {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.help-block dd {
+  margin: 0;
+  color: var(--muted);
+}
+
+@media (max-width: 860px) {
+  .help-block dl {
+    grid-template-columns: 1fr;
+    gap: 2px 0;
+  }
+
+  .help-block dd {
+    margin-bottom: 8px;
+  }
+}
+
 /* uPlot ships a light theme; retint its DOM chrome for the dark dashboard.
    Canvas-drawn axes/grid are themed via JS opts in app.js. */
 .u-legend {

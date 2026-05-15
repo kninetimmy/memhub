@@ -18,7 +18,7 @@
 
 use std::path::Path;
 
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 
 use crate::config::MetricsConfig;
 use crate::db;
@@ -190,6 +190,358 @@ fn query_last_sessions(
         .filter_map(|r| r.ok())
         .collect();
     Ok(rows)
+}
+
+/// Chart range for the dashboard burn-up. `Session` is the latest
+/// session rendered turn-by-turn (per-turn granularity, migration
+/// 0013); the windowed variants render one cumulative point per
+/// session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeriesWindow {
+    Session,
+    Days(u32),
+    All,
+}
+
+impl SeriesWindow {
+    /// Parse the `window` query param. Unknown values fall back to 7d
+    /// rather than erroring — the dashboard is a read-only inspector
+    /// and a bad param should degrade, not 500.
+    pub fn parse(raw: &str) -> Self {
+        match raw {
+            "session" | "current" => SeriesWindow::Session,
+            "30d" => SeriesWindow::Days(30),
+            "all" => SeriesWindow::All,
+            _ => SeriesWindow::Days(7),
+        }
+    }
+
+    fn label(&self) -> String {
+        match self {
+            SeriesWindow::Session => "session".to_string(),
+            SeriesWindow::Days(n) => format!("{n}d"),
+            SeriesWindow::All => "all".to_string(),
+        }
+    }
+
+    fn granularity(&self) -> &'static str {
+        match self {
+            SeriesWindow::Session => "turn",
+            _ => "session",
+        }
+    }
+}
+
+/// One plotted point. `actual` is the cumulative real token spend up
+/// to and including this point; `counterfactual` is that same
+/// cumulative plus the running full-ledger offset — what the context
+/// *would* have cost if every recall had instead loaded the whole
+/// `PROJECT_LEDGER.md`. Per the proxy contract this is a labelled
+/// estimate ("context offset vs full-ledger baseline"), never
+/// "tokens saved", and the tiktoken cl100k count is ±10% of
+/// Anthropic's real tokenizer.
+#[derive(Debug, Clone)]
+pub struct SeriesPoint {
+    /// Unix seconds (UTC). Synthetic monotonic fallback when the
+    /// source timestamp is missing/unparseable so uPlot still gets a
+    /// strictly increasing x.
+    pub x: i64,
+    pub label: String,
+    pub actual: i64,
+    pub counterfactual: i64,
+    /// This point's own input+output spend (not cumulative).
+    pub delta: i64,
+    /// Cumulative max(0, ledger−bundle) recall offset up to here.
+    pub recall_offset: i64,
+    /// Cumulative recall calls counted up to here.
+    pub recalls: i64,
+}
+
+#[derive(Debug)]
+pub struct SeriesData {
+    pub window: String,
+    pub granularity: String,
+    /// The session the `session` window resolved to, if any.
+    pub session_id: Option<String>,
+    pub points: Vec<SeriesPoint>,
+    /// True when at least one recall offset was counted; drives the
+    /// "estimate only where recall logging exists" UI note.
+    pub has_recall_signal: bool,
+    pub enabled: bool,
+}
+
+impl SeriesData {
+    fn disabled(window: SeriesWindow, enabled: bool) -> Self {
+        SeriesData {
+            window: window.label(),
+            granularity: window.granularity().to_string(),
+            session_id: None,
+            points: Vec::new(),
+            has_recall_signal: false,
+            enabled,
+        }
+    }
+}
+
+/// Time-ordered cumulative burn-up for the dashboard chart, with the
+/// counterfactual "without memhub" overlay. Returns immediately with
+/// empty points when metrics are disabled (same contract as
+/// `query_tool_data`). open_project has already run the scraper +
+/// reconciler this pass, so recall→session attribution is fresh.
+pub fn query_series(start: &Path, window: SeriesWindow) -> Result<SeriesData> {
+    let ctx = db::open_project(start)?;
+    if !ctx.config.metrics.enabled {
+        return Ok(SeriesData::disabled(window, false));
+    }
+    let conn = &ctx.conn;
+
+    let raw = match window {
+        SeriesWindow::Session => fetch_session_turn_rows(conn)?,
+        SeriesWindow::Days(n) => fetch_session_window_rows(conn, Some(n))?,
+        SeriesWindow::All => fetch_session_window_rows(conn, None)?,
+    };
+
+    let session_id = match window {
+        SeriesWindow::Session => raw.session_id.clone(),
+        _ => None,
+    };
+
+    let mut points = Vec::with_capacity(raw.rows.len());
+    let mut cum_actual: i64 = 0;
+    let mut cum_offset: i64 = 0;
+    let mut cum_recalls: i64 = 0;
+    let mut last_x: i64 = i64::MIN;
+    for r in raw.rows {
+        cum_actual += r.delta.max(0);
+        cum_offset += r.offset.max(0);
+        cum_recalls += r.recalls.max(0);
+        // uPlot requires strictly increasing x. Same-second points
+        // (common for fast turns) get nudged forward a second.
+        let mut x = r.x.unwrap_or(last_x.saturating_add(1));
+        if x <= last_x {
+            x = last_x.saturating_add(1);
+        }
+        last_x = x;
+        points.push(SeriesPoint {
+            x,
+            label: r.label,
+            actual: cum_actual,
+            counterfactual: cum_actual + cum_offset,
+            delta: r.delta,
+            recall_offset: cum_offset,
+            recalls: cum_recalls,
+        });
+    }
+
+    Ok(SeriesData {
+        window: window.label(),
+        granularity: window.granularity().to_string(),
+        session_id,
+        has_recall_signal: cum_offset > 0,
+        points,
+        enabled: true,
+    })
+}
+
+/// One pre-cumulative source row: this point's own spend, its own
+/// recall offset, its own recall count, and an optional epoch x.
+struct RawRow {
+    x: Option<i64>,
+    label: String,
+    delta: i64,
+    offset: i64,
+    recalls: i64,
+}
+
+struct RawRows {
+    rows: Vec<RawRow>,
+    session_id: Option<String>,
+}
+
+/// Per-turn rows for the most-recently-started session. The
+/// counterfactual offset is spread across turns by recall timestamp:
+/// each turn carries the recall offset for this session's recalls
+/// whose `ts` falls at/under that turn's `ts` and after the prior
+/// turn's. Turns with an unparseable ts still appear (synthetic x);
+/// any not-yet-placed offset lands on the final turn so the session
+/// total always reconciles.
+fn fetch_session_turn_rows(conn: &rusqlite::Connection) -> Result<RawRows> {
+    let session_id: Option<String> = conn
+        .query_row(
+            "SELECT session_id FROM session_metrics \
+             ORDER BY started_at DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+
+    let Some(sid) = session_id else {
+        return Ok(RawRows { rows: Vec::new(), session_id: None });
+    };
+
+    // Turns in transcript (append) order.
+    let mut stmt = conn.prepare(
+        "SELECT CAST(strftime('%s', ts) AS INTEGER) AS x, \
+                ts, input_tokens + output_tokens AS delta \
+         FROM session_turn_metrics \
+         WHERE session_id = ?1 \
+         ORDER BY id",
+    )?;
+    struct Turn {
+        x: Option<i64>,
+        ts_raw: Option<String>,
+        delta: i64,
+    }
+    let turns: Vec<Turn> = stmt
+        .query_map(params![sid], |row| {
+            Ok(Turn {
+                x: row.get(0)?,
+                ts_raw: row.get::<_, Option<String>>(1)?,
+                delta: row.get(2)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    // Recalls attributed to this session, with normalized epoch + the
+    // clamped full-ledger extra, oldest first.
+    let mut rstmt = conn.prepare(
+        "SELECT CAST(strftime('%s', ts) AS INTEGER) AS rx, \
+                MAX(0, ledger_tokens - bundle_tokens) AS extra \
+         FROM recall_metrics \
+         WHERE session_id = ?1 \
+         ORDER BY datetime(ts)",
+    )?;
+    let recalls: Vec<(Option<i64>, i64)> = rstmt
+        .query_map(params![sid], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let total_recalls = recalls.len() as i64;
+    let mut rows = Vec::with_capacity(turns.len());
+    let mut recall_idx = 0usize;
+    let n_turns = turns.len();
+    for (i, t) in turns.into_iter().enumerate() {
+        // Attach every recall whose epoch is <= this turn's epoch.
+        // Recalls with no epoch, or all remaining on the last turn,
+        // are flushed so the per-session total always lands.
+        let mut offset = 0i64;
+        let mut counted = 0i64;
+        let is_last = i + 1 == n_turns;
+        while recall_idx < recalls.len() {
+            let (rx, extra) = recalls[recall_idx];
+            let due = match (rx, t.x) {
+                (Some(r), Some(tx)) => r <= tx,
+                _ => false,
+            };
+            if due || is_last {
+                offset += extra;
+                counted += 1;
+                recall_idx += 1;
+            } else {
+                break;
+            }
+        }
+        rows.push(RawRow {
+            x: t.x,
+            label: t
+                .ts_raw
+                .clone()
+                .unwrap_or_else(|| format!("turn {}", i + 1)),
+            delta: t.delta,
+            offset,
+            recalls: counted,
+        });
+    }
+    // Defensive: if there were no turns but recalls exist, surface a
+    // single synthetic point so the offset isn't silently dropped.
+    if rows.is_empty() && total_recalls > 0 {
+        let offset: i64 = recalls.iter().map(|(_, e)| *e).sum();
+        rows.push(RawRow {
+            x: None,
+            label: "session".to_string(),
+            delta: 0,
+            offset,
+            recalls: total_recalls,
+        });
+    }
+
+    Ok(RawRows { rows, session_id: Some(sid) })
+}
+
+/// One cumulative point per session within the window (no 10-row cap),
+/// oldest first. Each session carries its own attributed recall
+/// offset and recall count.
+fn fetch_session_window_rows(
+    conn: &rusqlite::Connection,
+    days: Option<u32>,
+) -> Result<RawRows> {
+    let (sql, modifier): (String, Option<String>) = match days {
+        Some(n) => (
+            "SELECT s.session_id, \
+                    CAST(strftime('%s', s.started_at) AS INTEGER) AS x, \
+                    datetime(s.started_at, 'localtime') AS started_local, \
+                    s.input_tokens + s.output_tokens AS delta, \
+                    COALESCE(( \
+                        SELECT SUM(MAX(0, r.ledger_tokens - r.bundle_tokens)) \
+                        FROM recall_metrics r WHERE r.session_id = s.session_id \
+                    ), 0) AS offset, \
+                    COALESCE(( \
+                        SELECT COUNT(*) FROM recall_metrics r \
+                        WHERE r.session_id = s.session_id \
+                    ), 0) AS recalls \
+             FROM session_metrics s \
+             WHERE datetime(s.started_at) >= datetime('now', ?1) \
+             ORDER BY datetime(s.started_at) ASC, s.id ASC"
+                .to_string(),
+            Some(format!("-{n} days")),
+        ),
+        None => (
+            "SELECT s.session_id, \
+                    CAST(strftime('%s', s.started_at) AS INTEGER) AS x, \
+                    datetime(s.started_at, 'localtime') AS started_local, \
+                    s.input_tokens + s.output_tokens AS delta, \
+                    COALESCE(( \
+                        SELECT SUM(MAX(0, r.ledger_tokens - r.bundle_tokens)) \
+                        FROM recall_metrics r WHERE r.session_id = s.session_id \
+                    ), 0) AS offset, \
+                    COALESCE(( \
+                        SELECT COUNT(*) FROM recall_metrics r \
+                        WHERE r.session_id = s.session_id \
+                    ), 0) AS recalls \
+             FROM session_metrics s \
+             ORDER BY datetime(s.started_at) ASC, s.id ASC"
+                .to_string(),
+            None,
+        ),
+    };
+
+    let mut stmt = conn.prepare(&sql)?;
+    let map = |row: &rusqlite::Row| -> rusqlite::Result<RawRow> {
+        let sid: String = row.get(0)?;
+        Ok(RawRow {
+            x: row.get(1)?,
+            label: row
+                .get::<_, Option<String>>(2)?
+                .unwrap_or_else(|| sid.chars().take(8).collect()),
+            delta: row.get(3)?,
+            offset: row.get(4)?,
+            recalls: row.get(5)?,
+        })
+    };
+    let rows: Vec<RawRow> = match modifier {
+        Some(m) => stmt
+            .query_map(params![m], map)?
+            .filter_map(|r| r.ok())
+            .collect(),
+        None => stmt
+            .query_map([], map)?
+            .filter_map(|r| r.ok())
+            .collect(),
+    };
+    Ok(RawRows { rows, session_id: None })
 }
 
 #[derive(Debug)]
@@ -615,5 +967,116 @@ mod tests {
             abs_str.trim_start_matches('/').replace('/', "-")
         );
         assert_eq!(encoded, "-Users-alice-my-project");
+    }
+
+    #[test]
+    fn series_window_parse_falls_back_to_7d() {
+        assert_eq!(SeriesWindow::parse("session"), SeriesWindow::Session);
+        assert_eq!(SeriesWindow::parse("current"), SeriesWindow::Session);
+        assert_eq!(SeriesWindow::parse("30d"), SeriesWindow::Days(30));
+        assert_eq!(SeriesWindow::parse("all"), SeriesWindow::All);
+        assert_eq!(SeriesWindow::parse("7d"), SeriesWindow::Days(7));
+        assert_eq!(SeriesWindow::parse("garbage"), SeriesWindow::Days(7));
+    }
+
+    #[test]
+    fn series_is_empty_and_disabled_when_metrics_off() {
+        let temp = tempdir().expect("tempdir");
+        init_project(temp.path());
+        let s = query_series(temp.path(), SeriesWindow::Days(7)).expect("series");
+        assert!(!s.enabled);
+        assert!(s.points.is_empty());
+        assert!(!s.has_recall_signal);
+        assert_eq!(s.window, "7d");
+        assert_eq!(s.granularity, "session");
+    }
+
+    #[test]
+    fn session_window_is_per_turn_cumulative_with_counterfactual() {
+        let temp = tempdir().expect("tempdir");
+        init_project(temp.path());
+        enable(temp.path()).expect("enable");
+        {
+            let ctx = db::open_project(temp.path()).expect("open");
+            ctx.conn
+                .execute(
+                    "INSERT INTO session_metrics \
+                     (session_id, agent, started_at, ended_at, \
+                      input_tokens, output_tokens) \
+                     VALUES ('sx', 'claude-code', \
+                             '2026-05-15T10:00:00.000Z', \
+                             '2026-05-15T10:05:00.000Z', 500, 100)",
+                    [],
+                )
+                .expect("session");
+            ctx.conn
+                .execute(
+                    "INSERT INTO session_turn_metrics \
+                     (session_id, ts, input_tokens, output_tokens) VALUES \
+                     ('sx', '2026-05-15T10:00:00.000Z', 100, 20), \
+                     ('sx', '2026-05-15T10:05:00.000Z', 300, 80)",
+                    [],
+                )
+                .expect("turns");
+            // ledger 1000 vs bundle 100 → 900 counterfactual extra,
+            // recall ts between the two turns.
+            ctx.conn
+                .execute(
+                    "INSERT INTO recall_metrics \
+                     (ts, session_id, query_hash, bundle_tokens, \
+                      ledger_tokens, rerank_used, result_count) \
+                     VALUES ('2026-05-15 10:03:00', 'sx', 'h', 100, 1000, 1, 5)",
+                    [],
+                )
+                .expect("recall");
+        }
+
+        let s = query_series(temp.path(), SeriesWindow::Session).expect("series");
+        assert_eq!(s.session_id.as_deref(), Some("sx"));
+        assert_eq!(s.granularity, "turn");
+        assert_eq!(s.points.len(), 2);
+
+        // Cumulative actual = running input+output (120, then +380).
+        assert_eq!(s.points[0].actual, 120);
+        assert_eq!(s.points[1].actual, 500);
+        // Recall (ts 10:03) is due by turn 2 (ts 10:05): offset lands there.
+        assert_eq!(s.points[0].recall_offset, 0);
+        assert_eq!(s.points[1].recall_offset, 900);
+        assert_eq!(s.points[0].counterfactual, 120);
+        assert_eq!(s.points[1].counterfactual, 500 + 900);
+        assert!(s.has_recall_signal);
+        // Strictly increasing x for uPlot.
+        assert!(s.points[1].x > s.points[0].x);
+    }
+
+    #[test]
+    fn windowed_series_is_one_cumulative_point_per_session() {
+        let temp = tempdir().expect("tempdir");
+        init_project(temp.path());
+        enable(temp.path()).expect("enable");
+        {
+            let ctx = db::open_project(temp.path()).expect("open");
+            ctx.conn
+                .execute(
+                    "INSERT INTO session_metrics \
+                     (session_id, agent, started_at, ended_at, \
+                      input_tokens, output_tokens) VALUES \
+                     ('s1','claude-code', datetime('now','-2 days'), \
+                      datetime('now','-2 days'), 100, 50), \
+                     ('s2','claude-code', datetime('now','-1 day'), \
+                      datetime('now','-1 day'), 200, 70)",
+                    [],
+                )
+                .expect("sessions");
+        }
+        let s = query_series(temp.path(), SeriesWindow::Days(7)).expect("series");
+        assert_eq!(s.granularity, "session");
+        assert_eq!(s.points.len(), 2);
+        // Oldest first, cumulative.
+        assert_eq!(s.points[0].actual, 150);
+        assert_eq!(s.points[1].actual, 150 + 270);
+        // No recalls → counterfactual tracks actual exactly.
+        assert_eq!(s.points[1].counterfactual, s.points[1].actual);
+        assert!(!s.has_recall_signal);
     }
 }

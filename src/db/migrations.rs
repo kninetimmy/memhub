@@ -58,6 +58,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0012_metrics_tables",
         include_str!("../../migrations/0012_metrics_tables.sql"),
     ),
+    (
+        "0013_session_turn_metrics",
+        include_str!("../../migrations/0013_session_turn_metrics.sql"),
+    ),
 ];
 
 pub fn apply_all(conn: &mut Connection) -> Result<Vec<String>> {

@@ -129,9 +129,35 @@
         <div id="metrics-state" class="summary"></div>
         <div id="metrics-body" class="hidden">
           <div class="metrics" id="metrics-cards"></div>
+          <details class="help-block">
+            <summary>What do these numbers mean?</summary>
+            <dl id="metrics-help"></dl>
+          </details>
           <section class="surface">
-            <h2>Token burn-up <small id="metrics-burnup-sub" class="muted-line"></small></h2>
-            <div id="metrics-burnup" class="uplot-wrap"></div>
+            <div class="chart-head">
+              <h2>Token burn-up <small id="metrics-burnup-sub" class="muted-line"></small></h2>
+              <div class="chart-controls">
+                <label class="control-label">
+                  Range
+                  <select id="metrics-range" aria-label="Chart range">
+                    <option value="session">Current session</option>
+                    <option value="7d" selected>Last 7 days</option>
+                    <option value="30d">Last 30 days</option>
+                    <option value="all">All time</option>
+                  </select>
+                </label>
+                <button type="button" id="metrics-zoom-reset">Reset zoom</button>
+              </div>
+            </div>
+            <p class="chart-hint muted-line">
+              Drag across the chart to zoom in · double-click or
+              <em>Reset zoom</em> to zoom back out.
+            </p>
+            <div class="chart-stage">
+              <div id="metrics-burnup" class="uplot-wrap"></div>
+              <div id="metrics-tooltip" class="chart-tooltip hidden"></div>
+            </div>
+            <p id="metrics-series-note" class="muted-line"></p>
           </section>
           <section class="surface">
             <h2>Recent sessions</h2>
