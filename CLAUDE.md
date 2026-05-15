@@ -157,6 +157,36 @@ or backfill an existing row with `memhub decision set-summary <ID>
 For A/B testing in any repo: `memhub eval retrieval` vs
 `memhub eval retrieval --no-rerank`.
 
+## Token Accounting
+
+Off by default. Opt in per machine with `memhub metrics enable` — this
+auto-detects the Claude Code transcript directory and writes the resolved
+path into `.memhub/config.toml`. Disable with `memhub metrics disable`.
+
+Two independent sub-switches under `[metrics]`:
+- `recall_proxy = true` (component A) — logs one row to `recall_metrics`
+  per `memhub recall` call: actual bundle size vs a full-ledger
+  counterfactual, tokenised with tiktoken cl100k.
+- `session_accounting = true` (component B) — scrapes Claude Code
+  transcript JSONL into `session_metrics` for real input/output/cache
+  token totals. Scraping is incremental and never fatal; bad lines are
+  skipped.
+
+**Proxy contract:** `bundle_tokens` is the token count of the recall bundle
+actually returned. `ledger_tokens` is the counterfactual cost of loading the
+full `PROJECT_LEDGER.md` instead. The rendered label is "context offset vs
+full-ledger baseline" — not "tokens saved" — because the agent would not
+necessarily have loaded the full ledger anyway.
+
+**Tokenizer caveat:** tiktoken cl100k is ±10% off Anthropic's real
+tokenizer. Ratios stay sound because both sides of every comparison use the
+same yardstick; treat absolute token counts as estimates, not ground truth.
+
+Dashboard surfaces: `memhub metrics status` (CLI) · `memhub.metrics` (MCP
+tool) · `/metrics` (skill). `memhub render` appends a 7-day digest to
+`PROJECT.md` when enabled and ≥1 row exists; the section is omitted
+entirely when disabled or when no data has been captured yet.
+
 ## Current Build Focus
 
 The repository currently provides Milestone 1 scaffolding and a usable local CLI foundation. Future work should extend from these boundaries instead of replacing them.

@@ -14,6 +14,8 @@
 #   - retrieval.scoring.*              (reproducible recall)
 #   - integrations.k9.*                (project property)
 #   - render.output_dir                (project property)
+#   - metrics.enabled = false          (off by default; changes here set
+#                                       the canonical install default)
 #
 # Fields that are per-machine preferences (override locally without
 # committing back to the example):

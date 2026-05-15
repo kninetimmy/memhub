@@ -107,7 +107,7 @@ pub fn query_tool_data(start: &Path) -> Result<MetricsToolData> {
     })
 }
 
-fn query_period_totals(conn: &rusqlite::Connection, days: u32) -> Result<PeriodTotals> {
+pub(crate) fn query_period_totals(conn: &rusqlite::Connection, days: u32) -> Result<PeriodTotals> {
     let modifier = format!("-{days} days");
 
     // recall_metrics: count + token sums for the window.

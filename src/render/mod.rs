@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::Result;
+use crate::commands::metrics::query_period_totals;
 use crate::db;
+use crate::metrics::formatter::render_period_block;
 use crate::models::{
     Decision, Fact, FACT_STALE_AFTER_DAYS, NarrativeEntry, RenderResult, SessionNote, Task,
 };
@@ -39,12 +41,13 @@ struct RenderSnapshot {
     open_task_count: i64,
     recent_session_notes: Vec<SessionNote>,
     recent_writes: Vec<RecentWrite>,
+    token_accounting_section: Option<String>,
 }
 
 pub fn render_project(start: &Path, actor: &str) -> Result<RenderResult> {
     let ctx = db::open_project(start)?;
 
-    let snapshot = build_snapshot(&ctx.conn, &ctx.config.project_name)?;
+    let snapshot = build_snapshot(&ctx.conn, &ctx.config.project_name, ctx.config.metrics.enabled)?;
     let project_md = format_project_md(&snapshot);
     let ledger_md = format_ledger_md(&snapshot);
 
@@ -130,7 +133,7 @@ fn stage_rendered_file(path: &Path, content: &str, backup_dir: &Path) -> Result<
     })
 }
 
-fn build_snapshot(conn: &Connection, project_name: &str) -> Result<RenderSnapshot> {
+fn build_snapshot(conn: &Connection, project_name: &str, metrics_enabled: bool) -> Result<RenderSnapshot> {
     let generated_at: String = conn.query_row(
         "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')",
         [],
@@ -150,6 +153,11 @@ fn build_snapshot(conn: &Connection, project_name: &str) -> Result<RenderSnapsho
         open_task_count: count_open_tasks(conn)?,
         recent_session_notes: load_recent_session_notes(conn)?,
         recent_writes: load_recent_writes(conn)?,
+        token_accounting_section: if metrics_enabled {
+            load_token_accounting_section(conn)?
+        } else {
+            None
+        },
     })
 }
 
@@ -302,6 +310,14 @@ fn load_recent_session_notes(conn: &Connection) -> Result<Vec<SessionNote>> {
     Ok(rows)
 }
 
+fn load_token_accounting_section(conn: &Connection) -> Result<Option<String>> {
+    let totals = query_period_totals(conn, 7)?;
+    if totals.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(render_period_block("Last 7 days", &totals)))
+}
+
 fn load_recent_writes(conn: &Connection) -> Result<Vec<RecentWrite>> {
     let mut stmt = conn.prepare(
         "SELECT at, actor, table_name, action, reason
@@ -382,6 +398,13 @@ fn format_project_md(s: &RenderSnapshot) -> String {
                 collapse_inline(&note.text)
             ));
         }
+    }
+
+    if let Some(section) = &s.token_accounting_section {
+        out.push('\n');
+        out.push_str("## Token Accounting (last 7 days)\n\n");
+        out.push_str(section);
+        out.push('\n');
     }
 
     out
@@ -569,5 +592,52 @@ mod tests {
             strip_leading_heading(body, "## Currently building"),
             body,
         );
+    }
+
+    // --- Token Accounting section rendering ---
+
+    fn render_project_md_for_test(temp: &tempfile::TempDir) -> String {
+        let ctx = crate::db::open_project(temp.path()).expect("open_project");
+        let snapshot =
+            super::build_snapshot(&ctx.conn, "test", ctx.config.metrics.enabled).expect("build_snapshot");
+        super::format_project_md(&snapshot)
+    }
+
+    #[test]
+    fn token_accounting_section_absent_when_metrics_disabled() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::commands::init::run(temp.path()).expect("init");
+        // metrics.enabled is false by default — no enable call
+        let md = render_project_md_for_test(&temp);
+        assert!(!md.contains("Token Accounting"));
+    }
+
+    #[test]
+    fn token_accounting_section_absent_when_enabled_but_no_rows() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::commands::init::run(temp.path()).expect("init");
+        crate::commands::metrics::enable(temp.path()).expect("enable");
+        let md = render_project_md_for_test(&temp);
+        assert!(!md.contains("Token Accounting"));
+    }
+
+    #[test]
+    fn token_accounting_section_present_when_enabled_and_rows_exist() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::commands::init::run(temp.path()).expect("init");
+        crate::commands::metrics::enable(temp.path()).expect("enable");
+        let ctx = crate::db::open_project(temp.path()).expect("open_project");
+        ctx.conn
+            .execute(
+                "INSERT INTO recall_metrics \
+                 (ts, query_hash, bundle_tokens, ledger_tokens, rerank_used, result_count) \
+                 VALUES (datetime('now'), 'abc123', 150, 800, 0, 3)",
+                [],
+            )
+            .expect("insert recall_metrics");
+        drop(ctx);
+        let md = render_project_md_for_test(&temp);
+        assert!(md.contains("## Token Accounting (last 7 days)"));
+        assert!(md.contains("Recalls:"));
     }
 }
