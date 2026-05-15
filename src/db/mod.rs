@@ -19,7 +19,7 @@ pub const CONFIG_EXAMPLE_FILENAME: &str = "config.example.toml";
 /// tests can verify that `open_project` brought a DB up to head without
 /// hand-coding the version string in every assertion.
 pub fn latest_schema_version() -> &'static str {
-    migrations::LATEST_VERSION
+    migrations::latest_version()
 }
 
 #[derive(Debug, Clone)]
@@ -200,7 +200,7 @@ fn upsert_project(conn: &Connection, repo_root: &Path) -> Result<()> {
              schema_version = excluded.schema_version",
         params![
             repo_root.to_string_lossy().to_string(),
-            migrations::LATEST_VERSION
+            migrations::latest_version()
         ],
     )?;
     Ok(())

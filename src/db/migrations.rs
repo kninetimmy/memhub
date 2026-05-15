@@ -2,7 +2,12 @@ use rusqlite::Connection;
 
 use crate::Result;
 
-pub const LATEST_VERSION: &str = "0010_embeddings_delete_triggers";
+pub fn latest_version() -> &'static str {
+    MIGRATIONS
+        .last()
+        .expect("MIGRATIONS list is non-empty")
+        .0
+}
 
 const MIGRATIONS: &[(&str, &str)] = &[
     (

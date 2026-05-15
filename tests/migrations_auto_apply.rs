@@ -39,12 +39,21 @@ fn fresh_init_applies_all_migrations_to_head() {
 /// machine. Every `db::open_project` call invokes `migrations::apply_all`,
 /// which fills the gap. This test forces that scenario by deleting a
 /// `schema_migrations` row and verifying the next open re-applies it.
+///
+/// The probe migration is pinned to `0010_embeddings_delete_triggers`
+/// (CREATE TRIGGER IF NOT EXISTS — idempotent at the SQL level) rather
+/// than head, because the simulation deletes only the gating row and not
+/// the schema effect, so a non-idempotent head migration (e.g.
+/// `ALTER TABLE … ADD COLUMN`) would fail with `duplicate column` on
+/// re-apply. Keeping the probe pinned isolates this test to the gap-fill
+/// mechanism without coupling it to whichever migration happens to be
+/// newest.
 #[test]
 fn open_project_reapplies_a_missing_migration_row() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init succeeds");
 
-    let head = db::latest_schema_version();
+    let probe = "0010_embeddings_delete_triggers";
 
     {
         let ctx = db::open_project(temp.path()).expect("open project");
@@ -52,7 +61,7 @@ fn open_project_reapplies_a_missing_migration_row() {
             .conn
             .execute(
                 "DELETE FROM schema_migrations WHERE version = ?1",
-                [head],
+                [probe],
             )
             .expect("simulate stale schema");
         assert_eq!(
@@ -67,11 +76,11 @@ fn open_project_reapplies_a_missing_migration_row() {
         .conn
         .query_row(
             "SELECT COUNT(*) FROM schema_migrations WHERE version = ?1",
-            [head],
+            [probe],
             |row| row.get(0),
         )
-        .expect("count head migration rows");
-    assert_eq!(count, 1, "missing head migration should be auto-applied");
+        .expect("count probe migration rows");
+    assert_eq!(count, 1, "missing migration row should be auto-applied");
 }
 
 /// `open_project` runs `apply_all` on every call. If migrations are not
