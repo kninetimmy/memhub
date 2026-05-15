@@ -419,7 +419,9 @@ fn query_recent_sessions(
     limit: i64,
 ) -> Result<Vec<SessionRow>> {
     let mut stmt = conn.prepare(
-        "SELECT session_id, agent, started_at, ended_at, \
+        "SELECT session_id, agent, \
+         datetime(started_at, 'localtime') AS started_local, \
+         datetime(ended_at, 'localtime') AS ended_local, \
          input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, recall_calls \
          FROM session_metrics \
          ORDER BY started_at DESC \
