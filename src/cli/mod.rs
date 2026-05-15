@@ -552,6 +552,113 @@ fn print_eval_summary(summary: &commands::eval::EvalSummary) {
     }
 }
 
+fn print_metrics_status_human(s: &commands::metrics::MetricsStatus) {
+    let status_label = if s.config.enabled { "enabled" } else { "disabled" };
+    println!("memhub metrics — {status_label}");
+    println!("  session_accounting: {}", if s.config.session_accounting { "on" } else { "off" });
+    println!("  tokenizer:          {}", s.config.tokenizer);
+    println!(
+        "  retention:          {}",
+        if s.config.retention_days == 0 {
+            "keep forever".to_string()
+        } else {
+            format!("{} days", s.config.retention_days)
+        }
+    );
+    let transcripts = if s.config.claude_transcripts_dir.is_empty() {
+        "(not set)".to_string()
+    } else {
+        s.config.claude_transcripts_dir.clone()
+    };
+    println!("  claude transcripts: {transcripts}");
+    println!();
+    println!(
+        "  Recall rows:  {} ({} attributed to sessions)",
+        s.recall_rows, s.attributed_rows
+    );
+    println!("  Sessions:     {}", s.session_rows);
+    if let Some(t) = &s.token_totals {
+        println!();
+        println!("  Last 30 days:");
+        println!("    input tokens:         {}", t.input);
+        println!("    output tokens:        {}", t.output);
+        println!("    cache read tokens:    {}", t.cache_read);
+        println!("    cache creation tokens:{}", t.cache_creation);
+    }
+    if !s.recent_sessions.is_empty() {
+        println!();
+        println!("  Recent sessions (newest first):");
+        for sess in &s.recent_sessions {
+            let ended = sess.ended_at.as_deref().unwrap_or("(open)");
+            println!(
+                "    {}  agent={}  {}..{}  in={} out={} cread={} ccreate={} recalls={}",
+                &sess.session_id[..sess.session_id.len().min(8)],
+                sess.agent,
+                &sess.started_at[..sess.started_at.len().min(19)],
+                &ended[..ended.len().min(19)],
+                sess.input_tokens,
+                sess.output_tokens,
+                sess.cache_read_tokens,
+                sess.cache_creation_tokens,
+                sess.recall_calls,
+            );
+        }
+    }
+    if s.recalls_pruned > 0 || s.sessions_pruned > 0 {
+        println!();
+        println!(
+            "  Pruned this pass: {} recalls, {} sessions",
+            s.recalls_pruned, s.sessions_pruned
+        );
+    }
+}
+
+fn metrics_status_to_json(s: &commands::metrics::MetricsStatus) -> serde_json::Value {
+    let sessions: Vec<serde_json::Value> = s
+        .recent_sessions
+        .iter()
+        .map(|sess| {
+            json!({
+                "session_id": sess.session_id,
+                "agent": sess.agent,
+                "started_at": sess.started_at,
+                "ended_at": sess.ended_at,
+                "input_tokens": sess.input_tokens,
+                "output_tokens": sess.output_tokens,
+                "cache_read_tokens": sess.cache_read_tokens,
+                "cache_creation_tokens": sess.cache_creation_tokens,
+                "recall_calls": sess.recall_calls,
+            })
+        })
+        .collect();
+    json!({
+        "config": {
+            "enabled": s.config.enabled,
+            "session_accounting": s.config.session_accounting,
+            "tokenizer": s.config.tokenizer,
+            "retention_days": s.config.retention_days,
+            "claude_transcripts_dir": s.config.claude_transcripts_dir,
+            "codex_transcripts_dir": s.config.codex_transcripts_dir,
+        },
+        "stats": {
+            "recall_rows": s.recall_rows,
+            "attributed_rows": s.attributed_rows,
+            "session_rows": s.session_rows,
+        },
+        "token_totals_30d": s.token_totals.as_ref().map(|t| json!({
+            "input": t.input,
+            "output": t.output,
+            "cache_read": t.cache_read,
+            "cache_creation": t.cache_creation,
+        })),
+        "recent_sessions": sessions,
+        "pruned": {
+            "recalls": s.recalls_pruned,
+            "sessions": s.sessions_pruned,
+        },
+    })
+}
+
 fn print_init_result(result: &InitResult) {
     println!("Initialized memhub at {}", result.repo_root.display());
     println!("Database: {}", result.db_path.display());
@@ -677,6 +784,10 @@ pub enum TopLevelCommand {
         #[command(subcommand)]
         command: IndexCommand,
     },
+    Metrics {
+        #[command(subcommand)]
+        command: MetricsCommand,
+    },
     Recall {
         query: String,
         #[arg(long, value_enum, value_name = "TYPE")]
@@ -730,6 +841,37 @@ pub enum EvalCommand {
         /// rejection at the cost of recall on borderline matches.
         #[arg(long, value_name = "F")]
         min_rerank_score: Option<f32>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum MetricsCommand {
+    /// Show token-accounting status: config, DB counts, recent sessions.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Enable the token-accounting subsystem and auto-detect the Claude
+    /// transcripts dir if not already set.
+    Enable {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Disable the token-accounting subsystem.
+    Disable {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Force a transcript scrape + reconcile + prune pass and report counts.
+    Rescan {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Explicitly run the retention pruner and report how many rows were
+    /// deleted.
+    Prune {
         #[arg(long)]
         json: bool,
     },
@@ -1672,6 +1814,94 @@ pub fn run(cli: Cli) -> Result<()> {
                     println!(
                         "  facts: {}  decisions: {}  tasks: {}",
                         summary.facts, summary.decisions, summary.tasks,
+                    );
+                }
+            }
+        },
+        TopLevelCommand::Metrics { command } => match command {
+            MetricsCommand::Status { json: as_json } => {
+                let s = commands::metrics::status(&cwd)?;
+                if as_json {
+                    println!("{}", metrics_status_to_json(&s));
+                } else {
+                    print_metrics_status_human(&s);
+                }
+            }
+            MetricsCommand::Enable { json: as_json } => {
+                let r = commands::metrics::enable(&cwd)?;
+                if as_json {
+                    let payload = json!({
+                        "already_enabled": r.already_enabled,
+                        "enabled": r.config.enabled,
+                        "claude_transcripts_dir": r.config.claude_transcripts_dir,
+                        "auto_detected": r.auto_detected_dir.is_some(),
+                        "auto_detected_dir": r.auto_detected_dir,
+                    });
+                    println!("{payload}");
+                } else if r.already_enabled && r.auto_detected_dir.is_none() {
+                    println!("Metrics already enabled.");
+                } else {
+                    println!("Metrics enabled.");
+                    if let Some(dir) = &r.auto_detected_dir {
+                        println!("Claude transcripts dir auto-detected: {dir}");
+                    } else if r.config.claude_transcripts_dir.is_empty() {
+                        println!(
+                            "Note: claude_transcripts_dir not detected. Set manually in \
+                             .memhub/config.toml under [metrics] if session accounting is desired."
+                        );
+                    } else {
+                        println!(
+                            "Claude transcripts dir: {}",
+                            r.config.claude_transcripts_dir
+                        );
+                    }
+                }
+            }
+            MetricsCommand::Disable { json: as_json } => {
+                commands::metrics::disable(&cwd)?;
+                if as_json {
+                    println!("{}", json!({ "enabled": false }));
+                } else {
+                    println!("Metrics disabled.");
+                }
+            }
+            MetricsCommand::Rescan { json: as_json } => {
+                let r = commands::metrics::rescan(&cwd)?;
+                if as_json {
+                    let payload = json!({
+                        "recalls_attributed": r.recalls_attributed,
+                        "recalls_pruned": r.recalls_pruned,
+                        "sessions_pruned": r.sessions_pruned,
+                        "recall_rows": r.recall_rows,
+                        "session_rows": r.session_rows,
+                        "attributed_rows": r.attributed_rows,
+                    });
+                    println!("{payload}");
+                } else {
+                    println!("Rescan complete.");
+                    println!("  Recalls attributed: {}", r.recalls_attributed);
+                    println!("  Recalls pruned:     {}", r.recalls_pruned);
+                    println!("  Sessions pruned:    {}", r.sessions_pruned);
+                    println!("  Total recall rows:  {}", r.recall_rows);
+                    println!("  Total sessions:     {}", r.session_rows);
+                    println!("  Attributed rows:    {}", r.attributed_rows);
+                }
+            }
+            MetricsCommand::Prune { json: as_json } => {
+                let r = commands::metrics::prune(&cwd)?;
+                if as_json {
+                    let payload = json!({
+                        "recalls_pruned": r.recalls_pruned,
+                        "sessions_pruned": r.sessions_pruned,
+                        "retention_days": r.retention_days,
+                    });
+                    println!("{payload}");
+                } else if r.retention_days == 0 {
+                    println!("Retention is set to 0 (keep forever); nothing pruned.");
+                } else {
+                    println!(
+                        "Pruned {} recall rows, {} session rows (retention: {} days).",
+                        r.recalls_pruned, r.sessions_pruned, r.retention_days
                     );
                 }
             }
