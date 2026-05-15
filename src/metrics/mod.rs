@@ -15,7 +15,13 @@
 //!
 //! Both share `tokenizer::tokens_of` for size estimates so any
 //! ratio between bundle size and ledger size uses the same yardstick.
+//!
+//! `maintenance` is the shared post-scrape upkeep both components feed:
+//! it attributes recall rows to a session by timestamp window and
+//! prunes rows past the retention horizon. It runs opportunistically
+//! from `db::open_project`, gated by the master switch alone.
 
+pub mod maintenance;
 pub mod recall_proxy;
 pub mod session_scraper;
 pub mod tokenizer;

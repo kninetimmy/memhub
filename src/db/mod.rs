@@ -142,6 +142,12 @@ pub fn open_project(start: &Path) -> Result<ProjectContext> {
     // unless the user opted in via `memhub metrics enable`.
     crate::metrics::session_scraper::scrape_if_enabled(&conn, &config.metrics);
 
+    // Post-scrape upkeep (decision 74, task #30): attribute recall rows
+    // to the freshly-updated session windows and prune past retention.
+    // Master-switch gated, errors swallowed — same posture as the
+    // scrape above. Runs after it so the reconciler sees current bounds.
+    crate::metrics::maintenance::run_if_enabled(&conn, &config.metrics);
+
     Ok(ProjectContext {
         paths,
         config,
