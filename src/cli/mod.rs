@@ -577,6 +577,24 @@ fn print_metrics_status_human(s: &commands::metrics::MetricsStatus) {
         s.recall_rows, s.attributed_rows
     );
     println!("  Sessions:     {}", s.session_rows);
+    if let Some(sess) = &s.current_session {
+        let id = &sess.session_id[..sess.session_id.len().min(8)];
+        println!();
+        println!("  Current session ({id}):");
+        println!("    started:      {}", &sess.started_at[..sess.started_at.len().min(16)]);
+        println!("    input tokens: {}", sess.input_tokens);
+        println!("    output tokens:{}", sess.output_tokens);
+        println!("    cache read:   {}", sess.cache_read_tokens);
+        println!("    recalls:      {}", sess.recall_calls);
+    }
+    if let Some(t) = &s.token_totals_7d {
+        println!();
+        println!("  Last 7 days:");
+        println!("    input tokens:         {}", t.input);
+        println!("    output tokens:        {}", t.output);
+        println!("    cache read tokens:    {}", t.cache_read);
+        println!("    cache creation tokens:{}", t.cache_creation);
+    }
     if let Some(t) = &s.token_totals {
         println!();
         println!("  Last 30 days:");
@@ -645,6 +663,23 @@ fn metrics_status_to_json(s: &commands::metrics::MetricsStatus) -> serde_json::V
             "attributed_rows": s.attributed_rows,
             "session_rows": s.session_rows,
         },
+        "current_session": s.current_session.as_ref().map(|sess| json!({
+            "session_id": sess.session_id,
+            "agent": sess.agent,
+            "started_at": sess.started_at,
+            "ended_at": sess.ended_at,
+            "input_tokens": sess.input_tokens,
+            "output_tokens": sess.output_tokens,
+            "cache_read_tokens": sess.cache_read_tokens,
+            "cache_creation_tokens": sess.cache_creation_tokens,
+            "recall_calls": sess.recall_calls,
+        })),
+        "token_totals_7d": s.token_totals_7d.as_ref().map(|t| json!({
+            "input": t.input,
+            "output": t.output,
+            "cache_read": t.cache_read,
+            "cache_creation": t.cache_creation,
+        })),
         "token_totals_30d": s.token_totals.as_ref().map(|t| json!({
             "input": t.input,
             "output": t.output,

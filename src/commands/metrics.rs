@@ -198,13 +198,15 @@ pub struct MetricsStatus {
     pub recall_rows: i64,
     pub session_rows: i64,
     pub attributed_rows: i64,
+    pub current_session: Option<SessionRow>,
     pub recent_sessions: Vec<SessionRow>,
+    pub token_totals_7d: Option<TokenTotals>,
     pub token_totals: Option<TokenTotals>,
     pub recalls_pruned: usize,
     pub sessions_pruned: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SessionRow {
     pub session_id: String,
     pub agent: String,
@@ -274,8 +276,10 @@ pub fn status(start: &Path) -> Result<MetricsStatus> {
         .unwrap_or(0);
 
     let recent_sessions = query_recent_sessions(&ctx.conn, 5)?;
+    let current_session = recent_sessions.first().cloned();
 
-    let token_totals = query_token_totals_30d(&ctx.conn);
+    let token_totals_7d = query_token_totals_nd(&ctx.conn, 7);
+    let token_totals = query_token_totals_nd(&ctx.conn, 30);
 
     let (recalls_pruned, sessions_pruned) =
         maintenance::prune_old(&ctx.conn, cfg.retention_days).unwrap_or((0, 0));
@@ -285,7 +289,9 @@ pub fn status(start: &Path) -> Result<MetricsStatus> {
         recall_rows,
         session_rows,
         attributed_rows,
+        current_session,
         recent_sessions,
+        token_totals_7d,
         token_totals,
         recalls_pruned,
         sessions_pruned,
@@ -438,7 +444,8 @@ fn query_recent_sessions(
     Ok(rows)
 }
 
-fn query_token_totals_30d(conn: &rusqlite::Connection) -> Option<TokenTotals> {
+fn query_token_totals_nd(conn: &rusqlite::Connection, days: u32) -> Option<TokenTotals> {
+    let modifier = format!("-{days} days");
     conn.query_row(
         "SELECT \
            COALESCE(SUM(input_tokens), 0), \
@@ -446,15 +453,15 @@ fn query_token_totals_30d(conn: &rusqlite::Connection) -> Option<TokenTotals> {
            COALESCE(SUM(cache_read_tokens), 0), \
            COALESCE(SUM(cache_creation_tokens), 0) \
          FROM session_metrics \
-         WHERE datetime(started_at) >= datetime('now', '-30 days')",
-        [],
+         WHERE datetime(started_at) >= datetime('now', ?1)",
+        params![modifier],
         |row| {
             Ok(TokenTotals {
                 input: row.get(0)?,
                 output: row.get(1)?,
                 cache_read: row.get(2)?,
                 cache_creation: row.get(3)?,
-                window_days: 30,
+                window_days: days,
             })
         },
     )
