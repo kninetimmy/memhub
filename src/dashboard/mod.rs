@@ -399,6 +399,10 @@ fn run_recall(start: &Path, query: String) -> Result<RecallPayload> {
             accepted_only: None,
             use_reranker: None,
             min_rerank_score: None,
+            // Dashboard inspector replays/explores queries; that's
+            // not "real usage" the metrics dashboard should be
+            // reporting on.
+            log_metrics: false,
         },
     )?;
     Ok(RecallPayload {

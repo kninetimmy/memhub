@@ -22,6 +22,10 @@
 #   - retrieval.default_max_results
 #   - retrieval.accepted_only_by_default
 #   - retrieval.include_stale_by_default
+#   - metrics.*                        (opt-in token accounting; each
+#                                       install opts in independently
+#                                       and the transcript paths are
+#                                       auto-resolved per machine)
 
 project_name = "memhub"
 auto_sync_md = false
@@ -77,3 +81,25 @@ stale_penalty = 0.3
 # match drops out at +2.5; 2.0 sits in the middle of the safe band.
 # Only applied when re-ranker runs (hybrid + use_reranker).
 min_rerank_score = 2.0
+
+# Token accounting (decision 74). Off by default; opt in per machine
+# via `memhub metrics enable`. recall_proxy is component A (cheap,
+# local arithmetic, cannot break across Claude Code updates).
+# session_accounting is component B (transcript JSONL scraping) and
+# is kept behind its own kill switch in case the transcript shape
+# shifts. claude_transcripts_dir is auto-resolved on first enable and
+# written back to .memhub/config.toml so it is visible and
+# overridable; codex_transcripts_dir is a stub until that format is
+# confirmed. Tokenizer estimate (tiktoken cl100k) is acknowledged as
+# +/-10% off Anthropic's real tokenizer; symmetric across both sides
+# of the comparison so the ratio stays sound. Retention: closed
+# session_metrics and old recall_metrics rows past retention_days are
+# pruned opportunistically (no daemon).
+[metrics]
+enabled = false
+recall_proxy = true
+session_accounting = true
+claude_transcripts_dir = ''
+codex_transcripts_dir = ''
+tokenizer = 'tiktoken-cl100k'
+retention_days = 90

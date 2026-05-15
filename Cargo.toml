@@ -19,6 +19,13 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 sha2 = "0.10"
 thiserror = "2.0.17"
+# tiktoken cl100k_base BPE; vendored at compile time via include_str!
+# inside the crate, no runtime network calls. Used by
+# src/metrics/tokenizer.rs for the opt-in token-accounting subsystem
+# (decision 74). Acknowledged ~+/-10% estimate vs Anthropic's real
+# tokenizer; we use it symmetrically across both sides of every
+# comparison so the ratio stays sound.
+tiktoken-rs = "0.11"
 tokio = { version = "1.48.0", features = ["io-std", "net", "rt-multi-thread", "signal", "time"] }
 toml = "0.8.23"
 tower-http = { version = "0.6", features = ["trace"], optional = true }

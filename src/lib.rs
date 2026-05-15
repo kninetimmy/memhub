@@ -8,6 +8,7 @@ pub mod errors;
 pub mod export;
 pub mod logging;
 pub mod mcp;
+pub mod metrics;
 pub mod models;
 pub mod render;
 pub mod retrieval;

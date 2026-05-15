@@ -321,6 +321,7 @@ impl MemhubServer {
                 accepted_only: params.accepted_only,
                 use_reranker: None,
                 min_rerank_score: None,
+                log_metrics: true,
             },
         )
         .map_err(map_tool_error)?;

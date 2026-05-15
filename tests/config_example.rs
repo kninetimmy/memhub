@@ -135,3 +135,47 @@ log_level = "warn"
     assert_eq!(after.log_level, "trace");
     assert_ne!(after.project_name, "should-be-ignored");
 }
+
+/// The tracked `.memhub/config.example.toml` is the canonical baseline
+/// for every machine. Parse it directly and pin the `[metrics]` block
+/// (step 2/10 of decision 74) so a future edit cannot silently flip a
+/// default — e.g. shipping `enabled = true` to every install — without
+/// this test catching it.
+#[test]
+fn tracked_example_config_pins_metrics_defaults() {
+    let raw = fs::read_to_string(".memhub/config.example.toml")
+        .expect("read tracked .memhub/config.example.toml");
+    let config: ProjectConfig = toml::from_str(&raw).expect("parse tracked example");
+
+    assert_eq!(config.metrics.enabled, false);
+    assert_eq!(config.metrics.recall_proxy, true);
+    assert_eq!(config.metrics.session_accounting, true);
+    assert_eq!(config.metrics.claude_transcripts_dir, "");
+    assert_eq!(config.metrics.codex_transcripts_dir, "");
+    assert_eq!(config.metrics.tokenizer, "tiktoken-cl100k");
+    assert_eq!(config.metrics.retention_days, 90);
+}
+
+/// An install that hasn't pulled the new example (no `[metrics]` block
+/// in its local `.memhub/config.toml`) must still load cleanly with
+/// metrics off. Guards against existing repos breaking on the first
+/// run after the decision-74 build.
+#[test]
+fn pre_metrics_local_config_loads_with_metrics_off() {
+    let temp = tempdir().expect("tempdir");
+    let memhub_dir = temp.path().join(".memhub");
+    fs::create_dir_all(&memhub_dir).expect("create .memhub");
+
+    let legacy = r#"project_name = "pre-metrics"
+auto_sync_md = false
+log_level = "info"
+"#;
+    let local = memhub_dir.join("config.toml");
+    fs::write(&local, legacy).expect("write legacy config");
+
+    let config = ProjectConfig::load(&local).expect("load legacy config");
+    assert_eq!(config.metrics.enabled, false);
+    assert_eq!(config.metrics.recall_proxy, true);
+    assert_eq!(config.metrics.tokenizer, "tiktoken-cl100k");
+    assert_eq!(config.metrics.retention_days, 90);
+}

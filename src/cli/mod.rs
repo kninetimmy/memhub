@@ -1699,6 +1699,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 accepted_only: if accepted_only { Some(true) } else { None },
                 use_reranker: if no_rerank { Some(false) } else { None },
                 min_rerank_score,
+                log_metrics: true,
             };
             let response = retrieval::recall(&cwd, opts)?;
             if as_json {

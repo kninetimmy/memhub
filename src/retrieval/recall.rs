@@ -50,6 +50,15 @@ pub struct RecallOptions {
     /// Exists primarily to support `memhub eval retrieval
     /// --min-rerank-score` calibration sweeps (decisions 70, 71).
     pub min_rerank_score: Option<f32>,
+    /// Append a `recall_metrics` row for this call (component A of
+    /// decision 74's token-accounting subsystem). The agent-facing
+    /// call sites — CLI and MCP server — set this to `true`. Eval
+    /// sweeps and the viz dashboard's recall inspector pass `false`
+    /// because calibration runs and human inspection are not the
+    /// "real usage" the dashboard reports on. The `metrics.enabled`
+    /// master switch gates the actual insert separately, so setting
+    /// this `true` on a non-opted-in install is still a no-op.
+    pub log_metrics: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -100,7 +109,18 @@ pub struct RecallResponse {
 pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
     let ctx = db::open_project(start)?;
     let resolved = ResolvedOptions::from(&options, &ctx.config.retrieval)?;
-    run(&ctx.conn, &resolved, &ctx.config.retrieval.scoring)
+    let response = run(&ctx.conn, &resolved, &ctx.config.retrieval.scoring)?;
+    if options.log_metrics {
+        crate::metrics::recall_proxy::log_recall(
+            &ctx.conn,
+            &ctx.config.metrics,
+            &ctx.paths.repo_root,
+            &ctx.config.render.output_dir,
+            &resolved.query,
+            &response,
+        );
+    }
+    Ok(response)
 }
 
 #[derive(Debug)]
@@ -939,6 +959,7 @@ mod tests {
                 accepted_only: None,
                 use_reranker: None,
                 min_rerank_score: None,
+                log_metrics: false,
             },
         )
         .expect("recall");
@@ -969,6 +990,7 @@ mod tests {
                 accepted_only: None,
                 use_reranker: None,
                 min_rerank_score: None,
+                log_metrics: false,
             },
         )
         .expect("recall");
@@ -992,6 +1014,7 @@ mod tests {
                 accepted_only: Some(true),
                 use_reranker: None,
                 min_rerank_score: None,
+                log_metrics: false,
             },
         )
         .expect("recall");
@@ -1027,6 +1050,7 @@ mod tests {
                 accepted_only: None,
                 use_reranker: None,
                 min_rerank_score: None,
+                log_metrics: false,
             },
         )
         .expect_err("empty query");
@@ -1049,6 +1073,7 @@ mod tests {
                 accepted_only: None,
                 use_reranker: None,
                 min_rerank_score: None,
+                log_metrics: false,
             },
         )
         .expect("recall");
@@ -1086,6 +1111,7 @@ mod tests {
                 accepted_only: None,
                 use_reranker: None,
                 min_rerank_score: None,
+                log_metrics: false,
             },
         )
         .expect("recall");
@@ -1142,6 +1168,7 @@ mod tests {
                 accepted_only: None,
                 use_reranker: None,
                 min_rerank_score: None,
+                log_metrics: false,
             },
         )
         .expect("recall");
@@ -1184,6 +1211,7 @@ mod tests {
                 accepted_only: None,
                 use_reranker: None,
                 min_rerank_score: None,
+                log_metrics: false,
             },
         )
         .expect("recall");
@@ -1250,6 +1278,7 @@ mod tests {
                 accepted_only: None,
                 use_reranker: None,
                 min_rerank_score: None,
+                log_metrics: false,
             },
         )
         .expect("recall");
@@ -1325,6 +1354,7 @@ mod tests {
                 accepted_only: None,
                 use_reranker: None,
                 min_rerank_score: None,
+                log_metrics: false,
             },
         )
         .expect("recall");
@@ -1368,6 +1398,7 @@ mod tests {
                 accepted_only: None,
                 use_reranker: None,
                 min_rerank_score: Some(-1000.0),
+                log_metrics: false,
             },
         )
         .expect("recall");
@@ -1376,5 +1407,135 @@ mod tests {
             !response.results.is_empty(),
             "with the rerank floor pinned below every possible logit, hybrid recall should still surface low-confidence vector hits",
         );
+    }
+
+    fn count_recall_metrics(temp_path: &std::path::Path) -> i64 {
+        let ctx = crate::db::open_project(temp_path).expect("open");
+        ctx.conn
+            .query_row("SELECT COUNT(*) FROM recall_metrics", params![], |r| {
+                r.get(0)
+            })
+            .expect("count recall_metrics")
+    }
+
+    #[test]
+    fn metrics_disabled_writes_no_rows() {
+        // Default config ships `metrics.enabled = false`, so even when
+        // the caller asks for logging the proxy must stay silent.
+        // Guards against accidentally enabling the master switch on
+        // every install — the regression would silently flood every
+        // unrelated repo's DB with recall_metrics rows.
+        let temp = tempdir().expect("tempdir");
+        seed(temp.path());
+
+        let response = recall(
+            temp.path(),
+            RecallOptions {
+                query: "agent originated writes review".to_string(),
+                mode: Some(RetrievalMode::Fts),
+                max_results: 5,
+                source_types: vec![],
+                include_stale: None,
+                accepted_only: None,
+                use_reranker: None,
+                min_rerank_score: None,
+                log_metrics: true,
+            },
+        )
+        .expect("recall");
+
+        assert!(!response.results.is_empty());
+        assert_eq!(count_recall_metrics(temp.path()), 0);
+    }
+
+    #[test]
+    fn metrics_enabled_writes_one_row_per_recall() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let cfg_path = temp.path().join(".memhub/config.toml");
+        let mut cfg = ProjectConfig::load(&cfg_path).expect("load");
+        cfg.metrics.enabled = true;
+        cfg.metrics.recall_proxy = true;
+        cfg.save(&cfg_path).expect("save");
+
+        seed(temp.path());
+
+        let response = recall(
+            temp.path(),
+            RecallOptions {
+                query: "agent originated writes review".to_string(),
+                mode: Some(RetrievalMode::Fts),
+                max_results: 5,
+                source_types: vec![],
+                include_stale: None,
+                accepted_only: None,
+                use_reranker: None,
+                min_rerank_score: None,
+                log_metrics: true,
+            },
+        )
+        .expect("recall");
+        assert!(!response.results.is_empty());
+
+        let ctx = crate::db::open_project(temp.path()).expect("open");
+        let mut stmt = ctx
+            .conn
+            .prepare(
+                "SELECT query_hash, bundle_tokens, ledger_tokens, rerank_used, result_count \
+                 FROM recall_metrics",
+            )
+            .expect("prepare");
+        let rows: Vec<(String, i64, i64, i64, i64)> = stmt
+            .query_map(params![], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })
+            .expect("query")
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .expect("collect");
+
+        assert_eq!(rows.len(), 1, "exactly one row per recall");
+        let (query_hash, bundle_tokens, ledger_tokens, rerank_used, result_count) = &rows[0];
+        assert_eq!(query_hash.len(), 64);
+        assert!(*bundle_tokens > 0, "bundle_tokens must reflect returned hits");
+        assert_eq!(
+            *ledger_tokens, 0,
+            "no rendered ledger in this tempdir, so ledger_tokens = 0"
+        );
+        assert_eq!(*rerank_used, 0, "fts mode never invokes the re-ranker");
+        assert_eq!(*result_count, response.results.len() as i64);
+    }
+
+    #[test]
+    fn metrics_log_opt_out_skips_insert_even_when_enabled() {
+        // Eval and dashboard set log_metrics = false. Pin that
+        // behavior so a future refactor can't silently start logging
+        // calibration sweeps to the dashboard.
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let cfg_path = temp.path().join(".memhub/config.toml");
+        let mut cfg = ProjectConfig::load(&cfg_path).expect("load");
+        cfg.metrics.enabled = true;
+        cfg.metrics.recall_proxy = true;
+        cfg.save(&cfg_path).expect("save");
+
+        seed(temp.path());
+
+        recall(
+            temp.path(),
+            RecallOptions {
+                query: "agent originated writes review".to_string(),
+                mode: Some(RetrievalMode::Fts),
+                max_results: 5,
+                source_types: vec![],
+                include_stale: None,
+                accepted_only: None,
+                use_reranker: None,
+                min_rerank_score: None,
+                log_metrics: false,
+            },
+        )
+        .expect("recall");
+
+        assert_eq!(count_recall_metrics(temp.path()), 0);
     }
 }

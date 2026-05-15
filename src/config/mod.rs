@@ -31,6 +31,18 @@ pub const DEFAULT_INCLUDE_STALE: bool = false;
 pub const DEFAULT_USE_RERANKER: bool = true;
 pub const DEFAULT_RERANK_CANDIDATE_POOL: usize = 20;
 
+/// Token-accounting subsystem defaults. Master switch ships off so
+/// new installs and pre-decision-74 installs stay silent until the
+/// user opts in via `memhub metrics enable`. Sub-switches default on
+/// so a single `enable` lights up both component A (recall proxy) and
+/// component B (transcript scraper); B can be disabled independently
+/// if the transcript shape shifts. See decision 74.
+pub const DEFAULT_METRICS_ENABLED: bool = false;
+pub const DEFAULT_METRICS_RECALL_PROXY: bool = true;
+pub const DEFAULT_METRICS_SESSION_ACCOUNTING: bool = true;
+pub const DEFAULT_METRICS_TOKENIZER: &str = "tiktoken-cl100k";
+pub const DEFAULT_METRICS_RETENTION_DAYS: u32 = 90;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RetrievalMode {
@@ -97,6 +109,24 @@ fn default_use_reranker() -> bool {
 fn default_rerank_candidate_pool() -> usize {
     DEFAULT_RERANK_CANDIDATE_POOL
 }
+fn default_metrics_enabled() -> bool {
+    DEFAULT_METRICS_ENABLED
+}
+fn default_metrics_recall_proxy() -> bool {
+    DEFAULT_METRICS_RECALL_PROXY
+}
+fn default_metrics_session_accounting() -> bool {
+    DEFAULT_METRICS_SESSION_ACCOUNTING
+}
+fn default_metrics_transcripts_dir() -> String {
+    String::new()
+}
+fn default_metrics_tokenizer() -> String {
+    DEFAULT_METRICS_TOKENIZER.to_string()
+}
+fn default_metrics_retention_days() -> u32 {
+    DEFAULT_METRICS_RETENTION_DAYS
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetrievalConfig {
@@ -137,6 +167,45 @@ impl Default for RetrievalConfig {
     }
 }
 
+/// Opt-in token-accounting config (decision 74). Off by default;
+/// users opt in per machine via `memhub metrics enable`. Component A
+/// (recall_proxy) is local arithmetic over recall responses; component
+/// B (session_accounting) scrapes agent transcript JSONL for real
+/// input/output/cache token totals. Transcript dirs are auto-resolved
+/// on first enable and written back to the local config; an empty
+/// string means "not yet resolved".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetricsConfig {
+    #[serde(default = "default_metrics_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_metrics_recall_proxy")]
+    pub recall_proxy: bool,
+    #[serde(default = "default_metrics_session_accounting")]
+    pub session_accounting: bool,
+    #[serde(default = "default_metrics_transcripts_dir")]
+    pub claude_transcripts_dir: String,
+    #[serde(default = "default_metrics_transcripts_dir")]
+    pub codex_transcripts_dir: String,
+    #[serde(default = "default_metrics_tokenizer")]
+    pub tokenizer: String,
+    #[serde(default = "default_metrics_retention_days")]
+    pub retention_days: u32,
+}
+
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: DEFAULT_METRICS_ENABLED,
+            recall_proxy: DEFAULT_METRICS_RECALL_PROXY,
+            session_accounting: DEFAULT_METRICS_SESSION_ACCOUNTING,
+            claude_transcripts_dir: String::new(),
+            codex_transcripts_dir: String::new(),
+            tokenizer: DEFAULT_METRICS_TOKENIZER.to_string(),
+            retention_days: DEFAULT_METRICS_RETENTION_DAYS,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RenderConfig {
     #[serde(default = "default_render_output_dir")]
@@ -168,6 +237,8 @@ pub struct ProjectConfig {
     pub render: RenderConfig,
     #[serde(default)]
     pub retrieval: RetrievalConfig,
+    #[serde(default)]
+    pub metrics: MetricsConfig,
 }
 
 impl ProjectConfig {
@@ -180,6 +251,7 @@ impl ProjectConfig {
             integrations: IntegrationsConfig::default(),
             render: RenderConfig::default(),
             retrieval: RetrievalConfig::default(),
+            metrics: MetricsConfig::default(),
         }
     }
 

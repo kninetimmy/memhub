@@ -119,6 +119,10 @@ pub fn run_retrieval(start: &Path, opts: EvalOptions) -> Result<EvalSummary> {
             accepted_only: None,
             use_reranker: opts.use_reranker,
             min_rerank_score: opts.min_rerank_score,
+            // Calibration sweeps are not "real usage" — keep them out
+            // of recall_metrics so the dashboard's numbers reflect
+            // actual agent + user activity.
+            log_metrics: false,
         };
         let response = retrieval::recall(start, recall_opts)?;
         if resolved_mode.is_none() {
