@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>memhub viz</title>
+    <link rel="stylesheet" href="/vendor/uplot.css" />
     <link rel="stylesheet" href="/app.css" />
   </head>
   <body>
@@ -19,6 +20,7 @@
         <button class="tab" data-panel="recall">Recall Inspector</button>
         <button class="tab" data-panel="activity">Activity</button>
         <button class="tab" data-panel="audit">Audit</button>
+        <button class="tab" data-panel="metrics">Token Metrics</button>
       </nav>
     </header>
 
@@ -122,8 +124,36 @@
         </div>
         <div id="audit-summary" class="summary"></div>
       </section>
+
+      <section id="metrics" class="panel">
+        <div id="metrics-state" class="summary"></div>
+        <div id="metrics-body" class="hidden">
+          <div class="metrics" id="metrics-cards"></div>
+          <section class="surface">
+            <h2>Token burn-up <small id="metrics-burnup-sub" class="muted-line"></small></h2>
+            <div id="metrics-burnup" class="uplot-wrap"></div>
+          </section>
+          <section class="surface">
+            <h2>Recent sessions</h2>
+            <table>
+              <thead>
+                <tr>
+                  <th>Session</th>
+                  <th>Agent</th>
+                  <th>Started</th>
+                  <th>Input</th>
+                  <th>Output</th>
+                  <th>Recalls</th>
+                </tr>
+              </thead>
+              <tbody id="metrics-session-rows"></tbody>
+            </table>
+          </section>
+        </div>
+      </section>
     </main>
 
+    <script src="/vendor/uplot.js"></script>
     <script src="/app.js"></script>
   </body>
 </html>

@@ -6,6 +6,9 @@ const state = {
   activeRecallQuery: "",
   refreshing: false,
   lastEmbeddingRefresh: 0,
+  metrics: null,
+  metricsSig: "",
+  uplot: null,
 };
 
 const LIVE_REFRESH_MS = 2000;
@@ -78,8 +81,228 @@ function setupTabs() {
       button.classList.add("active");
       document.getElementById(button.dataset.panel).classList.add("active");
       if (button.dataset.panel === "map") drawMap();
+      if (button.dataset.panel === "metrics") drawBurnup(true);
     });
   });
+}
+
+function fmtNum(value) {
+  const n = Number(value) || 0;
+  return n.toLocaleString("en-US");
+}
+
+// Session timestamps are stored localtime ("YYYY-MM-DD HH:MM:SS", no tz).
+// Treat the space form as local time by swapping in the ISO 'T'.
+function parseLocalTs(value) {
+  if (!value) return NaN;
+  const ms = Date.parse(String(value).replace(" ", "T"));
+  return Number.isNaN(ms) ? NaN : Math.floor(ms / 1000);
+}
+
+function periodEmpty(t) {
+  return !t || (t.recalls === 0 && t.sessions === 0);
+}
+
+function metricsSignature(p) {
+  const top = p.sessions[0];
+  return [
+    p.enabled,
+    p.sessions.length,
+    top ? top.session_id : "",
+    top ? top.input_tokens + top.output_tokens : 0,
+    p.totals_7d.recalls,
+    p.totals_30d.recalls,
+  ].join(":");
+}
+
+function offsetLabel(t) {
+  return t.context_offset_pct === null || t.context_offset_pct === undefined
+    ? "—"
+    : `${t.context_offset_pct.toFixed(0)}%`;
+}
+
+function renderMetricsPanel(payload) {
+  state.metrics = payload;
+  const banner = document.getElementById("metrics-state");
+  const body = document.getElementById("metrics-body");
+
+  if (!payload.enabled) {
+    banner.innerHTML =
+      "<strong>Token accounting is off</strong> for this machine. Enable it (opt-in, per-machine) with <code>memhub metrics enable</code>.";
+    body.classList.add("hidden");
+    destroyBurnup();
+    return;
+  }
+
+  const empty =
+    periodEmpty(payload.totals_7d) &&
+    periodEmpty(payload.totals_30d) &&
+    payload.sessions.length === 0;
+  if (empty) {
+    banner.textContent = "Metrics enabled — no recall or session data captured yet.";
+    body.classList.add("hidden");
+    destroyBurnup();
+    return;
+  }
+
+  const scrape = payload.last_scrape_ts ? ` · last scrape ${payload.last_scrape_ts}` : "";
+  banner.innerHTML =
+    `<strong>Token accounting on</strong> · recall proxy: ${payload.recall_proxy ? "on" : "off"}` +
+    ` · session accounting: ${payload.session_accounting ? "on" : "off"}${scrape}`;
+  body.classList.remove("hidden");
+  renderMetricCards(payload);
+  renderSessionRows(payload.sessions);
+
+  const sig = metricsSignature(payload);
+  const active = document.querySelector(".panel.active")?.id === "metrics";
+  if (sig !== state.metricsSig) {
+    state.metricsSig = sig;
+    if (active) drawBurnup(true);
+  }
+}
+
+function renderMetricCards(payload) {
+  const root = document.getElementById("metrics-cards");
+  const t7 = payload.totals_7d;
+  const t30 = payload.totals_30d;
+  const cards = [
+    {
+      label: "Context offset 7d",
+      value: offsetLabel(t7),
+      hint: "of full-ledger baseline",
+    },
+    {
+      label: "Context offset 30d",
+      value: offsetLabel(t30),
+      hint: "of full-ledger baseline",
+    },
+    { label: "Recalls 7d", value: fmtNum(t7.recalls), hint: "bundle vs ledger tokens" },
+    { label: "Sessions 7d", value: fmtNum(t7.sessions), hint: "scraped transcripts" },
+    {
+      label: "Real tokens 7d",
+      value: fmtNum(t7.input_tokens + t7.output_tokens),
+      hint: `in ${fmtNum(t7.input_tokens)} · out ${fmtNum(t7.output_tokens)}`,
+    },
+  ];
+  root.innerHTML = "";
+  for (const card of cards) {
+    const item = document.createElement("div");
+    item.className = "metric";
+    item.innerHTML = `<span>${card.label}</span><b>${card.value}</b><small>${card.hint}</small>`;
+    root.appendChild(item);
+  }
+}
+
+function renderSessionRows(sessions) {
+  const tbody = document.getElementById("metrics-session-rows");
+  tbody.innerHTML = "";
+  if (!sessions.length) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td colspan="6" class="muted-line">No sessions scraped yet.</td>`;
+    tbody.appendChild(tr);
+    return;
+  }
+  for (const s of sessions) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${s.session_id.slice(0, 8)}</td>
+      <td>${text(s.agent)}</td>
+      <td>${s.started_at.slice(0, 19)}</td>
+      <td>${fmtNum(s.input_tokens)}</td>
+      <td>${fmtNum(s.output_tokens)}</td>
+      <td>${fmtNum(s.recall_calls)}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
+function destroyBurnup() {
+  if (state.uplot) {
+    state.uplot.destroy();
+    state.uplot = null;
+  }
+}
+
+// Cumulative token burn-up across scraped sessions, oldest → newest.
+// ccburn-style: filled area under a rising cumulative line.
+function drawBurnup(force = false) {
+  const host = document.getElementById("metrics-burnup");
+  if (!host) return;
+  const payload = state.metrics;
+  if (!payload || !payload.enabled) return;
+  const width = host.clientWidth;
+  if (width === 0) return; // panel hidden; redrawn on tab activate
+  if (state.uplot && !force) return;
+
+  const sub = document.getElementById("metrics-burnup-sub");
+  if (typeof uPlot === "undefined") {
+    destroyBurnup();
+    host.textContent = "Chart library failed to load.";
+    return;
+  }
+
+  const chrono = [...payload.sessions].reverse();
+  const xs = [];
+  const ys = [];
+  let cumulative = 0;
+  let prevX = -Infinity;
+  for (const s of chrono) {
+    let x = parseLocalTs(s.started_at);
+    if (Number.isNaN(x)) continue;
+    if (x <= prevX) x = prevX + 1; // uPlot needs strictly increasing x
+    prevX = x;
+    cumulative += (s.input_tokens || 0) + (s.output_tokens || 0);
+    xs.push(x);
+    ys.push(cumulative);
+  }
+
+  destroyBurnup();
+  host.innerHTML = "";
+  if (xs.length === 0) {
+    host.innerHTML = `<p class="empty-state">No session timestamps to chart yet.</p>`;
+    if (sub) sub.textContent = "";
+    return;
+  }
+  if (sub) {
+    sub.textContent = `${xs.length} session${xs.length === 1 ? "" : "s"} · ${fmtNum(
+      ys[ys.length - 1],
+    )} cumulative tokens`;
+  }
+
+  const accent = "#53bce8";
+  const opts = {
+    width,
+    height: 300,
+    cursor: { y: false },
+    legend: { show: true },
+    scales: { x: { time: true } },
+    axes: [
+      {
+        stroke: "#9ca7b7",
+        grid: { stroke: "#222936", width: 1 },
+        ticks: { stroke: "#323a49", width: 1 },
+      },
+      {
+        stroke: "#9ca7b7",
+        grid: { stroke: "#222936", width: 1 },
+        ticks: { stroke: "#323a49", width: 1 },
+        size: 64,
+        values: (u, splits) => splits.map((v) => fmtNum(v)),
+      },
+    ],
+    series: [
+      {},
+      {
+        label: "cumulative tokens",
+        stroke: accent,
+        width: 2,
+        fill: "rgba(83, 188, 232, 0.16)",
+        points: { show: true, size: 6, stroke: accent, fill: "#0d1016", width: 2 },
+        value: (u, v) => (v == null ? "—" : fmtNum(v)),
+      },
+    ],
+  };
+  state.uplot = new uPlot(opts, [xs, ys], host);
 }
 
 function renderMetrics(counts) {
@@ -385,6 +608,13 @@ async function load() {
   await refreshDashboard({ includeEmbeddings: true });
   setInterval(() => refreshDashboard(), LIVE_REFRESH_MS);
   setInterval(() => refreshActiveRecall(), RECALL_REFRESH_MS);
+
+  let resizeTimer = null;
+  window.addEventListener("resize", () => {
+    if (document.querySelector(".panel.active")?.id !== "metrics") return;
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => drawBurnup(true), 150);
+  });
 }
 
 async function refreshDashboard(options = {}) {
@@ -400,6 +630,7 @@ async function refreshDashboard(options = {}) {
       api("/api/overview"),
       api("/api/activity"),
       api("/api/audit"),
+      api("/api/metrics"),
     ];
     if (includeEmbeddings) {
       requests.push(api("/api/embeddings"));
@@ -414,12 +645,15 @@ async function refreshDashboard(options = {}) {
     if (results[2].status === "fulfilled") {
       renderAudit(results[2].value);
     }
+    if (results[3].status === "fulfilled") {
+      renderMetricsPanel(results[3].value);
+    }
     if (includeEmbeddings) {
-      if (results[3].status === "fulfilled") {
+      if (results[4].status === "fulfilled") {
         state.lastEmbeddingRefresh = Date.now();
-        renderEmbeddings(results[3].value);
+        renderEmbeddings(results[4].value);
       } else {
-        document.getElementById("map-meta").textContent = results[3].reason.message;
+        document.getElementById("map-meta").textContent = results[4].reason.message;
       }
     }
     setLiveStatus(`Live | ${new Date().toLocaleTimeString()}`);

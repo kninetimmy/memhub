@@ -31,6 +31,8 @@ use crate::{MemhubError, Result};
 const INDEX_HTML: &str = include_str!("static/index.html");
 const APP_CSS: &str = include_str!("static/app.css");
 const APP_JS: &str = include_str!("static/app.js");
+const UPLOT_JS: &str = include_str!("static/vendor/uplot.min.js");
+const UPLOT_CSS: &str = include_str!("static/vendor/uplot.min.css");
 
 #[derive(Debug, Clone)]
 pub struct DashboardOptions {
@@ -89,10 +91,13 @@ fn router(state: AppState) -> Router {
         .route("/", get(index_html))
         .route("/app.css", get(app_css))
         .route("/app.js", get(app_js))
+        .route("/vendor/uplot.css", get(uplot_css))
+        .route("/vendor/uplot.js", get(uplot_js))
         .route("/api/overview", get(api_overview))
         .route("/api/embeddings", get(api_embeddings))
         .route("/api/activity", get(api_activity))
         .route("/api/audit", get(api_audit))
+        .route("/api/metrics", get(api_metrics))
         .route("/api/recall", get(api_recall))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -110,6 +115,18 @@ async fn app_js() -> Response {
     (
         [(axum::http::header::CONTENT_TYPE, "application/javascript")],
         APP_JS,
+    )
+        .into_response()
+}
+
+async fn uplot_css() -> Response {
+    ([(axum::http::header::CONTENT_TYPE, "text/css")], UPLOT_CSS).into_response()
+}
+
+async fn uplot_js() -> Response {
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/javascript")],
+        UPLOT_JS,
     )
         .into_response()
 }
@@ -155,6 +172,14 @@ async fn api_audit(
 ) -> std::result::Result<Json<AuditPayload>, ApiError> {
     authorize(&state, query.token.as_deref())?;
     Ok(Json(read_audit(&state.repo_root)?))
+}
+
+async fn api_metrics(
+    State(state): State<AppState>,
+    Query(query): Query<TokenQuery>,
+) -> std::result::Result<Json<MetricsPayload>, ApiError> {
+    authorize(&state, query.token.as_deref())?;
+    Ok(Json(read_metrics(&state.repo_root)?))
 }
 
 async fn api_recall(
@@ -299,6 +324,82 @@ struct RecallHitPayload {
     stale: bool,
     source: String,
     created_at: String,
+}
+
+#[derive(Debug, Serialize)]
+struct MetricsPayload {
+    enabled: bool,
+    recall_proxy: bool,
+    session_accounting: bool,
+    claude_transcripts_dir: Option<String>,
+    last_scrape_ts: Option<String>,
+    totals_7d: PeriodPayload,
+    totals_30d: PeriodPayload,
+    sessions: Vec<SessionPayload>,
+}
+
+#[derive(Debug, Serialize)]
+struct PeriodPayload {
+    recalls: i64,
+    bundle_tokens: i64,
+    ledger_tokens: i64,
+    context_offset_pct: Option<f64>,
+    sessions: i64,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_read_tokens: i64,
+    cache_creation_tokens: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct SessionPayload {
+    session_id: String,
+    agent: String,
+    started_at: String,
+    ended_at: Option<String>,
+    input_tokens: i64,
+    output_tokens: i64,
+    recall_calls: i64,
+}
+
+fn read_metrics(start: &Path) -> Result<MetricsPayload> {
+    let data = crate::commands::metrics::query_tool_data(start)?;
+    Ok(MetricsPayload {
+        enabled: data.enabled,
+        recall_proxy: data.recall_proxy,
+        session_accounting: data.session_accounting,
+        claude_transcripts_dir: data.claude_transcripts_dir,
+        last_scrape_ts: data.last_scrape_ts,
+        totals_7d: period_payload(&data.totals_7d),
+        totals_30d: period_payload(&data.totals_30d),
+        sessions: data.last_sessions.into_iter().map(session_payload).collect(),
+    })
+}
+
+fn period_payload(t: &crate::metrics::formatter::PeriodTotals) -> PeriodPayload {
+    PeriodPayload {
+        recalls: t.recalls,
+        bundle_tokens: t.bundle_tokens,
+        ledger_tokens: t.ledger_tokens,
+        context_offset_pct: t.context_offset_pct(),
+        sessions: t.sessions,
+        input_tokens: t.input_tokens,
+        output_tokens: t.output_tokens,
+        cache_read_tokens: t.cache_read_tokens,
+        cache_creation_tokens: t.cache_creation_tokens,
+    }
+}
+
+fn session_payload(s: crate::metrics::formatter::SessionSummary) -> SessionPayload {
+    SessionPayload {
+        session_id: s.session_id,
+        agent: s.agent,
+        started_at: s.started_at,
+        ended_at: s.ended_at,
+        input_tokens: s.input_tokens,
+        output_tokens: s.output_tokens,
+        recall_calls: s.recall_calls,
+    }
 }
 
 fn read_overview(start: &Path) -> Result<OverviewPayload> {
@@ -824,6 +925,71 @@ mod tests {
             coords
                 .iter()
                 .all(|(x, y)| x.is_finite() && y.is_finite() && x.abs() <= 1.0 && y.abs() <= 1.0)
+        );
+    }
+
+    #[test]
+    fn metrics_payload_reports_disabled_when_not_enabled() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::commands::init::run(temp.path()).expect("init");
+        let payload = read_metrics(temp.path()).expect("read_metrics");
+        assert!(!payload.enabled);
+        assert!(payload.sessions.is_empty());
+        assert_eq!(payload.totals_7d.recalls, 0);
+        assert!(payload.totals_7d.context_offset_pct.is_none());
+    }
+
+    #[test]
+    fn metrics_payload_is_empty_when_enabled_with_no_data() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::commands::init::run(temp.path()).expect("init");
+        crate::commands::metrics::enable(temp.path()).expect("enable");
+        let payload = read_metrics(temp.path()).expect("read_metrics");
+        assert!(payload.enabled);
+        assert!(payload.sessions.is_empty());
+        assert_eq!(payload.totals_30d.sessions, 0);
+    }
+
+    #[test]
+    fn metrics_payload_maps_session_and_offset_when_data_present() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::commands::init::run(temp.path()).expect("init");
+        crate::commands::metrics::enable(temp.path()).expect("enable");
+        {
+            let ctx = crate::db::open_project(temp.path()).expect("open");
+            ctx.conn
+                .execute(
+                    "INSERT INTO session_metrics \
+                     (session_id, agent, started_at, ended_at, \
+                      input_tokens, output_tokens, cache_read_tokens, \
+                      cache_creation_tokens, recall_calls) \
+                     VALUES ('dash-session-001', 'claude-code', \
+                             datetime('now', '-1 hour'), datetime('now'), \
+                             1000, 500, 200, 100, 3)",
+                    [],
+                )
+                .expect("insert session");
+            ctx.conn
+                .execute(
+                    "INSERT INTO recall_metrics \
+                     (ts, session_id, query_hash, bundle_tokens, ledger_tokens, \
+                      rerank_used, result_count) \
+                     VALUES (datetime('now'), 'dash-session-001', 'deadbeef', \
+                             250, 1000, 1, 6)",
+                    [],
+                )
+                .expect("insert recall");
+        }
+        let payload = read_metrics(temp.path()).expect("read_metrics");
+        assert!(payload.enabled);
+        assert_eq!(payload.sessions.len(), 1);
+        assert_eq!(payload.sessions[0].input_tokens, 1000);
+        assert_eq!(payload.sessions[0].output_tokens, 500);
+        assert_eq!(payload.totals_7d.recalls, 1);
+        assert_eq!(
+            payload.totals_7d.context_offset_pct,
+            Some(25.0),
+            "250/1000 should be 25%"
         );
     }
 }

@@ -451,6 +451,45 @@ td {
   color: #d8dee8;
 }
 
+.hidden {
+  display: none;
+}
+
+.metrics-note {
+  margin: -6px 0 16px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.uplot-wrap {
+  width: 100%;
+  overflow: hidden;
+}
+
+/* uPlot ships a light theme; retint its DOM chrome for the dark dashboard.
+   Canvas-drawn axes/grid are themed via JS opts in app.js. */
+.u-legend {
+  border: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.u-legend table,
+.u-legend tr,
+.u-legend th,
+.u-legend td {
+  border: 0;
+  padding: 2px 6px;
+}
+
+.u-legend td {
+  color: var(--text);
+}
+
+.u-legend .u-marker {
+  border-radius: 2px;
+}
+
 @media (max-width: 860px) {
   .topbar,
   .toolbar,
