@@ -281,6 +281,11 @@ impl MemhubServer {
         Ok(Json(RenderToolResponse::from(result)))
     }
 
+    async fn metrics_impl(&self) -> std::result::Result<Json<MetricsToolResponse>, McpError> {
+        let data = commands::metrics::query_tool_data(&self.start).map_err(map_tool_error)?;
+        Ok(Json(MetricsToolResponse::from(data)))
+    }
+
     async fn recall_impl(
         &self,
         Parameters(params): Parameters<RecallParams>,
@@ -508,6 +513,18 @@ impl MemhubServer {
     ) -> std::result::Result<Json<RecallToolResponse>, McpError> {
         self.recall_impl(params).await
     }
+
+    #[tool(
+        name = "metrics",
+        description = "Return token-accounting totals and a pre-rendered dashboard panel. \
+                       When metrics are disabled returns {enabled:false} only. \
+                       When enabled, returns 7-day and 30-day recall/session token aggregates \
+                       plus up to 10 recent sessions and a rendered_panel string the /metrics \
+                       skill prints verbatim."
+    )]
+    async fn metrics(&self) -> std::result::Result<Json<MetricsToolResponse>, McpError> {
+        self.metrics_impl().await
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -516,7 +533,7 @@ impl ServerHandler for MemhubServer {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("memhub", env!("CARGO_PKG_VERSION")))
             .with_instructions(
-                "Local-first per-repo project memory. Read tools are direct (status, search, recall, list_tasks, list_decisions, list_facts, list_pending_writes, get_command). Prefer `recall` over reading PROJECT_LEDGER.md mid-session — it does SQL+RAG hybrid retrieval across facts, decisions, and tasks. Tasks write directly (task_add, task_done) since tasks are intent. Facts and decisions stage via propose_fact / propose_decision and require human acceptance through `memhub review accept`. Session notes are write-only scratch. `render` regenerates the configured local PROJECT.md from the DB.",
+                "Local-first per-repo project memory. Read tools are direct (status, search, recall, list_tasks, list_decisions, list_facts, list_pending_writes, get_command, metrics). Prefer `recall` over reading PROJECT_LEDGER.md mid-session — it does SQL+RAG hybrid retrieval across facts, decisions, and tasks. Tasks write directly (task_add, task_done) since tasks are intent. Facts and decisions stage via propose_fact / propose_decision and require human acceptance through `memhub review accept`. Session notes are write-only scratch. `render` regenerates the configured local PROJECT.md from the DB. `metrics` returns token-accounting totals and a pre-rendered dashboard panel for the /metrics skill.",
             )
     }
 
@@ -1156,6 +1173,129 @@ fn normalize_client_name(name: &str) -> String {
 
 fn sanitize_for_log(value: &str) -> String {
     value.chars().flat_map(char::escape_default).collect()
+}
+
+// ── MetricsToolResponse ──────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct MetricsToolResponse {
+    enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    components: Option<MetricsComponents>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transcripts_dir: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_scrape_ts: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    totals_7d: Option<PeriodTotalsResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    totals_30d: Option<PeriodTotalsResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_sessions: Option<Vec<SessionToolRecord>>,
+    /// Pre-rendered text panel; print verbatim in the /metrics skill.
+    /// Absent when enabled=false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rendered_panel: Option<String>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct MetricsComponents {
+    recall_proxy: bool,
+    session_accounting: bool,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct PeriodTotalsResponse {
+    recalls: i64,
+    bundle_tokens: i64,
+    ledger_tokens: i64,
+    sessions: i64,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_read_tokens: i64,
+    cache_creation_tokens: i64,
+    context_offset_pct: Option<f64>,
+}
+
+impl From<crate::metrics::formatter::PeriodTotals> for PeriodTotalsResponse {
+    fn from(t: crate::metrics::formatter::PeriodTotals) -> Self {
+        let pct = t.context_offset_pct();
+        Self {
+            recalls: t.recalls,
+            bundle_tokens: t.bundle_tokens,
+            ledger_tokens: t.ledger_tokens,
+            sessions: t.sessions,
+            input_tokens: t.input_tokens,
+            output_tokens: t.output_tokens,
+            cache_read_tokens: t.cache_read_tokens,
+            cache_creation_tokens: t.cache_creation_tokens,
+            context_offset_pct: pct,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct SessionToolRecord {
+    session_id: String,
+    agent: String,
+    started_at: String,
+    ended_at: Option<String>,
+    /// Total input tokens for this session.
+    #[serde(rename = "input")]
+    input_tokens: i64,
+    /// Total output tokens for this session.
+    #[serde(rename = "output")]
+    output_tokens: i64,
+    recall_calls: i64,
+}
+
+impl From<crate::metrics::formatter::SessionSummary> for SessionToolRecord {
+    fn from(s: crate::metrics::formatter::SessionSummary) -> Self {
+        Self {
+            session_id: s.session_id,
+            agent: s.agent,
+            started_at: s.started_at,
+            ended_at: s.ended_at,
+            input_tokens: s.input_tokens,
+            output_tokens: s.output_tokens,
+            recall_calls: s.recall_calls,
+        }
+    }
+}
+
+impl From<commands::metrics::MetricsToolData> for MetricsToolResponse {
+    fn from(d: commands::metrics::MetricsToolData) -> Self {
+        if !d.enabled {
+            return Self {
+                enabled: false,
+                components: None,
+                transcripts_dir: None,
+                last_scrape_ts: None,
+                totals_7d: None,
+                totals_30d: None,
+                last_sessions: None,
+                rendered_panel: None,
+            };
+        }
+        Self {
+            enabled: true,
+            components: Some(MetricsComponents {
+                recall_proxy: d.recall_proxy,
+                session_accounting: d.session_accounting,
+            }),
+            transcripts_dir: d.claude_transcripts_dir,
+            last_scrape_ts: d.last_scrape_ts,
+            totals_7d: Some(PeriodTotalsResponse::from(d.totals_7d)),
+            totals_30d: Some(PeriodTotalsResponse::from(d.totals_30d)),
+            last_sessions: Some(
+                d.last_sessions
+                    .into_iter()
+                    .map(SessionToolRecord::from)
+                    .collect(),
+            ),
+            rendered_panel: Some(d.rendered_panel),
+        }
+    }
 }
 
 fn map_tool_error(err: MemhubError) -> McpError {
@@ -1864,5 +2004,78 @@ mod tests {
             )
             .expect("query writes_log");
         assert_eq!(actor_logged, "claude-code");
+    }
+
+    fn run_metrics(server: &MemhubServer) -> Json<MetricsToolResponse> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(server.metrics_impl())
+            .expect("metrics")
+    }
+
+    #[test]
+    fn mcp_metrics_returns_disabled_state_when_not_enabled() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        // metrics.enabled defaults to false — no additional setup needed.
+        let server = MemhubServer::new(temp.path().to_path_buf());
+        let resp = run_metrics(&server);
+        assert!(!resp.0.enabled);
+        assert!(resp.0.totals_7d.is_none());
+        assert!(resp.0.rendered_panel.is_none());
+    }
+
+    #[test]
+    fn mcp_metrics_returns_no_data_panel_when_enabled_but_empty() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        crate::commands::metrics::enable(temp.path()).expect("enable");
+
+        let server = MemhubServer::new(temp.path().to_path_buf());
+        let resp = run_metrics(&server);
+        assert!(resp.0.enabled);
+        let panel = resp.0.rendered_panel.expect("rendered_panel");
+        assert!(
+            panel.contains("no recall or session data"),
+            "unexpected panel: {panel}"
+        );
+        assert!(resp.0.totals_7d.is_some());
+    }
+
+    #[test]
+    fn mcp_metrics_returns_full_panel_when_session_data_present() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        crate::commands::metrics::enable(temp.path()).expect("enable");
+
+        // Inject a synthetic session row so the panel has data.
+        {
+            let ctx = crate::db::open_project(temp.path()).expect("open");
+            ctx.conn
+                .execute(
+                    "INSERT INTO session_metrics \
+                     (session_id, agent, started_at, ended_at, \
+                      input_tokens, output_tokens, cache_read_tokens, \
+                      cache_creation_tokens, recall_calls) \
+                     VALUES ('test-session-001', 'claude-code', \
+                             datetime('now', '-1 hour'), datetime('now'), \
+                             1000, 500, 200, 100, 3)",
+                    [],
+                )
+                .expect("insert session");
+        }
+
+        let server = MemhubServer::new(temp.path().to_path_buf());
+        let resp = run_metrics(&server);
+        assert!(resp.0.enabled);
+        let panel = resp.0.rendered_panel.expect("rendered_panel");
+        assert!(panel.contains("Last 7 days"), "panel: {panel}");
+        assert!(panel.contains("Last 30 days"), "panel: {panel}");
+        let sessions = resp.0.last_sessions.expect("last_sessions");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].input_tokens, 1000);
+        assert_eq!(sessions[0].recall_calls, 3);
     }
 }

@@ -22,11 +22,175 @@ use rusqlite::params;
 
 use crate::config::MetricsConfig;
 use crate::db;
+use crate::metrics::formatter::{self, PeriodTotals, SessionSummary};
 use crate::metrics::maintenance;
 use crate::metrics::session_scraper;
 use crate::{MemhubError, Result};
 
 const METRICS_ACTOR: &str = "cli:user";
+
+/// All data the `memhub.metrics` MCP tool needs. Built by `query_tool_data`.
+#[derive(Debug)]
+pub struct MetricsToolData {
+    pub enabled: bool,
+    pub recall_proxy: bool,
+    pub session_accounting: bool,
+    pub claude_transcripts_dir: Option<String>,
+    /// MAX(ended_at) from session_metrics — the last timestamp the scraper advanced.
+    pub last_scrape_ts: Option<String>,
+    pub totals_7d: PeriodTotals,
+    pub totals_30d: PeriodTotals,
+    /// Up to 10 most recent sessions, newest first.
+    pub last_sessions: Vec<SessionSummary>,
+    /// Pre-rendered text panel for the /metrics skill.
+    pub rendered_panel: String,
+}
+
+/// Query all token-accounting data for the MCP tool. Returns immediately
+/// when `enabled = false` with only the flag set; no DB aggregation runs
+/// so no stale rows from a prior-enabled stretch can leak through.
+pub fn query_tool_data(start: &Path) -> Result<MetricsToolData> {
+    let ctx = db::open_project(start)?;
+    let cfg = &ctx.config.metrics;
+
+    if !cfg.enabled {
+        return Ok(MetricsToolData {
+            enabled: false,
+            recall_proxy: cfg.recall_proxy,
+            session_accounting: cfg.session_accounting,
+            claude_transcripts_dir: None,
+            last_scrape_ts: None,
+            totals_7d: PeriodTotals::default(),
+            totals_30d: PeriodTotals::default(),
+            last_sessions: Vec::new(),
+            rendered_panel: String::new(),
+        });
+    }
+
+    let transcripts_dir = if cfg.claude_transcripts_dir.is_empty() {
+        None
+    } else {
+        Some(cfg.claude_transcripts_dir.clone())
+    };
+
+    // MAX(ended_at) across all scraped sessions — most recent scrape advance.
+    let last_scrape_ts: Option<String> = ctx
+        .conn
+        .query_row(
+            "SELECT MAX(ended_at) FROM session_metrics",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(None);
+
+    let totals_7d = query_period_totals(&ctx.conn, 7)?;
+    let totals_30d = query_period_totals(&ctx.conn, 30)?;
+
+    let last_sessions = query_last_sessions(&ctx.conn, 10)?;
+
+    let rendered_panel = if totals_7d.is_empty() && totals_30d.is_empty() && last_sessions.is_empty() {
+        formatter::render_panel_no_data().to_string()
+    } else {
+        formatter::render_panel(&totals_7d, &totals_30d, &last_sessions)
+    };
+
+    Ok(MetricsToolData {
+        enabled: true,
+        recall_proxy: cfg.recall_proxy,
+        session_accounting: cfg.session_accounting,
+        claude_transcripts_dir: transcripts_dir,
+        last_scrape_ts,
+        totals_7d,
+        totals_30d,
+        last_sessions,
+        rendered_panel,
+    })
+}
+
+fn query_period_totals(conn: &rusqlite::Connection, days: u32) -> Result<PeriodTotals> {
+    let modifier = format!("-{days} days");
+
+    // recall_metrics: count + token sums for the window.
+    let (recalls, bundle_tokens, ledger_tokens): (i64, i64, i64) = conn
+        .query_row(
+            "SELECT \
+               COALESCE(COUNT(*), 0), \
+               COALESCE(SUM(bundle_tokens), 0), \
+               COALESCE(SUM(ledger_tokens), 0) \
+             FROM recall_metrics \
+             WHERE datetime(ts) >= datetime('now', ?1)",
+            params![modifier],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap_or((0, 0, 0));
+
+    // session_metrics: count + token sums for sessions starting in the window.
+    let (sessions, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens): (
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+    ) = conn
+        .query_row(
+            "SELECT \
+               COALESCE(COUNT(*), 0), \
+               COALESCE(SUM(input_tokens), 0), \
+               COALESCE(SUM(output_tokens), 0), \
+               COALESCE(SUM(cache_read_tokens), 0), \
+               COALESCE(SUM(cache_creation_tokens), 0) \
+             FROM session_metrics \
+             WHERE datetime(started_at) >= datetime('now', ?1)",
+            params![modifier],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .unwrap_or((0, 0, 0, 0, 0));
+
+    Ok(PeriodTotals {
+        recalls,
+        bundle_tokens,
+        ledger_tokens,
+        sessions,
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
+        cache_creation_tokens,
+    })
+}
+
+fn query_last_sessions(
+    conn: &rusqlite::Connection,
+    limit: i64,
+) -> Result<Vec<SessionSummary>> {
+    let mut stmt = conn.prepare(
+        "SELECT \
+           session_id, \
+           agent, \
+           datetime(started_at, 'localtime') AS started_local, \
+           datetime(ended_at, 'localtime') AS ended_local, \
+           input_tokens, \
+           output_tokens, \
+           recall_calls \
+         FROM session_metrics \
+         ORDER BY started_at DESC \
+         LIMIT ?1",
+    )?;
+    let rows = stmt
+        .query_map(params![limit], |row| {
+            Ok(SessionSummary {
+                session_id: row.get(0)?,
+                agent: row.get(1)?,
+                started_at: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                ended_at: row.get(3)?,
+                input_tokens: row.get(4)?,
+                output_tokens: row.get(5)?,
+                recall_calls: row.get(6)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(rows)
+}
 
 #[derive(Debug)]
 pub struct MetricsStatus {

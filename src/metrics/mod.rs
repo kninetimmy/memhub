@@ -21,6 +21,7 @@
 //! prunes rows past the retention horizon. It runs opportunistically
 //! from `db::open_project`, gated by the master switch alone.
 
+pub mod formatter;
 pub mod maintenance;
 pub mod recall_proxy;
 pub mod session_scraper;
