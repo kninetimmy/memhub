@@ -1,0 +1,6 @@
+{"type":"summary","summary":"Session start","leafUuid":"x1"}
+{"type":"user","uuid":"u1","timestamp":"2026-05-15T09:00:00.000Z","sessionId":"sess-abc","message":{"role":"user","content":"hello"}}
+{"type":"assistant","uuid":"a1","timestamp":"2026-05-15T09:00:05.000Z","sessionId":"sess-abc","message":{"role":"assistant","model":"claude-opus-4-7","usage":{"input_tokens":1000,"output_tokens":200,"cache_read_input_tokens":5000,"cache_creation_input_tokens":300}}}
+{"type":"user","uuid":"u2","timestamp":"2026-05-15T09:01:00.000Z","sessionId":"sess-abc","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1"}]}}
+{"type":"assistant","uuid":"a2","timestamp":"2026-05-15T09:01:30.000Z","sessionId":"sess-abc","message":{"role":"assistant","model":"claude-opus-4-7","usage":{"input_tokens":1500,"output_tokens":350,"cache_read_input_tokens":6000}}}
+{"oops this line is deliberately not valid json

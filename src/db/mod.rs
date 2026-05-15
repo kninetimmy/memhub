@@ -137,6 +137,11 @@ pub fn open_project(start: &Path) -> Result<ProjectContext> {
     let _ = migrations::apply_all(&mut conn)?;
     upsert_project(&conn, &paths.repo_root)?;
 
+    // Opportunistic, gated, never-fails token-accounting scrape
+    // (decision 74 component B, task #29). Off by default; a no-op
+    // unless the user opted in via `memhub metrics enable`.
+    crate::metrics::session_scraper::scrape_if_enabled(&conn, &config.metrics);
+
     Ok(ProjectContext {
         paths,
         config,

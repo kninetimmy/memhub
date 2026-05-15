@@ -17,4 +17,5 @@
 //! ratio between bundle size and ledger size uses the same yardstick.
 
 pub mod recall_proxy;
+pub mod session_scraper;
 pub mod tokenizer;
