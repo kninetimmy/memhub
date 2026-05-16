@@ -12,3 +12,5 @@ agent_docs/PROJECT_LEDGER.md
 __pycache__/
 agent_docs/PROJECT.md
 agent_docs/PROJECT_LEDGER.md
+# macOS Finder metadata
+.DS_Store
