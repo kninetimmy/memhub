@@ -173,10 +173,15 @@ Two independent sub-switches under `[metrics]`:
   skipped.
 
 **Proxy contract:** `bundle_tokens` is the token count of the recall bundle
-actually returned. `ledger_tokens` is the counterfactual cost of loading the
-full `PROJECT_LEDGER.md` instead. The rendered label is "context offset vs
-full-ledger baseline" — not "tokens saved" — because the agent would not
-necessarily have loaded the full ledger anyway.
+actually returned. `ledger_tokens` (per row in `recall_metrics`) is the size
+of `PROJECT_LEDGER.md` at recall time, measured in cl100k tokens. The
+counterfactual is **session-scoped**: for each session that had at least one
+non-empty recall, charge one ledger load (the minimum `ledger_tokens` across
+that session's recalls, as a proxy for session-start size) and subtract all
+non-empty bundle tokens. Empty-bundle recalls (no results returned) are not
+savings events and contribute nothing to the offset. The rendered label is
+"context offset vs full-ledger baseline" — not "tokens saved" — because the
+agent would not necessarily have loaded the full ledger anyway.
 
 **Tokenizer caveat:** tiktoken cl100k is ±10% off Anthropic's real
 tokenizer. Ratios stay sound because both sides of every comparison use the

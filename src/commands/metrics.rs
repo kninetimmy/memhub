@@ -110,19 +110,45 @@ pub fn query_tool_data(start: &Path) -> Result<MetricsToolData> {
 pub(crate) fn query_period_totals(conn: &rusqlite::Connection, days: u32) -> Result<PeriodTotals> {
     let modifier = format!("-{days} days");
 
-    // recall_metrics: count + token sums for the window.
-    let (recalls, bundle_tokens, ledger_tokens): (i64, i64, i64) = conn
+    // Total recall count (all calls, including empty-bundle ones).
+    let recalls: i64 = conn
         .query_row(
-            "SELECT \
-               COALESCE(COUNT(*), 0), \
-               COALESCE(SUM(bundle_tokens), 0), \
-               COALESCE(SUM(ledger_tokens), 0) \
-             FROM recall_metrics \
+            "SELECT COALESCE(COUNT(*), 0) FROM recall_metrics \
              WHERE datetime(ts) >= datetime('now', ?1)",
             params![modifier],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| r.get(0),
         )
-        .unwrap_or((0, 0, 0));
+        .unwrap_or(0);
+
+    // Sum of non-empty bundle_tokens. Empty recalls (bundle_tokens == 0)
+    // are not savings events and are excluded.
+    let bundle_tokens: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(CASE WHEN bundle_tokens > 0 THEN bundle_tokens ELSE 0 END), 0) \
+             FROM recall_metrics WHERE datetime(ts) >= datetime('now', ?1)",
+            params![modifier],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+
+    // Session-scoped ledger baseline: charge one ledger load (the minimum
+    // observed across all recalls in that session, as a proxy for session
+    // start) per session that had at least one non-empty recall. Sessions
+    // where every recall returned an empty bundle contribute 0.
+    let ledger_tokens: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(min_ledger), 0) FROM ( \
+                 SELECT MIN(ledger_tokens) AS min_ledger \
+                 FROM recall_metrics \
+                 WHERE datetime(ts) >= datetime('now', ?1) \
+                   AND session_id IS NOT NULL \
+                 GROUP BY session_id \
+                 HAVING SUM(CASE WHEN bundle_tokens > 0 THEN 1 ELSE 0 END) > 0 \
+             )",
+            params![modifier],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
 
     // session_metrics: count + token sums for sessions starting in the window.
     let (sessions, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens): (
@@ -234,12 +260,14 @@ impl SeriesWindow {
 
 /// One plotted point. `actual` is the cumulative real token spend up
 /// to and including this point; `counterfactual` is that same
-/// cumulative plus the running full-ledger offset — what the context
-/// *would* have cost if every recall had instead loaded the whole
-/// `PROJECT_LEDGER.md`. Per the proxy contract this is a labelled
-/// estimate ("context offset vs full-ledger baseline"), never
-/// "tokens saved", and the tiktoken cl100k count is ±10% of
-/// Anthropic's real tokenizer.
+/// cumulative plus the session-scoped ledger offset — what the context
+/// *would* have cost if each session with at least one successful recall
+/// had instead loaded the full `PROJECT_LEDGER.md` once at session start.
+/// Empty-bundle recalls (bundle_tokens == 0) are excluded from the savings
+/// calculation: a failed retrieval is not a savings event. Per the proxy
+/// contract this is a labelled estimate ("context offset vs full-ledger
+/// baseline"), never "tokens saved", and the tiktoken cl100k count is
+/// ±10% of Anthropic's real tokenizer.
 #[derive(Debug, Clone)]
 pub struct SeriesPoint {
     /// Unix seconds (UTC). Synthetic monotonic fallback when the
@@ -251,9 +279,10 @@ pub struct SeriesPoint {
     pub counterfactual: i64,
     /// This point's own input+output spend (not cumulative).
     pub delta: i64,
-    /// Cumulative max(0, ledger−bundle) recall offset up to here.
+    /// Cumulative session-scoped ledger offset up to here: for each session
+    /// that had ≥1 non-empty recall, max(0, min(ledger) − Σ non-empty bundles).
     pub recall_offset: i64,
-    /// Cumulative recall calls counted up to here.
+    /// Cumulative recall calls counted up to here (includes empty recalls).
     pub recalls: i64,
 }
 
@@ -403,20 +432,62 @@ fn fetch_session_turn_rows(conn: &rusqlite::Connection) -> Result<RawRows> {
         .filter_map(|r| r.ok())
         .collect();
 
-    // Recalls attributed to this session, with normalized epoch + the
-    // clamped full-ledger extra, oldest first.
+    // Fetch raw bundle/ledger per recall. Session-scoped offset is computed
+    // in Rust below rather than in SQL so the one-load-per-session semantics
+    // are easy to read and test.
+    struct RawRecall {
+        rx: Option<i64>,
+        bundle: i64,
+        ledger: i64,
+    }
     let mut rstmt = conn.prepare(
         "SELECT CAST(strftime('%s', ts) AS INTEGER) AS rx, \
-                MAX(0, ledger_tokens - bundle_tokens) AS extra \
+                bundle_tokens, ledger_tokens \
          FROM recall_metrics \
          WHERE session_id = ?1 \
          ORDER BY datetime(ts)",
     )?;
-    let recalls: Vec<(Option<i64>, i64)> = rstmt
+    let raw_recalls: Vec<RawRecall> = rstmt
         .query_map(params![sid], |row| {
-            Ok((row.get(0)?, row.get(1)?))
+            Ok(RawRecall {
+                rx: row.get(0)?,
+                bundle: row.get(1)?,
+                ledger: row.get(2)?,
+            })
         })?
         .filter_map(|r| r.ok())
+        .collect();
+
+    // Session-scoped offset: charge the ledger once (minimum observed
+    // ledger_tokens as a proxy for session-start size) for sessions that had
+    // at least one successful (non-empty) recall. Empty-bundle recalls are not
+    // savings events and contribute nothing. The full offset lands on the turn
+    // of the first non-empty recall; all other recall slots get 0.
+    let session_baseline = raw_recalls.iter().map(|r| r.ledger).min().unwrap_or(0);
+    let non_empty_bundle: i64 = raw_recalls
+        .iter()
+        .filter(|r| r.bundle > 0)
+        .map(|r| r.bundle)
+        .sum();
+    let has_non_empty = raw_recalls.iter().any(|r| r.bundle > 0);
+    let session_offset = if has_non_empty {
+        (session_baseline - non_empty_bundle).max(0)
+    } else {
+        0
+    };
+
+    let mut first_non_empty_done = false;
+    let recalls: Vec<(Option<i64>, i64)> = raw_recalls
+        .into_iter()
+        .map(|r| {
+            let extra = if r.bundle > 0 && !first_non_empty_done {
+                first_non_empty_done = true;
+                session_offset
+            } else {
+                0
+            };
+            (r.rx, extra)
+        })
         .collect();
 
     let total_recalls = recalls.len() as i64;
@@ -485,7 +556,12 @@ fn fetch_session_window_rows(
                     datetime(s.started_at, 'localtime') AS started_local, \
                     s.input_tokens + s.output_tokens AS delta, \
                     COALESCE(( \
-                        SELECT SUM(MAX(0, r.ledger_tokens - r.bundle_tokens)) \
+                        SELECT CASE \
+                            WHEN SUM(CASE WHEN r.bundle_tokens > 0 THEN 1 ELSE 0 END) > 0 \
+                            THEN MAX(0, MIN(r.ledger_tokens) \
+                                 - SUM(CASE WHEN r.bundle_tokens > 0 THEN r.bundle_tokens ELSE 0 END)) \
+                            ELSE 0 \
+                        END \
                         FROM recall_metrics r WHERE r.session_id = s.session_id \
                     ), 0) AS offset, \
                     COALESCE(( \
@@ -504,7 +580,12 @@ fn fetch_session_window_rows(
                     datetime(s.started_at, 'localtime') AS started_local, \
                     s.input_tokens + s.output_tokens AS delta, \
                     COALESCE(( \
-                        SELECT SUM(MAX(0, r.ledger_tokens - r.bundle_tokens)) \
+                        SELECT CASE \
+                            WHEN SUM(CASE WHEN r.bundle_tokens > 0 THEN 1 ELSE 0 END) > 0 \
+                            THEN MAX(0, MIN(r.ledger_tokens) \
+                                 - SUM(CASE WHEN r.bundle_tokens > 0 THEN r.bundle_tokens ELSE 0 END)) \
+                            ELSE 0 \
+                        END \
                         FROM recall_metrics r WHERE r.session_id = s.session_id \
                     ), 0) AS offset, \
                     COALESCE(( \
@@ -1078,5 +1159,73 @@ mod tests {
         // No recalls → counterfactual tracks actual exactly.
         assert_eq!(s.points[1].counterfactual, s.points[1].actual);
         assert!(!s.has_recall_signal);
+    }
+
+    /// Mirrors the real-world case that motivated the session-scoped fix:
+    /// 4 recalls against a 72 K-token ledger where 3 return empty bundles.
+    /// Old formula: (72066-0)×3 + (72066-1941) = 286,323.
+    /// New formula: min(ledger)=72066, non-empty bundle=1941,
+    ///              session_offset = 72066-1941 = 70,125.
+    #[test]
+    fn session_scoped_offset_nulls_empty_recalls() {
+        let temp = tempdir().expect("tempdir");
+        init_project(temp.path());
+        enable(temp.path()).expect("enable");
+        {
+            let ctx = db::open_project(temp.path()).expect("open");
+            ctx.conn
+                .execute(
+                    "INSERT INTO session_metrics \
+                     (session_id, agent, started_at, ended_at, \
+                      input_tokens, output_tokens) \
+                     VALUES ('sy', 'claude-code', \
+                             '2026-05-16T02:45:00.000Z', \
+                             '2026-05-16T02:50:00.000Z', 31, 2605)",
+                    [],
+                )
+                .expect("session");
+            ctx.conn
+                .execute(
+                    "INSERT INTO session_turn_metrics \
+                     (session_id, ts, input_tokens, output_tokens) VALUES \
+                     ('sy', '2026-05-16T02:45:30.000Z', 10, 800), \
+                     ('sy', '2026-05-16T02:47:00.000Z', 11, 900), \
+                     ('sy', '2026-05-16T02:50:00.000Z', 10, 905)",
+                    [],
+                )
+                .expect("turns");
+            // 4 recalls: first returns 1941 bundle tokens, three return 0.
+            // All share ledger=72066.
+            ctx.conn
+                .execute(
+                    "INSERT INTO recall_metrics \
+                     (ts, session_id, query_hash, bundle_tokens, \
+                      ledger_tokens, rerank_used, result_count) VALUES \
+                     ('2026-05-16 02:45:40', 'sy', 'h1', 0,    72066, 1, 0), \
+                     ('2026-05-16 02:45:43', 'sy', 'h2', 0,    72066, 1, 0), \
+                     ('2026-05-16 02:46:54', 'sy', 'h3', 0,    72066, 1, 0), \
+                     ('2026-05-16 02:46:56', 'sy', 'h4', 1941, 72066, 1, 5)",
+                    [],
+                )
+                .expect("recalls");
+        }
+
+        let s = query_series(temp.path(), SeriesWindow::Session).expect("series");
+        assert_eq!(s.session_id.as_deref(), Some("sy"));
+
+        // session_offset = max(0, 72066 - 1941) = 70125.
+        let total_offset: i64 = s.points.iter().map(|p| {
+            // recall_offset is cumulative; delta between last two points.
+            p.recall_offset
+        }).last().unwrap_or(0);
+        assert_eq!(total_offset, 70_125, "session offset should be 70125, not 286323");
+
+        // Counterfactual at last point = actual + 70125.
+        let last = s.points.last().unwrap();
+        assert_eq!(last.counterfactual, last.actual + 70_125);
+
+        // All 4 recall calls should still be counted.
+        assert_eq!(last.recalls, 4);
+        assert!(s.has_recall_signal);
     }
 }
