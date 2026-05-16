@@ -48,6 +48,32 @@ pub struct Task {
     pub updated_at: String,
 }
 
+/// An ingested external reference document. Per-repo, user-initiated,
+/// opt-in to recall (see migration 0014 / the doc-scope decision).
+#[derive(Debug)]
+pub struct Document {
+    pub id: i64,
+    pub path: String,
+    pub title: String,
+    pub content_hash: String,
+    pub byte_len: i64,
+    pub source: String,
+    pub ingested_at: String,
+    pub chunk_count: i64,
+}
+
+/// One retrievable section of a [`Document`]. `heading_path` is the
+/// breadcrumb of ancestor markdown headings (e.g. `Components > Buttons`).
+#[derive(Debug)]
+pub struct DocChunk {
+    pub id: i64,
+    pub doc_id: i64,
+    pub ord: i64,
+    pub heading_path: String,
+    pub body: String,
+    pub created_at: String,
+}
+
 #[derive(Debug)]
 pub struct CommandRecord {
     pub id: i64,

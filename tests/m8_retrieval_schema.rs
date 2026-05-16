@@ -325,3 +325,21 @@ fn embeddings_source_type_check_rejects_unknown_kinds() {
         "expected CHECK constraint violation, got: {message}"
     );
 }
+
+#[test]
+fn embeddings_source_type_check_accepts_doc_chunk_after_0014() {
+    // Migration 0014 widened the CHECK to include 'doc_chunk'. The
+    // table-rebuild must preserve the constraint shape (still rejecting
+    // junk) while admitting the new kind.
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+    let ctx = db::open_project(temp.path()).expect("open project");
+
+    ctx.conn
+        .execute(
+            "INSERT INTO embeddings(project_id, source_type, source_id, model_name, dimension, vector, content_hash)
+             VALUES (1, 'doc_chunk', 1, 'bge-small-en-v1.5', 1, X'00', 'h')",
+            [],
+        )
+        .expect("doc_chunk is a valid source_type after migration 0014");
+}

@@ -28,6 +28,7 @@ pub enum SourceType {
     Fact,
     Decision,
     Task,
+    DocChunk,
 }
 
 impl SourceType {
@@ -36,6 +37,7 @@ impl SourceType {
             SourceType::Fact => "fact",
             SourceType::Decision => "decision",
             SourceType::Task => "task",
+            SourceType::DocChunk => "doc_chunk",
         }
     }
 }
@@ -64,6 +66,18 @@ pub fn task_embed_text(title: &str, notes: Option<&str>) -> String {
     match notes {
         Some(n) if !n.is_empty() => format!("{title}\n\n{n}"),
         _ => title.to_string(),
+    }
+}
+
+/// Build the embed text for a doc chunk. The heading-path breadcrumb
+/// (e.g. `Components > Buttons`) acts as the title-analog so the
+/// bi-encoder and cross-encoder both see the section context, not just
+/// the prose body. Mirrors the `title\n\nbody` shape used for tasks.
+pub fn doc_chunk_embed_text(heading_path: &str, body: &str) -> String {
+    if heading_path.trim().is_empty() {
+        body.to_string()
+    } else {
+        format!("{heading_path}\n\n{body}")
     }
 }
 

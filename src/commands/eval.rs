@@ -383,6 +383,7 @@ mod tests {
             warnings: Vec::<RecallWarning>::new(),
             matcher: "recall:fts".to_string(),
             elapsed_ms: 0,
+            available_docs: 0,
         }
     }
 

@@ -310,6 +310,7 @@ fn index_status_to_json(s: &commands::index::IndexStatusSummary) -> serde_json::
         "facts": { "total": s.facts_total, "embedded": s.facts_embedded },
         "decisions": { "total": s.decisions_total, "embedded": s.decisions_embedded },
         "tasks": { "total": s.tasks_total, "embedded": s.tasks_embedded },
+        "doc_chunks": { "total": s.doc_chunks_total, "embedded": s.doc_chunks_embedded },
         "total_embeddings": s.total_embeddings,
         "missing_count": s.missing_count,
         "stale_ratio": s.stale_ratio,
@@ -330,6 +331,10 @@ fn print_index_status(s: &commands::index::IndexStatusSummary) {
     println!(
         "Tasks:     {} embedded / {} total",
         s.tasks_embedded, s.tasks_total,
+    );
+    println!(
+        "Doc chunks:{} embedded / {} total",
+        s.doc_chunks_embedded, s.doc_chunks_total,
     );
     println!("Total embeddings: {}", s.total_embeddings);
     println!(
@@ -390,6 +395,7 @@ fn recall_response_to_json(response: &RecallResponse) -> serde_json::Value {
         "results": results,
         "candidate_count": response.candidate_count,
         "returned_count": response.returned_count,
+        "available_docs": response.available_docs,
         "warnings": warnings,
         "provenance": {
             "matcher": response.matcher,
@@ -410,6 +416,12 @@ fn print_recall_human(response: &RecallResponse) {
         "Candidates: {} | Returned: {}",
         response.candidate_count, response.returned_count,
     );
+    if response.available_docs > 0 {
+        println!(
+            "Note: {} ingested doc chunk(s) not searched — re-run with --source-type doc to include them.",
+            response.available_docs,
+        );
+    }
     if response.results.is_empty() {
         println!("No matches.");
     } else {
@@ -782,6 +794,11 @@ pub enum TopLevelCommand {
         #[command(subcommand)]
         command: TaskCommand,
     },
+    /// Ingest and manage external reference documents (opt-in to recall).
+    Doc {
+        #[command(subcommand)]
+        command: DocCommand,
+    },
     Command {
         #[command(subcommand)]
         command: CommandCommand,
@@ -931,6 +948,7 @@ pub enum RecallSourceTypeArg {
     Fact,
     Decision,
     Task,
+    Doc,
 }
 
 impl RecallSourceTypeArg {
@@ -939,6 +957,7 @@ impl RecallSourceTypeArg {
             Self::Fact => SourceType::Fact,
             Self::Decision => SourceType::Decision,
             Self::Task => SourceType::Task,
+            Self::Doc => SourceType::DocChunk,
         }
     }
 }
@@ -1117,6 +1136,43 @@ pub enum FactCommand {
         actor: Option<String>,
     },
     List,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DocCommand {
+    /// Ingest (or re-ingest) a markdown file. Unchanged content is a
+    /// no-op; changed content replaces every chunk.
+    Add {
+        /// Path to the markdown file to ingest.
+        file: PathBuf,
+        /// Override the document title (defaults to the first heading or
+        /// the file name).
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// List ingested documents.
+    Ls {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove a document (and its chunks) by id or path.
+    Rm {
+        ident: String,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// Show a document's metadata and chunk breadcrumbs by id or path.
+    Show {
+        ident: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -1549,6 +1605,139 @@ pub fn run(cli: Cli) -> Result<()> {
                     println!("{payload}");
                 } else {
                     println!("Marked task {id} as done.");
+                }
+            }
+        },
+        TopLevelCommand::Doc { command } => match command {
+            DocCommand::Add {
+                file,
+                title,
+                json: as_json,
+                actor,
+            } => {
+                let actor = resolve_actor(actor.as_deref())?;
+                let outcome =
+                    commands::doc::add(&cwd, &file, title.as_deref(), &actor)?;
+                let status = match outcome.status {
+                    commands::doc::IngestStatus::Created => "created",
+                    commands::doc::IngestStatus::Updated => "updated",
+                    commands::doc::IngestStatus::Unchanged => "unchanged",
+                };
+                if as_json {
+                    let payload = json!({
+                        "id": outcome.doc_id,
+                        "title": outcome.title,
+                        "path": outcome.path,
+                        "chunks": outcome.chunk_count,
+                        "status": status,
+                    });
+                    println!("{payload}");
+                } else {
+                    println!(
+                        "{} document {}: {} ({} chunks)\n  {}",
+                        status,
+                        outcome.doc_id,
+                        outcome.title,
+                        outcome.chunk_count,
+                        outcome.path,
+                    );
+                    if outcome.status != commands::doc::IngestStatus::Unchanged {
+                        println!(
+                            "  Searchable via: memhub recall \"<query>\" --source-type doc"
+                        );
+                    }
+                }
+            }
+            DocCommand::Ls { json: as_json } => {
+                let docs = commands::doc::list(&cwd)?;
+                if as_json {
+                    let payload: Vec<_> = docs
+                        .iter()
+                        .map(|d| {
+                            json!({
+                                "id": d.id,
+                                "title": d.title,
+                                "path": d.path,
+                                "chunks": d.chunk_count,
+                                "bytes": d.byte_len,
+                                "source": d.source,
+                                "ingested_at": d.ingested_at,
+                            })
+                        })
+                        .collect();
+                    println!("{}", json!(payload));
+                } else if docs.is_empty() {
+                    println!("No documents ingested.");
+                } else {
+                    for d in docs {
+                        println!(
+                            "[{}] {} ({} chunks, {} bytes) ingested: {}\n  {}",
+                            d.id, d.title, d.chunk_count, d.byte_len, d.ingested_at, d.path,
+                        );
+                    }
+                }
+            }
+            DocCommand::Rm {
+                ident,
+                json: as_json,
+                actor,
+            } => {
+                let actor = resolve_actor(actor.as_deref())?;
+                let removed = commands::doc::remove(&cwd, &ident, &actor)?;
+                if as_json {
+                    println!("{}", json!({ "removed": removed, "ident": ident }));
+                } else if removed {
+                    println!("Removed document {ident}.");
+                } else {
+                    println!("No document matched {ident}.");
+                }
+            }
+            DocCommand::Show {
+                ident,
+                json: as_json,
+            } => {
+                match commands::doc::show(&cwd, &ident)? {
+                    None => {
+                        if as_json {
+                            println!("{}", json!({ "found": false, "ident": ident }));
+                        } else {
+                            println!("No document matched {ident}.");
+                        }
+                    }
+                    Some((meta, chunks)) => {
+                        if as_json {
+                            let payload = json!({
+                                "id": meta.id,
+                                "title": meta.title,
+                                "path": meta.path,
+                                "bytes": meta.byte_len,
+                                "ingested_at": meta.ingested_at,
+                                "chunks": chunks.iter().map(|c| json!({
+                                    "id": c.id,
+                                    "ord": c.ord,
+                                    "heading_path": c.heading_path,
+                                    "body": c.body,
+                                })).collect::<Vec<_>>(),
+                            });
+                            println!("{payload}");
+                        } else {
+                            println!(
+                                "[{}] {} ({} chunks)\n  {}",
+                                meta.id,
+                                meta.title,
+                                chunks.len(),
+                                meta.path,
+                            );
+                            for c in chunks {
+                                let head = if c.heading_path.is_empty() {
+                                    "(preamble)"
+                                } else {
+                                    &c.heading_path
+                                };
+                                println!("  #{} {}", c.ord, head);
+                            }
+                        }
+                    }
                 }
             }
         },

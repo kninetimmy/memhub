@@ -20,7 +20,7 @@ use crate::db;
 use crate::models::FACT_STALE_AFTER_DAYS;
 use crate::retrieval::embeddings::{EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME, embed_one};
 use crate::retrieval::persist::{
-    SourceType, decision_embed_text, fact_embed_text, task_embed_text,
+    SourceType, decision_embed_text, doc_chunk_embed_text, fact_embed_text, task_embed_text,
 };
 use crate::retrieval::rerank;
 use crate::{MemhubError, Result};
@@ -102,6 +102,14 @@ pub struct RecallResponse {
     pub warnings: Vec<RecallWarning>,
     pub matcher: String,
     pub elapsed_ms: u128,
+    /// Count of ingested doc chunks that exist in this repo but were NOT
+    /// searched because `doc_chunk` was not in the requested source
+    /// types. Zero when docs were queried, when none are ingested, or
+    /// when the caller explicitly scoped to docs. A non-zero value is a
+    /// cheap cue for the agent to decide whether a follow-up doc-scoped
+    /// recall is worthwhile — docs are deliberately opt-in and never in
+    /// the default bundle (see migration 0014 / the doc-scope decision).
+    pub available_docs: usize,
 }
 
 /// Top-level entry: resolves config, then dispatches to the
@@ -360,6 +368,22 @@ fn run(
         }
     };
 
+    // Cheap awareness signal: if the caller did not scope to docs, tell
+    // them how many ingested doc chunks they skipped so the agent can
+    // decide whether a follow-up doc-scoped recall is worthwhile.
+    let available_docs: usize = if opts.source_types.contains(&SourceType::DocChunk) {
+        0
+    } else {
+        conn.query_row(
+            "SELECT COUNT(*) FROM doc_chunks WHERE project_id = 1",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional_row()?
+        .unwrap_or(0)
+        .max(0) as usize
+    };
+
     Ok(RecallResponse {
         query: opts.query.clone(),
         mode: opts.mode,
@@ -369,6 +393,7 @@ fn run(
         warnings,
         matcher,
         elapsed_ms: started.elapsed().as_millis(),
+        available_docs,
     })
 }
 
@@ -478,6 +503,13 @@ fn fts_lookup(
             "SELECT tasks_fts.rowid, bm25(tasks_fts) AS score \
              FROM tasks_fts \
              WHERE tasks_fts MATCH ?1 \
+             ORDER BY score ASC \
+             LIMIT ?2"
+        }
+        SourceType::DocChunk => {
+            "SELECT doc_chunks_fts.rowid, bm25(doc_chunks_fts) AS score \
+             FROM doc_chunks_fts \
+             WHERE doc_chunks_fts MATCH ?1 \
              ORDER BY score ASC \
              LIMIT ?2"
         }
@@ -668,6 +700,17 @@ fn current_embed_text(
                 None => Ok(None),
             }
         }
+        SourceType::DocChunk => {
+            let row: std::result::Result<(String, String), rusqlite::Error> = conn.query_row(
+                "SELECT heading_path, body FROM doc_chunks WHERE id = ?1",
+                params![source_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            );
+            match row.optional_row()? {
+                Some((h, b)) => Ok(Some(doc_chunk_embed_text(&h, &b))),
+                None => Ok(None),
+            }
+        }
     }
 }
 
@@ -791,6 +834,38 @@ fn load_source_row(
                 });
             row.optional_row().map_err(Into::into)
         }
+        SourceType::DocChunk => {
+            // Title shows the document title plus the section breadcrumb
+            // so a recalled chunk is self-describing about its origin.
+            let mut stmt = conn.prepare(
+                "SELECT d.title, c.heading_path, c.body, d.source, c.created_at \
+                 FROM doc_chunks c JOIN documents d ON d.id = c.doc_id \
+                 WHERE c.id = ?1",
+            )?;
+            let row: std::result::Result<HydratedSource, rusqlite::Error> =
+                stmt.query_row(params![source_id], |r: &Row<'_>| {
+                    let doc_title: String = r.get(0)?;
+                    let heading_path: String = r.get(1)?;
+                    let body: String = r.get(2)?;
+                    let source: String = r.get(3)?;
+                    let created_at: String = r.get(4)?;
+                    let title = if heading_path.trim().is_empty() {
+                        doc_title
+                    } else {
+                        format!("{doc_title} — {heading_path}")
+                    };
+                    Ok(HydratedSource {
+                        title,
+                        body,
+                        summary: None,
+                        source,
+                        confidence: 1.0,
+                        is_stale: false,
+                        created_at,
+                    })
+                });
+            row.optional_row().map_err(Into::into)
+        }
     }
 }
 
@@ -803,6 +878,7 @@ fn parse_source_type(raw: &str) -> Option<SourceType> {
         "fact" => Some(SourceType::Fact),
         "decision" => Some(SourceType::Decision),
         "task" => Some(SourceType::Task),
+        "doc_chunk" => Some(SourceType::DocChunk),
         _ => None,
     }
 }
@@ -910,7 +986,7 @@ fn sha256_hex(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::{decision, fact, init, task};
+    use crate::commands::{decision, doc, fact, init, task};
     use crate::config::{ProjectConfig, RetrievalMode};
     use rusqlite::params;
     use tempfile::tempdir;
@@ -1416,6 +1492,76 @@ mod tests {
                 r.get(0)
             })
             .expect("count recall_metrics")
+    }
+
+    #[test]
+    fn docs_are_opt_in_and_signal_availability() {
+        // Docs must never enter the default bundle, but recall must
+        // advertise that they exist via `available_docs` so the agent
+        // can decide to follow up. Scoping to docs returns the chunk
+        // and zeroes the signal.
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        fact::add(temp.path(), "build-command", "cargo build", "user", "cli:user")
+            .expect("fact");
+        let doc_file = temp.path().join("spec.md");
+        std::fs::write(
+            &doc_file,
+            "# Design Spec\n\n## Shapes\n\nButtons use a 4px corner radius for a crisp engineered look.\n",
+        )
+        .expect("write doc");
+        doc::add(temp.path(), &doc_file, None, "cli:user").expect("ingest doc");
+
+        // Default scope: no doc hits, but availability is signalled.
+        let default = recall(
+            temp.path(),
+            RecallOptions {
+                query: "corner radius for buttons".to_string(),
+                mode: Some(RetrievalMode::Fts),
+                max_results: 10,
+                source_types: vec![],
+                include_stale: None,
+                accepted_only: None,
+                use_reranker: None,
+                min_rerank_score: None,
+                log_metrics: false,
+            },
+        )
+        .expect("default recall");
+        assert!(
+            default.results.iter().all(|h| h.source_type != "doc_chunk"),
+            "docs must not appear in the default bundle"
+        );
+        assert!(
+            default.available_docs >= 1,
+            "available_docs must flag ingested-but-unsearched docs, got {}",
+            default.available_docs
+        );
+
+        // Opt-in scope: the chunk surfaces and the signal zeroes out.
+        let scoped = recall(
+            temp.path(),
+            RecallOptions {
+                query: "corner radius for buttons".to_string(),
+                mode: Some(RetrievalMode::Fts),
+                max_results: 10,
+                source_types: vec![SourceType::DocChunk],
+                include_stale: None,
+                accepted_only: None,
+                use_reranker: None,
+                min_rerank_score: None,
+                log_metrics: false,
+            },
+        )
+        .expect("doc-scoped recall");
+        assert!(
+            scoped.results.iter().any(|h| h.source_type == "doc_chunk"),
+            "doc-scoped recall must return the ingested chunk"
+        );
+        assert_eq!(
+            scoped.available_docs, 0,
+            "available_docs is 0 when the caller already scoped to docs"
+        );
     }
 
     #[test]

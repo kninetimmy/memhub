@@ -476,6 +476,8 @@ fn read_overview(start: &Path) -> Result<OverviewPayload> {
         "facts",
         "decisions",
         "tasks",
+        "documents",
+        "doc_chunks",
         "commands",
         "pending_writes",
         "writes_log",
@@ -728,6 +730,7 @@ fn read_embedding_coverage(conn: &Connection) -> Result<Vec<CoverageRow>> {
         ("fact", "facts"),
         ("decision", "decisions"),
         ("task", "tasks"),
+        ("doc_chunk", "doc_chunks"),
     ];
     let mut out = Vec::with_capacity(sources.len());
     for (source_type, table) in sources {

@@ -259,6 +259,35 @@ impl MemhubServer {
         }))
     }
 
+    async fn doc_add_impl(
+        &self,
+        Parameters(params): Parameters<DocAddParams>,
+        actor: ClientIdentity,
+    ) -> std::result::Result<Json<DocAddToolResponse>, McpError> {
+        let outcome = commands::doc::add(
+            &self.start,
+            std::path::Path::new(&params.file),
+            params.title.as_deref(),
+            &actor.normalized,
+        )
+        .map_err(map_tool_error)?;
+
+        let status = match outcome.status {
+            commands::doc::IngestStatus::Created => "created",
+            commands::doc::IngestStatus::Updated => "updated",
+            commands::doc::IngestStatus::Unchanged => "unchanged",
+        };
+        Ok(Json(DocAddToolResponse {
+            id: outcome.doc_id,
+            title: outcome.title,
+            path: outcome.path,
+            chunks: outcome.chunk_count,
+            status: status.to_string(),
+            actor: actor.normalized,
+            actor_raw: actor.raw,
+        }))
+    }
+
     async fn list_facts_impl(
         &self,
         Parameters(params): Parameters<ListFactsParams>,
@@ -307,9 +336,12 @@ impl MemhubServer {
                 "fact" => source_types.push(SourceType::Fact),
                 "decision" => source_types.push(SourceType::Decision),
                 "task" => source_types.push(SourceType::Task),
+                "doc" | "doc_chunk" => source_types.push(SourceType::DocChunk),
                 other => {
                     return Err(McpError::invalid_params(
-                        format!("invalid source_type '{other}'; expected fact, decision, or task"),
+                        format!(
+                            "invalid source_type '{other}'; expected fact, decision, task, or doc"
+                        ),
                         None,
                     ));
                 }
@@ -468,6 +500,19 @@ impl MemhubServer {
     }
 
     #[tool(
+        name = "doc_add",
+        description = "Ingest (or re-ingest) a local markdown file as an external reference document, chunked and RAG-searchable. Direct write: a doc is a user-pointed artifact, not an agent claim, so no review gate. Docs are OPT-IN to recall — query them with recall(source_types=[\"doc\"]); they never appear in the default bundle. Unchanged content (same hash) is a no-op; changed content replaces every chunk."
+    )]
+    async fn doc_add(
+        &self,
+        params: Parameters<DocAddParams>,
+        request_context: RequestContext<RoleServer>,
+    ) -> std::result::Result<Json<DocAddToolResponse>, McpError> {
+        let actor = current_client_identity(&request_context);
+        self.doc_add_impl(params, actor).await
+    }
+
+    #[tool(
         name = "task_done",
         description = "Mark an existing task as done by id."
     )]
@@ -505,7 +550,7 @@ impl MemhubServer {
 
     #[tool(
         name = "recall",
-        description = "Retrieve relevant facts, decisions, and tasks via SQL+RAG hybrid recall (FTS5 + brute-force cosine when hybrid mode is configured). Read-only; prefer this over reading PROJECT_LEDGER.md mid-session."
+        description = "Retrieve relevant facts, decisions, and tasks via SQL+RAG hybrid recall (FTS5 + brute-force cosine when hybrid mode is configured). Read-only; prefer this over reading PROJECT_LEDGER.md mid-session. Ingested reference docs are OPT-IN: pass source_types=[\"doc\"] to search them. The response's `available_docs` counts ingested doc chunks you did NOT search — when it is non-zero and the question is design/spec/architecture-flavored, consider a follow-up recall scoped to docs (use judgment; not every turn)."
     )]
     async fn recall(
         &self,
@@ -533,7 +578,7 @@ impl ServerHandler for MemhubServer {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("memhub", env!("CARGO_PKG_VERSION")))
             .with_instructions(
-                "Local-first per-repo project memory. Read tools are direct (status, search, recall, list_tasks, list_decisions, list_facts, list_pending_writes, get_command, metrics). Prefer `recall` over reading PROJECT_LEDGER.md mid-session — it does SQL+RAG hybrid retrieval across facts, decisions, and tasks. Tasks write directly (task_add, task_done) since tasks are intent. Facts and decisions stage via propose_fact / propose_decision and require human acceptance through `memhub review accept`. Session notes are write-only scratch. `render` regenerates the configured local PROJECT.md from the DB. `metrics` returns token-accounting totals and a pre-rendered dashboard panel for the /metrics skill.",
+                "Local-first per-repo project memory. Read tools are direct (status, search, recall, list_tasks, list_decisions, list_facts, list_pending_writes, get_command, metrics). Prefer `recall` over reading PROJECT_LEDGER.md mid-session — it does SQL+RAG hybrid retrieval across facts, decisions, and tasks. Tasks write directly (task_add, task_done) since tasks are intent. `doc_add` ingests a user-pointed markdown file as opt-in reference material (search it with recall source_types=[\"doc\"]; it never enters the default bundle, and recall's `available_docs` signals when ingested docs went unsearched). Facts and decisions stage via propose_fact / propose_decision and require human acceptance through `memhub review accept`. Session notes are write-only scratch. `render` regenerates the configured local PROJECT.md from the DB. `metrics` returns token-accounting totals and a pre-rendered dashboard panel for the /metrics skill.",
             )
     }
 
@@ -890,6 +935,26 @@ struct TaskAddToolResponse {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct DocAddParams {
+    /// Path to the local markdown file to ingest.
+    file: String,
+    /// Optional title override (defaults to first heading or file name).
+    title: Option<String>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct DocAddToolResponse {
+    id: i64,
+    title: String,
+    path: String,
+    chunks: usize,
+    /// `created` | `updated` | `unchanged`.
+    status: String,
+    actor: String,
+    actor_raw: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct TaskDoneParams {
     id: i64,
 }
@@ -983,6 +1048,12 @@ struct RecallToolResponse {
     results: Vec<RecallToolHit>,
     candidate_count: usize,
     returned_count: usize,
+    /// Ingested doc chunks that exist but were NOT searched because the
+    /// call did not scope to `doc`. Non-zero is a cue to consider a
+    /// follow-up `recall(..., source_types=["doc"])` when the question is
+    /// design/spec/architecture-flavored. Docs are opt-in and never in
+    /// the default bundle.
+    available_docs: usize,
     warnings: Vec<RecallToolWarning>,
     provenance: RecallToolProvenance,
 }
@@ -1061,6 +1132,7 @@ impl From<RecallResponse> for RecallToolResponse {
             results: value.results.into_iter().map(RecallToolHit::from).collect(),
             candidate_count: value.candidate_count,
             returned_count: value.returned_count,
+            available_docs: value.available_docs,
             warnings: value
                 .warnings
                 .into_iter()

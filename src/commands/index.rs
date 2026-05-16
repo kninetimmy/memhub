@@ -16,7 +16,7 @@ use crate::config::RetrievalMode;
 use crate::db;
 use crate::retrieval::embeddings::{EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME, embed_batch};
 use crate::retrieval::persist::{
-    SourceType, decision_embed_text, fact_embed_text, task_embed_text,
+    SourceType, decision_embed_text, doc_chunk_embed_text, fact_embed_text, task_embed_text,
 };
 
 #[derive(Debug)]
@@ -29,6 +29,8 @@ pub struct IndexStatusSummary {
     pub decisions_embedded: i64,
     pub tasks_total: i64,
     pub tasks_embedded: i64,
+    pub doc_chunks_total: i64,
+    pub doc_chunks_embedded: i64,
     pub total_embeddings: i64,
     pub missing_count: i64,
     pub stale_ratio: f64,
@@ -40,6 +42,7 @@ pub struct RebuildSummary {
     pub facts: usize,
     pub decisions: usize,
     pub tasks: usize,
+    pub doc_chunks: usize,
     pub deleted: usize,
     pub elapsed_ms: u128,
 }
@@ -52,10 +55,12 @@ pub fn status(start: &Path) -> Result<IndexStatusSummary> {
     let facts_total = rows.facts.len() as i64;
     let decisions_total = rows.decisions.len() as i64;
     let tasks_total = rows.tasks.len() as i64;
+    let doc_chunks_total = rows.doc_chunks.len() as i64;
 
     let facts_embedded = count_current_fact_embeddings(conn, &rows.facts)?;
     let decisions_embedded = count_current_decision_embeddings(conn, &rows.decisions)?;
     let tasks_embedded = count_current_task_embeddings(conn, &rows.tasks)?;
+    let doc_chunks_embedded = count_current_doc_chunk_embeddings(conn, &rows.doc_chunks)?;
 
     let total_embeddings: i64 = conn.query_row(
         "SELECT COUNT(*) FROM embeddings WHERE model_name = ?1",
@@ -63,8 +68,9 @@ pub fn status(start: &Path) -> Result<IndexStatusSummary> {
         |row| row.get(0),
     )?;
 
-    let source_rows = facts_total + decisions_total + tasks_total;
-    let current_rows = facts_embedded + decisions_embedded + tasks_embedded;
+    let source_rows = facts_total + decisions_total + tasks_total + doc_chunks_total;
+    let current_rows =
+        facts_embedded + decisions_embedded + tasks_embedded + doc_chunks_embedded;
     let missing_count = (source_rows - current_rows).max(0);
     let stale_ratio = if source_rows == 0 {
         0.0
@@ -81,6 +87,8 @@ pub fn status(start: &Path) -> Result<IndexStatusSummary> {
         decisions_embedded,
         tasks_total,
         tasks_embedded,
+        doc_chunks_total,
+        doc_chunks_embedded,
         total_embeddings,
         missing_count,
         stale_ratio,
@@ -101,6 +109,7 @@ pub fn rebuild(start: &Path, actor: &str) -> Result<RebuildSummary> {
     let mut facts_vectors: Vec<(i64, Vec<f32>, String)> = Vec::new();
     let mut decisions_vectors: Vec<(i64, Vec<f32>, String)> = Vec::new();
     let mut tasks_vectors: Vec<(i64, Vec<f32>, String)> = Vec::new();
+    let mut doc_chunks_vectors: Vec<(i64, Vec<f32>, String)> = Vec::new();
 
     if !rows.facts.is_empty() {
         let texts: Vec<String> = rows
@@ -147,6 +156,21 @@ pub fn rebuild(start: &Path, actor: &str) -> Result<RebuildSummary> {
             tasks_vectors.push((*id, vector, text));
         }
     }
+    if !rows.doc_chunks.is_empty() {
+        let texts: Vec<String> = rows
+            .doc_chunks
+            .iter()
+            .map(|(_, h, b)| doc_chunk_embed_text(h, b))
+            .collect();
+        let vectors = embed_batch(&texts)?;
+        for ((id, _, _), (text, vector)) in rows
+            .doc_chunks
+            .iter()
+            .zip(texts.into_iter().zip(vectors.into_iter()))
+        {
+            doc_chunks_vectors.push((*id, vector, text));
+        }
+    }
 
     // Single transaction: prune orphaned active-model rows, then UPSERT
     // vectors only when the source row still matches the snapshot that was
@@ -159,6 +183,7 @@ pub fn rebuild(start: &Path, actor: &str) -> Result<RebuildSummary> {
     let facts_written = upsert_batch(&tx, SourceType::Fact, &facts_vectors)?;
     let decisions_written = upsert_batch(&tx, SourceType::Decision, &decisions_vectors)?;
     let tasks_written = upsert_batch(&tx, SourceType::Task, &tasks_vectors)?;
+    let doc_chunks_written = upsert_batch(&tx, SourceType::DocChunk, &doc_chunks_vectors)?;
 
     db::log_write(
         &tx,
@@ -167,8 +192,12 @@ pub fn rebuild(start: &Path, actor: &str) -> Result<RebuildSummary> {
         None,
         "rebuild",
         &format!(
-            "index rebuild: model={} facts={} decisions={} tasks={}",
-            EMBEDDING_MODEL_NAME, facts_written, decisions_written, tasks_written,
+            "index rebuild: model={} facts={} decisions={} tasks={} doc_chunks={}",
+            EMBEDDING_MODEL_NAME,
+            facts_written,
+            decisions_written,
+            tasks_written,
+            doc_chunks_written,
         ),
     )?;
     tx.commit()?;
@@ -178,6 +207,7 @@ pub fn rebuild(start: &Path, actor: &str) -> Result<RebuildSummary> {
         facts: facts_written,
         decisions: decisions_written,
         tasks: tasks_written,
+        doc_chunks: doc_chunks_written,
         deleted,
         elapsed_ms: started.elapsed().as_millis(),
     })
@@ -187,6 +217,7 @@ struct CollectedRows {
     facts: Vec<(i64, String, String)>,
     decisions: Vec<(i64, String, String, Option<String>)>,
     tasks: Vec<(i64, String, Option<String>)>,
+    doc_chunks: Vec<(i64, String, String)>,
 }
 
 fn collect_source_rows(conn: &Connection) -> Result<CollectedRows> {
@@ -231,10 +262,25 @@ fn collect_source_rows(conn: &Connection) -> Result<CollectedRows> {
         tasks.push(row?);
     }
 
+    let mut doc_chunks = Vec::new();
+    let mut stmt =
+        conn.prepare("SELECT id, heading_path, body FROM doc_chunks ORDER BY id")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    for row in rows {
+        doc_chunks.push(row?);
+    }
+
     Ok(CollectedRows {
         facts,
         decisions,
         tasks,
+        doc_chunks,
     })
 }
 
@@ -301,6 +347,13 @@ fn delete_orphan_embeddings(tx: &rusqlite::Transaction<'_>) -> Result<usize> {
            AND NOT EXISTS (SELECT 1 FROM tasks WHERE tasks.id = embeddings.source_id)",
         params![EMBEDDING_MODEL_NAME],
     )?;
+    deleted += tx.execute(
+        "DELETE FROM embeddings
+         WHERE model_name = ?1
+           AND source_type = 'doc_chunk'
+           AND NOT EXISTS (SELECT 1 FROM doc_chunks WHERE doc_chunks.id = embeddings.source_id)",
+        params![EMBEDDING_MODEL_NAME],
+    )?;
     Ok(deleted)
 }
 
@@ -337,6 +390,20 @@ fn count_current_task_embeddings(
     for (id, title, notes) in rows {
         let text = task_embed_text(title, notes.as_deref());
         if embedding_matches(conn, SourceType::Task, *id, &text)? {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+fn count_current_doc_chunk_embeddings(
+    conn: &Connection,
+    rows: &[(i64, String, String)],
+) -> Result<i64> {
+    let mut count = 0;
+    for (id, heading_path, body) in rows {
+        let text = doc_chunk_embed_text(heading_path, body);
+        if embedding_matches(conn, SourceType::DocChunk, *id, &text)? {
             count += 1;
         }
     }
@@ -406,6 +473,17 @@ fn current_source_hash(
                     let title: String = row.get(0)?;
                     let notes: Option<String> = row.get(1)?;
                     Ok(task_embed_text(&title, notes.as_deref()))
+                },
+            )
+            .optional()?,
+        SourceType::DocChunk => tx
+            .query_row(
+                "SELECT heading_path, body FROM doc_chunks WHERE id = ?1",
+                params![source_id],
+                |row| {
+                    let heading_path: String = row.get(0)?;
+                    let body: String = row.get(1)?;
+                    Ok(doc_chunk_embed_text(&heading_path, &body))
                 },
             )
             .optional()?,

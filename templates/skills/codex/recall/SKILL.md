@@ -53,7 +53,9 @@ Pick a filter only when the question narrows naturally; otherwise let
 the default behavior surface across all three source types.
 
 - `source_types=["fact"]` / `--source-type fact` (repeatable):
-  restrict to one or more of `fact`, `decision`, `task`.
+  restrict to one or more of `fact`, `decision`, `task`, `doc`.
+  `doc` is opt-in — never in the default bundle (see "Reaching for
+  ingested docs" below).
 - `max_results=N` / `--max-results N`: cap the bundle. Default comes
   from `.memhub/config.toml` (`[retrieval] default_max_results`,
   usually 6).
@@ -93,6 +95,7 @@ The bundle has the shape:
   ],
   "candidate_count": 41,
   "returned_count": 6,
+  "available_docs": 0,
   "warnings": [],
   "provenance": { "matcher": "recall:hybrid", "elapsed_ms": 12 }
 }
@@ -108,7 +111,26 @@ The bundle has the shape:
 - `source` is the row's provenance string (`user`, `user+agent:X`,
   `agent:X`, `git`, `observed`). Cite it when the user asks where a
   claim came from.
+- `available_docs` (integer) counts ingested reference-doc chunks not
+  searched because the call did not scope to docs — see below.
 - Empty `results` is a real answer, not a failure — see below.
+
+## Reaching for ingested docs
+
+Reference docs (ingested via `/doc` or `memhub doc add`) are opt-in:
+they never appear in the default fact/decision/task bundle. The
+`available_docs` count is the cue. When it is **> 0** and the
+question is design/spec/architecture/style-flavored, run **one**
+follow-up recall scoped to docs before answering:
+
+```
+memhub.recall(query="<same or refined question>", source_types=["doc"])
+```
+
+Judgment, not reflex — per-question, not every-turn. When
+`available_docs` is 0, do nothing extra. Doc hits return with
+`source_type: "doc_chunk"` and a `<title> — <section breadcrumb>`
+title; cite the document and section.
 
 ## Empty results
 

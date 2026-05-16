@@ -200,7 +200,7 @@ Please install memhub for me, then turn on hybrid recall.
    embedding model into the binary.
 3. Run `memhub --version` to verify.
 4. Copy the user-level skills so /wrap-up, /check-init, /init-project,
-   /recall, /reindex, and /eval-recall all work as slash commands:
+   /recall, /reindex, /eval-recall, and /doc all work as slash commands:
 
        cp ~/src/memhub/templates/skills/claude/*.md ~/.claude/commands/
 
@@ -243,7 +243,7 @@ Please install memhub for me, then turn on hybrid recall.
        args = ["serve"]
 
 5. Copy the user-level skills so /wrap-up, /check-init, /init-project,
-   /recall, /reindex, and /eval-recall all work:
+   /recall, /reindex, /eval-recall, and /doc all work:
 
        cp -R ~/src/memhub/templates/skills/codex/* ~/.codex/skills/
 
@@ -363,7 +363,7 @@ stale_penalty = 0.3
 **Claude Code**
 
 - Reads `CLAUDE.md` at session start.
-- User-level slash commands at `~/.claude/commands/`: `/wrap-up`, `/check-init`, `/init-project`, `/recall`, `/reindex`, `/eval-recall`, `/viz`.
+- User-level slash commands at `~/.claude/commands/`: `/wrap-up`, `/check-init`, `/init-project`, `/recall`, `/reindex`, `/eval-recall`, `/viz`, `/doc`.
 - Skill writes are attributed `actor=claude:wrap-up`, `source=user+agent:claude-code`.
 
 **Codex CLI**
