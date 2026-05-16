@@ -22,9 +22,9 @@ const EMBEDDING_REFRESH_MS = 5000;
 const RECALL_REFRESH_MS = 5000;
 
 const colorFor = {
-  fact: "#4bc78c",
-  decision: "#53bce8",
-  task: "#b48cff",
+  fact: "#1fe88a",
+  decision: "#19e3ff",
+  task: "#a45cff",
 };
 
 const sourceLabels = {
@@ -86,6 +86,7 @@ function setupTabs() {
       document.querySelectorAll(".panel").forEach((panel) => panel.classList.remove("active"));
       button.classList.add("active");
       document.getElementById(button.dataset.panel).classList.add("active");
+      document.body.dataset.tab = button.dataset.panel;
       if (button.dataset.panel === "map") drawMap();
       if (button.dataset.panel === "metrics") refreshSeries({ refit: true });
     });
@@ -256,8 +257,8 @@ function renderSessionRows(sessions) {
   }
 }
 
-const ACTUAL_COLOR = "#53bce8";
-const COUNTER_COLOR = "#b48cff";
+const ACTUAL_COLOR = "#3a86ff";
+const COUNTER_COLOR = "#828b9f";
 
 function destroyChart() {
   if (state.uplot) {
@@ -435,9 +436,9 @@ function drawSeriesChart(payload, opts = {}) {
   state.seriesWindowDrawn = payload.window;
 
   const axisStyle = {
-    stroke: "#9ca7b7",
-    grid: { stroke: "#222936", width: 1 },
-    ticks: { stroke: "#323a49", width: 1 },
+    stroke: "#828b9f",
+    grid: { stroke: "rgba(58, 134, 255, 0.10)", width: 1 },
+    ticks: { stroke: "#262a36", width: 1 },
   };
   const chartOpts = {
     width,
@@ -467,8 +468,8 @@ function drawSeriesChart(payload, opts = {}) {
         label: "with memhub (actual)",
         stroke: ACTUAL_COLOR,
         width: 2,
-        fill: "rgba(83, 188, 232, 0.16)",
-        points: { show: true, size: 6, stroke: ACTUAL_COLOR, fill: "#0d1016", width: 2 },
+        fill: "rgba(58, 134, 255, 0.20)",
+        points: { show: true, size: 6, stroke: ACTUAL_COLOR, fill: "#08090c", width: 2 },
         value: (u, v) => (v == null ? "—" : fmtNum(v)),
       },
       {
@@ -573,16 +574,50 @@ function renderActivity(payload) {
   }
 }
 
+function renderRadialGauge(rootId, rows) {
+  const root = document.getElementById(rootId);
+  if (!root) return;
+  const total = rows.reduce((acc, r) => acc + r.total, 0);
+  const embedded = rows.reduce((acc, r) => acc + r.embedded, 0);
+  const missing = rows.reduce((acc, r) => acc + r.missing, 0);
+  const pct = total > 0 ? Math.round((embedded / total) * 100) : 0;
+  const r = 52;
+  const circ = 2 * Math.PI * r;
+  const offset = circ * (1 - pct / 100);
+  const legend = rows
+    .map(
+      (row) =>
+        `<div><b>${row.embedded}</b>/${row.total} ${row.source_type}</div>`,
+    )
+    .join("");
+  root.className = "coverage-gauge";
+  root.innerHTML = `
+    <div class="radial">
+      <svg width="124" height="124" viewBox="0 0 124 124">
+        <defs>
+          <linearGradient id="garc-${rootId}" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#16b86d"/><stop offset="1" stop-color="#1fe88a"/>
+          </linearGradient>
+        </defs>
+        <circle cx="62" cy="62" r="${r}" fill="none" stroke="#1c1f29" stroke-width="12"/>
+        <circle cx="62" cy="62" r="${r}" fill="none" stroke="url(#garc-${rootId})"
+          stroke-width="12" stroke-linecap="round"
+          stroke-dasharray="${circ.toFixed(2)}" stroke-dashoffset="${offset.toFixed(2)}"/>
+      </svg>
+      <div class="num"><b>${pct}%</b><small>indexed</small></div>
+    </div>
+    <div class="leg">
+      <div><b>${embedded}</b> rows embedded</div>
+      <div><b>${missing}</b> awaiting index</div>
+      ${legend}
+    </div>
+  `;
+}
+
 function renderAudit(payload) {
   renderBars("source-bars", payload.source_counts);
   renderBars("confidence-bars", payload.confidence_histogram);
-  renderBars(
-    "coverage-bars",
-    payload.embedding_coverage.map((row) => ({
-      label: row.source_type,
-      count: row.embedded,
-    })),
-  );
+  renderRadialGauge("coverage-gauge", payload.embedding_coverage);
   const pending = payload.pending_writes.map((row) => `${row.label}: ${row.count}`).join(" | ");
   document.getElementById("audit-summary").textContent =
     `Stale facts: ${payload.stale_facts}. Pending writes: ${pending || "none"}.`;
@@ -609,13 +644,13 @@ function drawMap() {
   const points = visiblePoints();
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   const gradient = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
-  gradient.addColorStop(0, "#101820");
-  gradient.addColorStop(0.5, "#11131a");
-  gradient.addColorStop(1, "#171224");
+  gradient.addColorStop(0, "#0c0d12");
+  gradient.addColorStop(0.5, "#0a0b0f");
+  gradient.addColorStop(1, "#120d1c");
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  ctx.strokeStyle = "#252b35";
+  ctx.strokeStyle = "rgba(164, 92, 255, 0.12)";
   ctx.lineWidth = 1;
   for (let x = 80; x < canvas.width; x += 120) {
     ctx.beginPath();
@@ -629,7 +664,7 @@ function drawMap() {
     ctx.lineTo(canvas.width, y);
     ctx.stroke();
   }
-  ctx.fillStyle = "#788397";
+  ctx.fillStyle = "#828b9f";
   ctx.font = "14px ui-sans-serif, system-ui";
   ctx.fillText("PCA axis 1", canvas.width - 92, canvas.height - 18);
   ctx.save();
