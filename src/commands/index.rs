@@ -69,8 +69,7 @@ pub fn status(start: &Path) -> Result<IndexStatusSummary> {
     )?;
 
     let source_rows = facts_total + decisions_total + tasks_total + doc_chunks_total;
-    let current_rows =
-        facts_embedded + decisions_embedded + tasks_embedded + doc_chunks_embedded;
+    let current_rows = facts_embedded + decisions_embedded + tasks_embedded + doc_chunks_embedded;
     let missing_count = (source_rows - current_rows).max(0);
     let stale_ratio = if source_rows == 0 {
         0.0
@@ -118,11 +117,7 @@ pub fn rebuild(start: &Path, actor: &str) -> Result<RebuildSummary> {
             .map(|(_, k, v)| fact_embed_text(k, v))
             .collect();
         let vectors = embed_batch(&texts)?;
-        for ((id, _, _), (text, vector)) in rows
-            .facts
-            .iter()
-            .zip(texts.into_iter().zip(vectors.into_iter()))
-        {
+        for ((id, _, _), (text, vector)) in rows.facts.iter().zip(texts.into_iter().zip(vectors)) {
             facts_vectors.push((*id, vector, text));
         }
     }
@@ -133,10 +128,8 @@ pub fn rebuild(start: &Path, actor: &str) -> Result<RebuildSummary> {
             .map(|(_, t, r, s)| decision_embed_text(t, r, s.as_deref()))
             .collect();
         let vectors = embed_batch(&texts)?;
-        for ((id, _, _, _), (text, vector)) in rows
-            .decisions
-            .iter()
-            .zip(texts.into_iter().zip(vectors.into_iter()))
+        for ((id, _, _, _), (text, vector)) in
+            rows.decisions.iter().zip(texts.into_iter().zip(vectors))
         {
             decisions_vectors.push((*id, vector, text));
         }
@@ -148,11 +141,7 @@ pub fn rebuild(start: &Path, actor: &str) -> Result<RebuildSummary> {
             .map(|(_, t, n)| task_embed_text(t, n.as_deref()))
             .collect();
         let vectors = embed_batch(&texts)?;
-        for ((id, _, _), (text, vector)) in rows
-            .tasks
-            .iter()
-            .zip(texts.into_iter().zip(vectors.into_iter()))
-        {
+        for ((id, _, _), (text, vector)) in rows.tasks.iter().zip(texts.into_iter().zip(vectors)) {
             tasks_vectors.push((*id, vector, text));
         }
     }
@@ -163,10 +152,8 @@ pub fn rebuild(start: &Path, actor: &str) -> Result<RebuildSummary> {
             .map(|(_, h, b)| doc_chunk_embed_text(h, b))
             .collect();
         let vectors = embed_batch(&texts)?;
-        for ((id, _, _), (text, vector)) in rows
-            .doc_chunks
-            .iter()
-            .zip(texts.into_iter().zip(vectors.into_iter()))
+        for ((id, _, _), (text, vector)) in
+            rows.doc_chunks.iter().zip(texts.into_iter().zip(vectors))
         {
             doc_chunks_vectors.push((*id, vector, text));
         }
@@ -263,8 +250,7 @@ fn collect_source_rows(conn: &Connection) -> Result<CollectedRows> {
     }
 
     let mut doc_chunks = Vec::new();
-    let mut stmt =
-        conn.prepare("SELECT id, heading_path, body FROM doc_chunks ORDER BY id")?;
+    let mut stmt = conn.prepare("SELECT id, heading_path, body FROM doc_chunks ORDER BY id")?;
     let rows = stmt.query_map([], |row| {
         Ok((
             row.get::<_, i64>(0)?,

@@ -62,6 +62,7 @@ pub fn propose_decision(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn insert_pending_write(
     start: &Path,
     kind: &str,

@@ -45,11 +45,11 @@
 //! value, so a malformed timestamp simply fails to match / fails to be
 //! pruned — the conservative direction.
 
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
+use crate::Result;
 use crate::config::MetricsConfig;
 use crate::db::log_write;
-use crate::Result;
 
 const RECONCILER_ACTOR: &str = "metrics:reconciler";
 const PRUNER_ACTOR: &str = "metrics:pruner";
@@ -235,11 +235,9 @@ mod tests {
         assert_eq!(sessions, 1, "the stale session is pruned");
 
         let remaining: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM session_turn_metrics",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM session_turn_metrics", [], |r| {
+                r.get(0)
+            })
             .expect("count");
         assert_eq!(
             remaining, 1,
@@ -279,7 +277,9 @@ mod tests {
         let (r, s) = prune_old(conn, 0).expect("prune");
         assert_eq!((r, s), (0, 0), "retention 0 = keep forever");
         let turns: i64 = conn
-            .query_row("SELECT COUNT(*) FROM session_turn_metrics", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM session_turn_metrics", [], |r| {
+                r.get(0)
+            })
             .expect("count");
         assert_eq!(turns, 1);
     }

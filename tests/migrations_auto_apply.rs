@@ -59,10 +59,7 @@ fn open_project_reapplies_a_missing_migration_row() {
         let ctx = db::open_project(temp.path()).expect("open project");
         let removed = ctx
             .conn
-            .execute(
-                "DELETE FROM schema_migrations WHERE version = ?1",
-                [probe],
-            )
+            .execute("DELETE FROM schema_migrations WHERE version = ?1", [probe])
             .expect("simulate stale schema");
         assert_eq!(
             removed, 1,
@@ -95,7 +92,9 @@ fn open_project_is_idempotent_against_an_already_migrated_db() {
     let count_before: i64 = {
         let ctx = db::open_project(temp.path()).expect("open project");
         ctx.conn
-            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
             .expect("count before")
     };
 
@@ -107,7 +106,9 @@ fn open_project_is_idempotent_against_an_already_migrated_db() {
     let count_after: i64 = {
         let ctx = db::open_project(temp.path()).expect("open project");
         ctx.conn
-            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
             .expect("count after")
     };
 

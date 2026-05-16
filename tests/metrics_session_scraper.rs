@@ -81,7 +81,10 @@ fn writes_log_skip_count(repo: &Path) -> i64 {
 }
 
 fn append(path: &Path, bytes: &str) {
-    let mut f = OpenOptions::new().append(true).open(path).expect("append open");
+    let mut f = OpenOptions::new()
+        .append(true)
+        .open(path)
+        .expect("append open");
     f.write_all(bytes.as_bytes()).expect("append write");
 }
 
@@ -105,7 +108,10 @@ fn scrapes_claude_fixture_into_session_metrics() {
     assert_eq!(row.output, 550);
     assert_eq!(row.cache_read, 11_000);
     assert_eq!(row.cache_creation, 300);
-    assert_eq!(row.recall_calls, 0, "recall_calls is task #30's, not the scraper's");
+    assert_eq!(
+        row.recall_calls, 0,
+        "recall_calls is task #30's, not the scraper's"
+    );
     assert_eq!(row.started_at, "2026-05-15T09:00:00.000Z");
     assert_eq!(row.ended_at.as_deref(), Some("2026-05-15T09:01:30.000Z"));
 
@@ -202,7 +208,10 @@ fn partial_trailing_line_is_not_consumed_until_completed() {
     );
     let mid = scrape_and_read(temp.path(), "sess-abc").expect("row");
     assert_eq!(mid.input, base.input, "partial line not counted");
-    assert_eq!(mid.offset, base.offset, "offset not advanced past a partial line");
+    assert_eq!(
+        mid.offset, base.offset,
+        "offset not advanced past a partial line"
+    );
 
     // Complete the line + newline: now it must be counted exactly once.
     append(&file, ",\"output_tokens\":11}}}\n");

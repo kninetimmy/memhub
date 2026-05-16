@@ -16,8 +16,7 @@ use crate::{MemhubError, Result};
 pub const EMBEDDING_MODEL_NAME: &str = "bge-small-en-v1.5";
 pub const EMBEDDING_DIMENSION: usize = 384;
 
-const MODEL_ONNX: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/bge-small-en-v1.5/model.onnx"));
+const MODEL_ONNX: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/bge-small-en-v1.5/model.onnx"));
 const TOKENIZER_JSON: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
     "/bge-small-en-v1.5/tokenizer.json"
@@ -48,7 +47,9 @@ fn shared() -> Result<&'static Mutex<TextEmbedding>> {
     let user_model = UserDefinedEmbeddingModel::new(MODEL_ONNX.to_vec(), tokenizer_files)
         .with_pooling(Pooling::Cls);
     let model = TextEmbedding::try_new_from_user_defined(user_model, InitOptionsUserDefined::new())
-        .map_err(|e| MemhubError::Embedding(format!("failed to load {EMBEDDING_MODEL_NAME}: {e}")))?;
+        .map_err(|e| {
+            MemhubError::Embedding(format!("failed to load {EMBEDDING_MODEL_NAME}: {e}"))
+        })?;
     // If another thread won the race, drop ours and return the winner.
     Ok(MODEL.get_or_init(|| Mutex::new(model)))
 }

@@ -174,8 +174,7 @@ fn auto_sync_md_updates_rendered_markdown_after_writes() {
     )
     .expect("decision add");
 
-    let agents =
-        fs::read_to_string(rendered_agents(temp.path())).expect("read rendered agents");
+    let agents = fs::read_to_string(rendered_agents(temp.path())).expect("read rendered agents");
     assert!(agents.contains("- Auto-sync writes the rendered copy"));
 }
 

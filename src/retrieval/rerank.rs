@@ -14,8 +14,7 @@
 use std::sync::{Mutex, OnceLock};
 
 use fastembed::{
-    OnnxSource, RerankInitOptionsUserDefined, TextRerank, TokenizerFiles,
-    UserDefinedRerankingModel,
+    OnnxSource, RerankInitOptionsUserDefined, TextRerank, TokenizerFiles, UserDefinedRerankingModel,
 };
 
 use crate::{MemhubError, Result};
@@ -55,15 +54,13 @@ fn shared() -> Result<&'static Mutex<TextRerank>> {
         special_tokens_map_file: SPECIAL_TOKENS_JSON.to_vec(),
         tokenizer_config_file: TOKENIZER_CONFIG_JSON.to_vec(),
     };
-    let user_model = UserDefinedRerankingModel::new(
-        OnnxSource::Memory(MODEL_ONNX.to_vec()),
-        tokenizer_files,
-    );
-    let model = TextRerank::try_new_from_user_defined(
-        user_model,
-        RerankInitOptionsUserDefined::default(),
-    )
-    .map_err(|e| MemhubError::Rerank(format!("failed to load {RERANKER_MODEL_NAME}: {e}")))?;
+    let user_model =
+        UserDefinedRerankingModel::new(OnnxSource::Memory(MODEL_ONNX.to_vec()), tokenizer_files);
+    let model =
+        TextRerank::try_new_from_user_defined(user_model, RerankInitOptionsUserDefined::default())
+            .map_err(|e| {
+                MemhubError::Rerank(format!("failed to load {RERANKER_MODEL_NAME}: {e}"))
+            })?;
     Ok(MODEL.get_or_init(|| Mutex::new(model)))
 }
 

@@ -48,9 +48,9 @@ pub fn run(start: &Path, dry_run: bool) -> Result<BootstrapSummary> {
         ));
     }
 
-    let decision_count: i64 =
-        ctx.conn
-            .query_row("SELECT COUNT(*) FROM decisions", [], |row| row.get(0))?;
+    let decision_count: i64 = ctx
+        .conn
+        .query_row("SELECT COUNT(*) FROM decisions", [], |row| row.get(0))?;
     let task_count: i64 = ctx
         .conn
         .query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0))?;
@@ -322,20 +322,20 @@ fn classify_backlog_task(heading_done: bool, body_lines: &[String]) -> String {
         if !inline_done_pr && line_has_inline_done_pr_marker(line) {
             inline_done_pr = true;
         }
-        if bulleted_status.is_none() {
-            if let Some(v) = extract_bulleted_status(line) {
-                bulleted_status = Some(v);
-            }
+        if bulleted_status.is_none()
+            && let Some(v) = extract_bulleted_status(line)
+        {
+            bulleted_status = Some(v);
         }
-        if status_clause.is_none() {
-            if let Some(v) = extract_status_clause(line) {
-                status_clause = Some(v);
-            }
+        if status_clause.is_none()
+            && let Some(v) = extract_status_clause(line)
+        {
+            status_clause = Some(v);
         }
-        if legacy_status.is_none() {
-            if let Some(v) = extract_legacy_status(line) {
-                legacy_status = Some(v);
-            }
+        if legacy_status.is_none()
+            && let Some(v) = extract_legacy_status(line)
+        {
+            legacy_status = Some(v);
         }
     }
 
@@ -368,7 +368,7 @@ fn line_has_inline_done_pr_marker(line: &str) -> bool {
             c.is_whitespace() || matches!(c, '—' | '-' | ':' | '(' | '[' | ',')
         });
         if let Some(rest) = after.strip_prefix("pr") {
-            let is_pr_word = rest.chars().next().map_or(true, |c| !c.is_alphabetic());
+            let is_pr_word = rest.chars().next().is_none_or(|c| !c.is_alphabetic());
             if is_pr_word {
                 let rest = rest.trim_start_matches(|c: char| c.is_whitespace() || c == '#');
                 if rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
@@ -383,10 +383,10 @@ fn line_has_inline_done_pr_marker(line: &str) -> bool {
 
 fn skip_optional_action_clause(s: &str) -> &str {
     for verb in ["merged", "shipped", "landed", "released"] {
-        if let Some(rest) = s.strip_prefix(verb) {
-            if rest.chars().next().map_or(true, |c| !c.is_alphanumeric()) {
-                return skip_optional_iso_date(rest);
-            }
+        if let Some(rest) = s.strip_prefix(verb)
+            && rest.chars().next().is_none_or(|c| !c.is_alphanumeric())
+        {
+            return skip_optional_iso_date(rest);
         }
     }
     s
@@ -413,7 +413,7 @@ fn extract_status_clause(line: &str) -> Option<String> {
     let lower = trimmed.to_ascii_lowercase();
     for prefix in ["**status:**", "**status.**"] {
         if let Some(rest) = lower.strip_prefix(prefix) {
-            let raw = rest.trim().split_whitespace().next()?;
+            let raw = rest.split_whitespace().next()?;
             let cleaned = raw.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '-');
             if cleaned.is_empty() {
                 return None;
@@ -434,7 +434,7 @@ fn extract_bulleted_status(line: &str) -> Option<String> {
         "* **status:**",
     ] {
         if let Some(rest) = lower.strip_prefix(prefix) {
-            let raw = rest.trim().split_whitespace().next()?;
+            let raw = rest.split_whitespace().next()?;
             let cleaned = raw.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '-');
             if cleaned.is_empty() {
                 return None;
@@ -449,7 +449,7 @@ fn extract_legacy_status(line: &str) -> Option<String> {
     let trimmed = line.trim();
     let lower = trimmed.to_ascii_lowercase();
     let rest = lower.strip_prefix("status:")?;
-    let raw = rest.trim().split_whitespace().next()?;
+    let raw = rest.split_whitespace().next()?;
     let cleaned = raw.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '-');
     if cleaned.is_empty() {
         return None;
@@ -549,10 +549,7 @@ Body text.
             extract_date_and_title("2026-04-21 \u{2014} Title"),
             (Some("2026-04-21 00:00:00".to_string()), "Title")
         );
-        assert_eq!(
-            extract_date_and_title("Plain title"),
-            (None, "Plain title")
-        );
+        assert_eq!(extract_date_and_title("Plain title"), (None, "Plain title"));
         // En-dash is intentionally NOT accepted — K9 canonical is em-dash only.
         assert_eq!(
             extract_date_and_title("2026-04-21 \u{2013} Title"),
@@ -875,12 +872,18 @@ Just a description, no status field at all.
 - **Status.** in-progress
 ";
         let (tasks, skipped) = parse_backlog(raw);
-        assert_eq!(skipped, 3, "C2 heading-done, C3 strikethrough, C4 inline-done-PR");
+        assert_eq!(
+            skipped, 3,
+            "C2 heading-done, C3 strikethrough, C4 inline-done-PR"
+        );
         assert_eq!(tasks.len(), 2);
         assert!(tasks[0].title.starts_with("C1"));
         assert!(tasks[1].title.starts_with("C5"));
         for t in &tasks {
-            assert!(!t.title.starts_with("**`"), "preamble bullet leaked as task");
+            assert!(
+                !t.title.starts_with("**`"),
+                "preamble bullet leaked as task"
+            );
         }
     }
 }

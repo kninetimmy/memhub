@@ -70,10 +70,10 @@ pub fn run(start: &Path, destination: &Path) -> Result<ExportSummary> {
         project_arch,
     };
 
-    if let Some(parent) = destination.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)?;
-        }
+    if let Some(parent) = destination.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)?;
     }
 
     let json = serde_json::to_string_pretty(&payload)?;

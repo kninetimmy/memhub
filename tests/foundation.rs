@@ -1,7 +1,7 @@
 use std::fs;
 
-use memhub::commands::{command, decision, fact, init, status, task};
 use memhub::MemhubError;
+use memhub::commands::{command, decision, fact, init, status, task};
 use tempfile::tempdir;
 
 #[test]
@@ -13,9 +13,11 @@ fn init_creates_memhub_layout_and_gitignore_entry() {
 
     assert!(result.db_path.exists());
     assert!(temp.path().join(".memhub").join("config.toml").exists());
-    assert!(result
-        .migrations_applied
-        .contains(&"0004_pending_write_provenance".to_string()));
+    assert!(
+        result
+            .migrations_applied
+            .contains(&"0004_pending_write_provenance".to_string())
+    );
 
     let gitignore = fs::read_to_string(temp.path().join(".gitignore")).expect("read gitignore");
     assert!(gitignore.contains(".memhub/"));

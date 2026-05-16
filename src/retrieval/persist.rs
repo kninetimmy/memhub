@@ -192,13 +192,7 @@ mod tests {
         // Empty and whitespace-only summaries must not pollute the embed
         // text with a leading blank, which would change content_hash and
         // force a spurious re-embed across every machine.
-        assert_eq!(
-            decision_embed_text("T", "R", Some("")),
-            "T\n\nR"
-        );
-        assert_eq!(
-            decision_embed_text("T", "R", Some("   \n  ")),
-            "T\n\nR"
-        );
+        assert_eq!(decision_embed_text("T", "R", Some("")), "T\n\nR");
+        assert_eq!(decision_embed_text("T", "R", Some("   \n  ")), "T\n\nR");
     }
 }

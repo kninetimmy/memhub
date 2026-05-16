@@ -195,7 +195,9 @@ fn fts_rebuild_repopulates_after_index_wipe() {
         ("tasks_fts", "cherry-pick"),
     ] {
         ctx.conn
-            .execute_batch(&format!("INSERT INTO {table}({table}) VALUES('delete-all');"))
+            .execute_batch(&format!(
+                "INSERT INTO {table}({table}) VALUES('delete-all');"
+            ))
             .expect("clear fts");
         assert!(
             !fts_hit(&ctx.conn, table, term),

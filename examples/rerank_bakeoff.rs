@@ -28,7 +28,7 @@ use std::{
     time::Instant,
 };
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use fastembed::{
     OnnxSource, RerankInitOptionsUserDefined, TextRerank, TokenizerFiles, UserDefinedRerankingModel,
 };
@@ -167,10 +167,10 @@ fn run_recall(query: &str, pool: usize) -> Result<Vec<RecallHit>> {
 }
 
 fn matches_hit(hit: &RecallHit, q: &GoldenQuery) -> bool {
-    if let Some(st) = &q.source_type {
-        if !hit.source_type.eq_ignore_ascii_case(st) {
-            return false;
-        }
+    if let Some(st) = &q.source_type
+        && !hit.source_type.eq_ignore_ascii_case(st)
+    {
+        return false;
     }
     let t = hit.title.to_lowercase();
     let b = hit.body.to_lowercase();
@@ -231,13 +231,20 @@ impl MatchMetrics {
     }
 }
 
-fn rerank_score(reranker: &mut TextRerank, query: &str, docs: &[String]) -> Result<(Vec<usize>, f64, f32)> {
+fn rerank_score(
+    reranker: &mut TextRerank,
+    query: &str,
+    docs: &[String],
+) -> Result<(Vec<usize>, f64, f32)> {
     let doc_refs: Vec<&str> = docs.iter().map(|s| s.as_str()).collect();
     let t0 = Instant::now();
     let results = reranker.rerank(query, &doc_refs, false, None)?;
     let elapsed_ms = t0.elapsed().as_secs_f64() * 1000.0;
     let order: Vec<usize> = results.iter().map(|r| r.index).collect();
-    let top_score = results.first().map(|r| r.score).unwrap_or(f32::NEG_INFINITY);
+    let top_score = results
+        .first()
+        .map(|r| r.score)
+        .unwrap_or(f32::NEG_INFINITY);
     Ok((order, elapsed_ms, top_score))
 }
 
@@ -264,7 +271,9 @@ fn main() -> Result<()> {
                     .parse()?
             }
             "-h" | "--help" => {
-                eprintln!("Usage: cargo run --release --example rerank_bakeoff -- [--candidate-pool N]");
+                eprintln!(
+                    "Usage: cargo run --release --example rerank_bakeoff -- [--candidate-pool N]"
+                );
                 return Ok(());
             }
             other => return Err(anyhow!("unknown arg: {other}")),
@@ -274,8 +283,16 @@ fn main() -> Result<()> {
     let golden_path = "tests/retrieval_golden.json";
     let golden: GoldenFile = serde_json::from_slice(&fs::read(golden_path)?)
         .with_context(|| format!("parse {golden_path}"))?;
-    let match_queries: Vec<&GoldenQuery> = golden.queries.iter().filter(|q| q.kind == "match").collect();
-    let empty_queries: Vec<&GoldenQuery> = golden.queries.iter().filter(|q| q.kind == "empty").collect();
+    let match_queries: Vec<&GoldenQuery> = golden
+        .queries
+        .iter()
+        .filter(|q| q.kind == "match")
+        .collect();
+    let empty_queries: Vec<&GoldenQuery> = golden
+        .queries
+        .iter()
+        .filter(|q| q.kind == "empty")
+        .collect();
     eprintln!(
         "Golden set: {} match queries, {} empty (safety) queries",
         match_queries.len(),
@@ -300,7 +317,10 @@ fn main() -> Result<()> {
             continue;
         }
         let baseline_order: Vec<usize> = (0..hits.len()).collect();
-        let docs: Vec<String> = hits.iter().map(|h| format!("{}\n\n{}", h.title, h.body)).collect();
+        let docs: Vec<String> = hits
+            .iter()
+            .map(|h| format!("{}\n\n{}", h.title, h.body))
+            .collect();
 
         let (minilm_order, minilm_ms, _) = rerank_score(&mut minilm, &q.query, &docs)?;
         m_minilm.rerank_ms_total += minilm_ms;
@@ -314,7 +334,11 @@ fn main() -> Result<()> {
         score_order(&bge_order, &hits, q, &mut m_bge);
     }
 
-    println!("=== Match-query results ({} queries, candidate pool top-{}) ===\n", match_queries.len(), pool);
+    println!(
+        "=== Match-query results ({} queries, candidate pool top-{}) ===\n",
+        match_queries.len(),
+        pool
+    );
     println!(
         "  {:<48}  {:>8}  {:>8}  {:>5}   {:>10}",
         "config", "Recall@1", "Recall@3", "MRR", "mean ms"
@@ -348,10 +372,16 @@ fn main() -> Result<()> {
     for q in &empty_queries {
         let hits = run_recall(&q.query, pool)?;
         if hits.is_empty() {
-            println!("  {:<46}  {:>14}  {:>14}", q.id, "(empty pool)", "(empty pool)");
+            println!(
+                "  {:<46}  {:>14}  {:>14}",
+                q.id, "(empty pool)", "(empty pool)"
+            );
             continue;
         }
-        let docs: Vec<String> = hits.iter().map(|h| format!("{}\n\n{}", h.title, h.body)).collect();
+        let docs: Vec<String> = hits
+            .iter()
+            .map(|h| format!("{}\n\n{}", h.title, h.body))
+            .collect();
         let (_, _, minilm_top) = rerank_score(&mut minilm, &q.query, &docs)?;
         let (_, _, bge_top) = rerank_score(&mut bge, &q.query, &docs)?;
         println!("  {:<46}  {:>14.4}  {:>14.4}", q.id, minilm_top, bge_top);

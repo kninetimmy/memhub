@@ -50,12 +50,7 @@ pub struct DocAddOutcome {
 
 /// Ingest (or re-ingest) a markdown file. Unchanged content (same
 /// SHA-256) is a no-op. Changed content replaces every chunk.
-pub fn add(
-    start: &Path,
-    file: &Path,
-    title: Option<&str>,
-    actor: &str,
-) -> Result<DocAddOutcome> {
+pub fn add(start: &Path, file: &Path, title: Option<&str>, actor: &str) -> Result<DocAddOutcome> {
     let content = fs::read_to_string(file).map_err(|e| {
         crate::MemhubError::InvalidInput(format!("cannot read {}: {e}", file.display()))
     })?;
@@ -200,11 +195,9 @@ pub fn list(start: &Path) -> Result<Vec<Document>> {
 fn resolve_doc_id(tx: &Transaction<'_>, ident: &str) -> Result<Option<i64>> {
     if let Ok(id) = ident.parse::<i64>() {
         let found: Option<i64> = tx
-            .query_row(
-                "SELECT id FROM documents WHERE id = ?1",
-                params![id],
-                |r| r.get(0),
-            )
+            .query_row("SELECT id FROM documents WHERE id = ?1", params![id], |r| {
+                r.get(0)
+            })
             .optional()?;
         if found.is_some() {
             return Ok(found);
@@ -254,9 +247,10 @@ pub fn show(start: &Path, ident: &str) -> Result<Option<(Document, Vec<DocChunk>
     let canonical = fs::canonicalize(ident)
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| ident.to_string());
-    let Some(doc) = docs.into_iter().find(|d| {
-        parsed_id == Some(d.id) || d.path == ident || d.path == canonical
-    }) else {
+    let Some(doc) = docs
+        .into_iter()
+        .find(|d| parsed_id == Some(d.id) || d.path == ident || d.path == canonical)
+    else {
         return Ok(None);
     };
 
@@ -465,7 +459,12 @@ fn is_fence_token(trimmed: &str, open: Option<&str>) -> bool {
 }
 
 fn fence_marker(trimmed: &str) -> String {
-    if trimmed.starts_with('~') { "~~~" } else { "```" }.to_string()
+    if trimmed.starts_with('~') {
+        "~~~"
+    } else {
+        "```"
+    }
+    .to_string()
 }
 
 fn sha256_hex(text: &str) -> String {
@@ -490,7 +489,8 @@ mod tests {
 
     #[test]
     fn chunker_splits_on_headings_with_breadcrumb() {
-        let md = "# Top\n\nintro\n\n## Alpha\n\nbody a\n\n### Nested\n\ndeep\n\n## Beta\n\nbody b\n";
+        let md =
+            "# Top\n\nintro\n\n## Alpha\n\nbody a\n\n### Nested\n\ndeep\n\n## Beta\n\nbody b\n";
         let chunks = chunk_markdown(md);
         let paths: Vec<&str> = chunks.iter().map(|(p, _)| p.as_str()).collect();
         assert_eq!(
@@ -581,8 +581,11 @@ mod tests {
         };
 
         let doc = temp.path().join("spec.md");
-        fs::write(&doc, "# Spec\n\n## A\n\nalpha\n\n## B\n\nbeta\n\n## C\n\ngamma\n")
-            .expect("write");
+        fs::write(
+            &doc,
+            "# Spec\n\n## A\n\nalpha\n\n## B\n\nbeta\n\n## C\n\ngamma\n",
+        )
+        .expect("write");
         let first = add(temp.path(), &doc, None, "cli:user").expect("add");
         let (c1, e1) = counts("after add");
         assert!(c1 >= 3);

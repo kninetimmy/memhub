@@ -6,9 +6,9 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-pub use deny::{default_patterns, DenyList, PathMatcher};
+pub use deny::{DenyList, PathMatcher, default_patterns};
 pub use integrations::{
-    detect_k9, IntegrationsConfig, K9Config, DEFAULT_AGENT_DOCS_PATH, K9_DETECTION_FILENAME,
+    DEFAULT_AGENT_DOCS_PATH, IntegrationsConfig, K9_DETECTION_FILENAME, K9Config, detect_k9,
 };
 
 use crate::Result;

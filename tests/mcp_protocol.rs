@@ -104,9 +104,7 @@ fn tools_list_exposes_full_tool_surface() {
         .iter()
         .find(|r| r["id"] == json!(2))
         .expect("tools/list response");
-    let tools = list["result"]["tools"]
-        .as_array()
-        .expect("tools array");
+    let tools = list["result"]["tools"].as_array().expect("tools array");
 
     let names: std::collections::HashSet<String> = tools
         .iter()

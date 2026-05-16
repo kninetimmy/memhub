@@ -151,9 +151,11 @@ fn render_respects_custom_output_dir_from_config() {
     let result = render::run(temp.path(), "cli:user").expect("render");
 
     assert_eq!(result.output_dir, temp.path().join("docs").join("state"));
-    assert!(result
-        .project_md_path
-        .starts_with(temp.path().join("docs").join("state")));
+    assert!(
+        result
+            .project_md_path
+            .starts_with(temp.path().join("docs").join("state"))
+    );
     assert!(result.project_md_path.exists());
     assert!(result.ledger_md_path.exists());
 }

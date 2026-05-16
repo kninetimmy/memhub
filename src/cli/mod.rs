@@ -190,7 +190,11 @@ fn pending_write_record_to_json(row: &PendingWriteRecord) -> serde_json::Value {
     })
 }
 
-fn run_narrative(cwd: &std::path::Path, kind: NarrativeKind, command: NarrativeCommand) -> Result<()> {
+fn run_narrative(
+    cwd: &std::path::Path,
+    kind: NarrativeKind,
+    command: NarrativeCommand,
+) -> Result<()> {
     match command {
         NarrativeCommand::Set {
             body,
@@ -226,7 +230,10 @@ fn run_narrative(cwd: &std::path::Path, kind: NarrativeKind, command: NarrativeC
                     Some(entry) => {
                         println!(
                             "[{}] {} (actor: {}, created: {})",
-                            entry.id, kind.as_str(), entry.actor, entry.created_at
+                            entry.id,
+                            kind.as_str(),
+                            entry.actor,
+                            entry.created_at
                         );
                         println!();
                         println!("{}", entry.body);
@@ -554,10 +561,7 @@ fn print_eval_summary(summary: &commands::eval::EvalSummary) {
                 }
             },
         };
-        println!(
-            "  [{glyph}] {id} ({kind}) — {detail}",
-            id = outcome.id,
-        );
+        println!("  [{glyph}] {id} ({kind}) — {detail}", id = outcome.id,);
         if let Some(reason) = &outcome.failure_reason {
             println!("        {reason}");
         }
@@ -565,9 +569,20 @@ fn print_eval_summary(summary: &commands::eval::EvalSummary) {
 }
 
 fn print_metrics_status_human(s: &commands::metrics::MetricsStatus) {
-    let status_label = if s.config.enabled { "enabled" } else { "disabled" };
+    let status_label = if s.config.enabled {
+        "enabled"
+    } else {
+        "disabled"
+    };
     println!("memhub metrics — {status_label}");
-    println!("  session_accounting: {}", if s.config.session_accounting { "on" } else { "off" });
+    println!(
+        "  session_accounting: {}",
+        if s.config.session_accounting {
+            "on"
+        } else {
+            "off"
+        }
+    );
     println!("  tokenizer:          {}", s.config.tokenizer);
     println!(
         "  retention:          {}",
@@ -593,7 +608,10 @@ fn print_metrics_status_human(s: &commands::metrics::MetricsStatus) {
         let id = &sess.session_id[..sess.session_id.len().min(8)];
         println!();
         println!("  Current session ({id}):");
-        println!("    started:      {}", &sess.started_at[..sess.started_at.len().min(16)]);
+        println!(
+            "    started:      {}",
+            &sess.started_at[..sess.started_at.len().min(16)]
+        );
         println!("    input tokens: {}", sess.input_tokens);
         println!("    output tokens:{}", sess.output_tokens);
         println!("    cache read:   {}", sess.cache_read_tokens);
@@ -1616,8 +1634,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 actor,
             } => {
                 let actor = resolve_actor(actor.as_deref())?;
-                let outcome =
-                    commands::doc::add(&cwd, &file, title.as_deref(), &actor)?;
+                let outcome = commands::doc::add(&cwd, &file, title.as_deref(), &actor)?;
                 let status = match outcome.status {
                     commands::doc::IngestStatus::Created => "created",
                     commands::doc::IngestStatus::Updated => "updated",
@@ -1635,16 +1652,10 @@ pub fn run(cli: Cli) -> Result<()> {
                 } else {
                     println!(
                         "{} document {}: {} ({} chunks)\n  {}",
-                        status,
-                        outcome.doc_id,
-                        outcome.title,
-                        outcome.chunk_count,
-                        outcome.path,
+                        status, outcome.doc_id, outcome.title, outcome.chunk_count, outcome.path,
                     );
                     if outcome.status != commands::doc::IngestStatus::Unchanged {
-                        println!(
-                            "  Searchable via: memhub recall \"<query>\" --source-type doc"
-                        );
+                        println!("  Searchable via: memhub recall \"<query>\" --source-type doc");
                     }
                 }
             }
@@ -1695,51 +1706,49 @@ pub fn run(cli: Cli) -> Result<()> {
             DocCommand::Show {
                 ident,
                 json: as_json,
-            } => {
-                match commands::doc::show(&cwd, &ident)? {
-                    None => {
-                        if as_json {
-                            println!("{}", json!({ "found": false, "ident": ident }));
-                        } else {
-                            println!("No document matched {ident}.");
-                        }
+            } => match commands::doc::show(&cwd, &ident)? {
+                None => {
+                    if as_json {
+                        println!("{}", json!({ "found": false, "ident": ident }));
+                    } else {
+                        println!("No document matched {ident}.");
                     }
-                    Some((meta, chunks)) => {
-                        if as_json {
-                            let payload = json!({
-                                "id": meta.id,
-                                "title": meta.title,
-                                "path": meta.path,
-                                "bytes": meta.byte_len,
-                                "ingested_at": meta.ingested_at,
-                                "chunks": chunks.iter().map(|c| json!({
-                                    "id": c.id,
-                                    "ord": c.ord,
-                                    "heading_path": c.heading_path,
-                                    "body": c.body,
-                                })).collect::<Vec<_>>(),
-                            });
-                            println!("{payload}");
-                        } else {
-                            println!(
-                                "[{}] {} ({} chunks)\n  {}",
-                                meta.id,
-                                meta.title,
-                                chunks.len(),
-                                meta.path,
-                            );
-                            for c in chunks {
-                                let head = if c.heading_path.is_empty() {
-                                    "(preamble)"
-                                } else {
-                                    &c.heading_path
-                                };
-                                println!("  #{} {}", c.ord, head);
-                            }
+                }
+                Some((meta, chunks)) => {
+                    if as_json {
+                        let payload = json!({
+                            "id": meta.id,
+                            "title": meta.title,
+                            "path": meta.path,
+                            "bytes": meta.byte_len,
+                            "ingested_at": meta.ingested_at,
+                            "chunks": chunks.iter().map(|c| json!({
+                                "id": c.id,
+                                "ord": c.ord,
+                                "heading_path": c.heading_path,
+                                "body": c.body,
+                            })).collect::<Vec<_>>(),
+                        });
+                        println!("{payload}");
+                    } else {
+                        println!(
+                            "[{}] {} ({} chunks)\n  {}",
+                            meta.id,
+                            meta.title,
+                            chunks.len(),
+                            meta.path,
+                        );
+                        for c in chunks {
+                            let head = if c.heading_path.is_empty() {
+                                "(preamble)"
+                            } else {
+                                &c.heading_path
+                            };
+                            println!("  #{} {}", c.ord, head);
                         }
                     }
                 }
-            }
+            },
         },
         TopLevelCommand::Export { path } => {
             let summary = commands::export::run(&cwd, &path)?;
@@ -1777,9 +1786,9 @@ pub fn run(cli: Cli) -> Result<()> {
             println!();
             println!("Next steps:");
             println!(
-                "  Embeddings for imported rows are not yet built. Run `memhub index` to"
+                "  Embeddings for imported rows are not yet built. Run `memhub index rebuild`"
             );
-            println!("  enable vector recall on this machine.");
+            println!("  to enable vector recall on this machine.");
         }
         TopLevelCommand::Command { command } => match command {
             CommandCommand::List => {
@@ -1964,7 +1973,10 @@ pub fn run(cli: Cli) -> Result<()> {
                 let enabled = commands::integrations::check_k9(&cwd);
                 process::exit(if enabled { 0 } else { 1 });
             }
-            IntegrationsCommand::BootstrapK9 { dry_run, json: as_json } => {
+            IntegrationsCommand::BootstrapK9 {
+                dry_run,
+                json: as_json,
+            } => {
                 let summary = commands::bootstrap_k9::run(&cwd, dry_run)?;
                 if as_json {
                     let payload = json!({
@@ -1982,7 +1994,11 @@ pub fn run(cli: Cli) -> Result<()> {
                     println!(
                         "Bootstrap from K9 at {} ({})",
                         summary.agent_docs_path.display(),
-                        if summary.dry_run { "dry run" } else { "applied" }
+                        if summary.dry_run {
+                            "dry run"
+                        } else {
+                            "applied"
+                        }
                     );
                     println!(
                         "  decisions: {} | tasks: {} (skipped completed: {})",
@@ -2026,6 +2042,7 @@ pub fn run(cli: Cli) -> Result<()> {
                         "facts": summary.facts,
                         "decisions": summary.decisions,
                         "tasks": summary.tasks,
+                        "doc_chunks": summary.doc_chunks,
                         "deleted": summary.deleted,
                         "elapsed_ms": summary.elapsed_ms,
                     });
@@ -2036,8 +2053,8 @@ pub fn run(cli: Cli) -> Result<()> {
                         summary.model, summary.elapsed_ms, summary.deleted,
                     );
                     println!(
-                        "  facts: {}  decisions: {}  tasks: {}",
-                        summary.facts, summary.decisions, summary.tasks,
+                        "  facts: {}  decisions: {}  tasks: {}  doc chunks: {}",
+                        summary.facts, summary.decisions, summary.tasks, summary.doc_chunks,
                     );
                 }
             }
@@ -2171,9 +2188,8 @@ pub fn run(cli: Cli) -> Result<()> {
                 min_rerank_score,
                 json: as_json,
             } => {
-                let golden_path = golden.unwrap_or_else(|| {
-                    cwd.join(commands::eval::DEFAULT_GOLDEN_PATH)
-                });
+                let golden_path =
+                    golden.unwrap_or_else(|| cwd.join(commands::eval::DEFAULT_GOLDEN_PATH));
                 let opts = commands::eval::EvalOptions {
                     golden_path,
                     k,
@@ -2273,10 +2289,7 @@ pub fn run(cli: Cli) -> Result<()> {
 
 #[cfg(feature = "viz")]
 fn run_viz(cwd: &std::path::Path, host: String, port: u16, open: bool) -> Result<()> {
-    crate::dashboard::serve_blocking(
-        cwd,
-        crate::dashboard::DashboardOptions { host, port, open },
-    )
+    crate::dashboard::serve_blocking(cwd, crate::dashboard::DashboardOptions { host, port, open })
 }
 
 #[cfg(not(feature = "viz"))]

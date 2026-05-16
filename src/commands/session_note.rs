@@ -69,12 +69,12 @@ pub fn list(
             "session note list limit must be greater than zero".to_string(),
         ));
     }
-    if let Some(days) = since_days {
-        if days < 0 {
-            return Err(MemhubError::InvalidInput(
-                "session note --since-days must not be negative".to_string(),
-            ));
-        }
+    if let Some(days) = since_days
+        && days < 0
+    {
+        return Err(MemhubError::InvalidInput(
+            "session note --since-days must not be negative".to_string(),
+        ));
     }
 
     let ctx = db::open_project(start)?;

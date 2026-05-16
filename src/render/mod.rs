@@ -8,7 +8,7 @@ use crate::commands::metrics::query_period_totals;
 use crate::db;
 use crate::metrics::formatter::render_period_block;
 use crate::models::{
-    Decision, Fact, FACT_STALE_AFTER_DAYS, NarrativeEntry, RenderResult, SessionNote, Task,
+    Decision, FACT_STALE_AFTER_DAYS, Fact, NarrativeEntry, RenderResult, SessionNote, Task,
 };
 use crate::sync_md;
 
@@ -47,7 +47,11 @@ struct RenderSnapshot {
 pub fn render_project(start: &Path, actor: &str) -> Result<RenderResult> {
     let ctx = db::open_project(start)?;
 
-    let snapshot = build_snapshot(&ctx.conn, &ctx.config.project_name, ctx.config.metrics.enabled)?;
+    let snapshot = build_snapshot(
+        &ctx.conn,
+        &ctx.config.project_name,
+        ctx.config.metrics.enabled,
+    )?;
     let project_md = format_project_md(&snapshot);
     let ledger_md = format_ledger_md(&snapshot);
 
@@ -88,14 +92,7 @@ pub fn render_project(start: &Path, actor: &str) -> Result<RenderResult> {
         }
     }
 
-    db::log_write(
-        &ctx.conn,
-        actor,
-        "render",
-        None,
-        "render",
-        "memhub render",
-    )?;
+    db::log_write(&ctx.conn, actor, "render", None, "render", "memhub render")?;
 
     Ok(RenderResult {
         output_dir,
@@ -133,12 +130,15 @@ fn stage_rendered_file(path: &Path, content: &str, backup_dir: &Path) -> Result<
     })
 }
 
-fn build_snapshot(conn: &Connection, project_name: &str, metrics_enabled: bool) -> Result<RenderSnapshot> {
-    let generated_at: String = conn.query_row(
-        "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')",
-        [],
-        |row| row.get(0),
-    )?;
+fn build_snapshot(
+    conn: &Connection,
+    project_name: &str,
+    metrics_enabled: bool,
+) -> Result<RenderSnapshot> {
+    let generated_at: String =
+        conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
+            row.get(0)
+        })?;
 
     Ok(RenderSnapshot {
         project_name: project_name.to_string(),
@@ -526,7 +526,7 @@ fn render_header(s: &RenderSnapshot) -> String {
 }
 
 fn collapse_inline(text: &str) -> String {
-    text.replace('\n', " ").replace('\r', " ")
+    text.replace(['\n', '\r'], " ")
 }
 
 /// Wrap-up convention is to draft narrative bodies as standalone mini-docs
@@ -549,9 +549,7 @@ fn strip_leading_heading<'a>(body: &'a str, heading: &str) -> &'a str {
 }
 
 fn escape_table_cell(text: &str) -> String {
-    text.replace('|', "\\|")
-        .replace('\n', " ")
-        .replace('\r', " ")
+    text.replace('|', "\\|").replace(['\n', '\r'], " ")
 }
 
 #[cfg(test)]
@@ -570,36 +568,27 @@ mod tests {
     #[test]
     fn leaves_body_alone_when_heading_does_not_match() {
         let body = "## Different heading\n\nbody\n";
-        assert_eq!(
-            strip_leading_heading(body, "## Currently building"),
-            body,
-        );
+        assert_eq!(strip_leading_heading(body, "## Currently building"), body,);
     }
 
     #[test]
     fn tolerates_leading_blank_lines_before_heading() {
         let body = "\n\n## Architecture\n\nbody\n";
-        assert_eq!(
-            strip_leading_heading(body, "## Architecture"),
-            "body\n",
-        );
+        assert_eq!(strip_leading_heading(body, "## Architecture"), "body\n",);
     }
 
     #[test]
     fn does_not_strip_when_heading_text_is_only_a_prefix_of_a_paragraph() {
         let body = "## Currently building tools that...\n";
-        assert_eq!(
-            strip_leading_heading(body, "## Currently building"),
-            body,
-        );
+        assert_eq!(strip_leading_heading(body, "## Currently building"), body,);
     }
 
     // --- Token Accounting section rendering ---
 
     fn render_project_md_for_test(temp: &tempfile::TempDir) -> String {
         let ctx = crate::db::open_project(temp.path()).expect("open_project");
-        let snapshot =
-            super::build_snapshot(&ctx.conn, "test", ctx.config.metrics.enabled).expect("build_snapshot");
+        let snapshot = super::build_snapshot(&ctx.conn, "test", ctx.config.metrics.enabled)
+            .expect("build_snapshot");
         super::format_project_md(&snapshot)
     }
 

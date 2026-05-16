@@ -49,12 +49,12 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::Path;
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 
+use crate::Result;
 use crate::config::MetricsConfig;
 use crate::db::log_write;
-use crate::Result;
 
 const CLAUDE_AGENT: &str = "claude-code";
 const SCRAPER_ACTOR: &str = "metrics:claude-scraper";
@@ -79,10 +79,7 @@ pub fn scrape_if_enabled(conn: &Connection, cfg: &MetricsConfig, repo_root: &Pat
     if !cfg.claude_transcripts_dir.is_empty() {
         let dir = Path::new(&cfg.claude_transcripts_dir);
         if let Err(err) = scrape_claude_dir(conn, dir) {
-            log::warn!(
-                "session_metrics scrape of {} failed: {err}",
-                dir.display()
-            );
+            log::warn!("session_metrics scrape of {} failed: {err}", dir.display());
         }
     }
 
@@ -120,10 +117,7 @@ fn scrape_claude_dir(conn: &Connection, dir: &Path) -> Result<()> {
         }
         // One bad file must not stop the others.
         if let Err(err) = scrape_claude_file(conn, &path) {
-            log::warn!(
-                "metrics: skipping session file {}: {err}",
-                path.display()
-            );
+            log::warn!("metrics: skipping session file {}: {err}", path.display());
         }
     }
     Ok(())
@@ -138,24 +132,58 @@ fn scrape_codex_dir(conn: &Connection, dir: &Path, repo_root: &Path) -> Result<(
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(err) => return Err(err.into()),
     };
-    let canonical_root = repo_root.canonicalize().unwrap_or_else(|_| repo_root.to_path_buf());
+    let canonical_root = repo_root
+        .canonicalize()
+        .unwrap_or_else(|_| repo_root.to_path_buf());
     for l1 in l1_entries {
-        let l1 = match l1 { Ok(e) => e, Err(_) => continue };
-        if !l1.file_type().map(|t| t.is_dir()).unwrap_or(false) { continue; }
-        let l2_entries = match fs::read_dir(l1.path()) { Ok(e) => e, Err(_) => continue };
+        let l1 = match l1 {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        if !l1.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let l2_entries = match fs::read_dir(l1.path()) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
         for l2 in l2_entries {
-            let l2 = match l2 { Ok(e) => e, Err(_) => continue };
-            if !l2.file_type().map(|t| t.is_dir()).unwrap_or(false) { continue; }
-            let l3_entries = match fs::read_dir(l2.path()) { Ok(e) => e, Err(_) => continue };
+            let l2 = match l2 {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            if !l2.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            let l3_entries = match fs::read_dir(l2.path()) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
             for l3 in l3_entries {
-                let l3 = match l3 { Ok(e) => e, Err(_) => continue };
-                if !l3.file_type().map(|t| t.is_dir()).unwrap_or(false) { continue; }
-                let file_entries = match fs::read_dir(l3.path()) { Ok(e) => e, Err(_) => continue };
+                let l3 = match l3 {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
+                if !l3.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    continue;
+                }
+                let file_entries = match fs::read_dir(l3.path()) {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
                 for entry in file_entries {
-                    let path = match entry { Ok(e) => e.path(), Err(_) => continue };
-                    if path.extension().and_then(|e| e.to_str()) != Some("jsonl") { continue; }
+                    let path = match entry {
+                        Ok(e) => e.path(),
+                        Err(_) => continue,
+                    };
+                    if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                        continue;
+                    }
                     if let Err(err) = scrape_codex_file(conn, &path, &canonical_root) {
-                        log::warn!("metrics: skipping codex session file {}: {err}", path.display());
+                        log::warn!(
+                            "metrics: skipping codex session file {}: {err}",
+                            path.display()
+                        );
                     }
                 }
             }
@@ -221,18 +249,25 @@ fn scrape_codex_file(conn: &Connection, path: &Path, canonical_root: &Path) -> R
             params![session_id],
         )?;
         let _ = log_write(
-            conn, CODEX_SCRAPER_ACTOR, "session_metrics", None, "scrape_reset",
-            &format!("{} shrank ({} < {}); rescanning from 0", path.display(), file_len, offset),
+            conn,
+            CODEX_SCRAPER_ACTOR,
+            "session_metrics",
+            None,
+            "scrape_reset",
+            &format!(
+                "{} shrank ({} < {}); rescanning from 0",
+                path.display(),
+                file_len,
+                offset
+            ),
         );
         offset = 0;
     }
 
     // CWD filter: only needed for sessions we haven't seen before.
     // On a resume (existing_offset.is_some()) the project already matched.
-    if existing_offset.is_none() {
-        if !codex_session_matches_project(path, canonical_root) {
-            return Ok(());
-        }
+    if existing_offset.is_none() && !codex_session_matches_project(path, canonical_root) {
+        return Ok(());
     }
 
     let mut file = File::open(path)?;
@@ -244,8 +279,12 @@ fn scrape_codex_file(conn: &Connection, path: &Path, canonical_root: &Path) -> R
     loop {
         buf.clear();
         let n = reader.read_until(b'\n', &mut buf)?;
-        if n == 0 { break; }
-        if buf.last() != Some(&b'\n') { break; }
+        if n == 0 {
+            break;
+        }
+        if buf.last() != Some(&b'\n') {
+            break;
+        }
         d.consumed += n as u64;
         ingest_codex_line(&String::from_utf8_lossy(&buf), &mut d);
     }
@@ -303,10 +342,16 @@ fn scrape_codex_file(conn: &Connection, path: &Path, canonical_root: &Path) -> R
 
     if d.parse_skips > 0 {
         let _ = log_write(
-            conn, CODEX_SCRAPER_ACTOR, "session_metrics", None, "scrape_skip",
+            conn,
+            CODEX_SCRAPER_ACTOR,
+            "session_metrics",
+            None,
+            "scrape_skip",
             &format!(
                 "{}: {} unparseable/foreign line(s) skipped, {} token_count line(s) counted",
-                path.display(), d.parse_skips, d.lines_with_usage
+                path.display(),
+                d.parse_skips,
+                d.lines_with_usage
             ),
         );
     }
@@ -333,12 +378,18 @@ fn codex_session_matches_project(path: &Path, canonical_root: &Path) -> bool {
     if v.get("type").and_then(Value::as_str) != Some("session_meta") {
         return false;
     }
-    let cwd = match v.get("payload").and_then(|p| p.get("cwd")).and_then(Value::as_str) {
+    let cwd = match v
+        .get("payload")
+        .and_then(|p| p.get("cwd"))
+        .and_then(Value::as_str)
+    {
         Some(c) => c,
         None => return false,
     };
     let cwd_path = std::path::Path::new(cwd);
-    let canonical_cwd = cwd_path.canonicalize().unwrap_or_else(|_| cwd_path.to_path_buf());
+    let canonical_cwd = cwd_path
+        .canonicalize()
+        .unwrap_or_else(|_| cwd_path.to_path_buf());
     canonical_cwd == canonical_root
 }
 
@@ -348,11 +399,16 @@ fn codex_session_matches_project(path: &Path, canonical_root: &Path) -> bool {
 /// `output_tokens`; `cache_creation_tokens` is always 0.
 fn ingest_codex_line(line: &str, d: &mut Delta) {
     let line = line.trim();
-    if line.is_empty() { return; }
+    if line.is_empty() {
+        return;
+    }
 
     let v: Value = match serde_json::from_str(line) {
         Ok(v) => v,
-        Err(_) => { d.parse_skips += 1; return; }
+        Err(_) => {
+            d.parse_skips += 1;
+            return;
+        }
     };
 
     let line_ts: Option<String> = v
@@ -360,13 +416,24 @@ fn ingest_codex_line(line: &str, d: &mut Delta) {
         .and_then(Value::as_str)
         .map(str::to_string);
     if let Some(ts) = line_ts.clone() {
-        if d.min_ts.as_ref().is_none_or(|m| ts < *m) { d.min_ts = Some(ts.clone()); }
-        if d.max_ts.as_ref().is_none_or(|m| ts > *m) { d.max_ts = Some(ts); }
+        if d.min_ts.as_ref().is_none_or(|m| ts < *m) {
+            d.min_ts = Some(ts.clone());
+        }
+        if d.max_ts.as_ref().is_none_or(|m| ts > *m) {
+            d.max_ts = Some(ts);
+        }
     }
 
-    if v.get("type").and_then(Value::as_str) != Some("event_msg") { return; }
-    let payload = match v.get("payload") { Some(p) => p, None => return };
-    if payload.get("type").and_then(Value::as_str) != Some("token_count") { return; }
+    if v.get("type").and_then(Value::as_str) != Some("event_msg") {
+        return;
+    }
+    let payload = match v.get("payload") {
+        Some(p) => p,
+        None => return,
+    };
+    if payload.get("type").and_then(Value::as_str) != Some("token_count") {
+        return;
+    }
     let info = match payload.get("info") {
         Some(i) if !i.is_null() => i,
         _ => return,
@@ -653,9 +720,7 @@ fn ingest_line(line: &str, d: &mut Delta) {
         None => return, // non-usage event: silently ignored
     };
 
-    let n = |key: &str| -> i64 {
-        usage.get(key).and_then(Value::as_i64).unwrap_or(0)
-    };
+    let n = |key: &str| -> i64 { usage.get(key).and_then(Value::as_i64).unwrap_or(0) };
 
     let input = n("input_tokens");
     let output = n("output_tokens");
@@ -730,9 +795,7 @@ mod tests {
 
     #[test]
     fn tolerates_top_level_usage_shape_drift() {
-        let d = d_after(&[
-            r#"{"type":"assistant","usage":{"input_tokens":7,"output_tokens":3}}"#,
-        ]);
+        let d = d_after(&[r#"{"type":"assistant","usage":{"input_tokens":7,"output_tokens":3}}"#]);
         assert_eq!(d.input, 7);
         assert_eq!(d.output, 3);
     }
@@ -826,7 +889,9 @@ mod tests {
 
         write(
             &file,
-            &[r#"{"type":"assistant","timestamp":"2026-05-15T11:00:00.000Z","message":{"usage":{"input_tokens":10,"output_tokens":5}}}"#],
+            &[
+                r#"{"type":"assistant","timestamp":"2026-05-15T11:00:00.000Z","message":{"usage":{"input_tokens":10,"output_tokens":5}}}"#,
+            ],
         );
         scrape_claude_file(conn, &file).expect("scrape 1");
 
@@ -870,7 +935,9 @@ mod tests {
         // Rewrite shorter (rotation): one different line, fewer bytes.
         write(
             &file,
-            &[r#"{"type":"assistant","timestamp":"2026-05-15T13:00:00.000Z","message":{"usage":{"input_tokens":9,"output_tokens":1}}}"#],
+            &[
+                r#"{"type":"assistant","timestamp":"2026-05-15T13:00:00.000Z","message":{"usage":{"input_tokens":9,"output_tokens":1}}}"#,
+            ],
         );
         scrape_claude_file(conn, &file).expect("scrape 2");
 

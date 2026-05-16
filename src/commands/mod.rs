@@ -2,7 +2,6 @@ pub mod bootstrap_k9;
 pub mod command;
 pub mod decision;
 pub mod doc;
-pub mod metrics;
 pub mod eval;
 pub mod export;
 pub mod fact;
@@ -11,6 +10,7 @@ pub mod index;
 pub mod ingest_git;
 pub mod init;
 pub mod integrations;
+pub mod metrics;
 pub mod narrative;
 pub mod pending_write;
 pub mod render;
@@ -84,11 +84,7 @@ pub fn validate_source(source: &str) -> Result<()> {
 fn is_valid_agent_id(id: &str) -> bool {
     !id.is_empty()
         && id.chars().all(|c| {
-            c.is_ascii_lowercase()
-                || c.is_ascii_digit()
-                || c == '-'
-                || c == '_'
-                || c == '.'
+            c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_' || c == '.'
         })
 }
 

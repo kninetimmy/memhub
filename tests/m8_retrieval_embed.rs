@@ -19,7 +19,10 @@ fn switch_to_hybrid(repo_root: &std::path::Path) {
     cfg.save(&config_path).expect("save config");
     // Sanity: rewriting via TOML round-trip should preserve hybrid mode.
     let reloaded = ProjectConfig::load(&config_path).expect("reload");
-    assert_eq!(reloaded.retrieval.mode, memhub::config::RetrievalMode::Hybrid);
+    assert_eq!(
+        reloaded.retrieval.mode,
+        memhub::config::RetrievalMode::Hybrid
+    );
 }
 
 fn embedding_count(conn: &rusqlite::Connection, source_type: &str, source_id: i64) -> i64 {
@@ -190,13 +193,22 @@ fn hybrid_mode_re_embeds_when_value_changes() {
     let (_, hash_v1, blob_v1) = embedding_metadata(&ctx.conn, "fact", fact_id);
     drop(ctx);
 
-    fact::add(temp.path(), "k", "very different replacement", "user", "cli:user")
-        .expect("add v2");
+    fact::add(
+        temp.path(),
+        "k",
+        "very different replacement",
+        "user",
+        "cli:user",
+    )
+    .expect("add v2");
 
     let ctx = db::open_project(temp.path()).expect("open project");
     let (_, hash_v2, blob_v2) = embedding_metadata(&ctx.conn, "fact", fact_id);
 
-    assert_ne!(hash_v1, hash_v2, "content hash must move when value changes");
+    assert_ne!(
+        hash_v1, hash_v2,
+        "content hash must move when value changes"
+    );
     assert_ne!(blob_v1, blob_v2, "embedding vector must change too");
     assert_eq!(embedding_count(&ctx.conn, "fact", fact_id), 1);
 }
@@ -236,8 +248,8 @@ fn hybrid_mode_writes_task_embedding_with_and_without_notes() {
         "cli:user",
     )
     .expect("add task with notes");
-    let no_notes = task::add(temp.path(), "Profile cold start", None, "cli:user")
-        .expect("add task no notes");
+    let no_notes =
+        task::add(temp.path(), "Profile cold start", None, "cli:user").expect("add task no notes");
 
     let ctx = db::open_project(temp.path()).expect("open project");
     assert_eq!(embedding_count(&ctx.conn, "task", with_notes), 1);
@@ -247,7 +259,10 @@ fn hybrid_mode_writes_task_embedding_with_and_without_notes() {
     let (dim_b, _, blob_b) = embedding_metadata(&ctx.conn, "task", no_notes);
     assert_eq!(dim_a, 384);
     assert_eq!(dim_b, 384);
-    assert_ne!(blob_a, blob_b, "different content should produce different vectors");
+    assert_ne!(
+        blob_a, blob_b,
+        "different content should produce different vectors"
+    );
 }
 
 #[test]

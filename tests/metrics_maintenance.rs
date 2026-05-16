@@ -15,7 +15,7 @@ use memhub::commands::init;
 use memhub::config::ProjectConfig;
 use memhub::db;
 use memhub::metrics::maintenance;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use tempfile::tempdir;
 
 /// Insert a `session_metrics` row. `ended_at = None` models an open

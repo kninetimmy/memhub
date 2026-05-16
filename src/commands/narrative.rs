@@ -78,10 +78,7 @@ pub fn show(start: &Path, kind: NarrativeKind) -> Result<Option<NarrativeEntry>>
          LIMIT 1",
         kind.table()
     );
-    let entry = ctx
-        .conn
-        .query_row(&sql, [], row_to_entry)
-        .optional()?;
+    let entry = ctx.conn.query_row(&sql, [], row_to_entry).optional()?;
     Ok(entry)
 }
 

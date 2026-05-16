@@ -32,6 +32,7 @@ pub fn add_with_decided_at(
     Ok(row_id)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn add_with_decided_at_in_tx(
     tx: &Transaction<'_>,
     title: &str,
@@ -104,9 +105,9 @@ pub fn set_summary(start: &Path, id: i64, summary: Option<&str>, actor: &str) ->
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .map_err(|err| match err {
-            rusqlite::Error::QueryReturnedNoRows => crate::MemhubError::InvalidInput(format!(
-                "no decision with id {id}"
-            )),
+            rusqlite::Error::QueryReturnedNoRows => {
+                crate::MemhubError::InvalidInput(format!("no decision with id {id}"))
+            }
             other => crate::MemhubError::from(other),
         })?;
 

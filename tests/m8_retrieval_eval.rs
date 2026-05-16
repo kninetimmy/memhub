@@ -6,9 +6,7 @@
 
 use std::path::PathBuf;
 
-use memhub::commands::eval::{
-    DEFAULT_GOLDEN_PATH, EvalOptions, GoldenKind, run_retrieval,
-};
+use memhub::commands::eval::{DEFAULT_GOLDEN_PATH, EvalOptions, GoldenKind, run_retrieval};
 use memhub::commands::{decision, fact, init, task};
 use tempfile::tempdir;
 
@@ -261,10 +259,9 @@ fn shipped_golden_file_parses_cleanly() {
     // Guards against accidental schema drift in the checked-in starter set.
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let path = repo_root.join(DEFAULT_GOLDEN_PATH);
-    let bytes = std::fs::read(&path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    let parsed: memhub::commands::eval::GoldenFile = serde_json::from_slice(&bytes)
-        .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
+    let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let parsed: memhub::commands::eval::GoldenFile =
+        serde_json::from_slice(&bytes).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
     assert_eq!(parsed.version, 1);
     // Addendum §9 fixed a 12-query baseline (11 keyword match + 1 safety).
     // Decision 69 expanded the set with `semantic-` prefixed

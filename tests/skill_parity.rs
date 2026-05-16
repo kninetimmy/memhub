@@ -119,9 +119,7 @@ fn slash_tokens(segment: &str) -> BTreeSet<String> {
             let start = i + 1;
             let mut j = start;
             while j < bytes.len()
-                && (bytes[j].is_ascii_lowercase()
-                    || bytes[j].is_ascii_digit()
-                    || bytes[j] == b'-')
+                && (bytes[j].is_ascii_lowercase() || bytes[j].is_ascii_digit() || bytes[j] == b'-')
             {
                 j += 1;
             }
@@ -138,8 +136,7 @@ fn slash_tokens(segment: &str) -> BTreeSet<String> {
 
 #[test]
 fn readme_install_blocks_enumerate_every_skill() {
-    let readme =
-        fs::read_to_string(repo_root().join("README.md")).expect("read README.md");
+    let readme = fs::read_to_string(repo_root().join("README.md")).expect("read README.md");
 
     // Both the Claude and Codex install blocks carry one stable
     // sentence: "Copy the user-level skills so <list> all work".
@@ -169,7 +166,8 @@ fn readme_install_blocks_enumerate_every_skill() {
     for (idx, seg) in segments.iter().enumerate() {
         let listed = slash_tokens(seg);
         assert_eq!(
-            listed, canonical,
+            listed,
+            canonical,
             "README skill enumeration #{} is out of sync with the skill \
              template set.\n  listed:    {:?}\n  canonical: {:?}\n\
              (update the 'Copy the user-level skills so ... all work' \
@@ -202,8 +200,14 @@ fn claude_md_and_agents_md_sections_stay_in_parity() {
     let allowed_claude_only: BTreeSet<String> =
         CLAUDE_ONLY_SECTIONS.iter().map(|s| s.to_string()).collect();
 
-    let claude_only: BTreeSet<_> = claude_sections.difference(&agents_sections).cloned().collect();
-    let agents_only: BTreeSet<_> = agents_sections.difference(&claude_sections).cloned().collect();
+    let claude_only: BTreeSet<_> = claude_sections
+        .difference(&agents_sections)
+        .cloned()
+        .collect();
+    let agents_only: BTreeSet<_> = agents_sections
+        .difference(&claude_sections)
+        .cloned()
+        .collect();
 
     assert_eq!(
         claude_only, allowed_claude_only,

@@ -3,10 +3,7 @@ use rusqlite::Connection;
 use crate::Result;
 
 pub fn latest_version() -> &'static str {
-    MIGRATIONS
-        .last()
-        .expect("MIGRATIONS list is non-empty")
-        .0
+    MIGRATIONS.last().expect("MIGRATIONS list is non-empty").0
 }
 
 const MIGRATIONS: &[(&str, &str)] = &[

@@ -304,8 +304,7 @@ fn run(
     // nonsense-rejection floor that replaced `min_vector_score`), then
     // truncates to `max_results`. fts-only callers and trivially short
     // candidate sets bypass entirely.
-    let reranked =
-        opts.mode == RetrievalMode::Hybrid && opts.use_reranker && scored.len() > 1;
+    let reranked = opts.mode == RetrievalMode::Hybrid && opts.use_reranker && scored.len() > 1;
     if reranked {
         scored.truncate(opts.rerank_candidate_pool);
         // Cross-encoder input mirrors the bi-encoder's embed text shape:
@@ -606,7 +605,7 @@ fn detect_stale_candidates(
          WHERE source_type = ?1 AND source_id = ?2 AND model_name = ?3",
     )?;
 
-    for (key, _) in candidates {
+    for key in candidates.keys() {
         let current_text = match current_embed_text(conn, key.0, key.1)? {
             Some(t) => t,
             None => continue,
@@ -726,17 +725,17 @@ fn hydrate_sources(
 
     for (st, ids) in by_type {
         for id in ids {
-            if let Some(row) = load_source_row(conn, st, id)? {
-                if let Some(entry) = candidates.get_mut(&(st, id)) {
-                    entry.title = row.title;
-                    entry.body = row.body;
-                    entry.summary = row.summary;
-                    entry.source = row.source;
-                    entry.confidence = row.confidence;
-                    entry.is_stale = row.is_stale;
-                    entry.created_at = row.created_at;
-                    entry.hydrated = true;
-                }
+            if let Some(row) = load_source_row(conn, st, id)?
+                && let Some(entry) = candidates.get_mut(&(st, id))
+            {
+                entry.title = row.title;
+                entry.body = row.body;
+                entry.summary = row.summary;
+                entry.source = row.source;
+                entry.confidence = row.confidence;
+                entry.is_stale = row.is_stale;
+                entry.created_at = row.created_at;
+                entry.hydrated = true;
             }
         }
     }
@@ -1502,8 +1501,14 @@ mod tests {
         // and zeroes the signal.
         let temp = tempdir().expect("tempdir");
         init::run(temp.path()).expect("init");
-        fact::add(temp.path(), "build-command", "cargo build", "user", "cli:user")
-            .expect("fact");
+        fact::add(
+            temp.path(),
+            "build-command",
+            "cargo build",
+            "user",
+            "cli:user",
+        )
+        .expect("fact");
         let doc_file = temp.path().join("spec.md");
         std::fs::write(
             &doc_file,
@@ -1642,7 +1647,10 @@ mod tests {
         assert_eq!(rows.len(), 1, "exactly one row per recall");
         let (query_hash, bundle_tokens, ledger_tokens, rerank_used, result_count) = &rows[0];
         assert_eq!(query_hash.len(), 64);
-        assert!(*bundle_tokens > 0, "bundle_tokens must reflect returned hits");
+        assert!(
+            *bundle_tokens > 0,
+            "bundle_tokens must reflect returned hits"
+        );
         assert_eq!(
             *ledger_tokens, 0,
             "no rendered ledger in this tempdir, so ledger_tokens = 0"

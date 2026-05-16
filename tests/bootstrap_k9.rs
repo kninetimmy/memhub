@@ -79,10 +79,7 @@ fn bootstrap_k9_happy_path_writes_rows() {
     write_agent_docs(temp.path(), SAMPLE_DECISIONS, SAMPLE_BACKLOG);
     init::run(temp.path()).expect("init");
 
-    let output = run_cli(
-        temp.path(),
-        &["integrations", "bootstrap-k9", "--json"],
-    );
+    let output = run_cli(temp.path(), &["integrations", "bootstrap-k9", "--json"]);
     assert!(
         output.status.success(),
         "bootstrap-k9 failed: stderr={}",
@@ -146,7 +143,12 @@ fn bootstrap_k9_refuses_on_non_empty_db() {
     let prep = run_cli(
         temp.path(),
         &[
-            "decision", "add", "Pre-existing", "--rationale", "already here", "--actor",
+            "decision",
+            "add",
+            "Pre-existing",
+            "--rationale",
+            "already here",
+            "--actor",
             "cli:user",
         ],
     );

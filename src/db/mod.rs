@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use log::debug;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 use crate::config::ProjectConfig;
 use crate::models::InitResult;
@@ -87,7 +87,8 @@ fn init_project_inner(
         .and_then(|name| name.to_str())
         .unwrap_or("memhub");
 
-    let config_created = create_config_if_missing(&paths.memhub_dir, &paths.config_path, repo_name)?;
+    let config_created =
+        create_config_if_missing(&paths.memhub_dir, &paths.config_path, repo_name)?;
 
     let config = ProjectConfig::load(&paths.config_path)?;
     let mut conn = open_connection(&paths.db_path)?;

@@ -67,10 +67,8 @@ async fn serve(repo_root: PathBuf, token: String, bind_addr: SocketAddr, open: b
     println!("URL: {url}");
     println!("Press Ctrl-C to stop.");
 
-    if open {
-        if let Err(error) = open_url(&url) {
-            eprintln!("warning: could not open browser: {error}");
-        }
+    if open && let Err(error) = open_url(&url) {
+        eprintln!("warning: could not open browser: {error}");
     }
 
     let app = router(AppState {
@@ -194,9 +192,8 @@ async fn api_metrics_series(
     Query(query): Query<SeriesQuery>,
 ) -> std::result::Result<Json<SeriesPayload>, ApiError> {
     authorize(&state, query.token.as_deref())?;
-    let window = crate::commands::metrics::SeriesWindow::parse(
-        query.window.as_deref().unwrap_or("7d"),
-    );
+    let window =
+        crate::commands::metrics::SeriesWindow::parse(query.window.as_deref().unwrap_or("7d"));
     Ok(Json(read_series(&state.repo_root, window)?))
 }
 
@@ -438,7 +435,11 @@ fn read_metrics(start: &Path) -> Result<MetricsPayload> {
         last_scrape_ts: data.last_scrape_ts,
         totals_7d: period_payload(&data.totals_7d),
         totals_30d: period_payload(&data.totals_30d),
-        sessions: data.last_sessions.into_iter().map(session_payload).collect(),
+        sessions: data
+            .last_sessions
+            .into_iter()
+            .map(session_payload)
+            .collect(),
     })
 }
 
@@ -1066,11 +1067,8 @@ mod tests {
     fn series_payload_is_empty_and_disabled_when_metrics_off() {
         let temp = tempfile::tempdir().expect("tempdir");
         crate::commands::init::run(temp.path()).expect("init");
-        let payload = read_series(
-            temp.path(),
-            crate::commands::metrics::SeriesWindow::Days(7),
-        )
-        .expect("read_series");
+        let payload = read_series(temp.path(), crate::commands::metrics::SeriesWindow::Days(7))
+            .expect("read_series");
         assert!(!payload.enabled);
         assert!(payload.points.is_empty());
         assert_eq!(payload.window, "7d");
@@ -1114,11 +1112,8 @@ mod tests {
                 )
                 .expect("recall");
         }
-        let payload = read_series(
-            temp.path(),
-            crate::commands::metrics::SeriesWindow::Session,
-        )
-        .expect("read_series");
+        let payload = read_series(temp.path(), crate::commands::metrics::SeriesWindow::Session)
+            .expect("read_series");
         assert!(payload.enabled);
         assert_eq!(payload.session_id.as_deref(), Some("dash-s"));
         assert_eq!(payload.points.len(), 2);

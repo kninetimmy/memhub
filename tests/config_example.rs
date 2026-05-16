@@ -51,12 +51,15 @@ min_vector_score = 0.6
     let config: ProjectConfig = toml::from_str(&raw).expect("parse local config");
 
     assert_eq!(config.project_name, "from-example");
-    assert_eq!(config.auto_sync_md, true);
+    assert!(config.auto_sync_md);
     assert_eq!(config.log_level, "debug");
     assert_eq!(config.retrieval.default_max_results, 9);
     assert_eq!(config.retrieval.scoring.fts_weight, 0.3);
     assert_eq!(config.retrieval.scoring.vector_weight, 0.7);
-    assert_eq!(config.deny_list.patterns, vec!["custom-secret.*".to_string()]);
+    assert_eq!(
+        config.deny_list.patterns,
+        vec!["custom-secret.*".to_string()]
+    );
 }
 
 /// Without an example file, init falls back to the code-defined
@@ -78,7 +81,7 @@ fn init_falls_back_to_code_defaults_when_no_example_present() {
         .and_then(|name| name.to_str())
         .expect("tempdir basename");
     assert_eq!(config.project_name, repo_name);
-    assert_eq!(config.auto_sync_md, false);
+    assert!(!config.auto_sync_md);
     assert_eq!(config.log_level, "info");
 }
 
@@ -147,9 +150,9 @@ fn tracked_example_config_pins_metrics_defaults() {
         .expect("read tracked .memhub/config.example.toml");
     let config: ProjectConfig = toml::from_str(&raw).expect("parse tracked example");
 
-    assert_eq!(config.metrics.enabled, false);
-    assert_eq!(config.metrics.recall_proxy, true);
-    assert_eq!(config.metrics.session_accounting, true);
+    assert!(!config.metrics.enabled);
+    assert!(config.metrics.recall_proxy);
+    assert!(config.metrics.session_accounting);
     assert_eq!(config.metrics.claude_transcripts_dir, "");
     assert_eq!(config.metrics.codex_transcripts_dir, "");
     assert_eq!(config.metrics.tokenizer, "tiktoken-cl100k");
@@ -174,8 +177,8 @@ log_level = "info"
     fs::write(&local, legacy).expect("write legacy config");
 
     let config = ProjectConfig::load(&local).expect("load legacy config");
-    assert_eq!(config.metrics.enabled, false);
-    assert_eq!(config.metrics.recall_proxy, true);
+    assert!(!config.metrics.enabled);
+    assert!(config.metrics.recall_proxy);
     assert_eq!(config.metrics.tokenizer, "tiktoken-cl100k");
     assert_eq!(config.metrics.retention_days, 90);
 }

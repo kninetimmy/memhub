@@ -76,11 +76,9 @@ pub fn query_tool_data(start: &Path) -> Result<MetricsToolData> {
     // MAX(ended_at) across all scraped sessions — most recent scrape advance.
     let last_scrape_ts: Option<String> = ctx
         .conn
-        .query_row(
-            "SELECT MAX(ended_at) FROM session_metrics",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT MAX(ended_at) FROM session_metrics", [], |r| {
+            r.get(0)
+        })
         .unwrap_or(None);
 
     let totals_7d = query_period_totals(&ctx.conn, 7)?;
@@ -88,11 +86,12 @@ pub fn query_tool_data(start: &Path) -> Result<MetricsToolData> {
 
     let last_sessions = query_last_sessions(&ctx.conn, 10)?;
 
-    let rendered_panel = if totals_7d.is_empty() && totals_30d.is_empty() && last_sessions.is_empty() {
-        formatter::render_panel_no_data().to_string()
-    } else {
-        formatter::render_panel(&totals_7d, &totals_30d, &last_sessions)
-    };
+    let rendered_panel =
+        if totals_7d.is_empty() && totals_30d.is_empty() && last_sessions.is_empty() {
+            formatter::render_panel_no_data().to_string()
+        } else {
+            formatter::render_panel(&totals_7d, &totals_30d, &last_sessions)
+        };
 
     Ok(MetricsToolData {
         enabled: true,
@@ -184,10 +183,7 @@ pub(crate) fn query_period_totals(conn: &rusqlite::Connection, days: u32) -> Res
     })
 }
 
-fn query_last_sessions(
-    conn: &rusqlite::Connection,
-    limit: i64,
-) -> Result<Vec<SessionSummary>> {
+fn query_last_sessions(conn: &rusqlite::Connection, limit: i64) -> Result<Vec<SessionSummary>> {
     let mut stmt = conn.prepare(
         "SELECT \
            session_id, \
@@ -405,7 +401,10 @@ fn fetch_session_turn_rows(conn: &rusqlite::Connection) -> Result<RawRows> {
         .optional()?;
 
     let Some(sid) = session_id else {
-        return Ok(RawRows { rows: Vec::new(), session_id: None });
+        return Ok(RawRows {
+            rows: Vec::new(),
+            session_id: None,
+        });
     };
 
     // Turns in transcript (append) order.
@@ -539,16 +538,16 @@ fn fetch_session_turn_rows(conn: &rusqlite::Connection) -> Result<RawRows> {
         });
     }
 
-    Ok(RawRows { rows, session_id: Some(sid) })
+    Ok(RawRows {
+        rows,
+        session_id: Some(sid),
+    })
 }
 
 /// One cumulative point per session within the window (no 10-row cap),
 /// oldest first. Each session carries its own attributed recall
 /// offset and recall count.
-fn fetch_session_window_rows(
-    conn: &rusqlite::Connection,
-    days: Option<u32>,
-) -> Result<RawRows> {
+fn fetch_session_window_rows(conn: &rusqlite::Connection, days: Option<u32>) -> Result<RawRows> {
     let (sql, modifier): (String, Option<String>) = match days {
         Some(n) => (
             "SELECT s.session_id, \
@@ -617,12 +616,12 @@ fn fetch_session_window_rows(
             .query_map(params![m], map)?
             .filter_map(|r| r.ok())
             .collect(),
-        None => stmt
-            .query_map([], map)?
-            .filter_map(|r| r.ok())
-            .collect(),
+        None => stmt.query_map([], map)?.filter_map(|r| r.ok()).collect(),
     };
-    Ok(RawRows { rows, session_id: None })
+    Ok(RawRows {
+        rows,
+        session_id: None,
+    })
 }
 
 #[derive(Debug)]
@@ -738,18 +737,18 @@ pub fn enable(start: &Path) -> Result<EnableResult> {
     let mut new_config = ctx.config.clone();
     let mut auto_detected_dir: Option<String> = None;
 
-    if new_config.metrics.claude_transcripts_dir.is_empty() {
-        if let Some(dir) = detect_claude_transcripts_dir(&ctx.paths.repo_root) {
-            let dir_str = dir.to_string_lossy().to_string();
-            new_config.metrics.claude_transcripts_dir = dir_str.clone();
-            auto_detected_dir = Some(dir_str);
-        }
+    if new_config.metrics.claude_transcripts_dir.is_empty()
+        && let Some(dir) = detect_claude_transcripts_dir(&ctx.paths.repo_root)
+    {
+        let dir_str = dir.to_string_lossy().to_string();
+        new_config.metrics.claude_transcripts_dir = dir_str.clone();
+        auto_detected_dir = Some(dir_str);
     }
 
-    if new_config.metrics.codex_transcripts_dir.is_empty() {
-        if let Some(dir) = detect_codex_sessions_dir() {
-            new_config.metrics.codex_transcripts_dir = dir.to_string_lossy().to_string();
-        }
+    if new_config.metrics.codex_transcripts_dir.is_empty()
+        && let Some(dir) = detect_codex_sessions_dir()
+    {
+        new_config.metrics.codex_transcripts_dir = dir.to_string_lossy().to_string();
     }
 
     new_config.metrics.enabled = true;
@@ -811,8 +810,7 @@ pub fn rescan(start: &Path) -> Result<RescanResult> {
     session_scraper::scrape_if_enabled(&ctx.conn, cfg, &ctx.paths.repo_root);
 
     let recalls_attributed = maintenance::reconcile(&ctx.conn)?;
-    let (recalls_pruned, sessions_pruned) =
-        maintenance::prune_old(&ctx.conn, cfg.retention_days)?;
+    let (recalls_pruned, sessions_pruned) = maintenance::prune_old(&ctx.conn, cfg.retention_days)?;
 
     let recall_rows: i64 = ctx
         .conn
@@ -844,8 +842,7 @@ pub fn rescan(start: &Path) -> Result<RescanResult> {
 pub fn prune(start: &Path) -> Result<PruneResult> {
     let ctx = db::open_project(start)?;
     let retention_days = ctx.config.metrics.retention_days;
-    let (recalls_pruned, sessions_pruned) =
-        maintenance::prune_old(&ctx.conn, retention_days)?;
+    let (recalls_pruned, sessions_pruned) = maintenance::prune_old(&ctx.conn, retention_days)?;
     Ok(PruneResult {
         recalls_pruned,
         sessions_pruned,
@@ -853,10 +850,7 @@ pub fn prune(start: &Path) -> Result<PruneResult> {
     })
 }
 
-fn query_recent_sessions(
-    conn: &rusqlite::Connection,
-    limit: i64,
-) -> Result<Vec<SessionRow>> {
+fn query_recent_sessions(conn: &rusqlite::Connection, limit: i64) -> Result<Vec<SessionRow>> {
     let mut stmt = conn.prepare(
         "SELECT session_id, agent, \
          datetime(started_at, 'localtime') AS started_local, \
@@ -917,7 +911,11 @@ fn query_token_totals_nd(conn: &rusqlite::Connection, days: u32) -> Option<Token
 fn detect_codex_sessions_dir() -> Option<std::path::PathBuf> {
     let home = std::env::var("HOME").ok()?;
     let candidate = std::path::Path::new(&home).join(".codex/sessions");
-    if candidate.is_dir() { Some(candidate) } else { None }
+    if candidate.is_dir() {
+        Some(candidate)
+    } else {
+        None
+    }
 }
 
 /// Auto-detect the Claude Code transcripts dir for this repo.
@@ -933,10 +931,7 @@ fn detect_claude_transcripts_dir(repo_root: &Path) -> Option<std::path::PathBuf>
     let home = std::env::var("HOME").ok()?;
     let abs = repo_root.canonicalize().ok()?;
     let path_str = abs.to_string_lossy();
-    let encoded = format!(
-        "-{}",
-        path_str.trim_start_matches('/').replace('/', "-")
-    );
+    let encoded = format!("-{}", path_str.trim_start_matches('/').replace('/', "-"));
     let candidate = std::path::Path::new(&home)
         .join(".claude/projects")
         .join(encoded);
@@ -1060,10 +1055,7 @@ mod tests {
         // Simulate what detect_claude_transcripts_dir does, without
         // needing HOME or a real directory.
         let abs_str = root.to_string_lossy();
-        let encoded = format!(
-            "-{}",
-            abs_str.trim_start_matches('/').replace('/', "-")
-        );
+        let encoded = format!("-{}", abs_str.trim_start_matches('/').replace('/', "-"));
         assert_eq!(encoded, "-Users-alice-my-project");
     }
 
@@ -1231,11 +1223,19 @@ mod tests {
         assert_eq!(s.session_id.as_deref(), Some("sy"));
 
         // session_offset = max(0, 72066 - 1941) = 70125.
-        let total_offset: i64 = s.points.iter().map(|p| {
-            // recall_offset is cumulative; delta between last two points.
-            p.recall_offset
-        }).last().unwrap_or(0);
-        assert_eq!(total_offset, 70_125, "session offset should be 70125, not 286323");
+        let total_offset: i64 = s
+            .points
+            .iter()
+            .map(|p| {
+                // recall_offset is cumulative; delta between last two points.
+                p.recall_offset
+            })
+            .next_back()
+            .unwrap_or(0);
+        assert_eq!(
+            total_offset, 70_125,
+            "session offset should be 70125, not 286323"
+        );
 
         // Counterfactual at last point = actual + 70125.
         let last = s.points.last().unwrap();

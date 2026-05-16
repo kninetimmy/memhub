@@ -208,7 +208,12 @@ fn note_add_cli_reads_body_from_file() {
 
     let output = run_cli(
         temp.path(),
-        &["note", "add", "--from-file", body_path.to_str().expect("path")],
+        &[
+            "note",
+            "add",
+            "--from-file",
+            body_path.to_str().expect("path"),
+        ],
     );
     assert!(
         output.status.success(),

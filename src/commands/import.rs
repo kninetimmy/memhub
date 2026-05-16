@@ -283,11 +283,7 @@ fn insert_session_notes(tx: &Transaction<'_>, rows: &[v1::SessionNote]) -> Resul
     Ok(())
 }
 
-fn insert_narrative(
-    tx: &Transaction<'_>,
-    table: &str,
-    rows: &[v1::NarrativeEntry],
-) -> Result<()> {
+fn insert_narrative(tx: &Transaction<'_>, table: &str, rows: &[v1::NarrativeEntry]) -> Result<()> {
     // `table` is a static caller-controlled identifier — never user input.
     let sql = format!(
         "INSERT INTO {table}(id, project_id, body, actor, actor_raw, created_at)

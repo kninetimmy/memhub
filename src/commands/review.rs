@@ -119,8 +119,7 @@ pub fn accept(start: &Path, id: i64, actor: &str) -> Result<AcceptOutcome> {
                 .get("value")
                 .and_then(Value::as_str)
                 .ok_or_else(|| missing_payload_field(id, "value"))?;
-            let (fact_id, _) =
-                fact::add_in_tx(&tx, key, value, &derived_source, actor, mode)?;
+            let (fact_id, _) = fact::add_in_tx(&tx, key, value, &derived_source, actor, mode)?;
             (fact_id, "facts")
         }
         "decision" => {

@@ -132,7 +132,14 @@ pub fn run_retrieval(start: &Path, opts: EvalOptions) -> Result<EvalSummary> {
     }
 
     let mode = resolved_mode.unwrap_or(RetrievalMode::Fts);
-    let summary = summarize(&golden, opts.k, mode, opts.golden_path.clone(), outcomes, started);
+    let summary = summarize(
+        &golden,
+        opts.k,
+        mode,
+        opts.golden_path.clone(),
+        outcomes,
+        started,
+    );
     Ok(summary)
 }
 
@@ -261,7 +268,14 @@ pub fn evaluate_query(query: &GoldenQuery, response: &RecallResponse, k: usize) 
                     .results
                     .iter()
                     .take(limit)
-                    .map(|hit| format!("{}#{}:{}", hit.source_type, hit.source_id, truncate(&hit.title, 40)))
+                    .map(|hit| {
+                        format!(
+                            "{}#{}:{}",
+                            hit.source_type,
+                            hit.source_id,
+                            truncate(&hit.title, 40)
+                        )
+                    })
                     .collect();
                 format!(
                     "no top-{} hit matched (returned {}): {}",
@@ -448,7 +462,13 @@ mod tests {
                 hit(1, "fact", 1, "build-command", "cargo build"),
                 hit(2, "fact", 2, "test-command", "cargo test"),
                 hit(3, "task", 1, "Ship something", "irrelevant"),
-                hit(4, "decision", 48, "memhub recall is read-only", "irrelevant"),
+                hit(
+                    4,
+                    "decision",
+                    48,
+                    "memhub recall is read-only",
+                    "irrelevant",
+                ),
             ],
         );
         let outcome = evaluate_query(&q, &resp, 3);
@@ -470,8 +490,20 @@ mod tests {
         let resp = fake_response(
             "test",
             vec![
-                hit(1, "decision", 48, "memhub recall is read-only", "no ledger here"),
-                hit(2, "decision", 34, "Agents prefer recall over reading the ledger", "ok"),
+                hit(
+                    1,
+                    "decision",
+                    48,
+                    "memhub recall is read-only",
+                    "no ledger here",
+                ),
+                hit(
+                    2,
+                    "decision",
+                    34,
+                    "Agents prefer recall over reading the ledger",
+                    "ok",
+                ),
             ],
         );
         let outcome = evaluate_query(&q, &resp, 3);

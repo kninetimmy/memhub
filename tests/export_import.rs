@@ -489,8 +489,7 @@ fn export_import_round_trips_session_notes_and_narratives() {
 
     let target = tempdir().expect("target tempdir");
     init::run(target.path()).expect("target init");
-    let import_summary =
-        import::run(target.path(), &export_path, false).expect("import succeeds");
+    let import_summary = import::run(target.path(), &export_path, false).expect("import succeeds");
     assert_eq!(import_summary.session_notes, 2);
     assert_eq!(import_summary.project_state, 1);
     assert_eq!(import_summary.project_arch, 1);
@@ -563,8 +562,7 @@ fn import_refuses_when_only_session_notes_exist_without_force() {
 
     let target = tempdir().expect("target tempdir");
     init::run(target.path()).expect("target init");
-    session_note::add(target.path(), "I exist already.", "user", "cli:user")
-        .expect("seed note");
+    session_note::add(target.path(), "I exist already.", "user", "cli:user").expect("seed note");
 
     let result = import::run(target.path(), &export_path, false);
     assert!(

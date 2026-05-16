@@ -141,7 +141,11 @@ fn ensure_file(dest: &Path, base_url: &str, file: &ModelFile) {
     }
 
     let url = format!("{base_url}/{}", file.remote_path);
-    println!("cargo:warning=memhub: downloading {} -> {}", url, dest.display());
+    println!(
+        "cargo:warning=memhub: downloading {} -> {}",
+        url,
+        dest.display()
+    );
 
     let response = ureq::get(&url)
         .call()

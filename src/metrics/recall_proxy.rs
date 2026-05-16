@@ -12,13 +12,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime};
 
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
 
+use crate::Result;
 use crate::config::MetricsConfig;
 use crate::metrics::tokenizer::tokens_of;
 use crate::retrieval::RecallResponse;
-use crate::Result;
 
 /// Process-wide ledger token cache. CLI one-shots build it once per
 /// invocation; the MCP server amortizes the read across calls.
@@ -109,15 +109,13 @@ fn ledger_token_estimate(project_root: &Path, render_output_dir: &str) -> usize 
     };
 
     let cache = LEDGER_CACHE.get_or_init(|| Mutex::new(None));
-    if let Ok(guard) = cache.lock() {
-        if let Some(entry) = guard.as_ref() {
-            if entry.path == path
-                && entry.mtime == mtime
-                && entry.cached_at.elapsed().as_secs() < LEDGER_CACHE_TTL_SECS
-            {
-                return entry.tokens;
-            }
-        }
+    if let Ok(guard) = cache.lock()
+        && let Some(entry) = guard.as_ref()
+        && entry.path == path
+        && entry.mtime == mtime
+        && entry.cached_at.elapsed().as_secs() < LEDGER_CACHE_TTL_SECS
+    {
+        return entry.tokens;
     }
 
     let body = match fs::read_to_string(&path) {
