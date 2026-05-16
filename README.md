@@ -58,8 +58,9 @@ Tasks and session notes are different: those write directly, because they're low
 | **session notes** | Observations and scratch thoughts during a session | Agent | Yes — scratchpad only, not recalled |
 | **commands** | Verified shell commands with success/fail tracking | You or agent | Yes — observational |
 | **state / arch** | The "currently building" and architecture narratives | Agent at wrap-up | Yes — agent-authored but explicit |
+| **reference docs** | External markdown you point it at: specs, contracts, style guides | You (you hand it a file) | Yes — user-pointed, opt-in to recall |
 
-The rule behind the table: things that could be *wrong* — facts that might be outdated, decisions that might be misattributed — need a human in the loop. Things that are clearly ephemeral or observational write directly.
+The rule behind the table: things that could be *wrong* — facts that might be outdated, decisions that might be misattributed — need a human in the loop. Things that are clearly ephemeral or observational write directly. Reference docs are a fourth case — not a claim, not observational, just material you explicitly handed to memhub — so they write directly but stay out of the default recall bundle (see [Point it at your design docs](#point-it-at-your-design-docs)).
 
 When an agent proposal gets staged in `pending_writes`, the source is recorded as `agent:claude-code` or `agent:codex`. When you accept it at `/wrap-up`, that source upgrades to `user+agent:claude-code` — both signals preserved, so you can always tell later what was verified.
 
@@ -169,6 +170,28 @@ Six tabs:
 
 ---
 
+## Point it at your design docs
+
+Sometimes the thing the agent needs to know isn't a fact you wrote down — it's sitting in a spec file on your desktop. A design system, an API contract, a style guide: long external markdown you don't want to paste into every prompt and don't want to hand-transcribe into facts.
+
+Point memhub at it:
+
+```bash
+memhub doc add ~/specs/design-system.md
+```
+
+memhub splits the file into section-aware chunks — heading breadcrumbs preserved, so a hit knows it came from *Typography > Design Tokens*, not just "somewhere in a 14 KB file" — embeds each one, and makes the whole thing searchable through the exact same hybrid recall path as everything else.
+
+The catch — and it's deliberate — is that ingested docs are **opt-in**. They never show up in the default recall bundle. A design spec is reference material, not durable project knowledge, so it doesn't get to crowd out your facts and decisions. Instead, when docs exist, recall returns an `available_docs` count alongside the normal results. The agent sees that signal and, when the question is design- or spec-flavored, runs one follow-up doc-scoped query:
+
+```bash
+memhub recall "how should color tokens be named" --source-type doc
+```
+
+You can scope to docs explicitly any time with `--source-type doc`. Docs are file-backed and re-ingestable — so they're excluded from `memhub export`, and re-running `memhub doc add` after the source file changes replaces every chunk in place. Use `memhub doc ls / show / rm` to manage what's ingested.
+
+---
+
 ## Why bother?
 
 The honest answer: if you work on a project for more than a few days with an AI assistant, you'll notice the difference.
@@ -177,6 +200,7 @@ The honest answer: if you work on a project for more than a few days with an AI 
 - **Decisions stay explained.** Six months from now you'll know *why* a call was made, not just that it was made. That's the difference between a decision and a fact.
 - **Small context, relevant content.** A targeted recall bundle is much smaller than pasting the full project README into every prompt. The [Token Metrics tab](#the-web-dashboard) estimates how much context you're saving.
 - **Agent proposals are reviewable.** You see exactly what the agent wants to commit, and you can say no. Nothing sneaks into your project memory.
+- **Your specs are searchable too.** Point memhub at an external design doc or API contract and the agent pulls the relevant section on demand — no pasting the whole file into the prompt, no polluting normal recall.
 - **Both agents, same memory.** Claude Code and Codex share the same rows. Switching tools doesn't cost you context.
 - **It's just a file.** SQLite, gitignored, in your repo. No accounts to manage, no services to stay online, no vendor lock-in. Back it up, move it, or delete it whenever you want.
 
@@ -315,6 +339,7 @@ memhub index status   # confirm Missing: 0
 | `memhub state set/show` | The "current state" narrative |
 | `memhub arch set/show` | The architecture narrative |
 | `memhub ingest-git` | Pull commit + file history into the DB |
+| `memhub doc add/ls/rm/show` | Ingest external markdown reference docs; recall with `--source-type doc` |
 | `memhub review list/accept/reject` | Triage agent-proposed writes |
 | `memhub render` | Emit local `PROJECT.md` and `PROJECT_LEDGER.md` from the DB |
 | `memhub index status/rebuild` | Embedding coverage; one-shot backfill for `fts → hybrid` migrations |

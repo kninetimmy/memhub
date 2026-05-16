@@ -118,20 +118,25 @@
         fill="#5a6480" letter-spacing="1.2">PROJECT MEMORY</text>
 
   <!-- Row: facts -->
-  <rect x="682" y="56" width="202" height="26" rx="6" fill="#0b1118" stroke="#1fe88a" stroke-width="1"/>
-  <text x="783" y="74" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11.5" fill="#1fe88a">facts</text>
+  <rect x="682" y="54" width="202" height="22" rx="6" fill="#0b1118" stroke="#1fe88a" stroke-width="1"/>
+  <text x="783" y="69" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11.5" fill="#1fe88a">facts</text>
 
   <!-- Row: decisions -->
-  <rect x="682" y="88" width="202" height="26" rx="6" fill="#0b1118" stroke="#1fe88a" stroke-width="1" opacity="0.75"/>
-  <text x="783" y="106" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11.5" fill="#1fe88a">decisions</text>
+  <rect x="682" y="80" width="202" height="22" rx="6" fill="#0b1118" stroke="#1fe88a" stroke-width="1" opacity="0.8"/>
+  <text x="783" y="95" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11.5" fill="#1fe88a">decisions</text>
 
   <!-- Row: tasks -->
-  <rect x="682" y="120" width="202" height="26" rx="6" fill="#0b1118" stroke="#1fe88a" stroke-width="1" opacity="0.5"/>
-  <text x="783" y="138" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11.5" fill="#1fe88a">tasks</text>
+  <rect x="682" y="106" width="202" height="22" rx="6" fill="#0b1118" stroke="#1fe88a" stroke-width="1" opacity="0.6"/>
+  <text x="783" y="121" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11.5" fill="#1fe88a">tasks</text>
+
+  <!-- Row: reference docs (user-pointed, opt-in to recall — distinct amber) -->
+  <rect x="682" y="132" width="202" height="22" rx="6" fill="#0b1118" stroke="#e0a458" stroke-width="1" opacity="0.9"/>
+  <text x="765" y="147" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11.5" fill="#e0a458">reference docs</text>
+  <text x="853" y="147" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="8.5" fill="#7a6a45">opt-in</text>
 
   <!-- Row: notes/commands -->
-  <rect x="682" y="152" width="202" height="26" rx="6" fill="#0b1118" stroke="#242c3e" stroke-width="1"/>
-  <text x="783" y="170" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11" fill="#4a5470">notes · commands · ···</text>
+  <rect x="682" y="158" width="202" height="22" rx="6" fill="#0b1118" stroke="#242c3e" stroke-width="1"/>
+  <text x="783" y="173" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11" fill="#4a5470">notes · commands · ···</text>
 
   <!-- Bottom caption -->
   <text x="783" y="202" text-anchor="middle"
