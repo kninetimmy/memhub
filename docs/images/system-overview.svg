@@ -1,0 +1,139 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 230" width="920" height="230" style="max-width:100%;display:block;">
+  <defs>
+    <marker id="ah-right" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#19e3ff"/>
+    </marker>
+    <marker id="ah-right-dim" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#19e3ff" opacity="0.45"/>
+    </marker>
+    <marker id="ah-right-green" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#1fe88a"/>
+    </marker>
+    <marker id="ah-right-green-dim" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#1fe88a" opacity="0.4"/>
+    </marker>
+  </defs>
+
+  <!-- Main background -->
+  <rect width="920" height="230" rx="14" fill="#0c0e18"/>
+  <rect width="920" height="230" rx="14" fill="none" stroke="#1e2435" stroke-width="1"/>
+
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- LEFT BOX: You & Your Agents                            -->
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <rect x="18" y="18" width="238" height="194" rx="10" fill="#111521" stroke="#242c3e" stroke-width="1"/>
+
+  <!-- Section label -->
+  <text x="137" y="44" text-anchor="middle"
+        font-family="ui-sans-serif,system-ui,sans-serif" font-size="10.5"
+        fill="#5a6480" letter-spacing="1.2">YOU &amp; YOUR AGENTS</text>
+
+  <!-- Terminal row -->
+  <rect x="36" y="56" width="202" height="34" rx="7" fill="#161c2c" stroke="#2a3248" stroke-width="1"/>
+  <text x="56" y="78" font-family="ui-monospace,monospace" font-size="13" fill="#c8d0e4">⌨  terminal</text>
+
+  <!-- Claude Code row -->
+  <rect x="36" y="98" width="202" height="34" rx="7" fill="#161c2c" stroke="#19e3ff" stroke-width="1" opacity="0.85"/>
+  <text x="56" y="120" font-family="ui-monospace,monospace" font-size="13" fill="#19e3ff">◎  Claude Code</text>
+
+  <!-- Codex row -->
+  <rect x="36" y="140" width="202" height="34" rx="7" fill="#161c2c" stroke="#a45cff" stroke-width="1" opacity="0.85"/>
+  <text x="56" y="162" font-family="ui-monospace,monospace" font-size="13" fill="#a45cff">◉  Codex CLI</text>
+
+  <!-- Bottom caption -->
+  <text x="137" y="202" text-anchor="middle"
+        font-family="ui-sans-serif,system-ui,sans-serif" font-size="10" fill="#4a5470">write · ask · recall</text>
+
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- ARROWS: left ↔ middle                                  -->
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- write → (solid cyan) -->
+  <line x1="258" y1="106" x2="294" y2="106" stroke="#19e3ff" stroke-width="1.6" marker-end="url(#ah-right)"/>
+  <text x="276" y="101" text-anchor="middle"
+        font-family="ui-sans-serif,system-ui,sans-serif" font-size="9.5" fill="#19e3ff">write</text>
+
+  <!-- ← recall (dashed dim) - line goes right-to-left so marker-end points left -->
+  <line x1="294" y1="124" x2="258" y2="124" stroke="#19e3ff" stroke-width="1.4"
+        stroke-dasharray="4,3" opacity="0.5" marker-end="url(#ah-right-dim)"/>
+  <text x="276" y="138" text-anchor="middle"
+        font-family="ui-sans-serif,system-ui,sans-serif" font-size="9.5" fill="#19e3ff" opacity="0.5">recall</text>
+
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- MIDDLE BOX: memhub                                     -->
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <rect x="300" y="8" width="320" height="214" rx="10" fill="#111521" stroke="#19e3ff" stroke-width="1" opacity="0.7"/>
+
+  <!-- Title -->
+  <text x="460" y="44" text-anchor="middle"
+        font-family="ui-sans-serif,system-ui,sans-serif" font-size="20" font-weight="700"
+        fill="#19e3ff" letter-spacing="2">memhub</text>
+
+  <!-- CLI sub-box -->
+  <rect x="316" y="58" width="130" height="44" rx="7" fill="#0d1420" stroke="#242c3e" stroke-width="1"/>
+  <text x="381" y="78" text-anchor="middle" font-family="ui-monospace,monospace" font-size="12" fill="#c8d0e4">CLI</text>
+  <text x="381" y="94" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="10" fill="#4a5470">direct writes</text>
+
+  <!-- MCP sub-box -->
+  <rect x="474" y="58" width="130" height="44" rx="7" fill="#0d1420" stroke="#242c3e" stroke-width="1"/>
+  <text x="539" y="78" text-anchor="middle" font-family="ui-monospace,monospace" font-size="12" fill="#c8d0e4">MCP server</text>
+  <text x="539" y="94" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="10" fill="#4a5470">agent tool calls</text>
+
+  <!-- Convergence lines -->
+  <line x1="381" y1="102" x2="381" y2="122" stroke="#242c3e" stroke-width="1"/>
+  <line x1="539" y1="102" x2="539" y2="122" stroke="#242c3e" stroke-width="1"/>
+  <line x1="381" y1="122" x2="539" y2="122" stroke="#242c3e" stroke-width="1"/>
+  <line x1="460" y1="122" x2="460" y2="142" stroke="#242c3e" stroke-width="1"/>
+
+  <!-- Core engine box -->
+  <rect x="322" y="142" width="276" height="54" rx="8" fill="#0a1220" stroke="#19e3ff" stroke-width="1" opacity="0.7"/>
+  <text x="460" y="165" text-anchor="middle" font-family="ui-monospace,monospace" font-size="13" fill="#c8d0e4">hybrid recall engine</text>
+  <text x="460" y="183" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="10" fill="#4a5470">FTS5 BM25 · BGE-small vectors · re-ranker</text>
+
+  <!-- Bottom caption -->
+  <text x="460" y="215" text-anchor="middle"
+        font-family="ui-sans-serif,system-ui,sans-serif" font-size="10" fill="#4a5470">route · stage · approve · rank</text>
+
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- ARROWS: middle ↔ right                                 -->
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- → store (solid green) -->
+  <line x1="622" y1="106" x2="658" y2="106" stroke="#1fe88a" stroke-width="1.6" marker-end="url(#ah-right-green)"/>
+  <text x="640" y="101" text-anchor="middle"
+        font-family="ui-sans-serif,system-ui,sans-serif" font-size="9.5" fill="#1fe88a">store</text>
+
+  <!-- ← retrieve (dashed dim) -->
+  <line x1="658" y1="124" x2="622" y2="124" stroke="#1fe88a" stroke-width="1.4"
+        stroke-dasharray="4,3" opacity="0.45" marker-end="url(#ah-right-green-dim)"/>
+  <text x="640" y="138" text-anchor="middle"
+        font-family="ui-sans-serif,system-ui,sans-serif" font-size="9.5" fill="#1fe88a" opacity="0.45">query</text>
+
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- RIGHT BOX: Project Memory                              -->
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <rect x="664" y="18" width="238" height="194" rx="10" fill="#111521" stroke="#242c3e" stroke-width="1"/>
+
+  <!-- Section label -->
+  <text x="783" y="44" text-anchor="middle"
+        font-family="ui-sans-serif,system-ui,sans-serif" font-size="10.5"
+        fill="#5a6480" letter-spacing="1.2">PROJECT MEMORY</text>
+
+  <!-- Row: facts -->
+  <rect x="682" y="56" width="202" height="26" rx="6" fill="#0b1118" stroke="#1fe88a" stroke-width="1"/>
+  <text x="783" y="74" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11.5" fill="#1fe88a">facts</text>
+
+  <!-- Row: decisions -->
+  <rect x="682" y="88" width="202" height="26" rx="6" fill="#0b1118" stroke="#1fe88a" stroke-width="1" opacity="0.75"/>
+  <text x="783" y="106" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11.5" fill="#1fe88a">decisions</text>
+
+  <!-- Row: tasks -->
+  <rect x="682" y="120" width="202" height="26" rx="6" fill="#0b1118" stroke="#1fe88a" stroke-width="1" opacity="0.5"/>
+  <text x="783" y="138" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11.5" fill="#1fe88a">tasks</text>
+
+  <!-- Row: notes/commands -->
+  <rect x="682" y="152" width="202" height="26" rx="6" fill="#0b1118" stroke="#242c3e" stroke-width="1"/>
+  <text x="783" y="170" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11" fill="#4a5470">notes · commands · ···</text>
+
+  <!-- Bottom caption -->
+  <text x="783" y="202" text-anchor="middle"
+        font-family="ui-sans-serif,system-ui,sans-serif" font-size="10" fill="#4a5470">.memhub/project.sqlite</text>
+</svg>

@@ -1,42 +1,192 @@
 # memhub
 
-A local-first, per-repo project memory that **Claude Code and Codex CLI share** — now with hybrid SQL + vector recall.
+*Your AI agents forget things. memhub doesn't.*
 
-You write a fact, decision, or task from either agent — or directly from the terminal — and it lands in one SQLite database at `.memhub/project.sqlite`. Both agents read the same rows via the same MCP tools and slash commands. Switching tools, or coming back to a project after a month, doesn't cost you context. Asking *"why did we pick rusqlite bundled mode?"* mid-session pulls the actual decision back, not a paraphrase.
+---
 
-## What it is, in plain language
+memhub is a small, offline, per-repo memory system for AI coding assistants. It gives Claude Code and Codex CLI one shared, searchable store of project facts — built on SQLite, with semantic search bundled right into the binary.
 
-Claude Code and Codex each have their own notes systems, and they don't talk to each other. If you use both on the same project, you either keep two sets of notes in sync by hand, or you don't, and they drift.
+No cloud. No account. No daemon. No model download at runtime. Just a `.sqlite` file that lives next to your code and a binary on your PATH.
 
-memhub is a small Rust CLI that puts one structured store per repo. Facts, decisions, tasks, recent commands, session notes — all in SQLite, queryable, with attribution. As of M8, it also ships a bundled embedding model (`bge-small-en-v1.5`, ~130 MB inside the binary) so agents can do **semantic recall** without any network, account, or vector-DB infrastructure.
+<br>
 
-Rendered markdown is a local human-readable view generated from the DB, stored under `.memhub/rendered/` by default and ignored by Git. The database is the source of truth, but it is machine-local too; use export/import for intentional moves between machines rather than committing DB, embeddings, or render output.
+<p align="center">
+  <img src="docs/images/system-overview.svg" alt="memhub system overview" width="920"/>
+</p>
 
-**Four things matter:**
+---
 
-- **Offline.** No cloud, no account, no daemon, no model download at runtime. Just a binary and a `.sqlite` file. The embedding model is bundled into the binary at build time and runs locally.
-- **Per-repo.** Different projects, different databases. No global state to coordinate.
-- **Attributed.** Every write records both *where the claim came from* (`user`, `agent:codex`, `user+agent:claude-code`, …) and *who performed the write* (`cli:user`, `claude:wrap-up`, …). You can always tell whether a fact came from you typing it, or from an agent surfacing it during a wrap-up that you approved.
-- **Hybrid recall.** Keyword (FTS5 BM25) + semantic (cosine over local embeddings), blended into one ranked evidence bundle. Stays FTS-only if you'd rather skip the model load; the install prompt asks.
+## How it works
+
+### 1. The store (SQL)
+
+Everything lands in a SQLite database at `.memhub/project.sqlite`. Facts, decisions, tasks, session notes — all structured rows with full-text search indexes built in (FTS5), plus timestamps and source attribution on every write.
+
+SQLite means no server, no setup, and the whole thing is just a file you can inspect, back up, or export whenever you want. Migrations apply automatically on startup; you never need to think about schema versions.
+
+### 2. The semantic layer (RAG)
+
+Keyword search is great when you remember the exact term you used. It's less great three months in when you're asking about "compile settings" and the relevant fact is filed under `release_build`.
+
+memhub ships with a bundled embedding model (BGE-small-en-v1.5, ~130 MB, compiled into the binary at build time). Every fact and decision you write also gets embedded as a vector. When you recall something, memhub runs both a keyword search and a semantic similarity search in parallel, blends the scores, then runs a cross-encoder re-ranker over the top candidates — all locally, no network call.
+
+<br>
+
+<p align="center">
+  <img src="docs/images/hybrid-recall.svg" alt="how hybrid recall works" width="840"/>
+</p>
+
+The result is a ranked, cited evidence bundle. You get `title`, `body`, `score`, `source`, and a staleness flag for every hit. The agent gets crisp context; you keep a record of where it came from.
+
+### 3. The agent bridge (MCP + skills)
+
+memhub speaks [MCP](https://modelcontextprotocol.io/) (Model Context Protocol), the standard tool-call interface that Claude Code and Codex both use. When the agent needs context, it calls `memhub.recall` — a structured tool call, not a file read. It gets back a ranked bundle, not a wall of markdown.
+
+When the agent wants to *write* something, it calls `propose_fact` or `propose_decision`. The proposal lands in `pending_writes` — a staging area — and waits there until you review it. Nothing an agent proposes becomes durable fact until you've said yes.
+
+Tasks and session notes are different: those write directly, because they're low-stakes (intent and scratch, not claims).
+
+---
+
+## What gets saved (and when)
+
+| Type | What it's for | Who writes it | Goes straight to DB? |
+|---|---|---|---|
+| **facts** | Key project knowledge: build commands, MSRV, env vars, naming conventions | You or agent | Agent: no (staged). You: yes. |
+| **decisions** | Design choices with rationale and context | You or agent | Agent: no (staged). You: yes. |
+| **tasks** | Lightweight to-dos and in-flight work | You or agent | Yes — low-stakes |
+| **session notes** | Observations and scratch thoughts during a session | Agent | Yes — scratchpad only, not recalled |
+| **commands** | Verified shell commands with success/fail tracking | You or agent | Yes — observational |
+| **state / arch** | The "currently building" and architecture narratives | Agent at wrap-up | Yes — agent-authored but explicit |
+
+The rule behind the table: things that could be *wrong* — facts that might be outdated, decisions that might be misattributed — need a human in the loop. Things that are clearly ephemeral or observational write directly.
+
+When an agent proposal gets staged in `pending_writes`, the source is recorded as `agent:claude-code` or `agent:codex`. When you accept it at `/wrap-up`, that source upgrades to `user+agent:claude-code` — both signals preserved, so you can always tell later what was verified.
+
+---
+
+## Agent-driven vs. driving it yourself
+
+### The usual way: let the agent handle it
+
+In a normal session, you talk to your agent and memhub runs in the background. The agent reads `PROJECT.md` at session start for the narrative context, calls `memhub.recall` when it needs a specific fact mid-session, and stages any new knowledge it wants to record.
+
+At the end of a session, you run `/wrap-up` (a slash command in Claude Code, a skill in Codex). The agent walks you through everything it wants to commit — new facts, decisions, task updates, a short session summary — one item at a time. You approve or skip each one. Then it re-renders the local `PROJECT.md` and `PROJECT_LEDGER.md` from the database.
+
+```
+You: "What did we decide about the authentication flow?"
+  → memhub.recall "authentication flow"  (returns cited evidence bundle)
+
+You: "Add a task to refactor the cache layer."
+  → task_add "refactor cache layer"  (direct write, done)
+
+You: "We're going to use rusqlite bundled mode because X."
+  → propose_decision "use rusqlite bundled mode" --rationale "X"  (staged)
+
+You: "/wrap-up"
+  → agent reviews staged proposals with you, one by one
+  → you say yes or no to each
+  → session note written, PROJECT.md re-rendered
+```
+
+The `/wrap-up` gate is the whole point. The agent is helpful for surfacing and structuring knowledge; you're the one who decides what's true.
+
+### If you'd rather type
+
+The CLI is a first-class interface. Everything the agent does has a terminal equivalent:
+
+```bash
+memhub status
+memhub recall "auth flow"
+memhub task add "Refactor cache layer"
+memhub task done 7
+memhub fact add build-command "cargo build --release"
+memhub decision add "use rusqlite bundled mode" \
+  --rationale "Avoid system SQLite setup friction."
+memhub note add "Tried the router rewrite — no measurable diff."
+memhub render
+```
+
+The two flows write to the same database. The only difference is the `source` column on each row — `user` for what you typed directly, `user+agent:<id>` for what you approved through a `/wrap-up`. `memhub stats --window 7d` shows a breakdown of writes by actor.
+
+---
+
+## One machine, many projects
+
+memhub is per-repo by design. Every project gets its own `.memhub/project.sqlite` — completely isolated. There's no global database, no coordination between repos, no leakage between projects.
+
+```
+~/code/
+├── my-web-app/
+│   └── .memhub/project.sqlite   ← web app memory
+├── my-cli-tool/
+│   └── .memhub/project.sqlite   ← CLI tool memory
+└── my-library/
+    └── .memhub/project.sqlite   ← library memory
+```
+
+The `memhub` binary is installed once at `~/.cargo/bin/memhub`. Each project's database is independent. To add memhub to a new project, just `cd` into it and run `memhub init`. The recall surface, the dashboard, the stats — everything reads whichever repo's database is in your current working directory.
+
+This also means you can try memhub on one project without any risk to your others. If you decide it's not for you, `rm -rf .memhub/` is the entire uninstall.
+
+---
+
+## Moving between machines
+
+memhub state is machine-local by default — the database, embeddings, and rendered markdown are all gitignored. Only code and migrations travel with the repo. To carry your memory to another machine:
+
+```bash
+# on your current machine
+memhub export ~/memhub-myproject-backup.json
+
+# move the file however you like (Drive, USB, scp)
+
+# on the new machine, after cloning the repo + installing memhub
+memhub init --from-backup ~/memhub-myproject-backup.json
+memhub index rebuild   # re-generate embeddings from the imported rows
+```
+
+The export format is versioned JSON. It covers facts, decisions, tasks, commands, pending writes, writes log, session notes, and both narrative tables. Embeddings are not included — the target machine re-derives them via `memhub index rebuild`.
+
+---
+
+## The web dashboard
+
+Run `memhub viz` in your project directory (or `/viz` in Claude Code) to open a local read-only dashboard in your browser. It serves from localhost, reads the current repo's database, and never writes anything.
+
+Six tabs:
+
+- **Overview** — open tasks, recent decisions, pending writes, and current project state at a glance
+- **Embedding Map** — a 2D PCA projection of your semantic memory space; points are facts and decisions, clustered by meaning
+- **Recall Inspector** — type any query and see per-row scores in real time: FTS score, vector score, and final re-ranked position
+- **Activity** — a write-history feed with actor attribution
+- **Audit** — the full `writes_log`, every write ever, with source and actor
+- **Token Metrics** — input/output/cache token totals from your Claude Code sessions, a cumulative per-turn burn-up chart, and a context-offset estimate comparing targeted recall bundles vs. loading the full project ledger
+
+<!-- TODO: add screenshot of Overview tab here -->
+<!-- TODO: add screenshot of Embedding Map tab here -->
+<!-- TODO: add screenshot of Token Metrics tab here -->
+
+---
+
+## Why bother?
+
+The honest answer: if you work on a project for more than a few days with an AI assistant, you'll notice the difference.
+
+- **Context doesn't evaporate.** "What's the build command again?" gets a real answer on day 90, not just day 1. The agent looks it up; you don't repeat yourself.
+- **Decisions stay explained.** Six months from now you'll know *why* a call was made, not just that it was made. That's the difference between a decision and a fact.
+- **Small context, relevant content.** A targeted recall bundle is much smaller than pasting the full project README into every prompt. The [Token Metrics tab](#the-web-dashboard) estimates how much context you're saving.
+- **Agent proposals are reviewable.** You see exactly what the agent wants to commit, and you can say no. Nothing sneaks into your project memory.
+- **Both agents, same memory.** Claude Code and Codex share the same rows. Switching tools doesn't cost you context.
+- **It's just a file.** SQLite, gitignored, in your repo. No accounts to manage, no services to stay online, no vendor lock-in. Back it up, move it, or delete it whenever you want.
 
 ---
 
 ## Quickstart
 
-### One-line install + initialize
+### Install via Claude Code (recommended)
 
-```bash
-git clone https://github.com/kninetimmy/memhub.git ~/src/memhub \
-  && cargo install --path ~/src/memhub --force \
-  && cd /path/to/your/project \
-  && memhub init && memhub status
-```
-
-That builds the binary, installs it on PATH, and initializes memhub. The first `cargo install` is the slow one (~2-3 minutes — it downloads + SHA-pins the BGE-small ONNX model and bundles it into the binary). Subsequent installs reuse the cache. Everything below is polish.
-
-### Install via Claude Code (recommended — agent-driven)
-
-Open Claude Code in the repo you want memhub to track. Paste this:
+Open Claude Code in the repo you want memhub to track and paste:
 
 ```
 Please install memhub for me, then turn on hybrid recall.
@@ -70,9 +220,9 @@ Don't touch any files in this repo other than what `memhub init` writes
 .memhub/config.toml edit in step 6.
 ```
 
-### Install via Codex CLI (agent-driven)
+### Install via Codex CLI
 
-Open Codex in the repo you want memhub to track. Paste this:
+Open Codex in the repo you want to track and paste:
 
 ```
 Please install memhub for me, then turn on hybrid recall.
@@ -132,7 +282,7 @@ memhub status
 cp ~/src/memhub/templates/skills/claude/*.md ~/.claude/commands/
 cp -R ~/src/memhub/templates/skills/codex/*  ~/.codex/skills/
 
-# 5. MCP for Codex (append to ~/.codex/config.toml)
+# 5. MCP for Codex — append to ~/.codex/config.toml:
 #   [mcp_servers.memhub]
 #   command = "memhub"
 #   args = ["serve"]
@@ -141,107 +291,59 @@ cp -R ~/src/memhub/templates/skills/codex/*  ~/.codex/skills/
 #    Add to .memhub/config.toml:
 #       [retrieval]
 #       mode = "hybrid"
-#    Then backfill embeddings for the existing rows:
+#    Then backfill embeddings for existing rows:
 memhub index rebuild --actor cli:user
 memhub index status   # confirm Missing: 0
 ```
 
 ---
 
-## A typical session
+## Reference
 
-The default mode is **agent-driven**: you talk to Claude Code or Codex, and the agent calls memhub via MCP tools or the CLI on your behalf. You rarely need to drop into the terminal.
+### Commands
 
-### What you say → what the agent does
+| Command | What it does |
+|---|---|
+| `memhub init` | Set up `.memhub/` in a repo |
+| `memhub status` | Open tasks, stale facts, pending writes, schema version |
+| `memhub recall <query>` | Hybrid ranked bundle of facts/decisions/tasks |
+| `memhub fact add/list` | Durable key-value facts (build commands, MSRV, etc.) |
+| `memhub decision add/list` | Decisions with rationale, FTS-indexed and embedded |
+| `memhub task add/list/done` | Lightweight task tracking |
+| `memhub command verify` | Record verified command outcomes; derives confidence |
+| `memhub note add/list` | Session notes (low-stakes scratch; not in recall) |
+| `memhub state set/show` | The "current state" narrative |
+| `memhub arch set/show` | The architecture narrative |
+| `memhub ingest-git` | Pull commit + file history into the DB |
+| `memhub review list/accept/reject` | Triage agent-proposed writes |
+| `memhub render` | Emit local `PROJECT.md` and `PROJECT_LEDGER.md` from the DB |
+| `memhub index status/rebuild` | Embedding coverage; one-shot backfill for `fts → hybrid` migrations |
+| `memhub eval retrieval` | Run the Recall@K harness against `tests/retrieval_golden.json` |
+| `memhub stats --window 7d` | Write activity by actor, review rate, stale-fact counts |
+| `memhub metrics enable/status` | Opt-in token accounting (Claude Code transcript scraping) |
+| `memhub viz` | Open the local read-only web dashboard |
+| `memhub export/import` | Portable JSON backup; cross-machine restore |
+| `memhub serve` | Stdio MCP server for Claude Code / Codex |
 
-```
-You: "What did we decide about authentication?"
-  → memhub.recall "authentication" (hybrid ranked bundle, cited)
+Run any command with `--help` for flags.
 
-You: "What's in flight on this project?"
-  → list_tasks, list_decisions, status (read tools)
-
-You: "Add a task to refactor the cache layer."
-  → task_add (durable write; tasks are intent, easy to delete)
-
-You: "Mark task 7 as done."
-  → task_done
-
-You: "What's the build command for this repo?"
-  → memhub.recall "build command" (often hits a fact at rank 1)
-
-You: "Note: tried the router rewrite, no measurable diff."
-  → log_session_note (write-only scratch)
-
-You: "Remember the build command is cargo build."
-  → propose_fact (stages in pending_writes for /wrap-up approval)
-
-You: "We're going to use rusqlite bundled mode because <rationale>."
-  → propose_decision (stages for /wrap-up approval)
-
-You: "Re-render the local memhub docs."
-  → render
-```
-
-Facts and decisions stage in `pending_writes` instead of going durable directly — that's the "agents are untrusted writers" guardrail. They become durable when you approve them at `/wrap-up`, where the source becomes `user+agent:<your-agent>`.
-
-### Mid-session context: `/recall` over rendered files
-
-When the agent needs project context, the rule is: read the local rendered `PROJECT.md` if it exists, then call `memhub.recall` mid-session for anything deeper. The full `PROJECT_LEDGER.md` is a fallback for when recall comes up empty.
-
-Recall returns a cited evidence bundle — title, body, score, source, staleness flag — pulled from the durable tables. It's read-only and never logs to `writes_log`. Empty bundles are honest answers, not failures.
-
-### End-of-session: `/wrap-up`
-
-Run `/wrap-up` and the agent walks you through:
-
-- New facts / decisions surfaced this session (accept or reject each)
-- Pending MCP proposals to triage
-- Tasks added or closed
-- A short session summary written to `session_notes`
-- An updated state narrative if anything material changed
-- A re-render of the configured local `PROJECT.md` and `PROJECT_LEDGER.md`
-
-Each item gets your individual approval before it lands.
-
-### If you'd rather drive from the terminal
-
-Everything the agent does has a CLI equivalent:
-
-```bash
-memhub status
-memhub recall "auth flow"
-memhub task add "Refactor cache layer"
-memhub task done 7
-memhub fact list
-memhub fact add build-command "cargo build"
-memhub decision add "Use rusqlite bundled mode" \
-  --rationale "Avoid system SQLite setup friction."
-memhub note add "Tried router rewrite, no measurable diff."
-memhub render
-```
-
-CLI use is fine — sometimes faster, always available, and what you'll want for batch operations or scripting. The two flows write to the same database; the only difference is the `source` and `actor` columns on each row, which let you tell later who wrote what.
-
----
-
-## Two retrieval modes
+### Two retrieval modes
 
 memhub ships with two retrieval modes. Both are first-class; the install prompt asks you to pick one.
 
 | | **`fts`** (default) | **`hybrid`** (recommended) |
 |---|---|---|
-| Scoring | FTS5 BM25 over title + body | 0.5 × FTS + 0.5 × cosine − 0.3 × stale_penalty |
+| Scoring | FTS5 BM25 over title + body | 0.5 × FTS + 0.5 × cosine − 0.3 × stale_penalty, then re-ranked |
 | What it catches | Exact terms, stemmed variants | Exact + paraphrases (`"compile a release"` → `release_build` fact) |
 | Per-write cost | 0 ms | ~50 ms eager-embed inside the source-write transaction |
-| Per-recall cost | <10 ms | <100 ms (brute-force cosine over current corpus) |
+| Per-recall cost | <10 ms | <100 ms (brute-force cosine + ~275 ms re-ranker at pool=20) |
 | Disk footprint | None beyond source rows | ~1.5 KB per row (384-dim f32 vector) |
 | Network | Never | Never. Model is bundled. |
 | Best for | Small projects, scripted use | Multi-month projects where you forget exact wording |
 
-**Switching modes is non-destructive.** Going `fts → hybrid` requires one `memhub index rebuild` to backfill embeddings for the rows you already have. Going `hybrid → fts` just stops consulting the embeddings table; nothing is deleted.
+**Switching modes is non-destructive.** `fts → hybrid` requires one `memhub index rebuild`. `hybrid → fts` just stops consulting embeddings; nothing is deleted.
 
-**The `[retrieval]` block** in `.memhub/config.toml`:
+The `[retrieval]` block in `.memhub/config.toml`:
 
 ```toml
 [retrieval]
@@ -256,107 +358,45 @@ vector_weight = 0.5
 stale_penalty = 0.3
 ```
 
-Stale embeddings (model upgrade, content drift, or pre-existing rows that haven't been indexed yet) are detected per recall call and surfaced as a `warnings[]` entry. The agent asks before running `/reindex` — recall results stay usable in the meantime.
+### Compatibility
 
----
-
-## What's in the box
-
-| Command | What it does |
-|---|---|
-| `memhub init` | Set up `.memhub/` in a repo |
-| `memhub status` | Open tasks, stale facts, pending writes, schema version |
-| `memhub recall <query>` | Hybrid ranked bundle of facts/decisions/tasks (the M8 surface) |
-| `memhub fact add/list` | Durable key-value facts (build commands, MSRV, etc.) |
-| `memhub decision add/list` | Decisions with rationale, FTS-indexed and embedded |
-| `memhub task add/list/done` | Lightweight task tracking |
-| `memhub command verify` | Record verified command outcomes; derives confidence |
-| `memhub note add/list` | Session notes (low-stakes scratch; not in recall) |
-| `memhub state set/show` | The "current state" narrative |
-| `memhub arch set/show` | The architecture narrative |
-| `memhub ingest-git` | Pull commit + file history into the DB |
-| `memhub search <query>` | Indexed search over decisions and file history (legacy; prefer recall) |
-| `memhub review list/accept/reject` | Triage agent-proposed writes |
-| `memhub render` | Emit local `PROJECT.md` and `PROJECT_LEDGER.md` from the DB |
-| `memhub index status/rebuild` | Embedding coverage; one-shot backfill for `fts → hybrid` migrations |
-| `memhub eval retrieval` | Run the Recall@K harness against `tests/retrieval_golden.json` |
-| `memhub stats --window 7d` | Write activity by actor, review rate, stale-fact counts |
-| `memhub export/import` | Portable JSON backup; cross-machine restore |
-| `memhub serve` | Stdio MCP server for Claude Code / Codex |
-
-Run any command with `--help` for flags.
-
----
-
-## Compatibility
-
-### Claude Code
+**Claude Code**
 
 - Reads `CLAUDE.md` at session start.
-- User-level slash commands at `~/.claude/commands/`: `/wrap-up`, `/check-init`, `/init-project`, `/recall`, `/reindex`, `/eval-recall`.
+- User-level slash commands at `~/.claude/commands/`: `/wrap-up`, `/check-init`, `/init-project`, `/recall`, `/reindex`, `/eval-recall`, `/viz`.
 - Skill writes are attributed `actor=claude:wrap-up`, `source=user+agent:claude-code`.
 
-### Codex CLI
+**Codex CLI**
 
-- Reads `AGENTS.md` at session start (same role as CLAUDE.md).
-- User-level skills at `~/.codex/skills/`: same six as above.
+- Reads `AGENTS.md` at session start (same role as `CLAUDE.md`).
+- User-level skills at `~/.codex/skills/`: same set as above.
 - MCP server registered in `~/.codex/config.toml` as `[mcp_servers.memhub]`. Codex's MCP client identifies as `codex`; memhub auto-attributes writes accordingly.
 - Skill writes are attributed `actor=codex:wrap-up`, `source=user+agent:codex`.
 
-### Both at once
+**Both at once**
 
-Same DB, same rows. Every write is tagged. `memhub fact list` and `memhub decision list` show the `source` column on every row, so you always know who surfaced it.
+Same DB, same rows. Every write is tagged. `memhub fact list` and `memhub decision list` show the `source` column, so you always know who surfaced it.
 
 ```text
-source                       Meaning
-─────────────────────────────────────────────────────────────────────
-user                         You typed `memhub fact add` directly
-agent:codex                  Codex proposed it (still in pending_writes)
-agent:claude-code            Claude proposed it
-user+agent:codex             Codex surfaced via /wrap-up, you approved
-user+agent:claude-code       Same, Claude-side
-git                          Reserved for git ingestion
-observed                     Reserved for observed signals
+source                      Meaning
+────────────────────────────────────────────────────────────────────
+user                        You typed `memhub fact add` directly
+agent:codex                 Codex proposed it (still in pending_writes)
+agent:claude-code           Claude proposed it
+user+agent:codex            Codex surfaced via /wrap-up, you approved
+user+agent:claude-code      Same, Claude-side
+git                         Reserved for git ingestion
+observed                    Reserved for observed signals
 ```
 
-`memhub stats --window 7d` breaks down writes by actor and table.
-
----
-
-## Deeper dive
-
-### One database, one truth, two views
-
-```
-.memhub/project.sqlite          ← source of truth (durable, gitignored)
-.memhub/rendered/PROJECT.md        ← local rendered narrative (gitignored)
-.memhub/rendered/PROJECT_LEDGER.md ← local rendered structured view (gitignored)
-```
-
-`memhub render` regenerates the markdown from the DB. The markdown is one-way output: there's no parser that reads human edits back into the DB. To change durable content, use the CLI (or have an agent do it via `/wrap-up`). If you want render output committed for a specific repo, set `[render].output_dir` to an in-repo path and remove that path from `.gitignore`; that is opt-in.
-
-### How attribution works
+### Attribution in depth
 
 Two columns split the work:
 
-- `source` on `facts` and `decisions` — *origin of the claim*. One of `user`, `agent:<id>`, `user+agent:<id>`, `git`, `observed`. Full vocabulary: [`docs/reference/memhub-prd-source-vocabulary-addendum.md`](docs/reference/memhub-prd-source-vocabulary-addendum.md).
+- `source` on `facts` and `decisions` — *origin of the claim*. One of `user`, `agent:<id>`, `user+agent:<id>`, `git`, `observed`.
 - `actor` on `writes_log` and `pending_writes` — *who performed the write*. Free-form, e.g. `cli:user`, `claude:wrap-up`, `codex:wrap-up`.
 
 When you accept a pending MCP proposal via `memhub review accept`, the durable row's `source` becomes `user+agent:<actor>` automatically — both signals preserved without you passing anything.
-
-### Recall: hybrid scoring + the warnings channel
-
-`memhub.recall` is the primary read tool in hybrid mode. It:
-
-1. Runs an FTS5 lookup per source table (`facts_fts`, `decisions_fts`, `tasks_fts` — contentless virtual tables that point at the live source rows).
-2. (Hybrid mode only) Embeds the query with the bundled BGE-small model and does brute-force cosine over the active-model `embeddings` table.
-3. Blends both signals with the configured weights (default `0.5 × fts + 0.5 × vec − 0.3 × stale`), after min-max-normalizing FTS BM25 onto `[0, 1]`.
-4. Applies filters (`source_type` allowlist, `include_stale`, `accepted_only`) before scoring.
-5. Returns a ranked bundle with `score`, `fts_score`, `vector_score`, `confidence`, `stale`, and `source` for every hit.
-
-Recall is **read-only**: it never writes to `writes_log`, never stages a pending write, never mutates durable rows. Safe to call as many times as you want.
-
-If recall detects any candidate row whose embedding is missing or whose `content_hash` has drifted from the current source body, it surfaces a `warnings[].kind == "stale_embeddings"` entry. Results are still returned (with vector_score = 0 for the affected rows); the agent surfaces the warning and **asks before running `/reindex`**.
 
 ### MCP server
 
@@ -366,48 +406,15 @@ If recall detects any candidate row whose embedding is missing or whose `content
 - **Write (direct):** `task_add`, `task_done`, `record_command`, `log_session_note`, `render`
 - **Write (staged for review):** `propose_fact`, `propose_decision`
 
-Tasks and session notes are direct writes because they're low-stakes (intent and scratch, not claims). Facts and decisions stage in `pending_writes` and only become durable when you approve them — usually through `memhub review accept` during `/wrap-up`. `render` is a thin side-effect tool: it regenerates the configured local `PROJECT.md` and backs up the prior version.
+### Token accounting
 
-Client identity is read from `clientInfo.name` at `initialize` and normalized: Claude Code → `claude-code`, Codex → `codex`. That value lands in `actor` columns automatically.
+Off by default. Opt in with `memhub metrics enable` — this auto-detects the Claude Code transcript directory and writes the resolved path into `.memhub/config.toml`. Disable with `memhub metrics disable`.
 
-### Review flow
+Two independent sub-switches under `[metrics]`:
+- `recall_proxy = true` — logs one row to `recall_metrics` per `memhub recall` call: actual bundle size vs a full-ledger counterfactual.
+- `session_accounting = true` — scrapes Claude Code transcript JSONL into `session_metrics` for real input/output/cache token totals.
 
-```bash
-memhub review list                              # default: pending, last 25
-memhub review show <id>
-memhub review accept <id>                       # promote to facts/decisions
-memhub review reject <id> --reason "untrusted"
-memhub review expire --older-than-days 30       # batch age-out
-```
-
-Accept derives `source = user+agent:<actor>` from the pending row's actor. Re-reviewing an already-reviewed row errors.
-
-### Staleness and confidence
-
-- **Facts** go stale after 90 days without re-verification. `memhub fact list` flags them; `memhub status` reports the count.
-- **Commands** carry a derived confidence: `success_count / (success_count + fail_count)`. `memhub command verify <kind> <cmdline> --exit-code N` updates the counters.
-- **Embeddings** go stale when the source body changes (detected by `content_hash` drift) or when the binary upgrades to a different bundled model. Recall surfaces a warning; the user decides whether to `/reindex`.
-
-Continuous decay is deliberately not implemented. Decisions don't have confidence.
-
-### Eval harness
-
-`tests/retrieval_golden.json` ships with 12 starter queries used to baseline `Recall@K` for the memhub repo itself. `memhub eval retrieval` (and the `/eval-recall` slash command) run the harness:
-
-```bash
-memhub eval retrieval                # markdown summary
-memhub eval retrieval --json         # structured for skill consumption
-memhub eval retrieval --golden tests/my-other-set.json --k 5
-memhub eval retrieval --mode fts     # compare modes A/B
-```
-
-The harness is read-only. For your own projects, write a `tests/retrieval_golden.json` that pulls real titles/keywords from your DB and pass `--golden <path>`. Matchers use `title_contains` / `body_contains` substring checks so the file survives row-ID shifts.
-
-### Deny list
-
-`.memhub/config.toml` ships with defaults blocking `.env*`, `*.pem`, `*.key`, `secrets/**`, `.aws/credentials`, etc. The list filters both `ingest-git` writes and `search` reads. Invalid patterns fail closed.
-
-Path-based only; no content scanning. Already-ingested paths are not purged when the list changes.
+The dashboard Token Metrics panel and `memhub metrics status` surface both components. `memhub render` appends a 7-day digest to `PROJECT.md` when enabled.
 
 ### Backup and restore
 
@@ -418,7 +425,27 @@ memhub import <path>                   # restore into an existing repo
 memhub import <path> --force           # overwrite live data
 ```
 
-Export covers facts, decisions, tasks, commands, pending writes, and writes_log. Git ingestion, FTS chunks, embeddings, `.memhub/config.toml`, and rendered markdown are local or derived state and are not committed by default. Session notes are not in the v1 export format.
+Export covers facts, decisions, tasks, commands, pending writes, writes_log, session notes, and both narrative tables. Embeddings are local derived state and are excluded; run `memhub index rebuild` after import.
+
+### Staleness and confidence
+
+- **Facts** go stale after 90 days without re-verification. `memhub fact list` flags them; `memhub status` reports the count.
+- **Commands** carry a derived confidence: `success_count / (success_count + fail_count)`.
+- **Embeddings** go stale when the source body changes (detected by `content_hash` drift) or when the binary upgrades to a different bundled model. Recall surfaces a warning; you decide whether to run `/reindex`.
+
+### Deny list
+
+`.memhub/config.toml` ships with defaults blocking `.env*`, `*.pem`, `*.key`, `secrets/**`, `.aws/credentials`, and similar. The list filters both `ingest-git` writes and `search` reads. Invalid patterns fail closed.
+
+### Eval harness
+
+`tests/retrieval_golden.json` ships 12 starter queries for testing `Recall@K`. Run the harness with:
+
+```bash
+memhub eval retrieval                  # markdown summary
+memhub eval retrieval --json           # structured output
+memhub eval retrieval --mode fts       # A/B compare modes
+```
 
 ---
 
@@ -430,43 +457,16 @@ Single Rust binary over an embedded-migration SQLite database. The MCP server re
 memhub CLI / MCP
    ├── src/commands/    fact / decision / task / command / review / eval / index / ...
    ├── src/db/          path discovery, migrations, audit log
-   ├── src/config/      per-repo TOML (incl. [retrieval] block)
+   ├── src/config/      per-repo TOML (incl. [retrieval] and [metrics] blocks)
    ├── src/mcp/         stdio MCP server, client identity normalization
-   ├── src/retrieval/   bundled BGE-small wrapper, eager-embed, hybrid recall
-   ├── src/sync_md/     managed markdown rewrite
+   ├── src/retrieval/   BGE-small bi-encoder + ms-marco cross-encoder, hybrid recall
+   ├── src/dashboard/   read-only local web UI (viz feature flag)
+   ├── src/metrics/     opt-in token accounting + session scraper
    ├── src/render/      PROJECT.md and PROJECT_LEDGER.md emit
    └── src/export/      v1 portable JSON
        │
-       └── SQLite (.memhub/project.sqlite) + git CLI + bundled BGE-small ONNX
+       └── SQLite (.memhub/project.sqlite) + bundled BGE-small + ms-marco ONNX
 ```
-
-Schema is at migration `0010_embeddings_delete_triggers` (FTS5 source-table indexes + `embeddings` table + cascade triggers). Run `memhub render` for a local `.memhub/rendered/PROJECT.md` architecture snapshot.
-
----
-
-## Project status
-
-**Active core (shipping):**
-
-- CLI for facts / decisions / tasks / commands / state / arch / notes / review / stats
-- Stdio MCP server with client-identity auto-attribution
-- `memhub render` emits local `PROJECT.md` + `PROJECT_LEDGER.md` under `.memhub/rendered/` by default
-- Portable JSON export/import with single-step `init --from-backup`
-- Compound source vocabulary for multi-agent attribution
-- Per-repo deny list for sensitive paths
-- Claude Code and Codex CLI bridge: shared DB, parity skills, MCP registration
-- **M8 hybrid recall:** bundled BGE-small model, eager-embed write path, FTS5 contentless virtual tables, brute-force cosine, `recall` CLI + MCP tool, `index rebuild`, `eval retrieval` harness, `/recall` + `/reindex` + `/eval-recall` skills
-
-**Not implemented yet:**
-
-- Continuous confidence decay
-- Min-score threshold on recall (low-similarity hits can leak into hybrid-mode nonsense queries)
-- Cross-repo / global memory layer
-- File watcher
-- Desktop inspector
-- `sqlite-vec` for projects past ~10,000 embeddable rows (current brute-force cosine is fine well below that)
-
-PRD authority: [`docs/reference/memhub-prd.md`](docs/reference/memhub-prd.md) (kept verbatim; changes land as addenda). M8 design is in [`docs/reference/memhub-prd-addendum-m8-retrieval.md`](docs/reference/memhub-prd-addendum-m8-retrieval.md).
 
 ---
 
@@ -474,7 +474,7 @@ PRD authority: [`docs/reference/memhub-prd.md`](docs/reference/memhub-prd.md) (k
 
 - **Local-first.** No network, no daemon, no account, no runtime model download.
 - **One per repo.** Project boundaries are repo boundaries.
-- **Boring tech.** SQLite, Rust, glob patterns, FTS5, brute-force cosine. No vector DB, no extension loading, no Python.
+- **Boring tech.** SQLite, Rust, FTS5, brute-force cosine. No vector DB, no extension loading, no Python.
 - **Agents are untrusted writers.** Agent proposals stage in `pending_writes` until a human approves. The schema enforces it.
 - **Recall is read-only.** Retrieval never writes to `writes_log` or any durable table.
 - **Narrow milestones.** Ship usable slices; defer speculative work until a real workflow demands it.
@@ -486,6 +486,5 @@ PRD authority: [`docs/reference/memhub-prd.md`](docs/reference/memhub-prd.md) (k
 - [Product PRD (verbatim)](docs/reference/memhub-prd.md)
 - [M8 hybrid retrieval addendum](docs/reference/memhub-prd-addendum-m8-retrieval.md)
 - [Source vocabulary addendum](docs/reference/memhub-prd-source-vocabulary-addendum.md)
-- [K9 deprecation addendum](docs/reference/memhub-prd-deprecation-addendum.md) — memhub used to coexist with the K9 markdown framework; that integration is retired as of 2026-05-13. K9 markdown files in older repos are historical archive.
+- [K9 deprecation addendum](docs/reference/memhub-prd-deprecation-addendum.md)
 - Local project state: run `memhub render`, then read `.memhub/rendered/PROJECT.md`
-- Local project ledger: run `memhub render`, then read `.memhub/rendered/PROJECT_LEDGER.md`
