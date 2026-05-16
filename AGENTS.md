@@ -117,6 +117,74 @@ surface for plain-English queries. Set with `memhub decision add
 For A/B testing in any repo: `memhub eval retrieval` vs
 `memhub eval retrieval --no-rerank`.
 
+## Token Accounting
+
+Off by default. Opt in per machine with `memhub metrics enable` — this
+auto-detects the Claude Code transcript directory and writes the resolved
+path into `.memhub/config.toml`. Disable with `memhub metrics disable`.
+
+Two independent sub-switches under `[metrics]`:
+- `recall_proxy = true` (component A) — logs one row to `recall_metrics`
+  per `memhub recall` call: actual bundle size vs a full-ledger
+  counterfactual, tokenised with tiktoken cl100k.
+- `session_accounting = true` (component B) — scrapes Claude Code
+  transcript JSONL into `session_metrics` for real input/output/cache
+  token totals. Scraping is incremental and never fatal; bad lines are
+  skipped.
+
+**Codex note:** component B currently scrapes Claude Code transcripts
+only. `codex_transcripts_dir` in `[metrics]` is a stub until the Codex
+transcript format is confirmed; until then a Codex session contributes
+component-A proxy rows (every `memhub recall` is logged regardless of
+host) but no real input/output token totals.
+
+**Proxy contract:** `bundle_tokens` is the token count of the recall bundle
+actually returned. `ledger_tokens` (per row in `recall_metrics`) is the size
+of `PROJECT_LEDGER.md` at recall time, measured in cl100k tokens. The
+counterfactual is **session-scoped**: for each session that had at least one
+non-empty recall, charge one ledger load (the minimum `ledger_tokens` across
+that session's recalls, as a proxy for session-start size) and subtract all
+non-empty bundle tokens. Empty-bundle recalls (no results returned) are not
+savings events and contribute nothing to the offset. The rendered label is
+"context offset vs full-ledger baseline" — not "tokens saved" — because the
+agent would not necessarily have loaded the full ledger anyway.
+
+**Tokenizer caveat:** tiktoken cl100k is ±10% off Anthropic's real
+tokenizer. Ratios stay sound because both sides of every comparison use the
+same yardstick; treat absolute token counts as estimates, not ground truth.
+
+Dashboard surfaces: `memhub metrics status` (CLI) · `memhub.metrics` (MCP
+tool) · `/metrics` (skill). `memhub render` appends a 7-day digest to
+`PROJECT.md` when enabled and ≥1 row exists; the section is omitted
+entirely when disabled or when no data has been captured yet.
+
+## Doc Ingestion
+
+External markdown reference docs (design specs, API contracts) can be
+ingested into `.memhub/project.sqlite` as opt-in retrieval material
+(decision 86). The file is chunked by heading — fenced code blocks kept
+intact — and each chunk is embedded, so it is retrievable through the
+same SQL+RAG hybrid recall as facts, decisions, and tasks.
+
+**Opt-in only.** Doc chunks never enter the default recall bundle, so
+normal project recall stays clean. Scope to docs explicitly with
+`memhub recall <query> --source-type doc` (CLI) or
+`memhub.recall(query=..., source_types=["doc"])` (MCP). Plain recall
+returns an `available_docs` count; when it is non-zero and the question
+is design/spec/architecture-flavored, run one follow-up doc-scoped
+recall before answering (judgment, not reflex).
+
+Surfaces: `memhub doc add|ls|show|rm` (CLI) · `memhub.doc_add` (MCP,
+direct write — a doc is a user-pointed artifact, not an agent claim) ·
+`/doc` (skill). Re-ingesting an unchanged file is a no-op; changed
+content replaces every chunk and refreshes embeddings/FTS.
+
+Doc content is **excluded from `memhub export`** — it is a disk-backed,
+re-ingestable cache. On another machine, re-run `doc add` against the
+same file. Embeddings populate only in `hybrid` mode; `fts` mode
+ingests chunks + FTS and vector recall for docs starts after
+`memhub index rebuild`.
+
 ## Current Build Focus
 
 The repository currently provides Milestone 1 scaffolding and a usable local CLI foundation. Future work should extend from these boundaries instead of replacing them.

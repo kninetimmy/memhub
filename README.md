@@ -224,7 +224,8 @@ Please install memhub for me, then turn on hybrid recall.
    embedding model into the binary.
 3. Run `memhub --version` to verify.
 4. Copy the user-level skills so /wrap-up, /check-init, /init-project,
-   /recall, /reindex, /eval-recall, and /doc all work as slash commands:
+   /recall, /reindex, /eval-recall, /doc, /metrics, and /viz all work
+   as slash commands:
 
        cp ~/src/memhub/templates/skills/claude/*.md ~/.claude/commands/
 
@@ -238,6 +239,11 @@ Please install memhub for me, then turn on hybrid recall.
      - If I say FTS: nothing to do; the default is already FTS.
 7. Run `memhub recall "<some keyword from my project>" --max-results 3`
    so I can see the recall surface working end-to-end.
+8. Tell me memhub can also ingest long reference docs (design specs,
+   API contracts) as opt-in, RAG-searchable material that never
+   pollutes normal recall. Ask whether I want to ingest one now — if I
+   give you a path, run `memhub doc add "<path>" --json` and report the
+   chunk count; if not, just note `/doc` is available anytime.
 
 Don't touch any files in this repo other than what `memhub init` writes
 (.memhub/ and the generated-output .gitignore entries) and the
@@ -267,7 +273,7 @@ Please install memhub for me, then turn on hybrid recall.
        args = ["serve"]
 
 5. Copy the user-level skills so /wrap-up, /check-init, /init-project,
-   /recall, /reindex, /eval-recall, and /doc all work:
+   /recall, /reindex, /eval-recall, /doc, /metrics, and /viz all work:
 
        cp -R ~/src/memhub/templates/skills/codex/* ~/.codex/skills/
 
@@ -281,6 +287,11 @@ Please install memhub for me, then turn on hybrid recall.
      - If I say FTS: nothing to do; the default is already FTS.
 8. Run `memhub recall "<some keyword from my project>" --max-results 3`
    so I can see the recall surface working end-to-end.
+9. Tell me memhub can also ingest long reference docs (design specs,
+   API contracts) as opt-in, RAG-searchable material that never
+   pollutes normal recall. Ask whether I want to ingest one now — if I
+   give you a path, run `memhub doc add "<path>" --json` and report the
+   chunk count; if not, just note `/doc` is available anytime.
 
 Don't touch any files in this repo other than what `memhub init` writes
 (.memhub/ and the generated-output .gitignore entries) and the
@@ -318,6 +329,10 @@ cp -R ~/src/memhub/templates/skills/codex/*  ~/.codex/skills/
 #    Then backfill embeddings for existing rows:
 memhub index rebuild --actor cli:user
 memhub index status   # confirm Missing: 0
+
+# 7. (Optional) Ingest a long reference doc as opt-in, RAG-searchable
+#    material — it never pollutes normal recall. /doc wraps this too.
+memhub doc add path/to/design-spec.md --json
 ```
 
 ---

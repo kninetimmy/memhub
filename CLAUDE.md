@@ -192,6 +192,33 @@ tool) · `/metrics` (skill). `memhub render` appends a 7-day digest to
 `PROJECT.md` when enabled and ≥1 row exists; the section is omitted
 entirely when disabled or when no data has been captured yet.
 
+## Doc Ingestion
+
+External markdown reference docs (design specs, API contracts) can be
+ingested into `.memhub/project.sqlite` as opt-in retrieval material
+(decision 86). The file is chunked by heading — fenced code blocks kept
+intact — and each chunk is embedded, so it is retrievable through the
+same SQL+RAG hybrid recall as facts, decisions, and tasks.
+
+**Opt-in only.** Doc chunks never enter the default recall bundle, so
+normal project recall stays clean. Scope to docs explicitly with
+`memhub recall <query> --source-type doc` (CLI) or
+`memhub.recall(query=..., source_types=["doc"])` (MCP). Plain recall
+returns an `available_docs` count; when it is non-zero and the question
+is design/spec/architecture-flavored, run one follow-up doc-scoped
+recall before answering (judgment, not reflex).
+
+Surfaces: `memhub doc add|ls|show|rm` (CLI) · `memhub.doc_add` (MCP,
+direct write — a doc is a user-pointed artifact, not an agent claim) ·
+`/doc` (skill). Re-ingesting an unchanged file is a no-op; changed
+content replaces every chunk and refreshes embeddings/FTS.
+
+Doc content is **excluded from `memhub export`** — it is a disk-backed,
+re-ingestable cache. On another machine, re-run `doc add` against the
+same file. Embeddings populate only in `hybrid` mode; `fts` mode
+ingests chunks + FTS and vector recall for docs starts after
+`memhub index rebuild`.
+
 ## Current Build Focus
 
 The repository currently provides Milestone 1 scaffolding and a usable local CLI foundation. Future work should extend from these boundaries instead of replacing them.
