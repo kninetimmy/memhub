@@ -140,7 +140,7 @@ pub fn open_project(start: &Path) -> Result<ProjectContext> {
     // Opportunistic, gated, never-fails token-accounting scrape
     // (decision 74 component B, task #29). Off by default; a no-op
     // unless the user opted in via `memhub metrics enable`.
-    crate::metrics::session_scraper::scrape_if_enabled(&conn, &config.metrics);
+    crate::metrics::session_scraper::scrape_if_enabled(&conn, &config.metrics, &paths.repo_root);
 
     // Post-scrape upkeep (decision 74, task #30): attribute recall rows
     // to the freshly-updated session windows and prune past retention.

@@ -746,6 +746,12 @@ pub fn enable(start: &Path) -> Result<EnableResult> {
         }
     }
 
+    if new_config.metrics.codex_transcripts_dir.is_empty() {
+        if let Some(dir) = detect_codex_sessions_dir() {
+            new_config.metrics.codex_transcripts_dir = dir.to_string_lossy().to_string();
+        }
+    }
+
     new_config.metrics.enabled = true;
     new_config.save(&ctx.paths.config_path)?;
 
@@ -802,7 +808,7 @@ pub fn rescan(start: &Path) -> Result<RescanResult> {
     // open_project already scraped this pass; a second call is a no-op
     // (offsets consumed) but documents intent and picks up any new files
     // that appeared between open and here.
-    session_scraper::scrape_if_enabled(&ctx.conn, cfg);
+    session_scraper::scrape_if_enabled(&ctx.conn, cfg, &ctx.paths.repo_root);
 
     let recalls_attributed = maintenance::reconcile(&ctx.conn)?;
     let (recalls_pruned, sessions_pruned) =
@@ -901,6 +907,17 @@ fn query_token_totals_nd(conn: &rusqlite::Connection, days: u32) -> Option<Token
         },
     )
     .ok()
+}
+
+/// Auto-detect the Codex sessions directory. Codex writes all projects'
+/// sessions to `~/.codex/sessions/` (global, not per-project). The
+/// per-project filter happens in the scraper via `session_meta.payload.cwd`
+/// (decision 77). Returns `None` when HOME is not set or the directory
+/// doesn't exist.
+fn detect_codex_sessions_dir() -> Option<std::path::PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    let candidate = std::path::Path::new(&home).join(".codex/sessions");
+    if candidate.is_dir() { Some(candidate) } else { None }
 }
 
 /// Auto-detect the Claude Code transcripts dir for this repo.

@@ -58,13 +58,20 @@ use crate::Result;
 
 const CLAUDE_AGENT: &str = "claude-code";
 const SCRAPER_ACTOR: &str = "metrics:claude-scraper";
+const CODEX_AGENT: &str = "codex";
+const CODEX_SCRAPER_ACTOR: &str = "metrics:codex-scraper";
 
 /// Opportunistic entry point. Gated by the `metrics.enabled` master
 /// switch and the `metrics.session_accounting` sub-switch; both off by
 /// default, so this is a zero-cost early return on a non-opted-in
 /// install. Errors are swallowed (logged, never propagated) — losing a
 /// metrics scrape must never fail an otherwise-successful command.
-pub fn scrape_if_enabled(conn: &Connection, cfg: &MetricsConfig) {
+///
+/// `repo_root` is used to filter Codex sessions: Codex writes all
+/// projects' sessions to `~/.codex/sessions/`, so each file is checked
+/// against `session_meta.payload.cwd` before any rows are written
+/// (decision 77).
+pub fn scrape_if_enabled(conn: &Connection, cfg: &MetricsConfig, repo_root: &Path) {
     if !cfg.enabled || !cfg.session_accounting {
         return;
     }
@@ -79,15 +86,14 @@ pub fn scrape_if_enabled(conn: &Connection, cfg: &MetricsConfig) {
         }
     }
 
-    // Codex transcript format is unconfirmed (decision 74: deferred).
-    // The config field exists and the scraper no-ops on it so a user
-    // who sets it doesn't silently believe Codex sessions are counted.
     if !cfg.codex_transcripts_dir.is_empty() {
-        log::debug!(
-            "metrics: codex_transcripts_dir is set but Codex scraping \
-             is deferred (decision 74); skipping {}",
-            cfg.codex_transcripts_dir
-        );
+        let dir = Path::new(&cfg.codex_transcripts_dir);
+        if let Err(err) = scrape_codex_dir(conn, dir, repo_root) {
+            log::warn!(
+                "session_metrics codex scrape of {} failed: {err}",
+                dir.display()
+            );
+        }
     }
 }
 
@@ -121,6 +127,272 @@ fn scrape_claude_dir(conn: &Connection, dir: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Scrape the Codex sessions tree: `~/.codex/sessions/YYYY/MM/DD/*.jsonl`.
+/// The tree is global (all projects share it), so each file is filtered by
+/// `session_meta.payload.cwd` before rows are written (decision 77).
+fn scrape_codex_dir(conn: &Connection, dir: &Path, repo_root: &Path) -> Result<()> {
+    let l1_entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err.into()),
+    };
+    let canonical_root = repo_root.canonicalize().unwrap_or_else(|_| repo_root.to_path_buf());
+    for l1 in l1_entries {
+        let l1 = match l1 { Ok(e) => e, Err(_) => continue };
+        if !l1.file_type().map(|t| t.is_dir()).unwrap_or(false) { continue; }
+        let l2_entries = match fs::read_dir(l1.path()) { Ok(e) => e, Err(_) => continue };
+        for l2 in l2_entries {
+            let l2 = match l2 { Ok(e) => e, Err(_) => continue };
+            if !l2.file_type().map(|t| t.is_dir()).unwrap_or(false) { continue; }
+            let l3_entries = match fs::read_dir(l2.path()) { Ok(e) => e, Err(_) => continue };
+            for l3 in l3_entries {
+                let l3 = match l3 { Ok(e) => e, Err(_) => continue };
+                if !l3.file_type().map(|t| t.is_dir()).unwrap_or(false) { continue; }
+                let file_entries = match fs::read_dir(l3.path()) { Ok(e) => e, Err(_) => continue };
+                for entry in file_entries {
+                    let path = match entry { Ok(e) => e.path(), Err(_) => continue };
+                    if path.extension().and_then(|e| e.to_str()) != Some("jsonl") { continue; }
+                    if let Err(err) = scrape_codex_file(conn, &path, &canonical_root) {
+                        log::warn!("metrics: skipping codex session file {}: {err}", path.display());
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Scrape one Codex session file.
+///
+/// Codex session IDs are prefixed with `codex:` to prevent any PK
+/// collision with Claude session UUIDs (decision 77).
+///
+/// Token mapping (decision 77):
+///   `last_token_usage.input_tokens`            → input_tokens
+///   `last_token_usage.cached_input_tokens`      → cache_read_tokens
+///   `last_token_usage.output_tokens`            → output_tokens (base)
+///   `last_token_usage.reasoning_output_tokens`  → rolled into output_tokens
+///   cache_creation_tokens                       → always 0 (no Codex equivalent)
+fn scrape_codex_file(conn: &Connection, path: &Path, canonical_root: &Path) -> Result<()> {
+    // Extract UUID from stem: "rollout-YYYY-MM-DDTHH-MM-SS-<UUID>" where
+    // UUID is always the last 5 hyphen-delimited groups.
+    let stem = match path.file_stem().and_then(|s| s.to_str()) {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => return Ok(()),
+    };
+    let parts: Vec<&str> = stem.split('-').collect();
+    if parts.len() < 5 {
+        log::debug!("metrics: codex stem has too few hyphen parts, skipping: {stem}");
+        return Ok(());
+    }
+    let uuid = parts[parts.len() - 5..].join("-");
+    let session_id = format!("codex:{uuid}");
+
+    let file_len = fs::metadata(path)?.len();
+
+    let existing_offset: Option<i64> = conn
+        .query_row(
+            "SELECT last_scanned_offset FROM session_metrics WHERE session_id = ?1",
+            params![session_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+
+    let mut offset = existing_offset.unwrap_or(0).max(0) as u64;
+
+    if existing_offset.is_some() && file_len == offset {
+        return Ok(());
+    }
+
+    if file_len < offset {
+        conn.execute(
+            "UPDATE session_metrics SET \
+                input_tokens = 0, output_tokens = 0, \
+                cache_read_tokens = 0, cache_creation_tokens = 0, \
+                last_scanned_offset = 0 \
+             WHERE session_id = ?1",
+            params![session_id],
+        )?;
+        conn.execute(
+            "DELETE FROM session_turn_metrics WHERE session_id = ?1",
+            params![session_id],
+        )?;
+        let _ = log_write(
+            conn, CODEX_SCRAPER_ACTOR, "session_metrics", None, "scrape_reset",
+            &format!("{} shrank ({} < {}); rescanning from 0", path.display(), file_len, offset),
+        );
+        offset = 0;
+    }
+
+    // CWD filter: only needed for sessions we haven't seen before.
+    // On a resume (existing_offset.is_some()) the project already matched.
+    if existing_offset.is_none() {
+        if !codex_session_matches_project(path, canonical_root) {
+            return Ok(());
+        }
+    }
+
+    let mut file = File::open(path)?;
+    file.seek(SeekFrom::Start(offset))?;
+    let mut reader = BufReader::new(file);
+
+    let mut d = Delta::default();
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        let n = reader.read_until(b'\n', &mut buf)?;
+        if n == 0 { break; }
+        if buf.last() != Some(&b'\n') { break; }
+        d.consumed += n as u64;
+        ingest_codex_line(&String::from_utf8_lossy(&buf), &mut d);
+    }
+
+    if d.consumed == 0 {
+        return Ok(());
+    }
+
+    let new_offset = (offset + d.consumed) as i64;
+
+    conn.execute(
+        "INSERT INTO session_metrics \
+            (session_id, agent, started_at, ended_at, \
+             input_tokens, output_tokens, cache_read_tokens, \
+             cache_creation_tokens, recall_calls, last_scanned_offset) \
+         VALUES (?1, ?2, COALESCE(?3, CURRENT_TIMESTAMP), ?4, \
+                 ?5, ?6, ?7, 0, 0, ?8) \
+         ON CONFLICT(session_id) DO UPDATE SET \
+            input_tokens          = input_tokens          + excluded.input_tokens, \
+            output_tokens         = output_tokens         + excluded.output_tokens, \
+            cache_read_tokens     = cache_read_tokens     + excluded.cache_read_tokens, \
+            cache_creation_tokens = cache_creation_tokens + excluded.cache_creation_tokens, \
+            ended_at              = COALESCE(excluded.ended_at, session_metrics.ended_at), \
+            last_scanned_offset   = excluded.last_scanned_offset",
+        params![
+            session_id,
+            CODEX_AGENT,
+            d.min_ts,
+            d.max_ts,
+            d.input,
+            d.output,
+            d.cache_read,
+            new_offset,
+        ],
+    )?;
+
+    if !d.turns.is_empty() {
+        let mut stmt = conn.prepare(
+            "INSERT INTO session_turn_metrics \
+                (session_id, ts, input_tokens, output_tokens, \
+                 cache_read_tokens, cache_creation_tokens) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )?;
+        for turn in &d.turns {
+            stmt.execute(params![
+                session_id,
+                turn.ts,
+                turn.input,
+                turn.output,
+                turn.cache_read,
+                turn.cache_creation,
+            ])?;
+        }
+    }
+
+    if d.parse_skips > 0 {
+        let _ = log_write(
+            conn, CODEX_SCRAPER_ACTOR, "session_metrics", None, "scrape_skip",
+            &format!(
+                "{}: {} unparseable/foreign line(s) skipped, {} token_count line(s) counted",
+                path.display(), d.parse_skips, d.lines_with_usage
+            ),
+        );
+    }
+
+    Ok(())
+}
+
+/// Read the first line of a Codex session file and return true when
+/// `session_meta.payload.cwd` matches `canonical_root`.
+fn codex_session_matches_project(path: &Path, canonical_root: &Path) -> bool {
+    let file = match File::open(path) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+    let mut reader = BufReader::new(file);
+    let mut line = String::new();
+    if reader.read_line(&mut line).is_err() {
+        return false;
+    }
+    let v: Value = match serde_json::from_str(line.trim()) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    if v.get("type").and_then(Value::as_str) != Some("session_meta") {
+        return false;
+    }
+    let cwd = match v.get("payload").and_then(|p| p.get("cwd")).and_then(Value::as_str) {
+        Some(c) => c,
+        None => return false,
+    };
+    let cwd_path = std::path::Path::new(cwd);
+    let canonical_cwd = cwd_path.canonicalize().unwrap_or_else(|_| cwd_path.to_path_buf());
+    canonical_cwd == canonical_root
+}
+
+/// Parse one Codex `event_msg / token_count` line and fold its
+/// `last_token_usage` into `d`. Any other event type is silently
+/// ignored (not a skip). `reasoning_output_tokens` is rolled into
+/// `output_tokens`; `cache_creation_tokens` is always 0.
+fn ingest_codex_line(line: &str, d: &mut Delta) {
+    let line = line.trim();
+    if line.is_empty() { return; }
+
+    let v: Value = match serde_json::from_str(line) {
+        Ok(v) => v,
+        Err(_) => { d.parse_skips += 1; return; }
+    };
+
+    let line_ts: Option<String> = v
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    if let Some(ts) = line_ts.clone() {
+        if d.min_ts.as_ref().is_none_or(|m| ts < *m) { d.min_ts = Some(ts.clone()); }
+        if d.max_ts.as_ref().is_none_or(|m| ts > *m) { d.max_ts = Some(ts); }
+    }
+
+    if v.get("type").and_then(Value::as_str) != Some("event_msg") { return; }
+    let payload = match v.get("payload") { Some(p) => p, None => return };
+    if payload.get("type").and_then(Value::as_str) != Some("token_count") { return; }
+    let info = match payload.get("info") {
+        Some(i) if !i.is_null() => i,
+        _ => return,
+    };
+    let last = match info.get("last_token_usage") {
+        Some(l) if !l.is_null() => l,
+        _ => return,
+    };
+
+    let n = |key: &str| -> i64 { last.get(key).and_then(Value::as_i64).unwrap_or(0) };
+
+    let input = n("input_tokens");
+    let cache_read = n("cached_input_tokens");
+    let output = n("output_tokens") + n("reasoning_output_tokens");
+
+    d.input += input;
+    d.output += output;
+    d.cache_read += cache_read;
+    d.lines_with_usage += 1;
+    d.turns.push(TurnRecord {
+        ts: line_ts,
+        input,
+        output,
+        cache_read,
+        cache_creation: 0,
+    });
 }
 
 /// One usage-bearing assistant line, captured verbatim for the
