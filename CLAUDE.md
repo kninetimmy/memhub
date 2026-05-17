@@ -200,13 +200,25 @@ ingested into `.memhub/project.sqlite` as opt-in retrieval material
 intact — and each chunk is embedded, so it is retrievable through the
 same SQL+RAG hybrid recall as facts, decisions, and tasks.
 
-**Opt-in only.** Doc chunks never enter the default recall bundle, so
-normal project recall stays clean. Scope to docs explicitly with
-`memhub recall <query> --source-type doc` (CLI) or
-`memhub.recall(query=..., source_types=["doc"])` (MCP). Plain recall
-returns an `available_docs` count; when it is non-zero and the question
-is design/spec/architecture-flavored, run one follow-up doc-scoped
-recall before answering (judgment, not reflex).
+**Default after first ingest (decision 90, extends 86).** Docs are
+opt-in by default; the first successful `memhub doc add` in a repo
+flips `[retrieval] include_docs_in_default` on in that repo's local
+config, so the user-pointed write that establishes docs also wires up
+retrieval. After that, plain `memhub recall` surfaces a doc chunk only
+when it clears the cross-encoder relevance boundary
+(`[retrieval.scoring] doc_min_rerank_score`, default 0.0) — strong
+topical matches in, off-topic docs out, so a UI style guide stays
+silent on a backend query while a code style guide surfaces. The
+doc floor is deliberately *below* `min_rerank_score`: doc chunks
+rerank in a lower band than facts/decisions (an on-topic doc ≈ +1.6,
+off-topic ≈ −11), so a higher floor would filter relevant docs.
+Scope to docs alone with `memhub recall <query> --source-type doc`
+(CLI) or `memhub.recall(query=..., source_types=["doc"])` (MCP);
+explicit scoping keeps the normal floor and is unaffected by the
+flag. Plain recall still returns `available_docs` — now the count of
+ingested chunks that did *not* surface this call — so a doc-scoped
+follow-up for the long tail stays a judgment call. Set
+`include_docs_in_default = false` to revert to strict opt-in.
 
 Surfaces: `memhub doc add|ls|show|rm` (CLI) · `memhub.doc_add` (MCP,
 direct write — a doc is a user-pointed artifact, not an agent claim) ·

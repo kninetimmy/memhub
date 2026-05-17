@@ -150,6 +150,19 @@ struct ResolvedOptions {
     /// rerank-score cutoff cleanly separates the two without the
     /// cosine-band overlap that doomed the vector-path floor.
     min_rerank_score: f32,
+    /// True only when doc chunks entered the pool implicitly via
+    /// `[retrieval] include_docs_in_default` (caller passed no
+    /// `source_types`). Explicit `--source-type doc` keeps this false
+    /// so that path behaves exactly as before. Gates the stricter
+    /// doc floor and the "drop unvetted docs" safety rule below.
+    docs_via_default: bool,
+    /// Rerank floor applied to doc chunks that entered via
+    /// `docs_via_default`, from `[retrieval.scoring]
+    /// doc_min_rerank_score`. Defaults to the cross-encoder's
+    /// relevant/irrelevant sign boundary (0.0): on-topic doc chunks
+    /// rerank just above it, off-topic ones far below, so docs route
+    /// by task without displacing project memory.
+    doc_min_rerank_score: f32,
 }
 
 impl ResolvedOptions {
@@ -170,8 +183,17 @@ impl ResolvedOptions {
                 "max_results must be greater than zero".to_string(),
             ));
         }
+        // Docs join the *default* pool only when the caller passed no
+        // explicit scope AND the repo opted in. Explicit scopes
+        // (including `--source-type doc`) bypass this entirely and
+        // keep the legacy floor.
+        let docs_via_default = opts.source_types.is_empty() && cfg.include_docs_in_default;
         let source_types = if opts.source_types.is_empty() {
-            vec![SourceType::Fact, SourceType::Decision, SourceType::Task]
+            let mut base = vec![SourceType::Fact, SourceType::Decision, SourceType::Task];
+            if docs_via_default {
+                base.push(SourceType::DocChunk);
+            }
+            base
         } else {
             let mut deduped = Vec::with_capacity(opts.source_types.len());
             for st in &opts.source_types {
@@ -193,6 +215,8 @@ impl ResolvedOptions {
             min_rerank_score: opts
                 .min_rerank_score
                 .unwrap_or(cfg.scoring.min_rerank_score),
+            docs_via_default,
+            doc_min_rerank_score: cfg.scoring.doc_min_rerank_score,
         })
     }
 }
@@ -323,16 +347,36 @@ fn run(
         let scored_order = rerank::rerank(&opts.query, &docs)?;
         let mut reshuffled: Vec<ScoredHit> = Vec::with_capacity(scored.len());
         for (idx, score) in scored_order {
-            if score < opts.min_rerank_score {
-                continue;
-            }
             if let Some(hit) = scored.get(idx) {
+                // Doc chunks that joined via the default-inclusion
+                // path must clear the stricter doc floor; everything
+                // else (and explicitly doc-scoped recall) uses the
+                // normal floor.
+                let floor = if opts.docs_via_default
+                    && hit.source_type == SourceType::DocChunk
+                {
+                    opts.doc_min_rerank_score
+                } else {
+                    opts.min_rerank_score
+                };
+                if score < floor {
+                    continue;
+                }
                 let mut hit = hit.clone();
                 hit.rerank_score = Some(score);
                 reshuffled.push(hit);
             }
         }
         scored = reshuffled;
+    }
+    // Safety invariant: a doc may enter the *default* bundle only when
+    // the cross-encoder actually vetted it. If the re-rank pass did
+    // not run (fts mode, use_reranker = false, or a trivially short
+    // candidate set), drop default-included docs entirely rather than
+    // letting unscored chunks displace project memory. Explicit
+    // `--source-type doc` (docs_via_default = false) is unaffected.
+    if opts.docs_via_default && !reranked {
+        scored.retain(|h| h.source_type != SourceType::DocChunk);
     }
     scored.truncate(opts.max_results);
 
@@ -367,20 +411,36 @@ fn run(
         }
     };
 
-    // Cheap awareness signal: if the caller did not scope to docs, tell
-    // them how many ingested doc chunks they skipped so the agent can
-    // decide whether a follow-up doc-scoped recall is worthwhile.
-    let available_docs: usize = if opts.source_types.contains(&SourceType::DocChunk) {
+    // Cheap awareness signal. Three states:
+    //  - explicit `--source-type doc`: 0, the caller already has docs.
+    //  - docs_via_default: docs are in the pool but most won't fit the
+    //    bundle, so report how many chunks did NOT surface here — the
+    //    agent still benefits from knowing a doc-scoped follow-up
+    //    exists for the long tail.
+    //  - flag off / docs not pooled: total chunks skipped (legacy).
+    let explicitly_doc_scoped =
+        !opts.docs_via_default && opts.source_types.contains(&SourceType::DocChunk);
+    let available_docs: usize = if explicitly_doc_scoped {
         0
     } else {
-        conn.query_row(
-            "SELECT COUNT(*) FROM doc_chunks WHERE project_id = 1",
-            [],
-            |r| r.get::<_, i64>(0),
-        )
-        .optional_row()?
-        .unwrap_or(0)
-        .max(0) as usize
+        let total = conn
+            .query_row(
+                "SELECT COUNT(*) FROM doc_chunks WHERE project_id = 1",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional_row()?
+            .unwrap_or(0)
+            .max(0) as usize;
+        if opts.docs_via_default {
+            let surfaced = results
+                .iter()
+                .filter(|r| r.source_type == SourceType::DocChunk.as_str())
+                .count();
+            total.saturating_sub(surfaced)
+        } else {
+            total
+        }
     };
 
     Ok(RecallResponse {
@@ -1495,10 +1555,11 @@ mod tests {
 
     #[test]
     fn docs_are_opt_in_and_signal_availability() {
-        // Docs must never enter the default bundle, but recall must
-        // advertise that they exist via `available_docs` so the agent
-        // can decide to follow up. Scoping to docs returns the chunk
-        // and zeroes the signal.
+        // `doc add` auto-enables include_docs_in_default, but in FTS
+        // mode the cross-encoder never runs, so the safety rule must
+        // still keep unvetted docs out of the default bundle while
+        // `available_docs` advertises the un-surfaced chunks. Explicit
+        // doc scope returns the chunk and zeroes the signal.
         let temp = tempdir().expect("tempdir");
         init::run(temp.path()).expect("init");
         fact::add(
@@ -1566,6 +1627,228 @@ mod tests {
         assert_eq!(
             scoped.available_docs, 0,
             "available_docs is 0 when the caller already scoped to docs"
+        );
+    }
+
+    /// Two ingested docs (a code style guide and a UI style guide).
+    /// A code-flavored query must surface the code doc and the doc
+    /// floor must keep the off-topic UI doc out of the default bundle;
+    /// the inverse query flips it. This is the user's own
+    /// "depends on the task at hand" example, and it calibrates
+    /// `DEFAULT_DOC_MIN_RERANK_SCORE` — if the constant is mis-tuned,
+    /// one of these assertions fails with the offending rerank scores.
+    #[test]
+    fn doc_default_recall_floor_routes_by_task_relevance() {
+        let temp = tempdir().expect("tempdir");
+        seed(temp.path());
+
+        // Doc chunks embed only in hybrid mode; the cross-encoder must
+        // run for the doc floor to apply at all.
+        let cfg_path = temp.path().join(".memhub/config.toml");
+        let mut cfg = ProjectConfig::load(&cfg_path).expect("load cfg");
+        cfg.retrieval.mode = RetrievalMode::Hybrid;
+        cfg.save(&cfg_path).expect("save cfg");
+
+        let code_doc = temp.path().join("code-style-guide.md");
+        std::fs::write(
+            &code_doc,
+            "# Rust Code Style Guide\n\n\
+             ## Error Handling\n\n\
+             New fallible functions return `crate::Result<T>`. Never call \
+             `unwrap()` outside tests. Convert an IO failure with `map_err` \
+             into `MemhubError::InvalidInput` and propagate it upward with \
+             the `?` operator so the caller decides how to recover.\n\n\
+             ## Naming\n\n\
+             Functions are snake_case verbs; modules are nouns. Avoid \
+             abbreviations in any public API signature.\n",
+        )
+        .expect("write code doc");
+        doc::add(temp.path(), &code_doc, None, "cli:user").expect("ingest code doc");
+
+        let ui_doc = temp.path().join("ui-style-guide.md");
+        std::fs::write(
+            &ui_doc,
+            "# UI Style Guide\n\n\
+             ## Color Palette\n\n\
+             The primary accent is teal #1F8A8A painted on a near-black \
+             #0B0B0C canvas. Never use pure black for the background.\n\n\
+             ## Spacing And Typography\n\n\
+             Lay everything out on an 8px base grid. Buttons take 12px \
+             vertical and 20px horizontal padding. Headings use a humanist \
+             sans on a 1.25 modular scale; body copy is 16px at 1.5 line \
+             height.\n",
+        )
+        .expect("write ui doc");
+        doc::add(temp.path(), &ui_doc, None, "cli:user").expect("ingest ui doc");
+
+        let is_ui_chunk = |b: &str| {
+            b.contains("#1F8A8A") || b.contains("8px base grid") || b.contains("modular scale")
+        };
+        let is_code_chunk =
+            |b: &str| b.contains("map_err") || b.contains("snake_case") || b.contains("Result<T>");
+
+        // Code-flavored query: code doc in, UI doc out.
+        let code_q = recall(
+            temp.path(),
+            RecallOptions {
+                query: "convention for returning and propagating errors from a new function"
+                    .to_string(),
+                mode: Some(RetrievalMode::Hybrid),
+                max_results: 6,
+                source_types: vec![],
+                include_stale: None,
+                accepted_only: None,
+                use_reranker: None,
+                min_rerank_score: None,
+                log_metrics: false,
+            },
+        )
+        .expect("code-flavored recall");
+        let doc_hits = |r: &RecallResponse| -> Vec<(String, Option<f32>)> {
+            r.results
+                .iter()
+                .filter(|h| h.source_type == "doc_chunk")
+                .map(|h| (h.body.clone(), h.rerank_score))
+                .collect()
+        };
+        assert!(
+            code_q
+                .results
+                .iter()
+                .any(|h| h.source_type == "doc_chunk" && is_code_chunk(&h.body)),
+            "code query must surface the code style guide; doc hits = {:?}",
+            doc_hits(&code_q),
+        );
+        assert!(
+            !code_q
+                .results
+                .iter()
+                .any(|h| h.source_type == "doc_chunk" && is_ui_chunk(&h.body)),
+            "off-topic UI doc must be filtered by the doc floor on a code query; \
+             doc hits = {:?}",
+            doc_hits(&code_q),
+        );
+
+        // Inverse: a UI-flavored query surfaces the UI doc, not the code one.
+        let ui_q = recall(
+            temp.path(),
+            RecallOptions {
+                query: "primary accent color and button padding for the interface".to_string(),
+                mode: Some(RetrievalMode::Hybrid),
+                max_results: 6,
+                source_types: vec![],
+                include_stale: None,
+                accepted_only: None,
+                use_reranker: None,
+                min_rerank_score: None,
+                log_metrics: false,
+            },
+        )
+        .expect("ui-flavored recall");
+        assert!(
+            ui_q.results
+                .iter()
+                .any(|h| h.source_type == "doc_chunk" && is_ui_chunk(&h.body)),
+            "ui query must surface the UI style guide; doc hits = {:?}",
+            doc_hits(&ui_q),
+        );
+        assert!(
+            !ui_q
+                .results
+                .iter()
+                .any(|h| h.source_type == "doc_chunk" && is_code_chunk(&h.body)),
+            "off-topic code doc must be filtered on a UI query; doc hits = {:?}",
+            doc_hits(&ui_q),
+        );
+
+        // Flag off: even in hybrid + reranked, no doc may surface.
+        let mut off = ProjectConfig::load(&cfg_path).expect("reload cfg");
+        off.retrieval.include_docs_in_default = false;
+        off.save(&cfg_path).expect("save cfg off");
+        let gated = recall(
+            temp.path(),
+            RecallOptions {
+                query: "convention for returning and propagating errors from a new function"
+                    .to_string(),
+                mode: Some(RetrievalMode::Hybrid),
+                max_results: 6,
+                source_types: vec![],
+                include_stale: None,
+                accepted_only: None,
+                use_reranker: None,
+                min_rerank_score: None,
+                log_metrics: false,
+            },
+        )
+        .expect("flag-off recall");
+        assert!(
+            gated.results.iter().all(|h| h.source_type != "doc_chunk"),
+            "with include_docs_in_default=false no doc may enter the default \
+             bundle; got {:?}",
+            doc_hits(&gated),
+        );
+        assert!(
+            gated.available_docs >= 1,
+            "flag-off recall still advertises available docs, got {}",
+            gated.available_docs,
+        );
+    }
+
+    /// Only the *first* doc in a repo auto-enables default doc recall.
+    /// Once a user sets the flag false, neither a re-add nor a second
+    /// new doc may silently re-flip it — that escape hatch is promised
+    /// in CLAUDE.md / AGENTS.md, so it gets a regression guard.
+    #[test]
+    fn first_doc_auto_enables_then_user_opt_out_sticks() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let cfg_path = temp.path().join(".memhub/config.toml");
+
+        let d1 = temp.path().join("one.md");
+        std::fs::write(&d1, "# One\n\nFirst doc body.\n").expect("write d1");
+        let out1 = doc::add(temp.path(), &d1, None, "cli:user").expect("add d1");
+        assert!(
+            out1.enabled_default_recall,
+            "first doc must auto-enable default recall"
+        );
+        assert!(
+            ProjectConfig::load(&cfg_path)
+                .expect("load")
+                .retrieval
+                .include_docs_in_default,
+            "config must persist the auto-enable"
+        );
+
+        // User deliberately opts back out.
+        let mut off = ProjectConfig::load(&cfg_path).expect("load");
+        off.retrieval.include_docs_in_default = false;
+        off.save(&cfg_path).expect("save off");
+
+        // A second, brand-new doc must NOT re-flip it.
+        let d2 = temp.path().join("two.md");
+        std::fs::write(&d2, "# Two\n\nSecond doc body.\n").expect("write d2");
+        let out2 = doc::add(temp.path(), &d2, None, "cli:user").expect("add d2");
+        assert!(
+            !out2.enabled_default_recall,
+            "a second new doc must not re-enable after explicit opt-out"
+        );
+        assert!(
+            !ProjectConfig::load(&cfg_path)
+                .expect("load")
+                .retrieval
+                .include_docs_in_default,
+            "user opt-out must survive a second doc add"
+        );
+
+        // Neither may a re-add of the first doc (unchanged).
+        let out1b = doc::add(temp.path(), &d1, None, "cli:user").expect("re-add d1");
+        assert!(!out1b.enabled_default_recall);
+        assert!(
+            !ProjectConfig::load(&cfg_path)
+                .expect("load")
+                .retrieval
+                .include_docs_in_default,
+            "user opt-out must survive an unchanged re-add"
         );
     }
 

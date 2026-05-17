@@ -26,10 +26,29 @@ pub const DEFAULT_STALE_PENALTY: f64 = 0.3;
 /// middle of the safe band [1.5, 2.4]. Gives parity with the retired
 /// `min_vector_score = 0.7` floor on R@3 and safety probe pass.
 pub const DEFAULT_MIN_RERANK_SCORE: f32 = 2.0;
+/// Cross-encoder floor a doc chunk must clear to enter the *default*
+/// recall bundle when `include_docs_in_default` is on (decision
+/// extending 86). Calibrated empirically (recall.rs
+/// `doc_default_recall_floor_routes_by_task_relevance`): an on-topic
+/// doc chunk reranks around +1.6 while off-topic chunks sit near
+/// −11, so 0.0 — the ms-marco-MiniLM relevant/irrelevant sign
+/// boundary — cleanly routes by task with wide margin both ways.
+/// Note this is *below* `DEFAULT_MIN_RERANK_SCORE` (2.0): doc chunks
+/// rerank in a lower band than facts/decisions, so a "stricter =
+/// higher" floor would wrongly filter genuinely relevant docs.
+/// Anti-displacement comes from the deeply negative off-topic
+/// scores, not a high threshold. Only consulted for chunks that
+/// entered via the default-inclusion path; explicit
+/// `--source-type doc` keeps the normal `min_rerank_score`.
+pub const DEFAULT_DOC_MIN_RERANK_SCORE: f32 = 0.0;
 pub const DEFAULT_ACCEPTED_ONLY: bool = false;
 pub const DEFAULT_INCLUDE_STALE: bool = false;
 pub const DEFAULT_USE_RERANKER: bool = true;
 pub const DEFAULT_RERANK_CANDIDATE_POOL: usize = 20;
+/// Docs are opt-in to default recall (decision 86). Auto-flipped to
+/// true by the first successful `memhub doc add` in a project so the
+/// user-pointed write that establishes docs also wires up retrieval.
+pub const DEFAULT_INCLUDE_DOCS_IN_DEFAULT: bool = false;
 
 /// Token-accounting subsystem defaults. Master switch ships off so
 /// new installs and pre-decision-74 installs stay silent until the
@@ -69,6 +88,15 @@ pub struct RetrievalScoringConfig {
     /// and when `use_reranker = false`.
     #[serde(default = "default_min_rerank_score")]
     pub min_rerank_score: f32,
+    /// Cross-encoder floor a doc chunk must clear to survive into the
+    /// *default* bundle when `[retrieval] include_docs_in_default` is
+    /// on. Defaults to 0.0 — the cross-encoder's own relevance sign
+    /// boundary — which routes on-topic docs in and off-topic docs
+    /// out by a wide margin (see DEFAULT_DOC_MIN_RERANK_SCORE).
+    /// Ignored for explicit `--source-type doc` scopes (those use the
+    /// normal floor) and whenever the re-ranker does not run.
+    #[serde(default = "default_doc_min_rerank_score")]
+    pub doc_min_rerank_score: f32,
 }
 
 impl Default for RetrievalScoringConfig {
@@ -78,6 +106,7 @@ impl Default for RetrievalScoringConfig {
             vector_weight: DEFAULT_VECTOR_WEIGHT,
             stale_penalty: DEFAULT_STALE_PENALTY,
             min_rerank_score: DEFAULT_MIN_RERANK_SCORE,
+            doc_min_rerank_score: DEFAULT_DOC_MIN_RERANK_SCORE,
         }
     }
 }
@@ -93,6 +122,12 @@ fn default_stale_penalty() -> f64 {
 }
 fn default_min_rerank_score() -> f32 {
     DEFAULT_MIN_RERANK_SCORE
+}
+fn default_doc_min_rerank_score() -> f32 {
+    DEFAULT_DOC_MIN_RERANK_SCORE
+}
+fn default_include_docs_in_default() -> bool {
+    DEFAULT_INCLUDE_DOCS_IN_DEFAULT
 }
 fn default_max_results() -> usize {
     DEFAULT_RECALL_MAX_RESULTS
@@ -149,6 +184,14 @@ pub struct RetrievalConfig {
     /// `use_reranker = true` and mode = hybrid.
     #[serde(default = "default_rerank_candidate_pool")]
     pub rerank_candidate_pool: usize,
+    /// When true, plain `memhub recall` (no `--source-type`) makes
+    /// ingested doc chunks eligible for the default bundle, gated by
+    /// `scoring.doc_min_rerank_score`. Off by default (decision 86);
+    /// the first successful `memhub doc add` in a project flips this
+    /// to true in that repo's `.memhub/config.toml`. Explicit
+    /// `--source-type doc` recall is unaffected by this flag.
+    #[serde(default = "default_include_docs_in_default")]
+    pub include_docs_in_default: bool,
     #[serde(default)]
     pub scoring: RetrievalScoringConfig,
 }
@@ -162,6 +205,7 @@ impl Default for RetrievalConfig {
             include_stale_by_default: DEFAULT_INCLUDE_STALE,
             use_reranker: DEFAULT_USE_RERANKER,
             rerank_candidate_pool: DEFAULT_RERANK_CANDIDATE_POOL,
+            include_docs_in_default: DEFAULT_INCLUDE_DOCS_IN_DEFAULT,
             scoring: RetrievalScoringConfig::default(),
         }
     }

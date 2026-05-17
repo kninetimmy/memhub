@@ -46,6 +46,10 @@ pub struct DocAddOutcome {
     pub path: String,
     pub chunk_count: usize,
     pub status: IngestStatus,
+    /// True when this call flipped `[retrieval] include_docs_in_default`
+    /// on for the repo (first successful doc add). The CLI surfaces a
+    /// one-line notice so the behavior change is visible, not silent.
+    pub enabled_default_recall: bool,
 }
 
 /// Ingest (or re-ingest) a markdown file. Unchanged content (same
@@ -67,6 +71,17 @@ pub fn add(start: &Path, file: &Path, title: Option<&str>, actor: &str) -> Resul
     let mode = ctx.config.retrieval.mode;
     let tx = ctx.conn.transaction()?;
 
+    // "First successful doc add in this repo" — the literal trigger for
+    // auto-enabling default doc recall — means the documents table was
+    // empty *before* this call. Measured pre-insert so re-adds, updates,
+    // and a second new doc never re-flip a setting the user turned off
+    // (that escape hatch is documented in CLAUDE.md / AGENTS.md).
+    let was_first_doc: bool = tx.query_row(
+        "SELECT COUNT(*) FROM documents WHERE project_id = 1",
+        [],
+        |r| r.get::<_, i64>(0),
+    )? == 0;
+
     let existing: Option<(i64, String)> = tx
         .query_row(
             "SELECT id, content_hash FROM documents WHERE project_id = 1 AND path = ?1",
@@ -83,12 +98,15 @@ pub fn add(start: &Path, file: &Path, title: Option<&str>, actor: &str) -> Resul
                 |r| r.get(0),
             )?;
             tx.commit()?;
+            let enabled_default_recall =
+                was_first_doc && maybe_enable_default_doc_recall(&mut ctx)?;
             return Ok(DocAddOutcome {
                 doc_id: id,
                 title: resolved_title,
                 path: path_str,
                 chunk_count: chunk_count.max(0) as usize,
                 status: IngestStatus::Unchanged,
+                enabled_default_recall,
             });
         }
         Some((id, _)) => {
@@ -130,6 +148,7 @@ pub fn add(start: &Path, file: &Path, title: Option<&str>, actor: &str) -> Resul
         &format!("doc add: {} ({} chunks)", path_str, chunks.len()),
     )?;
     tx.commit()?;
+    let enabled_default_recall = was_first_doc && maybe_enable_default_doc_recall(&mut ctx)?;
     sync_md::sync_if_enabled(start)?;
 
     Ok(DocAddOutcome {
@@ -138,7 +157,23 @@ pub fn add(start: &Path, file: &Path, title: Option<&str>, actor: &str) -> Resul
         path: path_str,
         chunk_count: chunks.len(),
         status,
+        enabled_default_recall,
     })
+}
+
+/// Flip `[retrieval] include_docs_in_default` on (decision 90). Only
+/// called when `was_first_doc` held — i.e. the documents table was
+/// empty before this ingest — so the user-pointed write that
+/// establishes the very first doc also wires up retrieval, while a
+/// later `false` set by the user is never silently re-flipped by a
+/// re-add or a second doc. Returns whether it changed the config.
+fn maybe_enable_default_doc_recall(ctx: &mut db::ProjectContext) -> Result<bool> {
+    if ctx.config.retrieval.include_docs_in_default {
+        return Ok(false);
+    }
+    ctx.config.retrieval.include_docs_in_default = true;
+    ctx.config.save(&ctx.paths.config_path)?;
+    Ok(true)
 }
 
 fn insert_chunks(

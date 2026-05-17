@@ -283,6 +283,7 @@ impl MemhubServer {
             path: outcome.path,
             chunks: outcome.chunk_count,
             status: status.to_string(),
+            enabled_default_recall: outcome.enabled_default_recall,
             actor: actor.normalized,
             actor_raw: actor.raw,
         }))
@@ -578,7 +579,7 @@ impl ServerHandler for MemhubServer {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("memhub", env!("CARGO_PKG_VERSION")))
             .with_instructions(
-                "Local-first per-repo project memory. Read tools are direct (status, search, recall, list_tasks, list_decisions, list_facts, list_pending_writes, get_command, metrics). Prefer `recall` over reading PROJECT_LEDGER.md mid-session — it does SQL+RAG hybrid retrieval across facts, decisions, and tasks. Tasks write directly (task_add, task_done) since tasks are intent. `doc_add` ingests a user-pointed markdown file as opt-in reference material (search it with recall source_types=[\"doc\"]; it never enters the default bundle, and recall's `available_docs` signals when ingested docs went unsearched). Facts and decisions stage via propose_fact / propose_decision and require human acceptance through `memhub review accept`. Session notes are write-only scratch. `render` regenerates the configured local PROJECT.md from the DB. `metrics` returns token-accounting totals and a pre-rendered dashboard panel for the /metrics skill.",
+                "Local-first per-repo project memory. Read tools are direct (status, search, recall, list_tasks, list_decisions, list_facts, list_pending_writes, get_command, metrics). Prefer `recall` over reading PROJECT_LEDGER.md mid-session — it does SQL+RAG hybrid retrieval across facts, decisions, and tasks. Tasks write directly (task_add, task_done) since tasks are intent. `doc_add` ingests a user-pointed markdown file as reference material; the first ingest in a repo turns on default-bundle doc recall, after which only strong topical doc matches surface in plain `recall` (scope to docs alone with source_types=[\"doc\"]; recall's `available_docs` counts ingested chunks that did not surface this call). Facts and decisions stage via propose_fact / propose_decision and require human acceptance through `memhub review accept`. Session notes are write-only scratch. `render` regenerates the configured local PROJECT.md from the DB. `metrics` returns token-accounting totals and a pre-rendered dashboard panel for the /metrics skill.",
             )
     }
 
@@ -950,6 +951,11 @@ struct DocAddToolResponse {
     chunks: usize,
     /// `created` | `updated` | `unchanged`.
     status: String,
+    /// True when this call flipped on default-bundle doc recall for
+    /// the repo (first doc ingested). After this, strong topical doc
+    /// matches surface in plain `recall`; `source_types=["doc"]` still
+    /// scopes to docs only.
+    enabled_default_recall: bool,
     actor: String,
     actor_raw: String,
 }

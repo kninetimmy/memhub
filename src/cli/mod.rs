@@ -491,6 +491,7 @@ pub fn run(cli: Cli) -> Result<()> {
                         "path": outcome.path,
                         "chunks": outcome.chunk_count,
                         "status": status,
+                        "enabled_default_recall": outcome.enabled_default_recall,
                     });
                     println!("{payload}");
                 } else {
@@ -498,7 +499,14 @@ pub fn run(cli: Cli) -> Result<()> {
                         "{} document {}: {} ({} chunks)\n  {}",
                         status, outcome.doc_id, outcome.title, outcome.chunk_count, outcome.path,
                     );
-                    if outcome.status != commands::doc::IngestStatus::Unchanged {
+                    if outcome.enabled_default_recall {
+                        println!(
+                            "  Default doc recall enabled for this repo \
+                             (first doc ingested) — strong topical matches now\n  \
+                             surface in plain `memhub recall`; \
+                             scope to docs only with --source-type doc."
+                        );
+                    } else if outcome.status != commands::doc::IngestStatus::Unchanged {
                         println!("  Searchable via: memhub recall \"<query>\" --source-type doc");
                     }
                 }

@@ -24,6 +24,11 @@
 #   - retrieval.default_max_results
 #   - retrieval.accepted_only_by_default
 #   - retrieval.include_stale_by_default
+#   - retrieval.include_docs_in_default  (canonical baseline false
+#                                         here; auto-flips to true in
+#                                         the local config on first
+#                                         `doc add` — do NOT commit a
+#                                         true value back)
 #   - metrics.*                        (opt-in token accounting; each
 #                                       install opts in independently
 #                                       and the transcript paths are
@@ -72,6 +77,15 @@ include_stale_by_default = false
 # the bake-off (decision 68). Ignored in fts mode.
 use_reranker = true
 rerank_candidate_pool = 20
+# Make ingested doc chunks eligible for the *default* recall bundle
+# (no --source-type needed), gated by scoring.doc_min_rerank_score.
+# Canonical baseline is false (decision 86: docs are opt-in). The
+# first successful `memhub doc add` in a repo flips the LOCAL
+# config.toml to true so the user-pointed write that establishes
+# docs also wires up retrieval — that per-repo drift is expected and
+# is not committed back here. Explicit `--source-type doc` recall is
+# unaffected by this flag either way.
+include_docs_in_default = false
 
 [retrieval.scoring]
 fts_weight = 0.5
@@ -83,6 +97,15 @@ stale_penalty = 0.3
 # match drops out at +2.5; 2.0 sits in the middle of the safe band.
 # Only applied when re-ranker runs (hybrid + use_reranker).
 min_rerank_score = 2.0
+# Floor for doc chunks that entered via include_docs_in_default.
+# Calibrated empirically (recall.rs
+# doc_default_recall_floor_routes_by_task_relevance): an on-topic doc
+# chunk reranks ~+1.6, off-topic ~−11, so 0.0 (the MiniLM
+# relevant/irrelevant sign boundary) routes by task with wide margin.
+# Deliberately *below* min_rerank_score — doc chunks rerank in a
+# lower band than facts/decisions, so a higher floor would wrongly
+# filter relevant docs. Ignored for explicit --source-type doc.
+doc_min_rerank_score = 0.0
 
 # Token accounting (decision 74). Off by default; opt in per machine
 # via `memhub metrics enable`. recall_proxy is component A (cheap,
