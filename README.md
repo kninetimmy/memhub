@@ -2,6 +2,18 @@
 
 *Your AI agents forget things. memhub doesn't.*
 
+<p align="center">
+  <img src="https://img.shields.io/badge/License-MIT-2E7D32?style=flat&logo=opensourceinitiative&logoColor=white" alt="License: MIT"/>
+  <img src="https://img.shields.io/badge/Rust-1.85%2B-B7410E?style=flat&logo=rust&logoColor=white" alt="Rust 1.85+"/>
+  <img src="https://img.shields.io/badge/SQLite-bundled-003B57?style=flat&logo=sqlite&logoColor=white" alt="SQLite bundled"/>
+  <br/>
+  <img src="https://img.shields.io/badge/Recall-FTS5%20%2B%20RAG-5E81AC?style=flat" alt="Recall: FTS5 + RAG"/>
+  <img src="https://img.shields.io/badge/MCP-Claude%20%C2%B7%20Codex-D97757?style=flat&logo=anthropic&logoColor=white" alt="MCP: Claude and Codex"/>
+  <img src="https://img.shields.io/badge/Offline-local--first-4C566A?style=flat" alt="Offline, local-first"/>
+  <br/>
+  <img src="https://img.shields.io/badge/Platform-macOS%20%C2%B7%20Linux%20%C2%B7%20Windows-607D8B?style=flat" alt="Platform: macOS, Linux, Windows"/>
+</p>
+
 ---
 
 If you've ever started a coding session by re-explaining your build setup, your naming conventions, or why that one architectural decision was made — that's the problem memhub solves.
