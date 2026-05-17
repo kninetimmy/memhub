@@ -4,9 +4,11 @@
 
 ---
 
-memhub is a small, offline, per-repo memory system for AI coding assistants. It gives Claude Code and Codex CLI one shared, searchable store of project facts — built on SQLite, with semantic search bundled right into the binary.
+If you've ever started a coding session by re-explaining your build setup, your naming conventions, or why that one architectural decision was made — that's the problem memhub solves.
 
-No cloud. No account. No daemon. No model download at runtime. Just a `.sqlite` file that lives next to your code and a binary on your PATH.
+memhub is a small, offline, per-repo memory system for AI coding assistants. It gives Claude Code and Codex CLI one shared, searchable store of project knowledge — decisions, facts, tasks, notes, and your own reference docs — built on SQLite with semantic search bundled into the binary.
+
+No cloud. No account. No daemon. No model download at runtime. Just a `.sqlite` file next to your code and a binary on your PATH.
 
 <br>
 
@@ -16,193 +18,50 @@ No cloud. No account. No daemon. No model download at runtime. Just a `.sqlite` 
 
 ---
 
-## How it works
+## What you actually get
 
-### 1. The store (SQL)
-
-Everything lands in a SQLite database at `.memhub/project.sqlite`. Facts, decisions, tasks, session notes — all structured rows with full-text search indexes built in (FTS5), plus timestamps and source attribution on every write.
-
-SQLite means no server, no setup, and the whole thing is just a file you can inspect, back up, or export whenever you want. Migrations apply automatically on startup; you never need to think about schema versions.
-
-### 2. The semantic layer (RAG)
-
-Keyword search is great when you remember the exact term you used. It's less great three months in when you're asking about "compile settings" and the relevant fact is filed under `release_build`.
-
-memhub ships with a bundled embedding model (BGE-small-en-v1.5, ~130 MB, compiled into the binary at build time). Every fact and decision you write also gets embedded as a vector. When you recall something, memhub runs both a keyword search and a semantic similarity search in parallel, blends the scores, then runs a cross-encoder re-ranker over the top candidates — all locally, no network call.
-
-<br>
-
-<p align="center">
-  <img src="docs/images/hybrid-recall.svg" alt="how hybrid recall works" width="840"/>
-</p>
-
-The result is a ranked, cited evidence bundle. You get `title`, `body`, `score`, `source`, and a staleness flag for every hit. The agent gets crisp context; you keep a record of where it came from.
-
-### 3. The agent bridge (MCP + skills)
-
-memhub speaks [MCP](https://modelcontextprotocol.io/) (Model Context Protocol), the standard tool-call interface that Claude Code and Codex both use. When the agent needs context, it calls `memhub.recall` — a structured tool call, not a file read. It gets back a ranked bundle, not a wall of markdown.
-
-When the agent wants to *write* something, it calls `propose_fact` or `propose_decision`. The proposal lands in `pending_writes` — a staging area — and waits there until you review it. Nothing an agent proposes becomes durable fact until you've said yes.
-
-Tasks and session notes are different: those write directly, because they're low-stakes (intent and scratch, not claims).
+- **Context that sticks.** "What's the build command?" gets a real answer on day 90, not just day 1. The agent looks it up; you stop repeating yourself.
+- **Decisions with reasons.** Six months from now you'll know *why* a call was made, not just that it was made. "We switched to rusqlite bundled mode because X" stays findable forever.
+- **Your docs are searchable too.** Point memhub at an API spec, design system, or compliance doc and the agent pulls the relevant section on demand — no pasting the whole file into the prompt. A styling question surfaces the right color token table; a backend question stays completely silent on the style guide.
+- **You stay in control.** Agent proposals stage for review before anything becomes durable. You see exactly what the agent wants to commit, and you can say no.
+- **Both agents, same memory.** Claude Code and Codex share the same rows. Switching tools doesn't cost you context.
+- **Small context, relevant content.** A targeted recall bundle is much smaller than pasting your full project README into every prompt. The Token Metrics dashboard estimates how much context you're saving.
+- **It's just a file.** SQLite, gitignored, in your repo. No accounts, no services, no vendor lock-in. Back it up, move it, or `rm -rf .memhub/` and it's gone.
 
 ---
 
-## What gets saved (and when)
+## A session in practice
 
-| Type | What it's for | Who writes it | Goes straight to DB? |
-|---|---|---|---|
-| **facts** | Key project knowledge: build commands, MSRV, env vars, naming conventions | You or agent | Agent: no (staged). You: yes. |
-| **decisions** | Design choices with rationale and context | You or agent | Agent: no (staged). You: yes. |
-| **tasks** | Lightweight to-dos and in-flight work | You or agent | Yes — low-stakes |
-| **session notes** | Observations and scratch thoughts during a session | Agent | Yes — scratchpad only, not recalled |
-| **commands** | Verified shell commands with success/fail tracking | You or agent | Yes — observational |
-| **state / arch** | The "currently building" and architecture narratives | Agent at wrap-up | Yes — agent-authored but explicit |
-| **reference docs** | External markdown you point it at: specs, contracts, style guides | You (you hand it a file) | Yes — user-pointed, opt-in to recall |
-
-The rule behind the table: things that could be *wrong* — facts that might be outdated, decisions that might be misattributed — need a human in the loop. Things that are clearly ephemeral or observational write directly. Reference docs are a fourth case — not a claim, not observational, just material you explicitly handed to memhub — so they write directly but stay out of the default recall bundle (see [Point it at your design docs](#point-it-at-your-design-docs)).
-
-When an agent proposal gets staged in `pending_writes`, the source is recorded as `agent:claude-code` or `agent:codex`. When you accept it at `/wrap-up`, that source upgrades to `user+agent:claude-code` — both signals preserved, so you can always tell later what was verified.
-
----
-
-## Agent-driven vs. driving it yourself
-
-### The usual way: let the agent handle it
-
-In a normal session, you talk to your agent and memhub runs in the background. The agent reads `PROJECT.md` at session start for the narrative context, calls `memhub.recall` when it needs a specific fact mid-session, and stages any new knowledge it wants to record.
-
-At the end of a session, you run `/wrap-up` (a slash command in Claude Code, a skill in Codex). The agent walks you through everything it wants to commit — new facts, decisions, task updates, a short session summary — one item at a time. You approve or skip each one. Then it re-renders the local `PROJECT.md` and `PROJECT_LEDGER.md` from the database.
+In a normal session, you talk to your agent and memhub runs in the background. At the end you run `/wrap-up` — a slash command in Claude Code — and the agent walks you through everything it wants to commit, one item at a time. You say yes or no to each one.
 
 ```
 You: "What did we decide about the authentication flow?"
   → memhub.recall "authentication flow"  (returns cited evidence bundle)
 
 You: "Add a task to refactor the cache layer."
-  → task_add "refactor cache layer"  (direct write, done)
+  → task_add "refactor cache layer"  (direct write)
 
-You: "We're going to use rusqlite bundled mode because X."
-  → propose_decision "use rusqlite bundled mode" --rationale "X"  (staged)
+You: "We're going to use rusqlite bundled mode because it avoids setup friction."
+  → propose_decision ...  (staged for your review)
 
 You: "/wrap-up"
-  → agent reviews staged proposals with you, one by one
-  → you say yes or no to each
+  → agent walks through staged proposals one by one
+  → you approve or skip each one
   → session note written, PROJECT.md re-rendered
 ```
 
-The `/wrap-up` gate is the whole point. The agent is helpful for surfacing and structuring knowledge; you're the one who decides what's true.
+The `/wrap-up` gate is the whole point. The agent is good at surfacing and structuring knowledge; you decide what's true.
 
-### If you'd rather type
-
-The CLI is a first-class interface. Everything the agent does has a terminal equivalent:
+You can also drive it directly from the terminal — both flows write to the same database:
 
 ```bash
-memhub status
 memhub recall "auth flow"
 memhub task add "Refactor cache layer"
-memhub task done 7
 memhub fact add build-command "cargo build --release"
 memhub decision add "use rusqlite bundled mode" \
   --rationale "Avoid system SQLite setup friction."
-memhub note add "Tried the router rewrite — no measurable diff."
 memhub render
 ```
-
-The two flows write to the same database. The only difference is the `source` column on each row — `user` for what you typed directly, `user+agent:<id>` for what you approved through a `/wrap-up`. `memhub stats --window 7d` shows a breakdown of writes by actor.
-
----
-
-## One machine, many projects
-
-memhub is per-repo by design. Every project gets its own `.memhub/project.sqlite` — completely isolated. There's no global database, no coordination between repos, no leakage between projects.
-
-```
-~/code/
-├── my-web-app/
-│   └── .memhub/project.sqlite   ← web app memory
-├── my-cli-tool/
-│   └── .memhub/project.sqlite   ← CLI tool memory
-└── my-library/
-    └── .memhub/project.sqlite   ← library memory
-```
-
-The `memhub` binary is installed once at `~/.cargo/bin/memhub`. Each project's database is independent. To add memhub to a new project, just `cd` into it and run `memhub init`. The recall surface, the dashboard, the stats — everything reads whichever repo's database is in your current working directory.
-
-This also means you can try memhub on one project without any risk to your others. If you decide it's not for you, `rm -rf .memhub/` is the entire uninstall.
-
----
-
-## Moving between machines
-
-memhub state is machine-local by default — the database, embeddings, and rendered markdown are all gitignored. Only code and migrations travel with the repo. To carry your memory to another machine:
-
-```bash
-# on your current machine
-memhub export ~/memhub-myproject-backup.json
-
-# move the file however you like (Drive, USB, scp)
-
-# on the new machine, after cloning the repo + installing memhub
-memhub init --from-backup ~/memhub-myproject-backup.json
-memhub index rebuild   # re-generate embeddings from the imported rows
-```
-
-The export format is versioned JSON. It covers facts, decisions, tasks, commands, pending writes, writes log, session notes, and both narrative tables. Embeddings are not included — the target machine re-derives them via `memhub index rebuild`.
-
----
-
-## The web dashboard
-
-Run `memhub viz` in your project directory (or `/viz` in Claude Code) to open a local read-only dashboard in your browser. It serves from localhost, reads the current repo's database, and never writes anything.
-
-Six tabs:
-
-- **Overview** — open tasks, recent decisions, pending writes, and current project state at a glance
-- **Embedding Map** — a 2D PCA projection of your semantic memory space; points are facts and decisions, clustered by meaning
-- **Recall Inspector** — type any query and see per-row scores in real time: FTS score, vector score, and final re-ranked position
-- **Activity** — a write-history feed with actor attribution
-- **Audit** — the full `writes_log`, every write ever, with source and actor
-- **Token Metrics** — input/output/cache token totals from your Claude Code sessions, a cumulative per-turn burn-up chart, and a context-offset estimate comparing targeted recall bundles vs. loading the full project ledger
-
-<!-- TODO: add screenshot of Overview tab here -->
-<!-- TODO: add screenshot of Embedding Map tab here -->
-<!-- TODO: add screenshot of Token Metrics tab here -->
-
----
-
-## Point it at your design docs
-
-Sometimes the thing the agent needs to know isn't a fact you wrote down — it's sitting in a spec file on your desktop. A design system, an API contract, a style guide: long external markdown you don't want to paste into every prompt and don't want to hand-transcribe into facts.
-
-Point memhub at it:
-
-```bash
-memhub doc add ~/specs/design-system.md
-```
-
-memhub splits the file into section-aware chunks — heading breadcrumbs preserved, so a hit knows it came from *Typography > Design Tokens*, not just "somewhere in a 14 KB file" — embeds each one, and makes the whole thing searchable through the exact same hybrid recall path as everything else.
-
-The catch — and it's deliberate — is that ingested docs are **opt-in**. They never show up in the default recall bundle. A design spec is reference material, not durable project knowledge, so it doesn't get to crowd out your facts and decisions. Instead, when docs exist, recall returns an `available_docs` count alongside the normal results. The agent sees that signal and, when the question is design- or spec-flavored, runs one follow-up doc-scoped query:
-
-```bash
-memhub recall "how should color tokens be named" --source-type doc
-```
-
-You can scope to docs explicitly any time with `--source-type doc`. Docs are file-backed and re-ingestable — so they're excluded from `memhub export`, and re-running `memhub doc add` after the source file changes replaces every chunk in place. Use `memhub doc ls / show / rm` to manage what's ingested.
-
----
-
-## Why bother?
-
-The honest answer: if you work on a project for more than a few days with an AI assistant, you'll notice the difference.
-
-- **Context doesn't evaporate.** "What's the build command again?" gets a real answer on day 90, not just day 1. The agent looks it up; you don't repeat yourself.
-- **Decisions stay explained.** Six months from now you'll know *why* a call was made, not just that it was made. That's the difference between a decision and a fact.
-- **Small context, relevant content.** A targeted recall bundle is much smaller than pasting the full project README into every prompt. The [Token Metrics tab](#the-web-dashboard) estimates how much context you're saving.
-- **Agent proposals are reviewable.** You see exactly what the agent wants to commit, and you can say no. Nothing sneaks into your project memory.
-- **Your specs are searchable too.** Point memhub at an external design doc or API contract and the agent pulls the relevant section on demand — no pasting the whole file into the prompt, no polluting normal recall.
-- **Both agents, same memory.** Claude Code and Codex share the same rows. Switching tools doesn't cost you context.
-- **It's just a file.** SQLite, gitignored, in your repo. No accounts to manage, no services to stay online, no vendor lock-in. Back it up, move it, or delete it whenever you want.
 
 ---
 
@@ -240,10 +99,12 @@ Please install memhub for me, then turn on hybrid recall.
 7. Run `memhub recall "<some keyword from my project>" --max-results 3`
    so I can see the recall surface working end-to-end.
 8. Tell me memhub can also ingest long reference docs (design specs,
-   API contracts) as opt-in, RAG-searchable material that never
-   pollutes normal recall. Ask whether I want to ingest one now — if I
-   give you a path, run `memhub doc add "<path>" --json` and report the
-   chunk count; if not, just note `/doc` is available anytime.
+   API contracts) as RAG-searchable material. After the first doc add,
+   relevant doc chunks automatically surface in plain recall — gated by
+   a relevance threshold so off-topic docs stay silent. Ask whether I
+   want to ingest one now — if I give you a path, run
+   `memhub doc add "<path>" --json` and report the chunk count;
+   if not, just note `/doc` is available anytime.
 
 Don't touch any files in this repo other than what `memhub init` writes
 (.memhub/ and the generated-output .gitignore entries) and the
@@ -288,10 +149,12 @@ Please install memhub for me, then turn on hybrid recall.
 8. Run `memhub recall "<some keyword from my project>" --max-results 3`
    so I can see the recall surface working end-to-end.
 9. Tell me memhub can also ingest long reference docs (design specs,
-   API contracts) as opt-in, RAG-searchable material that never
-   pollutes normal recall. Ask whether I want to ingest one now — if I
-   give you a path, run `memhub doc add "<path>" --json` and report the
-   chunk count; if not, just note `/doc` is available anytime.
+   API contracts) as RAG-searchable material. After the first doc add,
+   relevant doc chunks automatically surface in plain recall — gated by
+   a relevance threshold so off-topic docs stay silent. Ask whether I
+   want to ingest one now — if I give you a path, run
+   `memhub doc add "<path>" --json` and report the chunk count;
+   if not, just note `/doc` is available anytime.
 
 Don't touch any files in this repo other than what `memhub init` writes
 (.memhub/ and the generated-output .gitignore entries) and the
@@ -330,10 +193,156 @@ cp -R ~/src/memhub/templates/skills/codex/*  ~/.codex/skills/
 memhub index rebuild --actor cli:user
 memhub index status   # confirm Missing: 0
 
-# 7. (Optional) Ingest a long reference doc as opt-in, RAG-searchable
-#    material — it never pollutes normal recall. /doc wraps this too.
+# 7. (Optional) Ingest a reference doc — after first add, relevant chunks
+#    automatically surface in plain recall (relevance-gated; off-topic
+#    docs stay silent). /doc wraps this as a slash command.
 memhub doc add path/to/design-spec.md --json
 ```
+
+---
+
+## What gets saved (and when)
+
+| Type | What it's for | Who writes it | Goes straight to DB? |
+|---|---|---|---|
+| **facts** | Key project knowledge: build commands, MSRV, env vars, naming conventions | You or agent | Agent: no (staged). You: yes. |
+| **decisions** | Design choices with rationale and context | You or agent | Agent: no (staged). You: yes. |
+| **tasks** | Lightweight to-dos and in-flight work | You or agent | Yes — low-stakes |
+| **session notes** | Observations and scratch thoughts during a session | Agent | Yes — scratchpad only, not recalled |
+| **commands** | Verified shell commands with success/fail tracking | You or agent | Yes — observational |
+| **state / arch** | The "currently building" and architecture narratives | Agent at wrap-up | Yes — agent-authored but explicit |
+| **reference docs** | External markdown you point it at: specs, contracts, style guides | You (you hand it a file) | Yes — auto-joins default recall after first ingest |
+
+The rule behind the table: things that could be *wrong* — facts that might be outdated, decisions that might be misattributed — need a human in the loop. Things that are clearly ephemeral or observational write directly. Reference docs are a fourth case: not a claim, not observational, just material you explicitly handed to memhub — so they write directly. After the first `doc add` in a repo, doc chunks automatically join default recall when they're relevant enough (see [Point it at your design docs](#point-it-at-your-design-docs)).
+
+When an agent proposal gets staged in `pending_writes`, the source is recorded as `agent:claude-code` or `agent:codex`. When you accept it at `/wrap-up`, that source upgrades to `user+agent:claude-code` — both signals preserved, so you can always tell what was verified.
+
+---
+
+## Point it at your design docs
+
+Sometimes the thing the agent needs is sitting in an existing file: a design spec, an API contract, a compliance document, a style guide. You don't want to paste it into every prompt. You don't want to hand-transcribe it into facts.
+
+Point memhub at it:
+
+```bash
+memhub doc add ~/specs/design-system.md
+```
+
+memhub splits the file into section-aware chunks — heading breadcrumbs preserved, so a hit knows it came from *Typography > Design Tokens*, not just "somewhere in a 14 KB file" — embeds each one, and makes the whole thing searchable through the same hybrid recall path as everything else.
+
+**After the first `doc add` in a repo, relevant chunks automatically surface in plain recall.** There's no extra flag to pass. The agent calls `memhub.recall "how should color tokens be named"` and, if the design system has a relevant answer, it comes back alongside your facts and decisions.
+
+What keeps this from being noisy: a relevance threshold. Doc chunks score differently from facts and decisions in the cross-encoder. A clearly on-topic section scores around +1.6; a clearly off-topic one scores around −11. The result is that a UI style guide stays completely silent on a backend architecture query, while a compliance doc surfaces the relevant policy section when you ask about data retention. You don't configure this; it just works.
+
+When doc chunks *don't* clear the relevance bar, recall still tells you they exist — via an `available_docs` count in the response. That's your signal to run a more targeted query:
+
+```bash
+memhub recall "color token naming" --source-type doc
+```
+
+Scoping to `--source-type doc` returns only doc chunks — useful for a deep dive into the spec without facts and decisions mixed in.
+
+**What this looks like in practice:**
+
+- You're building an API gateway. You ingest a 200-page API spec once. Six months later, "how does rate limiting work in the payment service" returns the relevant section, cited by heading.
+- You ingest your compliance policy doc. "What's our session-token retention policy" returns the exact paragraph. Your fact and decision records stay uncluttered.
+- You ingest a design system. Backend questions return nothing from it. A question about button states or spacing pulls the right spec section automatically.
+- You hand a new team member's onboarding doc to memhub. The agent surfaces the relevant section when onboarding questions come up — without you having to remember to mention it.
+
+A few things to know:
+- Docs are excluded from `memhub export` — they're file-backed and re-ingestable, not part of your durable memory snapshot. Re-run `doc add` on another machine.
+- Re-ingesting an unchanged file is a no-op. Changed content replaces every chunk in place.
+- `memhub doc ls / show / rm` to manage what's ingested.
+- Set `include_docs_in_default = false` in config to revert to strict opt-in if you prefer manual control.
+
+---
+
+## The web dashboard
+
+Run `memhub viz` in your project directory (or `/viz` in Claude Code) to open a local read-only dashboard in your browser. Serves from localhost, reads the current repo's database, never writes anything.
+
+Six tabs:
+
+- **Overview** — open tasks, recent decisions, pending writes, and current project state at a glance
+- **Embedding Map** — a 2D PCA projection of your semantic memory space; points are facts and decisions, clustered by meaning
+- **Recall Inspector** — type any query and see per-row scores in real time: FTS score, vector score, and final re-ranked position
+- **Activity** — a write-history feed with actor attribution
+- **Audit** — the full `writes_log`, every write ever, with source and actor
+- **Token Metrics** — input/output/cache token totals from your Claude Code sessions, a cumulative per-turn burn-up chart, and a context-offset estimate comparing targeted recall bundles vs. loading the full project ledger
+
+<!-- TODO: add screenshot of Overview tab here -->
+<!-- TODO: add screenshot of Embedding Map tab here -->
+<!-- TODO: add screenshot of Token Metrics tab here -->
+
+---
+
+## One machine, many projects
+
+memhub is per-repo by design. Every project gets its own `.memhub/project.sqlite` — completely isolated. No global database, no coordination between repos, no leakage between projects.
+
+```
+~/code/
+├── my-web-app/
+│   └── .memhub/project.sqlite   ← web app memory
+├── my-cli-tool/
+│   └── .memhub/project.sqlite   ← CLI tool memory
+└── my-library/
+    └── .memhub/project.sqlite   ← library memory
+```
+
+The `memhub` binary is installed once at `~/.cargo/bin/memhub`. Each project's database is independent. To add memhub to a new project, `cd` into it and run `memhub init`. To try it risk-free: `rm -rf .memhub/` is the entire uninstall for that project.
+
+---
+
+## Moving between machines
+
+memhub state is machine-local by default — the database, embeddings, and rendered markdown are all gitignored. Only code and migrations travel with the repo. To carry your memory to another machine:
+
+```bash
+# on your current machine
+memhub export ~/memhub-myproject-backup.json
+
+# move the file (Drive, USB, scp)
+
+# on the new machine, after cloning the repo + installing memhub
+memhub init --from-backup ~/memhub-myproject-backup.json
+memhub index rebuild   # re-generate embeddings from the imported rows
+```
+
+The export format is versioned JSON. It covers facts, decisions, tasks, commands, pending writes, writes log, session notes, and both narrative tables. Embeddings are excluded — the target machine re-derives them via `memhub index rebuild`. Ingested docs are also excluded; re-run `memhub doc add` against the same files on the new machine.
+
+---
+
+## How it works
+
+<br>
+
+<p align="center">
+  <img src="docs/images/hybrid-recall.svg" alt="how hybrid recall works" width="840"/>
+</p>
+
+### 1. The store (SQL)
+
+Everything lands in a SQLite database at `.memhub/project.sqlite`. Facts, decisions, tasks, session notes — all structured rows with full-text search indexes (FTS5) built in, plus timestamps and source attribution on every write.
+
+SQLite means no server, no setup, and the whole thing is just a file you can inspect, back up, or export whenever you want. Migrations apply automatically on startup; you never need to think about schema versions.
+
+### 2. The semantic layer (RAG)
+
+Keyword search is great when you remember the exact term you used. Less great three months in when you're asking about "compile settings" and the relevant fact is filed under `release_build`.
+
+memhub ships with a bundled embedding model (BGE-small-en-v1.5, ~130 MB, compiled into the binary at build time). Every fact and decision you write also gets embedded as a vector. When you recall something, memhub runs both a keyword search and a semantic similarity search in parallel, blends the scores, then runs a cross-encoder re-ranker over the top candidates — all locally, no network call.
+
+The result is a ranked, cited evidence bundle. You get `title`, `body`, `score`, `source`, and a staleness flag for every hit. The agent gets crisp context; you keep a record of where it came from.
+
+### 3. The agent bridge (MCP + skills)
+
+memhub speaks [MCP](https://modelcontextprotocol.io/) (Model Context Protocol), the standard tool-call interface that Claude Code and Codex both use. When the agent needs context, it calls `memhub.recall` — a structured tool call, not a file read. It gets back a ranked bundle, not a wall of markdown.
+
+When the agent wants to *write* something, it calls `propose_fact` or `propose_decision`. The proposal lands in `pending_writes` — a staging area — and waits until you review it. Nothing an agent proposes becomes durable fact until you've said yes.
+
+Tasks and session notes write directly — they're low-stakes (intent and scratch, not claims).
 
 ---
 
@@ -345,7 +354,7 @@ memhub doc add path/to/design-spec.md --json
 |---|---|
 | `memhub init` | Set up `.memhub/` in a repo |
 | `memhub status` | Open tasks, stale facts, pending writes, schema version |
-| `memhub recall <query>` | Hybrid ranked bundle of facts/decisions/tasks |
+| `memhub recall <query>` | Hybrid ranked bundle of facts/decisions/tasks/docs |
 | `memhub fact add/list` | Durable key-value facts (build commands, MSRV, etc.) |
 | `memhub decision add/list` | Decisions with rationale, FTS-indexed and embedded |
 | `memhub task add/list/done` | Lightweight task tracking |
@@ -354,10 +363,10 @@ memhub doc add path/to/design-spec.md --json
 | `memhub state set/show` | The "current state" narrative |
 | `memhub arch set/show` | The architecture narrative |
 | `memhub ingest-git` | Pull commit + file history into the DB |
-| `memhub doc add/ls/rm/show` | Ingest external markdown reference docs; recall with `--source-type doc` |
+| `memhub doc add/ls/rm/show` | Ingest external markdown docs; scope recall with `--source-type doc` |
 | `memhub review list/accept/reject` | Triage agent-proposed writes |
 | `memhub render` | Emit local `PROJECT.md` and `PROJECT_LEDGER.md` from the DB |
-| `memhub index status/rebuild` | Embedding coverage; one-shot backfill for `fts → hybrid` migrations |
+| `memhub index status/rebuild` | Embedding coverage; backfill for `fts → hybrid` migrations |
 | `memhub eval retrieval` | Run the Recall@K harness against `tests/retrieval_golden.json` |
 | `memhub stats --window 7d` | Write activity by actor, review rate, stale-fact counts |
 | `memhub metrics enable/status` | Opt-in token accounting (Claude Code transcript scraping) |
@@ -465,7 +474,7 @@ memhub import <path>                   # restore into an existing repo
 memhub import <path> --force           # overwrite live data
 ```
 
-Export covers facts, decisions, tasks, commands, pending writes, writes_log, session notes, and both narrative tables. Embeddings are local derived state and are excluded; run `memhub index rebuild` after import.
+Export covers facts, decisions, tasks, commands, pending writes, writes_log, session notes, and both narrative tables. Embeddings and ingested docs are excluded; run `memhub index rebuild` after import and re-run `memhub doc add` for any reference docs.
 
 ### Staleness and confidence
 
