@@ -302,9 +302,23 @@ pub fn open_global_if_exists() -> Result<Option<ProjectContext>> {
 }
 
 pub fn discover_paths(start: &Path) -> Result<ProjectPaths> {
+    // The machine-global store lives at `~/.memhub` and shares the
+    // `.memhub` dirname with per-repo stores. Without this guard,
+    // discovery walking up from a cwd that is *not* inside any repo
+    // reaches `$HOME`, finds `~/.memhub`, and returns it as a project.
+    // `open_project` then sees no `~/.memhub/project.sqlite` and raises
+    // `MissingDatabase`, whose remedy ("remove ~/.memhub") would delete
+    // the machine-global store. Never treat the global-store dir as a
+    // repo project unless a repo DB actually lives alongside it (a real,
+    // if unusual, project rooted at `$HOME`).
+    let global_memhub_dir = home_dir().ok().map(|h| h.join(GLOBAL_MEMHUB_DIRNAME));
+
     for candidate in start.ancestors() {
         let paths = ProjectPaths::for_repo_root(candidate);
         if paths.memhub_dir.exists() {
+            if is_global_only_store(&paths, global_memhub_dir.as_deref()) {
+                continue;
+            }
             return Ok(paths);
         }
     }
@@ -312,6 +326,27 @@ pub fn discover_paths(start: &Path) -> Result<ProjectPaths> {
     Err(MemhubError::NotInitialized {
         start: start.to_path_buf(),
     })
+}
+
+/// True iff `paths` points at the machine-global store directory and
+/// that directory holds *only* the global store (no repo
+/// `project.sqlite`). Such a dir must be skipped by project discovery
+/// so it is never mistaken for — or destructively "recovered" as — a
+/// per-repo project.
+fn is_global_only_store(paths: &ProjectPaths, global_memhub_dir: Option<&Path>) -> bool {
+    let Some(global_dir) = global_memhub_dir else {
+        return false;
+    };
+    same_dir(&paths.memhub_dir, global_dir) && !paths.db_path.exists()
+}
+
+/// Path equality that tolerates relative/symlinked inputs by
+/// canonicalizing when possible, falling back to literal comparison.
+fn same_dir(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
 }
 
 fn ensure_gitignore(repo_root: &Path) -> Result<bool> {
