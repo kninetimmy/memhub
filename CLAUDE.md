@@ -278,19 +278,39 @@ manual override: `[retrieval] use_reranker` (auto-on with hybrid) and
 `memhub upgrade` (decision 96; resolves task 48, subsumes the
 recurring stale-PATH-binary problem) is the one dependable command to
 bring **every** memhub install on a machine to a coherent state after
-a code change — the binary on PATH, each known repo DB, and the global
-store — not just whichever repo you rebuilt from. Run it **from the
-memhub source repo**; it errors elsewhere.
+a code change — the binary on PATH, each known repo DB, the global
+store, and the installed agent skill wrappers — not just whichever
+repo you rebuilt from. Run it **from the memhub source repo**; it
+errors elsewhere.
 
 Flow: `cargo install --path . --force` → one-time, order-independent
 PATH-shadow fix (a regular-file `~/.local/bin/memhub` shadowing
 `~/.cargo/bin/memhub` is replaced **once** with a symlink so future
 installs always take effect; already-a-symlink is an idempotent no-op;
 a non-symlink shadow is replaced only after a y/N confirm or `--yes`,
-otherwise the manual `ln -sf` is printed) → **re-exec the freshly
-installed binary** for the migrate+verify pass so migrations run under
-new code → per-instance `ready/migrated/skipped/ERROR` table (`--json`
-available). `--dry-run` reports the plan and changes nothing.
+otherwise the manual `ln -sf` is printed) → installed-skill resync
+(decision 97; below) → **re-exec the freshly installed binary** for the
+migrate+verify pass so migrations run under new code → per-instance
+`ready/migrated/skipped/ERROR` table plus a per-agent skills line
+(`--json` carries a `skills` array). `--dry-run` reports the plan
+(including would-sync skill counts) and changes nothing.
+
+Skill resync (decision 97; resolves task 50, internalizes the fact-10
+manual `cp`): the same `memhub upgrade` also refreshes the installed
+slash-command wrappers so they never lag the binary. For each agent
+dir that **already exists** — `~/.claude/commands/` (flat `*.md`),
+`~/.codex/skills/` (dir-per-skill) — it copies from the source repo's
+`templates/skills/{claude,codex}/`. It runs in the orchestrate phase
+(the old binary, where `templates/` lives) and the result is rendered
+by the re-exec'd child in one table. The copy is **additive**: a skill
+removed/renamed in `templates/` leaves a harmless installed orphan —
+settled against mirror-with-prune because pruning shared user-global
+dirs risks a user's own same-named skill, while an orphan is just a
+stale slash-command. Idempotent, best-effort (a partial/permission
+error degrades to a `warn` row, never fails the upgrade — same posture
+as the registry/metrics writes). `--no-skills` skips the step; the
+binary + DB migrate still run. The manual `cp` recipe (fact 10) is now
+a fallback only.
 
 Instances are enumerated from a **self-maintaining registry**, never a
 filesystem scan: every `db::open_project` does a single guarded,
@@ -310,7 +330,11 @@ recall output: the eval-regression guarantee, tested in
 `tests/upgrade_registry.rs`). `upgrade` migrates the global store only
 if it already exists; it never creates it (opting in stays the
 explicit `memhub global enable` choice). `known_projects` is
-machine-local and **not** exported by `memhub export`.
+machine-local and **not** exported by `memhub export`. Skill resync
+likewise only ever writes into an agent dir that already exists — it
+never creates `~/.claude/commands` or `~/.codex/skills`, and a
+non-directory at that path is a clean skip, not a clobber (mirrors the
+PATH-shadow and global-store "only act on what exists" rule).
 
 ## Current Build Focus
 

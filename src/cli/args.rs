@@ -131,6 +131,11 @@ pub enum TopLevelCommand {
         /// `~/.local/bin/memhub` shadow.
         #[arg(long)]
         yes: bool,
+        /// Skip resyncing installed agent skill wrappers
+        /// (`~/.claude/commands/`, `~/.codex/skills/`) from
+        /// `templates/skills/`. The binary + DB migrate still run.
+        #[arg(long)]
+        no_skills: bool,
         /// Internal: set on the re-exec'd freshly installed binary to
         /// run only the migrate + verify pass.
         #[arg(long, hide = true)]

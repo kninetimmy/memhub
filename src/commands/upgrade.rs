@@ -15,6 +15,7 @@ use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::config::RetrievalMode;
@@ -34,7 +35,18 @@ pub struct UpgradeArgs {
     /// Skip the confirmation prompt before replacing a non-symlink
     /// `~/.local/bin/memhub` shadow.
     pub yes: bool,
+    /// Skip resyncing installed agent skill wrappers (decision 97).
+    pub no_skills: bool,
 }
+
+/// Internal parent->child handoff for the skill-resync result. The skill
+/// sync runs in the *orchestrate* phase (the old binary, in the source
+/// repo where `templates/` lives) but is rendered by the re-exec'd
+/// `--finish` child alongside the migrate table so there is one output
+/// surface. A hidden CLI flag would be the `--finish` precedent, but
+/// this is a pure internal IPC blob, not a user knob, so it travels by
+/// env var (same spirit as the test seams).
+const SKILLS_ENV: &str = "MEMHUB_UPGRADE_SKILLS_JSON";
 
 pub fn run(cwd: &Path, args: UpgradeArgs) -> Result<()> {
     if args.finish {
@@ -82,7 +94,18 @@ fn orchestrate_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
     let outcome = fix_path_shadow(&cargo_bin, args.yes)?;
     println!("==> PATH: {}", outcome.message);
 
-    // 3. Re-exec the freshly installed binary for the migrate + verify
+    // 3. Resync installed agent skill wrappers from templates/ (decision
+    //    97). Additive, idempotent, best-effort — never fatal. Done here
+    //    in the old binary because the source repo's `templates/` must
+    //    be present (already an `upgrade` precondition); the result is
+    //    handed to the re-exec'd child so it renders in one table.
+    let skills = if args.no_skills {
+        vec![SkillSync::skipped_all("--no-skills")]
+    } else {
+        sync_skills(cwd, false)
+    };
+
+    // 4. Re-exec the freshly installed binary for the migrate + verify
     //    pass so migrations run under NEW code. Use the explicit
     //    cargo-bin path, not PATH — PATH may still resolve to a shadow
     //    the user declined to fix.
@@ -94,6 +117,9 @@ fn orchestrate_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+    if let Ok(js) = serde_json::to_string(&skills) {
+        child.env(SKILLS_ENV, js);
+    }
     if args.json {
         child.arg("--json");
     }
@@ -200,7 +226,15 @@ fn finish_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
     }
     reports.push(verify_global());
 
-    emit(&reports, pruned, args.json);
+    // Skill resync ran in the orchestrate phase; its result rides an
+    // env var so it renders here alongside the migrate table. Absent
+    // (e.g. `--finish` invoked directly in a test) => no skill section.
+    let skills: Vec<SkillSync> = std::env::var(SKILLS_ENV)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+
+    emit(&reports, pruned, &skills, args.json);
 
     if reports
         .iter()
@@ -501,6 +535,11 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
 
     let would_prune = db::registry::dead_roots().map(|d| d.len()).unwrap_or(0);
     let shadow_state = describe_shadow(cargo_bin)?;
+    let skills = if args.no_skills {
+        vec![SkillSync::skipped_all("--no-skills")]
+    } else {
+        sync_skills(cwd, true)
+    };
 
     if args.json {
         println!(
@@ -523,6 +562,7 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
                     "schema": global_preview.0,
                     "verdict": global_preview.1,
                 },
+                "skills": skills,
             })
         );
         return Ok(());
@@ -551,6 +591,9 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
         global_preview.0.as_deref().unwrap_or("(none)"),
         global_preview.1
     );
+    for s in &skills {
+        println!("  skills:       {}", s.dry_line());
+    }
     Ok(())
 }
 
@@ -586,7 +629,7 @@ fn describe_shadow(cargo_bin: &Path) -> Result<String> {
 // Output
 // ---------------------------------------------------------------------
 
-fn emit(reports: &[InstanceReport], pruned: usize, as_json: bool) {
+fn emit(reports: &[InstanceReport], pruned: usize, skills: &[SkillSync], as_json: bool) {
     let ready = reports
         .iter()
         .filter(|r| {
@@ -615,6 +658,7 @@ fn emit(reports: &[InstanceReport], pruned: usize, as_json: bool) {
                 "ready": ready,
                 "total": total,
                 "pruned": pruned,
+                "skills": skills,
             })
         );
         return;
@@ -641,6 +685,9 @@ fn emit(reports: &[InstanceReport], pruned: usize, as_json: bool) {
     if pruned > 0 {
         println!("  pruned {pruned} stale registry entries (repo gone)");
     }
+    for s in skills {
+        println!("  skills: {}", s.line());
+    }
     println!("  {ready}/{total} instances ready");
 }
 
@@ -658,6 +705,247 @@ fn status_detail(s: &InstanceStatus) -> Option<String> {
         InstanceStatus::Skipped(w) | InstanceStatus::Error(w) => Some(w.clone()),
         _ => None,
     }
+}
+
+// ---------------------------------------------------------------------
+// Skill resync (decision 97)
+// ---------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillSyncStatus {
+    /// Files were copied (or, in `--dry-run`, would be).
+    Synced,
+    /// Nothing done — agent not set up, or `--no-skills`.
+    Skipped,
+    /// Best-effort copy hit a partial/permission error. Never fatal:
+    /// decision 97 pins the registry/metrics "never fatal" posture.
+    Warn,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SkillSync {
+    /// "claude" | "codex" | "(all)" for the `--no-skills` sentinel.
+    pub agent: String,
+    /// `$HOME`-abbreviated install dir, or empty for the sentinel.
+    pub target: String,
+    pub status: SkillSyncStatus,
+    /// Skill units copied: `.md` files for Claude, skill dirs for Codex.
+    pub synced: usize,
+    /// Skip reason or warning text.
+    pub detail: Option<String>,
+}
+
+impl SkillSync {
+    fn skipped_all(reason: &str) -> Self {
+        SkillSync {
+            agent: "(all)".to_string(),
+            target: String::new(),
+            status: SkillSyncStatus::Skipped,
+            synced: 0,
+            detail: Some(reason.to_string()),
+        }
+    }
+
+    /// One compact human line, e.g.
+    /// `claude  ~/.claude/commands  synced 11`.
+    fn line(&self) -> String {
+        self.render(false)
+    }
+
+    /// `--dry-run` variant: a successful sync reads as "would sync N".
+    fn dry_line(&self) -> String {
+        self.render(true)
+    }
+
+    fn render(&self, dry: bool) -> String {
+        let tail = match self.status {
+            SkillSyncStatus::Synced if dry => format!("would sync {}", self.synced),
+            SkillSyncStatus::Synced => format!("synced {}", self.synced),
+            SkillSyncStatus::Skipped => match &self.detail {
+                Some(d) => format!("skipped ({d})"),
+                None => "skipped".to_string(),
+            },
+            SkillSyncStatus::Warn => match &self.detail {
+                Some(d) => format!("warn ({d})"),
+                None => "warn".to_string(),
+            },
+        };
+        if self.target.is_empty() {
+            format!("{:<8} {tail}", self.agent)
+        } else {
+            format!("{:<8} {:<22} {tail}", self.agent, self.target)
+        }
+    }
+}
+
+enum CopyKind {
+    /// Claude: flat `*.md` files in `templates/skills/claude/`.
+    FlatMd,
+    /// Codex: one dir per skill in `templates/skills/codex/`.
+    DirPerSkill,
+}
+
+/// Additively copy the repo's skill templates over the installed agent
+/// skill wrappers, for each agent dir that **already exists** (never
+/// created — mirrors `upgrade`'s "only act on what exists" posture for
+/// the PATH shadow and the global store). Idempotent; best-effort.
+///
+/// Additive only: a skill removed/renamed in `templates/` leaves a
+/// harmless installed orphan. Settled against mirror-with-prune because
+/// pruning shared user-global dirs (`~/.claude/commands`,
+/// `~/.codex/skills`) risks a user's own same-named skill, while an
+/// orphan is just a stale slash-command, not a correctness bug.
+///
+/// `dry` stats and counts but performs no filesystem mutation.
+pub fn sync_skills(source_repo: &Path, dry: bool) -> Vec<SkillSync> {
+    let home = match db::home_dir() {
+        Ok(h) => h,
+        Err(e) => {
+            return vec![SkillSync {
+                agent: "(all)".to_string(),
+                target: String::new(),
+                status: SkillSyncStatus::Warn,
+                synced: 0,
+                detail: Some(format!("cannot resolve home dir: {e}")),
+            }];
+        }
+    };
+    let skills_root = source_repo.join("templates").join("skills");
+    vec![
+        sync_one(
+            "claude",
+            &skills_root.join("claude"),
+            &home.join(".claude").join("commands"),
+            CopyKind::FlatMd,
+            dry,
+        ),
+        sync_one(
+            "codex",
+            &skills_root.join("codex"),
+            &home.join(".codex").join("skills"),
+            CopyKind::DirPerSkill,
+            dry,
+        ),
+    ]
+}
+
+fn sync_one(agent: &str, src: &Path, target: &Path, kind: CopyKind, dry: bool) -> SkillSync {
+    let label = abbrev(target);
+    let mk = |status: SkillSyncStatus, synced: usize, detail: Option<String>| SkillSync {
+        agent: agent.to_string(),
+        target: label.clone(),
+        status,
+        synced,
+        detail,
+    };
+
+    // Only sync an agent dir the user actually set up. A missing dir or
+    // a non-dir at that path is a clean skip — never created.
+    match std::fs::symlink_metadata(target) {
+        Err(_) => {
+            return mk(
+                SkillSyncStatus::Skipped,
+                0,
+                Some("agent dir absent (not set up)".to_string()),
+            );
+        }
+        Ok(m) if !m.is_dir() => {
+            return mk(
+                SkillSyncStatus::Skipped,
+                0,
+                Some("path exists but is not a directory".to_string()),
+            );
+        }
+        Ok(_) => {}
+    }
+
+    let entries = match std::fs::read_dir(src) {
+        Ok(e) => e,
+        Err(e) => {
+            // Precondition is that templates/ exists in the source repo;
+            // surface rather than silently report 0.
+            return mk(
+                SkillSyncStatus::Warn,
+                0,
+                Some(format!("templates unreadable at {}: {e}", src.display())),
+            );
+        }
+    };
+
+    let mut synced = 0usize;
+    let mut errors: Vec<String> = Vec::new();
+    for entry in entries.flatten() {
+        let from = entry.path();
+        let name = entry.file_name();
+        match kind {
+            CopyKind::FlatMd => {
+                if from.extension().and_then(|e| e.to_str()) != Some("md") {
+                    continue;
+                }
+                if !entry.path().is_file() {
+                    continue;
+                }
+                let to = target.join(&name);
+                if dry {
+                    synced += 1;
+                } else if let Err(e) = std::fs::copy(&from, &to) {
+                    errors.push(format!("{}: {e}", name.to_string_lossy()));
+                } else {
+                    synced += 1;
+                }
+            }
+            CopyKind::DirPerSkill => {
+                if !entry.path().is_dir() {
+                    continue;
+                }
+                let to = target.join(&name);
+                if dry {
+                    synced += 1;
+                } else if let Err(e) = copy_dir_recursive(&from, &to) {
+                    errors.push(format!("{}: {e}", name.to_string_lossy()));
+                } else {
+                    synced += 1;
+                }
+            }
+        }
+    }
+
+    if errors.is_empty() {
+        mk(SkillSyncStatus::Synced, synced, None)
+    } else {
+        let shown: Vec<&String> = errors.iter().take(3).collect();
+        let more = errors.len().saturating_sub(shown.len());
+        let mut detail = format!(
+            "{} synced, {} failed: {}",
+            synced,
+            errors.len(),
+            shown
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join("; ")
+        );
+        if more > 0 {
+            detail.push_str(&format!("; +{more} more"));
+        }
+        mk(SkillSyncStatus::Warn, synced, Some(detail))
+    }
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------

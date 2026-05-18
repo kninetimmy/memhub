@@ -1276,6 +1276,7 @@ pub fn run(cli: Cli) -> Result<()> {
             also,
             dry_run,
             yes,
+            no_skills,
             finish,
             json: as_json,
         } => {
@@ -1287,6 +1288,7 @@ pub fn run(cli: Cli) -> Result<()> {
                     json: as_json,
                     finish,
                     yes,
+                    no_skills,
                 },
             )?;
         }

@@ -1,6 +1,6 @@
 ---
 name: upgrade
-description: Rebuild + install memhub and bring every memhub instance on this machine (each known repo DB + the machine-global store) to head schema, with a one-time fix for the ~/.local/bin PATH shadow. Run from the memhub source repo.
+description: Rebuild + install memhub and bring every memhub instance on this machine (each known repo DB + the machine-global store) to head schema, resync installed agent skill wrappers, with a one-time fix for the ~/.local/bin PATH shadow. Run from the memhub source repo.
 framework: memhub
 framework_version: 1.0.0
 last_updated: 2026-05-18
@@ -9,9 +9,10 @@ last_updated: 2026-05-18
 `memhub upgrade` is the one dependable command to make **every** memhub
 install on this machine coherent after a code change — not just
 whichever repo you rebuilt from. It rebuilds + installs the binary,
-fixes the stale-`~/.local/bin` PATH shadow once and for all, then
-migrates and smoke-tests every known repo DB plus the machine-global
-store, printing a per-instance ready table.
+fixes the stale-`~/.local/bin` PATH shadow once and for all, resyncs
+the installed slash-command skill wrappers, then migrates and
+smoke-tests every known repo DB plus the machine-global store, printing
+a per-instance ready table.
 
 This is the Codex counterpart to the Claude Code `/upgrade` skill; both
 drive the same `memhub upgrade` CLI and differ only in agent telemetry.
@@ -45,10 +46,11 @@ memhub upgrade --also /path/to/untouched/repo   # repeatable; also persists it
 ## Usage
 
 ```bash
-memhub upgrade            # rebuild+install, fix PATH shadow, migrate+verify all
-memhub upgrade --dry-run  # show what would happen; NO install/symlink/migration
-memhub upgrade --json     # machine-readable instance table
+memhub upgrade            # rebuild+install, fix PATH shadow, resync skills, migrate+verify all
+memhub upgrade --dry-run  # show what would happen; NO install/symlink/migration/skill copy
+memhub upgrade --json     # machine-readable instance table + skills array
 memhub upgrade --yes      # don't prompt before replacing a non-symlink shadow
+memhub upgrade --no-skills # skip the skill-wrapper resync; binary + DB migrate still run
 ```
 
 Show the user `--dry-run` first if there is any doubt about what will
@@ -63,9 +65,19 @@ change.
    installs just work. Already-a-symlink → idempotent no-op. A
    non-symlink shadow is replaced only after y/N confirm (or `--yes`);
    declined prints the exact manual `ln -sf` command.
-3. Re-execs the freshly installed binary for the migrate+verify pass
+3. **Skill-wrapper resync (decision 97):** for each agent dir that
+   *already exists* — `~/.claude/commands/` (flat `*.md`),
+   `~/.codex/skills/` (dir-per-skill) — copies the source repo's
+   `templates/skills/{claude,codex}/` over the installed wrappers so
+   they never lag the binary. Additive (a skill removed from
+   `templates/` leaves a harmless installed orphan; shared user-global
+   dirs are never pruned), idempotent, best-effort (a partial/permission
+   error is a `warn` row, never fatal). A non-existent agent dir is
+   skipped, never created. `--no-skills` skips it. Internalizes the old
+   manual `cp` recipe, now a fallback only.
+4. Re-execs the freshly installed binary for the migrate+verify pass
    (migrations must run under new code).
-4. Per instance: open (auto-migrates) → compare schema → tiny FTS
+5. Per instance: open (auto-migrates) → compare schema → tiny FTS
    recall smoke → table row.
 
 ## Reading the table
@@ -77,6 +89,8 @@ change.
   ~/work/legacy               (none)                       skipped (no memhub project)
   <global store>              0015_known_projects          ready
 
+  skills: claude   ~/.claude/commands     synced 11
+  skills: codex    ~/.codex/skills        synced 11
   3/4 instances ready
 ```
 
@@ -84,6 +98,9 @@ change.
 - `skipped` nothing to do (path gone, or global store absent because
   no repo opted into M9).
 - `ERROR` opened/verified and failed; the command exits non-zero.
+- `skills:` rows — per-agent `synced N`, `skipped (reason)` (agent dir
+  absent / not a directory / `--no-skills`), or `warn (...)` for a
+  best-effort partial copy. A skills `warn` never fails the run.
 
 ## Notes
 
@@ -95,5 +112,8 @@ change.
   machine.
 - Registry membership is **not** M9 opt-in — recall never reads it and
   stays gated on each repo's own `[global] enabled`.
+- Skill resync only writes into an agent dir that **already exists** —
+  same conservative rule as the PATH-shadow and global-store steps; it
+  never creates `~/.claude/commands` or `~/.codex/skills`.
 - On Windows the shadow fix falls back to a copy if symlink creation
   needs privilege (re-run after each install).
