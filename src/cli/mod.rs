@@ -7,9 +7,9 @@ mod output;
 
 pub use args::{
     Cli, CommandCommand, CommandKind, DecisionCommand, DocCommand, EvalCommand, FactCommand,
-    GlobalCommand, IndexCommand, IntegrationsCommand, MetricsCommand, NarrativeCommand, NoteCommand,
-    PendingStatus, RecallModeArg, RecallSourceTypeArg, ReviewCommand, StatsWindowArg, TaskCommand,
-    TaskStatus, TopLevelCommand,
+    GlobalCommand, IndexCommand, IntegrationsCommand, MetricsCommand, NarrativeCommand,
+    NoteCommand, PendingStatus, RecallModeArg, RecallSourceTypeArg, ReviewCommand, StatsWindowArg,
+    TaskCommand, TaskStatus, TopLevelCommand,
 };
 use output::{
     eval_summary_to_json, index_status_to_json, metrics_status_to_json, narrative_entry_to_json,
@@ -394,7 +394,11 @@ pub fn run(cli: Cli) -> Result<()> {
                     println!(
                         "Promoted fact {id} → global fact {} ({})",
                         r.id,
-                        if r.created { "new" } else { "updated existing key" }
+                        if r.created {
+                            "new"
+                        } else {
+                            "updated existing key"
+                        }
                     );
                 }
             }
@@ -673,8 +677,16 @@ pub fn run(cli: Cli) -> Result<()> {
                     }
                 }
             }
-            DocCommand::Ls { json: as_json } => {
-                let docs = commands::doc::list(&cwd)?;
+            DocCommand::Ls {
+                global,
+                json: as_json,
+            } => {
+                let docs = if global {
+                    commands::doc::list_global(&cwd)?
+                } else {
+                    commands::doc::list(&cwd)?
+                };
+                let scope = if global { "global" } else { "repo" };
                 if as_json {
                     let payload: Vec<_> = docs
                         .iter()
@@ -687,12 +699,13 @@ pub fn run(cli: Cli) -> Result<()> {
                                 "bytes": d.byte_len,
                                 "source": d.source,
                                 "ingested_at": d.ingested_at,
+                                "scope": scope,
                             })
                         })
                         .collect();
                     println!("{}", json!(payload));
                 } else if docs.is_empty() {
-                    println!("No documents ingested.");
+                    println!("No {scope} documents ingested.");
                 } else {
                     for d in docs {
                         println!(
@@ -704,65 +717,87 @@ pub fn run(cli: Cli) -> Result<()> {
             }
             DocCommand::Rm {
                 ident,
+                global,
                 json: as_json,
                 actor,
             } => {
                 let actor = resolve_actor(actor.as_deref())?;
-                let removed = commands::doc::remove(&cwd, &ident, &actor)?;
-                if as_json {
-                    println!("{}", json!({ "removed": removed, "ident": ident }));
-                } else if removed {
-                    println!("Removed document {ident}.");
+                let removed = if global {
+                    commands::doc::remove_global(&cwd, &ident, &actor)?
                 } else {
-                    println!("No document matched {ident}.");
+                    commands::doc::remove(&cwd, &ident, &actor)?
+                };
+                let scope = if global { "global" } else { "repo" };
+                if as_json {
+                    println!(
+                        "{}",
+                        json!({ "removed": removed, "ident": ident, "scope": scope })
+                    );
+                } else if removed {
+                    println!("Removed {scope} document {ident}.");
+                } else {
+                    println!("No {scope} document matched {ident}.");
                 }
             }
             DocCommand::Show {
                 ident,
+                global,
                 json: as_json,
-            } => match commands::doc::show(&cwd, &ident)? {
-                None => {
-                    if as_json {
-                        println!("{}", json!({ "found": false, "ident": ident }));
-                    } else {
-                        println!("No document matched {ident}.");
+            } => {
+                let scope = if global { "global" } else { "repo" };
+                let found = if global {
+                    commands::doc::show_global(&cwd, &ident)?
+                } else {
+                    commands::doc::show(&cwd, &ident)?
+                };
+                match found {
+                    None => {
+                        if as_json {
+                            println!(
+                                "{}",
+                                json!({ "found": false, "ident": ident, "scope": scope })
+                            );
+                        } else {
+                            println!("No {scope} document matched {ident}.");
+                        }
                     }
-                }
-                Some((meta, chunks)) => {
-                    if as_json {
-                        let payload = json!({
-                            "id": meta.id,
-                            "title": meta.title,
-                            "path": meta.path,
-                            "bytes": meta.byte_len,
-                            "ingested_at": meta.ingested_at,
-                            "chunks": chunks.iter().map(|c| json!({
-                                "id": c.id,
-                                "ord": c.ord,
-                                "heading_path": c.heading_path,
-                                "body": c.body,
-                            })).collect::<Vec<_>>(),
-                        });
-                        println!("{payload}");
-                    } else {
-                        println!(
-                            "[{}] {} ({} chunks)\n  {}",
-                            meta.id,
-                            meta.title,
-                            chunks.len(),
-                            meta.path,
-                        );
-                        for c in chunks {
-                            let head = if c.heading_path.is_empty() {
-                                "(preamble)"
-                            } else {
-                                &c.heading_path
-                            };
-                            println!("  #{} {}", c.ord, head);
+                    Some((meta, chunks)) => {
+                        if as_json {
+                            let payload = json!({
+                                "id": meta.id,
+                                "title": meta.title,
+                                "path": meta.path,
+                                "bytes": meta.byte_len,
+                                "ingested_at": meta.ingested_at,
+                                "scope": scope,
+                                "chunks": chunks.iter().map(|c| json!({
+                                    "id": c.id,
+                                    "ord": c.ord,
+                                    "heading_path": c.heading_path,
+                                    "body": c.body,
+                                })).collect::<Vec<_>>(),
+                            });
+                            println!("{payload}");
+                        } else {
+                            println!(
+                                "[{}] {} ({} chunks)\n  {}",
+                                meta.id,
+                                meta.title,
+                                chunks.len(),
+                                meta.path,
+                            );
+                            for c in chunks {
+                                let head = if c.heading_path.is_empty() {
+                                    "(preamble)"
+                                } else {
+                                    &c.heading_path
+                                };
+                                println!("  #{} {}", c.ord, head);
+                            }
                         }
                     }
                 }
-            },
+            }
         },
         TopLevelCommand::Export { path } => {
             let summary = commands::export::run(&cwd, &path)?;

@@ -19,7 +19,7 @@
 use std::fs;
 use std::path::Path;
 
-use rusqlite::{OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::Result;
 use crate::db;
@@ -149,7 +149,12 @@ fn ingest_in_tx(
             tx.execute(
                 "INSERT INTO documents(project_id, path, title, content_hash, byte_len, source)
                  VALUES (1, ?1, ?2, ?3, ?4, 'user')",
-                params![doc.path_str, doc.resolved_title, doc.content_hash, doc.byte_len],
+                params![
+                    doc.path_str,
+                    doc.resolved_title,
+                    doc.content_hash,
+                    doc.byte_len
+                ],
             )?;
             (tx.last_insert_rowid(), IngestStatus::Created)
         }
@@ -289,9 +294,8 @@ fn insert_chunks(
     Ok(())
 }
 
-pub fn list(start: &Path) -> Result<Vec<Document>> {
-    let ctx = db::open_project(start)?;
-    let mut stmt = ctx.conn.prepare(
+fn list_in_conn(conn: &Connection) -> Result<Vec<Document>> {
+    let mut stmt = conn.prepare(
         "SELECT d.id, d.path, d.title, d.content_hash, d.byte_len, d.source,
                 d.ingested_at,
                 (SELECT COUNT(*) FROM doc_chunks c WHERE c.doc_id = d.id) AS chunk_count
@@ -312,6 +316,24 @@ pub fn list(start: &Path) -> Result<Vec<Document>> {
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
         .map_err(Into::into)
+}
+
+pub fn list(start: &Path) -> Result<Vec<Document>> {
+    let ctx = db::open_project(start)?;
+    list_in_conn(&ctx.conn)
+}
+
+/// List documents in the machine-global store (M9). Requires this repo
+/// to have opted in (`memhub global enable`), mirroring the gate on
+/// `doc add --global`. Returns empty when the store does not yet exist
+/// — a read never creates it.
+pub fn list_global(start: &Path) -> Result<Vec<Document>> {
+    let repo = db::open_project(start)?;
+    crate::commands::global::ensure_enabled(&repo.config)?;
+    match db::open_global_if_exists()? {
+        Some(g) => list_in_conn(&g.conn),
+        None => Ok(Vec::new()),
+    }
 }
 
 /// Resolve a document by numeric id or by exact/canonical path.
@@ -339,12 +361,11 @@ fn resolve_doc_id(tx: &Transaction<'_>, ident: &str) -> Result<Option<i64>> {
     Ok(by_path)
 }
 
-/// Remove a document and all its chunks/embeddings. Returns false when
-/// no document matched `ident`.
-pub fn remove(start: &Path, ident: &str, actor: &str) -> Result<bool> {
-    let mut ctx = db::open_project(start)?;
-    let tx = ctx.conn.transaction()?;
-    let Some(doc_id) = resolve_doc_id(&tx, ident)? else {
+/// Resolve + delete a document and its chunks/embeddings within `tx`.
+/// Connection-agnostic so the caller picks repo vs. global DB. Returns
+/// false (leaving `tx` to roll back) when nothing matched `ident`.
+fn remove_in_tx(tx: &Transaction<'_>, ident: &str, actor: &str) -> Result<bool> {
+    let Some(doc_id) = resolve_doc_id(tx, ident)? else {
         return Ok(false);
     };
     // Explicit chunk delete first (recursive_triggers OFF) so embeddings
@@ -352,20 +373,49 @@ pub fn remove(start: &Path, ident: &str, actor: &str) -> Result<bool> {
     tx.execute("DELETE FROM doc_chunks WHERE doc_id = ?1", params![doc_id])?;
     tx.execute("DELETE FROM documents WHERE id = ?1", params![doc_id])?;
     db::log_write(
-        &tx,
+        tx,
         actor,
         "documents",
         Some(doc_id),
         "delete",
         &format!("doc rm: {ident}"),
     )?;
+    Ok(true)
+}
+
+/// Remove a document and all its chunks/embeddings. Returns false when
+/// no document matched `ident`.
+pub fn remove(start: &Path, ident: &str, actor: &str) -> Result<bool> {
+    let mut ctx = db::open_project(start)?;
+    let tx = ctx.conn.transaction()?;
+    if !remove_in_tx(&tx, ident, actor)? {
+        return Ok(false);
+    }
     tx.commit()?;
     sync_md::sync_if_enabled(start)?;
     Ok(true)
 }
 
-pub fn show(start: &Path, ident: &str) -> Result<Option<(Document, Vec<DocChunk>)>> {
-    let docs = list(start)?;
+/// Remove a document from the machine-global store (M9). Requires this
+/// repo opted in, mirroring `doc add --global`. Returns false when the
+/// store does not exist or nothing matched `ident`. No markdown sync —
+/// the global store has no rendered view.
+pub fn remove_global(start: &Path, ident: &str, actor: &str) -> Result<bool> {
+    let repo = db::open_project(start)?;
+    crate::commands::global::ensure_enabled(&repo.config)?;
+    let Some(mut g) = db::open_global_if_exists()? else {
+        return Ok(false);
+    };
+    let tx = g.conn.transaction()?;
+    if !remove_in_tx(&tx, ident, actor)? {
+        return Ok(false);
+    }
+    tx.commit()?;
+    Ok(true)
+}
+
+fn show_in_conn(conn: &Connection, ident: &str) -> Result<Option<(Document, Vec<DocChunk>)>> {
+    let docs = list_in_conn(conn)?;
     let parsed_id = ident.parse::<i64>().ok();
     let canonical = fs::canonicalize(ident)
         .map(|p| p.to_string_lossy().into_owned())
@@ -377,8 +427,7 @@ pub fn show(start: &Path, ident: &str) -> Result<Option<(Document, Vec<DocChunk>
         return Ok(None);
     };
 
-    let ctx = db::open_project(start)?;
-    let mut stmt = ctx.conn.prepare(
+    let mut stmt = conn.prepare(
         "SELECT id, doc_id, ord, heading_path, body, created_at
          FROM doc_chunks WHERE doc_id = ?1 ORDER BY ord",
     )?;
@@ -395,6 +444,23 @@ pub fn show(start: &Path, ident: &str) -> Result<Option<(Document, Vec<DocChunk>
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(Some((doc, chunks)))
+}
+
+pub fn show(start: &Path, ident: &str) -> Result<Option<(Document, Vec<DocChunk>)>> {
+    let ctx = db::open_project(start)?;
+    show_in_conn(&ctx.conn, ident)
+}
+
+/// Show a document from the machine-global store (M9). Requires this
+/// repo opted in, mirroring `doc add --global`. Returns None when the
+/// store does not exist or nothing matched `ident`.
+pub fn show_global(start: &Path, ident: &str) -> Result<Option<(Document, Vec<DocChunk>)>> {
+    let repo = db::open_project(start)?;
+    crate::commands::global::ensure_enabled(&repo.config)?;
+    match db::open_global_if_exists()? {
+        Some(g) => show_in_conn(&g.conn, ident),
+        None => Ok(None),
+    }
 }
 
 /// Count of ingested documents (for `status` / dashboards).

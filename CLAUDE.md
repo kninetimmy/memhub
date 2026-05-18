@@ -259,7 +259,8 @@ guides. Never global: tasks, rendered narrative, anything naming a
 repo-specific path/symbol. Routing is **user-gated and never
 agent-automatic** (one bad global write poisons every repo). Surfaces:
 `memhub global enable|disable|status`, `--global` on
-`fact|decision|doc add`, `fact|decision promote <id> --global` (CLI) ·
+`fact|decision|doc add` and `doc ls|rm|show`,
+`fact|decision promote <id> --global` (CLI) ·
 `memhub.propose_fact|propose_decision(global=true)` (MCP — staged into
 the repo's `pending_writes`, durable only on `memhub review accept`;
 no `global` on MCP `doc_add`) · `/global` (skill). Global memory is

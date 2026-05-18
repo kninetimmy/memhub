@@ -59,9 +59,13 @@ memhub decision add "<title>" --rationale "<why>" --global
 memhub doc add <path/to/guide.md> --global
 memhub fact promote <id> --global       # copy, not move
 memhub decision promote <id> --global
+memhub doc ls --global                   # manage global docs
+memhub doc show <id|path> --global
+memhub doc rm <id|path> --global
 ```
 
-Fact keys are UNIQUE per store (re-promote updates). Decisions have no
+Global doc ids are per-global-DB, independent of repo ids. Fact keys
+are UNIQUE per store (re-promote updates). Decisions have no
 natural key (re-promote duplicates; the CLI warns). The first global
 write prints a one-time disclosure naming the store path.
 

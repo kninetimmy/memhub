@@ -5,7 +5,7 @@
 //! other tests in this binary. Other integration-test binaries run as
 //! separate processes and are unaffected.
 
-use memhub::commands::{fact, global, init, pending_write, review};
+use memhub::commands::{doc, fact, global, init, pending_write, review};
 use memhub::config::RetrievalMode;
 use memhub::retrieval::{RecallOptions, recall};
 use tempfile::tempdir;
@@ -80,6 +80,53 @@ fn machine_global_memory_end_to_end() {
     assert_eq!(
         global::status(repo_a.path()).expect("status a2").fact_count,
         1
+    );
+
+    // --- global doc management: add / ls / show / rm round-trip ------
+    let doc_file = repo_a.path().join("guide.md");
+    std::fs::write(
+        &doc_file,
+        "# Guide\n\n## Section A\n\nalpha doc body\n\n## Section B\n\nbeta doc body\n",
+    )
+    .expect("write doc");
+    let added =
+        doc::add_global(repo_a.path(), &doc_file, None, "cli:user").expect("doc add_global");
+    assert!(added.chunk_count >= 2);
+    assert!(
+        doc::list(repo_a.path()).expect("repo doc list").is_empty(),
+        "a global doc must NOT be in the repo store"
+    );
+    let gdocs = doc::list_global(repo_a.path()).expect("list_global");
+    assert_eq!(gdocs.len(), 1);
+    assert_eq!(gdocs[0].id, added.doc_id);
+    let (meta, chunks) = doc::show_global(repo_a.path(), &added.doc_id.to_string())
+        .expect("show_global")
+        .expect("present");
+    assert_eq!(meta.id, added.doc_id);
+    assert!(chunks.iter().any(|c| c.body.contains("alpha doc body")));
+    // A repo that has not opted in cannot manage global docs (gate
+    // mirrors `doc add --global`).
+    assert!(
+        doc::list_global(repo_c.path()).is_err(),
+        "list_global must refuse when the repo has not opted in"
+    );
+    assert!(
+        doc::remove_global(repo_c.path(), &added.doc_id.to_string(), "cli:user").is_err(),
+        "remove_global must refuse when the repo has not opted in"
+    );
+    assert!(
+        doc::remove_global(repo_a.path(), &added.doc_id.to_string(), "cli:user")
+            .expect("remove_global")
+    );
+    assert!(
+        doc::list_global(repo_a.path())
+            .expect("list_global after rm")
+            .is_empty()
+    );
+    assert!(
+        !doc::remove_global(repo_a.path(), &added.doc_id.to_string(), "cli:user")
+            .expect("remove_global again"),
+        "a second remove of the same global doc finds nothing"
     );
 
     // --- recall from a DIFFERENT repo merges global with scope -------

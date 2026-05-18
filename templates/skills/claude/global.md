@@ -69,6 +69,15 @@ memhub fact promote <id> --global
 memhub decision promote <id> --global
 ```
 
+Manage global docs with the same `--global` flag on the other `doc`
+verbs (global doc ids are per-global-DB, independent of repo ids):
+
+```bash
+memhub doc ls --global               # list global docs
+memhub doc show <id|path> --global   # metadata + chunk breadcrumbs
+memhub doc rm <id|path> --global     # remove a global doc + chunks
+```
+
 Fact keys are UNIQUE per store, so re-promoting a key updates the
 global fact. Decisions have no natural key — re-promoting duplicates
 and the CLI warns. The first global write prints a one-time disclosure

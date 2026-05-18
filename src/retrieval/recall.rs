@@ -471,9 +471,7 @@ fn finalize(
                 // path must clear the stricter doc floor; everything
                 // else (and explicitly doc-scoped recall) uses the
                 // normal floor.
-                let floor = if opts.docs_via_default
-                    && hit.source_type == SourceType::DocChunk
-                {
+                let floor = if opts.docs_via_default && hit.source_type == SourceType::DocChunk {
                     opts.doc_min_rerank_score
                 } else {
                     opts.min_rerank_score

@@ -472,12 +472,20 @@ pub enum DocCommand {
     },
     /// List ingested documents.
     Ls {
+        /// List documents in the machine-global store instead of this
+        /// repo's. Requires `memhub global enable` in this repo (M9).
+        #[arg(long)]
+        global: bool,
         #[arg(long)]
         json: bool,
     },
     /// Remove a document (and its chunks) by id or path.
     Rm {
         ident: String,
+        /// Remove from the machine-global store instead of this repo's.
+        /// Requires `memhub global enable` in this repo (M9).
+        #[arg(long)]
+        global: bool,
         #[arg(long)]
         json: bool,
         #[arg(long)]
@@ -486,6 +494,10 @@ pub enum DocCommand {
     /// Show a document's metadata and chunk breadcrumbs by id or path.
     Show {
         ident: String,
+        /// Show from the machine-global store instead of this repo's.
+        /// Requires `memhub global enable` in this repo (M9).
+        #[arg(long)]
+        global: bool,
         #[arg(long)]
         json: bool,
     },

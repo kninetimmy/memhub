@@ -72,8 +72,7 @@ fn global_store_dir_is_never_discovered_as_a_repo_project() {
     init::run(&real_repo).expect("init real repo");
     let paths = discover_paths(&real_repo).expect("real repo must still discover");
     assert_eq!(
-        paths.repo_root,
-        real_repo,
+        paths.repo_root, real_repo,
         "discovery must resolve the real repo, not the global-store dir"
     );
     open_project(&real_repo).expect("real repo must open");

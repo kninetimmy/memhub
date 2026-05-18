@@ -3,7 +3,7 @@ name: doc
 description: Ingest an external markdown reference doc into memhub so it is RAG-searchable in chunks. Opt-in to recall — never pollutes the default bundle.
 framework: memhub
 framework_version: 1.0.0
-last_updated: 2026-05-16
+last_updated: 2026-05-18
 ---
 
 Ingest a local markdown file into this repo's `.memhub/project.sqlite`
@@ -44,6 +44,18 @@ memhub doc add "<path>.md" --json
 memhub doc ls --json
 memhub doc show <id|path> --json
 memhub doc rm <id|path> --json
+```
+
+Add `--global` to `ls`, `show`, or `rm` to manage docs in the
+machine-global store instead of this repo's (mirrors `doc add
+--global`; requires `memhub global enable` in this repo — see
+`/global`). Without `--global` these only touch the repo store; global
+doc ids are per-global-DB, independent of repo ids:
+
+```bash
+memhub doc ls --global --json
+memhub doc show <id|path> --global --json
+memhub doc rm <id|path> --global --json
 ```
 
 ## Re-ingest semantics
