@@ -18,7 +18,7 @@
 
 If you've ever started a coding session by re-explaining your build setup, your naming conventions, or why that one architectural decision was made — that's the problem memhub solves.
 
-memhub is a small, offline, per-repo memory system for AI coding assistants. It gives Claude Code and Codex CLI one shared, searchable store of project knowledge — decisions, facts, tasks, notes, and your own reference docs — built on SQLite with semantic search bundled into the binary.
+memhub is a small, offline memory system for AI coding assistants — per-repo by default, with an optional machine-wide layer for cross-repo truths. It gives Claude Code and Codex CLI one shared, searchable store of project knowledge — decisions, facts, tasks, notes, and your own reference docs — built on SQLite with semantic search bundled into the binary.
 
 No cloud. No account. No daemon. No model download at runtime. Just a `.sqlite` file next to your code and a binary on your PATH.
 
@@ -37,6 +37,7 @@ No cloud. No account. No daemon. No model download at runtime. Just a `.sqlite` 
 - **Your docs are searchable too.** Point memhub at an API spec, design system, or compliance doc and the agent pulls the relevant section on demand — no pasting the whole file into the prompt. A styling question surfaces the right color token table; a backend question stays completely silent on the style guide.
 - **You stay in control.** Agent proposals stage for review before anything becomes durable. You see exactly what the agent wants to commit, and you can say no.
 - **Both agents, same memory.** Claude Code and Codex share the same rows. Switching tools doesn't cost you context.
+- **Optional machine-wide memory.** Truths that aren't about one repo — toolchain facts, a standing engineering rule, a universal style guide — can live in an opt-in store shared by every repo on the machine. Off by default; you promote to it deliberately.
 - **Small context, relevant content.** A targeted recall bundle is much smaller than pasting your full project README into every prompt. The Token Metrics dashboard estimates how much context you're saving.
 - **It's just a file.** SQLite, gitignored, in your repo. No accounts, no services, no vendor lock-in. Back it up, move it, or `rm -rf .memhub/` and it's gone.
 
@@ -110,7 +111,18 @@ Please install memhub for me, then turn on hybrid recall.
      - If I say FTS: nothing to do; the default is already FTS.
 7. Run `memhub recall "<some keyword from my project>" --max-results 3`
    so I can see the recall surface working end-to-end.
-8. Tell me memhub can also ingest long reference docs (design specs,
+8. Tell me about the optional machine-global store: a second SQLite at
+   ~/.memhub/global.sqlite, shared by every repo on this machine, for
+   machine/toolchain facts and standing engineering policy — it's the
+   global-vs-repo CLAUDE.md idea, made retrievable. Off by default and
+   per-repo opt-in. Ask whether to enable it for this repo:
+     - If I say yes: run `memhub global enable` and report the store
+       path. Note that writing to global is always a deliberate human
+       action — never promote to global on your own; repo is the safe
+       default.
+     - If I say no: just note `/global` and `memhub global enable` are
+       available anytime.
+9. Tell me memhub can also ingest long reference docs (design specs,
    API contracts) as RAG-searchable material. After the first doc add,
    relevant doc chunks automatically surface in plain recall — gated by
    a relevance threshold so off-topic docs stay silent. Ask whether I
@@ -119,8 +131,10 @@ Please install memhub for me, then turn on hybrid recall.
    if not, just note `/doc` is available anytime.
 
 Don't touch any files in this repo other than what `memhub init` writes
-(.memhub/ and the generated-output .gitignore entries) and the
-.memhub/config.toml edit in step 6.
+(.memhub/ and the generated-output .gitignore entries), the
+.memhub/config.toml edits in steps 6 and 8, and — only if I opt in at
+step 8 — the machine-global store at ~/.memhub/global.sqlite (outside
+this repo, in my home directory; that is expected).
 ```
 
 ### Install via Codex CLI
@@ -161,17 +175,30 @@ Please install memhub for me, then turn on hybrid recall.
      - If I say FTS: nothing to do; the default is already FTS.
 8. Run `memhub recall "<some keyword from my project>" --max-results 3`
    so I can see the recall surface working end-to-end.
-9. Tell me memhub can also ingest long reference docs (design specs,
-   API contracts) as RAG-searchable material. After the first doc add,
-   relevant doc chunks automatically surface in plain recall — gated by
-   a relevance threshold so off-topic docs stay silent. Ask whether I
-   want to ingest one now — if I give you a path, run
-   `memhub doc add "<path>" --json` and report the chunk count;
-   if not, just note `/doc` is available anytime.
+9. Tell me about the optional machine-global store: a second SQLite at
+   ~/.memhub/global.sqlite, shared by every repo on this machine, for
+   machine/toolchain facts and standing engineering policy — it's the
+   global-vs-repo AGENTS.md idea, made retrievable. Off by default and
+   per-repo opt-in. Ask whether to enable it for this repo:
+     - If I say yes: run `memhub global enable` and report the store
+       path. Note that writing to global is always a deliberate human
+       action — never promote to global on your own; repo is the safe
+       default.
+     - If I say no: just note `/global` and `memhub global enable` are
+       available anytime.
+10. Tell me memhub can also ingest long reference docs (design specs,
+    API contracts) as RAG-searchable material. After the first doc add,
+    relevant doc chunks automatically surface in plain recall — gated by
+    a relevance threshold so off-topic docs stay silent. Ask whether I
+    want to ingest one now — if I give you a path, run
+    `memhub doc add "<path>" --json` and report the chunk count;
+    if not, just note `/doc` is available anytime.
 
 Don't touch any files in this repo other than what `memhub init` writes
-(.memhub/ and the generated-output .gitignore entries) and the
-.memhub/config.toml edit in step 7.
+(.memhub/ and the generated-output .gitignore entries), the
+.memhub/config.toml edits in steps 7 and 9, and — only if I opt in at
+step 9 — the machine-global store at ~/.memhub/global.sqlite (outside
+this repo, in my home directory; that is expected).
 ```
 
 ### Install by hand
@@ -206,7 +233,13 @@ cp -R ~/src/memhub/templates/skills/codex/*  ~/.codex/skills/
 memhub index rebuild --actor cli:user
 memhub index status   # confirm Missing: 0
 
-# 7. (Optional) Ingest a reference doc — after first add, relevant chunks
+# 7. (Optional) Machine-wide memory: a second store at
+#    ~/.memhub/global.sqlite shared by every repo on this machine.
+#    Off by default; opt this repo in, then write/promote with --global.
+memhub global enable
+memhub global status
+
+# 8. (Optional) Ingest a reference doc — after first add, relevant chunks
 #    automatically surface in plain recall (relevance-gated; off-topic
 #    docs stay silent). /doc wraps this as a slash command.
 memhub doc add path/to/design-spec.md --json
@@ -292,7 +325,7 @@ Six tabs:
 
 ## One machine, many projects
 
-memhub is per-repo by design. Every project gets its own `.memhub/project.sqlite` — completely isolated. No global database, no coordination between repos, no leakage between projects.
+memhub is per-repo by default. Every project gets its own `.memhub/project.sqlite` — isolated, with no coordination or leakage between projects. The one deliberate, opt-in exception is the optional machine-global store described in the next section: off by default, and even when enabled it never merges repo databases together — it's a separate, second store you explicitly promote things into.
 
 ```
 ~/code/
@@ -305,6 +338,54 @@ memhub is per-repo by design. Every project gets its own `.memhub/project.sqlite
 ```
 
 The `memhub` binary is installed once at `~/.cargo/bin/memhub`. Each project's database is independent. To add memhub to a new project, `cd` into it and run `memhub init`. To try it risk-free: `rm -rf .memhub/` is the entire uninstall for that project.
+
+---
+
+## Shared memory across repos (optional)
+
+Some knowledge isn't about *this* repo — it's about *this machine*, or about how *you* work everywhere. Your toolchain versions. The install command for your environment. A standing rule like "always integration-test against a real database, never a mock." Re-deriving that in every repo is the same waste memhub fixes inside a repo, one level up.
+
+That's the optional machine-global store: a second SQLite at `~/.memhub/global.sqlite`, structurally identical to a repo DB, shared by every repo on this machine. It's the global-vs-repo `CLAUDE.md` idea — made retrievable instead of always-loaded.
+
+**Off by default, per-repo opt-in.** A repo joins explicitly:
+
+```bash
+memhub global enable     # opt this repo in; create the store if absent
+memhub global status     # path, schema version, fact/decision/doc counts
+memhub global disable    # opt back out (non-destructive; store kept)
+```
+
+When it's disabled — or the store doesn't exist — recall is byte-for-byte identical to a build without this feature. Nothing changes until you ask for it.
+
+**What belongs in it.** Only facts, decisions, and docs — and only the broadly-applicable kind:
+
+- **Global facts** — machine/toolchain truths, install/env commands, cross-repo conventions, how you like to collaborate with the agent.
+- **Global decisions** — standing engineering policy applied everywhere, *not* a per-repo architecture call.
+- **Global docs** — a universal style guide or language-idiom reference. A guide only one repo follows stays a plain repo `doc add`.
+
+Never global: tasks, the rendered project narrative, and anything naming a repo-specific path or symbol.
+
+**Writing to it is always a deliberate human action.** Born-global from the CLI:
+
+```bash
+memhub fact add ci-runner "self-hosted, 16 vCPU" --global
+memhub decision add "Integration-test against a real DB" \
+  --rationale "A mocked DB once hid a prod migration failure." --global
+memhub doc add ~/refs/python-style-guide.md --global
+```
+
+Or promote an existing repo row — **copy, not move**: the repo row stays and still wins locally.
+
+```bash
+memhub fact promote 12 --global
+memhub decision promote 8 --global
+```
+
+**An agent can never write global on its own.** Its only route is a *staged proposal you accept*: the MCP `propose_fact` / `propose_decision` tools take an optional `global=true`, which lands in *this repo's* `pending_writes` tagged for the global target. It becomes durable in `~/.memhub/global.sqlite` only when you run `memhub review accept`. One bad global write would poison every repo on the machine, so the global write path is deliberately never agent-automatic — there is no `global` option on the MCP `doc_add` tool at all.
+
+**Recall merges, then you arbitrate.** When the repo is enabled, recall blends global hits with repo hits and reranks the unified pool in one pass. Every hit carries a `scope` of `"repo"` or `"global"`. memhub never silently drops a global hit and does no automatic conflict resolution — it hands you the provenance and the agent applies **repo-overrides-global**, exactly the way a repo `CLAUDE.md` overrides the global one.
+
+The global store inherits the active repo's `[retrieval]` config — it has no settings of its own, so an FTS-mode repo does an FTS-only global gather. Like ingested docs, it is **not** included in `memhub export`; it's per-machine. On another machine, re-enable and re-add from source. `/global` wraps all of this as a slash command.
 
 ---
 
@@ -323,7 +404,7 @@ memhub init --from-backup ~/memhub-myproject-backup.json
 memhub index rebuild   # re-generate embeddings from the imported rows
 ```
 
-The export format is versioned JSON. It covers facts, decisions, tasks, commands, pending writes, writes log, session notes, and both narrative tables. Embeddings are excluded — the target machine re-derives them via `memhub index rebuild`. Ingested docs are also excluded; re-run `memhub doc add` against the same files on the new machine.
+The export format is versioned JSON. It covers facts, decisions, tasks, commands, pending writes, writes log, session notes, and both narrative tables. Embeddings are excluded — the target machine re-derives them via `memhub index rebuild`. Ingested docs are also excluded; re-run `memhub doc add` against the same files on the new machine. The machine-global store (`~/.memhub/global.sqlite`) is likewise per-machine and not exported — run `memhub global enable` on the new machine and re-add or re-promote whatever should be global there.
 
 ---
 
@@ -347,7 +428,7 @@ Keyword search is great when you remember the exact term you used. Less great th
 
 memhub ships with a bundled embedding model (BGE-small-en-v1.5, ~130 MB, compiled into the binary at build time). Every fact and decision you write also gets embedded as a vector. When you recall something, memhub runs both a keyword search and a semantic similarity search in parallel, blends the scores, then runs a cross-encoder re-ranker over the top candidates — all locally, no network call.
 
-The result is a ranked, cited evidence bundle. You get `title`, `body`, `score`, `source`, and a staleness flag for every hit. The agent gets crisp context; you keep a record of where it came from.
+The result is a ranked, cited evidence bundle. You get `title`, `body`, `score`, `source`, and a staleness flag for every hit — plus a `scope` tag (`repo` or `global`) when the optional machine-wide store is enabled. The agent gets crisp context; you keep a record of where it came from.
 
 ### 3. The agent bridge (MCP + skills)
 
@@ -377,6 +458,7 @@ Tasks and session notes write directly — they're low-stakes (intent and scratc
 | `memhub arch set/show` | The architecture narrative |
 | `memhub ingest-git` | Pull commit + file history into the DB |
 | `memhub doc add/ls/rm/show` | Ingest external markdown docs; scope recall with `--source-type doc` |
+| `memhub global enable/disable/status` | Opt this repo into the optional machine-wide store (`~/.memhub/global.sqlite`) |
 | `memhub review list/accept/reject` | Triage agent-proposed writes |
 | `memhub render` | Emit local `PROJECT.md` and `PROJECT_LEDGER.md` from the DB |
 | `memhub index status/rebuild` | Embedding coverage; backfill for `fts → hybrid` migrations |
@@ -387,7 +469,7 @@ Tasks and session notes write directly — they're low-stakes (intent and scratc
 | `memhub export/import` | Portable JSON backup; cross-machine restore |
 | `memhub serve` | Stdio MCP server for Claude Code / Codex |
 
-Run any command with `--help` for flags.
+`fact add`, `decision add`, and `doc add` take `--global`; `fact promote <id> --global` and `decision promote <id> --global` copy an existing repo row up into the machine-wide store. See [Shared memory across repos](#shared-memory-across-repos-optional). Run any command with `--help` for flags.
 
 ### Two retrieval modes
 
@@ -418,14 +500,20 @@ include_stale_by_default = false # hide stale facts unless asked
 fts_weight = 0.5
 vector_weight = 0.5
 stale_penalty = 0.3
+
+[global]
+enabled = false                  # opt-in via `memhub global enable`
+include_docs_in_default = false  # auto-flips on first `doc add --global`
 ```
+
+`[global] enabled` is managed for you by `memhub global enable` / `disable` — it's per-machine, so the tracked `.memhub/config.example.toml` baseline ships `false` and you don't commit a `true` value back. The machine-global store has no `[retrieval]` block of its own; it inherits the active repo's.
 
 ### Compatibility
 
 **Claude Code**
 
 - Reads `CLAUDE.md` at session start.
-- User-level slash commands at `~/.claude/commands/`: `/wrap-up`, `/check-init`, `/init-project`, `/recall`, `/reindex`, `/eval-recall`, `/viz`, `/doc`.
+- User-level slash commands at `~/.claude/commands/`: `/wrap-up`, `/check-init`, `/init-project`, `/recall`, `/reindex`, `/eval-recall`, `/doc`, `/metrics`, `/viz`, `/global`.
 - Skill writes are attributed `actor=claude:wrap-up`, `source=user+agent:claude-code`.
 
 **Codex CLI**
@@ -466,7 +554,7 @@ When you accept a pending MCP proposal via `memhub review accept`, the durable r
 
 - **Read:** `status`, `search`, `recall`, `list_tasks`, `list_decisions`, `list_facts`, `list_pending_writes`, `get_command`
 - **Write (direct):** `task_add`, `task_done`, `record_command`, `log_session_note`, `render`
-- **Write (staged for review):** `propose_fact`, `propose_decision`
+- **Write (staged for review):** `propose_fact`, `propose_decision` — both take an optional `global` flag; a `global=true` proposal stages in the repo's `pending_writes` and only becomes durable in `~/.memhub/global.sqlite` on human `memhub review accept`. There is no `global` parameter on any MCP write — the global path is never agent-automatic.
 
 ### Token accounting
 
@@ -547,6 +635,7 @@ memhub CLI / MCP
 
 - [Product PRD (verbatim)](docs/reference/memhub-prd.md)
 - [M8 hybrid retrieval addendum](docs/reference/memhub-prd-addendum-m8-retrieval.md)
+- [M9 machine-global memory addendum](docs/reference/memhub-prd-addendum-m9-machine-global-memory.md)
 - [Source vocabulary addendum](docs/reference/memhub-prd-source-vocabulary-addendum.md)
 - [K9 deprecation addendum](docs/reference/memhub-prd-deprecation-addendum.md)
 - Local project state: run `memhub render`, then read `.memhub/rendered/PROJECT.md`
