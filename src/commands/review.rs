@@ -87,6 +87,10 @@ pub struct AcceptOutcome {
 pub fn accept(start: &Path, id: i64, actor: &str) -> Result<AcceptOutcome> {
     let mut ctx = db::open_project(start)?;
     let mode = ctx.config.retrieval.mode;
+    // Cloned before the repo tx borrows ctx.conn so a global-targeted
+    // accept can consult [global] config + open the global DB without
+    // a borrow conflict.
+    let config = ctx.config.clone();
     // Immediate behavior acquires the write lock at BEGIN so concurrent acceptors
     // serialize at the lock instead of both racing past the status check.
     let tx = ctx
@@ -109,40 +113,60 @@ pub fn accept(start: &Path, id: i64, actor: &str) -> Result<AcceptOutcome> {
 
     let derived_source = derive_source_from_pending_actor(&pending.actor);
 
-    let (durable_id, durable_table) = match pending.kind.as_str() {
-        "fact" => {
-            let key = payload
-                .get("key")
-                .and_then(Value::as_str)
-                .ok_or_else(|| missing_payload_field(id, "key"))?;
-            let value = payload
-                .get("value")
-                .and_then(Value::as_str)
-                .ok_or_else(|| missing_payload_field(id, "value"))?;
-            let (fact_id, _) = fact::add_in_tx(&tx, key, value, &derived_source, actor, mode)?;
-            (fact_id, "facts")
-        }
-        "decision" => {
-            let title = payload
-                .get("title")
-                .and_then(Value::as_str)
-                .ok_or_else(|| missing_payload_field(id, "title"))?;
-            let decision_id = decision::add_with_decided_at_in_tx(
-                &tx,
-                title,
-                &pending.rationale,
-                None,
-                None,
-                &derived_source,
-                actor,
-                mode,
-            )?;
-            (decision_id, "decisions")
-        }
-        other => {
-            return Err(MemhubError::InvalidInput(format!(
-                "pending write {id} has unknown kind '{other}'"
-            )));
+    // M9: a proposal tagged `target: "global"` makes its durable write
+    // land in `~/.memhub/global.sqlite` instead of the repo. The
+    // pending_writes row + status update stay in the repo DB (it is the
+    // repo's review queue). The global durable write commits first; if
+    // the subsequent repo-side status update fails the proposal simply
+    // stays `pending` (safe to re-accept) rather than being lost.
+    let target_global = payload.get("target").and_then(Value::as_str) == Some("global");
+
+    let (durable_id, durable_table) = if target_global {
+        write_durable_global(
+            &config,
+            id,
+            &pending.kind,
+            &payload,
+            &pending.rationale,
+            &derived_source,
+            actor,
+        )?
+    } else {
+        match pending.kind.as_str() {
+            "fact" => {
+                let key = payload
+                    .get("key")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| missing_payload_field(id, "key"))?;
+                let value = payload
+                    .get("value")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| missing_payload_field(id, "value"))?;
+                let (fact_id, _) = fact::add_in_tx(&tx, key, value, &derived_source, actor, mode)?;
+                (fact_id, "facts")
+            }
+            "decision" => {
+                let title = payload
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| missing_payload_field(id, "title"))?;
+                let decision_id = decision::add_with_decided_at_in_tx(
+                    &tx,
+                    title,
+                    &pending.rationale,
+                    None,
+                    None,
+                    &derived_source,
+                    actor,
+                    mode,
+                )?;
+                (decision_id, "decisions")
+            }
+            other => {
+                return Err(MemhubError::InvalidInput(format!(
+                    "pending write {id} has unknown kind '{other}'"
+                )));
+            }
         }
     };
 
@@ -305,6 +329,74 @@ fn missing_payload_field(id: i64, field: &str) -> MemhubError {
     MemhubError::InvalidInput(format!(
         "pending write {id} payload is missing required field '{field}'"
     ))
+}
+
+/// Durable write for a `target: "global"` pending write. Runs in the
+/// global DB's own transaction (committed here) so the repo-side
+/// status update can follow. Requires the accepting repo to still
+/// have `[global] enabled` — accepting a global proposal is itself a
+/// machine-global write and obeys the same per-repo gate.
+fn write_durable_global(
+    config: &crate::config::ProjectConfig,
+    pending_id: i64,
+    kind: &str,
+    payload: &Value,
+    rationale: &str,
+    derived_source: &str,
+    actor: &str,
+) -> Result<(i64, &'static str)> {
+    crate::commands::global::ensure_enabled(config)?;
+    let mode = config.retrieval.mode;
+    let mut g = db::open_global()?;
+    let gtx = g.conn.transaction()?;
+
+    let (durable_id, durable_table): (i64, &'static str) = match kind {
+        "fact" => {
+            let key = payload
+                .get("key")
+                .and_then(Value::as_str)
+                .ok_or_else(|| missing_payload_field(pending_id, "key"))?;
+            let value = payload
+                .get("value")
+                .and_then(Value::as_str)
+                .ok_or_else(|| missing_payload_field(pending_id, "value"))?;
+            let (fact_id, _) = fact::add_in_tx(&gtx, key, value, derived_source, actor, mode)?;
+            (fact_id, "facts")
+        }
+        "decision" => {
+            let title = payload
+                .get("title")
+                .and_then(Value::as_str)
+                .ok_or_else(|| missing_payload_field(pending_id, "title"))?;
+            let decision_id = decision::add_with_decided_at_in_tx(
+                &gtx,
+                title,
+                rationale,
+                None,
+                None,
+                derived_source,
+                actor,
+                mode,
+            )?;
+            (decision_id, "decisions")
+        }
+        other => {
+            return Err(MemhubError::InvalidInput(format!(
+                "pending write {pending_id} has unknown kind '{other}'"
+            )));
+        }
+    };
+
+    db::log_write(
+        &gtx,
+        actor,
+        durable_table,
+        Some(durable_id),
+        "promote",
+        &format!("accept pending_write:{pending_id} → global"),
+    )?;
+    gtx.commit()?;
+    Ok((durable_id, durable_table))
 }
 
 /// Compose the durable `source` value for a pending write being accepted.

@@ -160,11 +160,12 @@ impl MemhubServer {
         actor: ClientIdentity,
         provenance_json: String,
     ) -> std::result::Result<Json<ProposeFactToolResponse>, McpError> {
-        let id = commands::pending_write::propose_fact(
+        let id = commands::pending_write::propose_fact_scoped(
             &self.start,
             &params.key,
             &params.value,
             &params.rationale,
+            params.global,
             &actor.normalized,
             &actor.raw,
             &provenance_json,
@@ -203,10 +204,11 @@ impl MemhubServer {
         actor: ClientIdentity,
         provenance_json: String,
     ) -> std::result::Result<Json<ProposeDecisionToolResponse>, McpError> {
-        let id = commands::pending_write::propose_decision(
+        let id = commands::pending_write::propose_decision_scoped(
             &self.start,
             &params.title,
             &params.rationale,
+            params.global,
             &actor.normalized,
             &actor.raw,
             &provenance_json,
@@ -643,12 +645,24 @@ struct ProposeFactParams {
     key: String,
     value: String,
     rationale: String,
+    /// Propose this fact for the machine-global store instead of the
+    /// repo. Still staged: it lands in the repo's pending_writes and
+    /// becomes durable in `~/.memhub/global.sqlite` only on human
+    /// `memhub review accept`. The agent can never write global
+    /// directly (M9).
+    #[serde(default)]
+    global: bool,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct ProposeDecisionParams {
     title: String,
     rationale: String,
+    /// Propose this decision for the machine-global store instead of
+    /// the repo. Staged exactly like a repo proposal; becomes durable
+    /// in the global store only on human `memhub review accept` (M9).
+    #[serde(default)]
+    global: bool,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -1068,6 +1082,9 @@ struct RecallToolResponse {
 struct RecallToolHit {
     rank: usize,
     source_type: String,
+    /// `"repo"` or `"global"` (M9). Repo-local always wins on
+    /// conflict; a `"global"` hit may be overridden by repo memory.
+    scope: String,
     source_id: i64,
     title: String,
     body: String,
@@ -1100,6 +1117,7 @@ impl From<RecallHit> for RecallToolHit {
         Self {
             rank: value.rank,
             source_type: value.source_type,
+            scope: value.scope,
             source_id: value.source_id,
             title: value.title,
             body: value.body,
@@ -1634,6 +1652,7 @@ mod tests {
                     key: "build-command".to_string(),
                     value: "cargo build".to_string(),
                     rationale: "Observed in this repo and should be reviewed.".to_string(),
+                    global: false,
                 }),
                 ClientIdentity {
                     normalized: "codex".to_string(),
@@ -1647,6 +1666,7 @@ mod tests {
                 Parameters(ProposeDecisionParams {
                     title: "Keep staged writes narrow".to_string(),
                     rationale: "Avoid direct agent writes before review exists.".to_string(),
+                    global: false,
                 }),
                 ClientIdentity {
                     normalized: "claude-code".to_string(),
@@ -1857,6 +1877,7 @@ mod tests {
                     key: "lint-command".to_string(),
                     value: "cargo fmt --check".to_string(),
                     rationale: "Candidate command for future review.".to_string(),
+                    global: false,
                 }),
                 ClientIdentity {
                     normalized: "codex".to_string(),

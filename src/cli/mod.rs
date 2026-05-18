@@ -7,7 +7,7 @@ mod output;
 
 pub use args::{
     Cli, CommandCommand, CommandKind, DecisionCommand, DocCommand, EvalCommand, FactCommand,
-    IndexCommand, IntegrationsCommand, MetricsCommand, NarrativeCommand, NoteCommand,
+    GlobalCommand, IndexCommand, IntegrationsCommand, MetricsCommand, NarrativeCommand, NoteCommand,
     PendingStatus, RecallModeArg, RecallSourceTypeArg, ReviewCommand, StatsWindowArg, TaskCommand,
     TaskStatus, TopLevelCommand,
 };
@@ -25,6 +25,29 @@ use crate::models::NarrativeKind;
 use crate::retrieval;
 use crate::retrieval::RecallOptions;
 use crate::{MemhubError, Result};
+
+/// One-time disclosure printed the first time a global write creates
+/// `~/.memhub/global.sqlite`. The store is machine-wide and visible to
+/// every repo on this machine that opts in.
+fn print_global_store_created() {
+    println!(
+        "Created machine-global store at ~/.memhub/global.sqlite — \
+         visible to recall in every repo on this machine that runs \
+         `memhub global enable`."
+    );
+}
+
+/// `promote` only supports the machine-global target in M9. Reject a
+/// missing `--global` with a clear message rather than a silent no-op.
+fn require_global_target(global: bool) -> Result<()> {
+    if global {
+        Ok(())
+    } else {
+        Err(MemhubError::InvalidInput(
+            "promote requires --global (the only promotion target in M9)".to_string(),
+        ))
+    }
+}
 
 fn resolve_actor(actor: Option<&str>) -> Result<String> {
     match actor {
@@ -295,24 +318,83 @@ pub fn run(cli: Cli) -> Result<()> {
                 key,
                 value,
                 source,
+                global,
                 json: as_json,
                 actor,
             } => {
                 let actor = resolve_actor(actor.as_deref())?;
-                let (id, created) = commands::fact::add(&cwd, &key, &value, &source, &actor)?;
-                if as_json {
-                    let payload = json!({
-                        "id": id,
-                        "key": key,
-                        "value": value,
-                        "source": source,
-                        "created": created,
-                    });
-                    println!("{payload}");
+                if global {
+                    let r = commands::fact::add_global(&cwd, &key, &value, &source, &actor)?;
+                    if as_json {
+                        println!(
+                            "{}",
+                            json!({
+                                "id": r.id,
+                                "key": key,
+                                "value": value,
+                                "source": source,
+                                "created": r.created,
+                                "scope": "global",
+                                "store_created": r.store_created,
+                            })
+                        );
+                    } else {
+                        if r.store_created {
+                            print_global_store_created();
+                        }
+                        println!(
+                            "{} global fact {}: {key}",
+                            if r.created { "Created" } else { "Updated" },
+                            r.id
+                        );
+                    }
                 } else {
+                    let (id, created) = commands::fact::add(&cwd, &key, &value, &source, &actor)?;
+                    if as_json {
+                        let payload = json!({
+                            "id": id,
+                            "key": key,
+                            "value": value,
+                            "source": source,
+                            "created": created,
+                        });
+                        println!("{payload}");
+                    } else {
+                        println!(
+                            "{} fact {id}: {key}",
+                            if created { "Created" } else { "Updated" }
+                        );
+                    }
+                }
+            }
+            FactCommand::Promote {
+                id,
+                global,
+                json: as_json,
+                actor,
+            } => {
+                require_global_target(global)?;
+                let actor = resolve_actor(actor.as_deref())?;
+                let r = commands::fact::promote(&cwd, id, &actor)?;
+                if as_json {
                     println!(
-                        "{} fact {id}: {key}",
-                        if created { "Created" } else { "Updated" }
+                        "{}",
+                        json!({
+                            "promoted_from": id,
+                            "id": r.id,
+                            "created": r.created,
+                            "scope": "global",
+                            "store_created": r.store_created,
+                        })
+                    );
+                } else {
+                    if r.store_created {
+                        print_global_store_created();
+                    }
+                    println!(
+                        "Promoted fact {id} → global fact {} ({})",
+                        r.id,
+                        if r.created { "new" } else { "updated existing key" }
                     );
                 }
             }
@@ -345,29 +427,92 @@ pub fn run(cli: Cli) -> Result<()> {
                 rationale,
                 summary,
                 source,
+                global,
                 json: as_json,
                 actor,
             } => {
                 let actor = resolve_actor(actor.as_deref())?;
-                let id = commands::decision::add_with_decided_at(
-                    &cwd,
-                    &title,
-                    &rationale,
-                    None,
-                    summary.as_deref(),
-                    &source,
-                    &actor,
-                )?;
-                if as_json {
-                    let payload = json!({
-                        "id": id,
-                        "title": title,
-                        "source": source,
-                        "summary": summary,
-                    });
-                    println!("{payload}");
+                if global {
+                    let r = commands::decision::add_global(
+                        &cwd,
+                        &title,
+                        &rationale,
+                        summary.as_deref(),
+                        &source,
+                        &actor,
+                    )?;
+                    if as_json {
+                        println!(
+                            "{}",
+                            json!({
+                                "id": r.id,
+                                "title": title,
+                                "source": source,
+                                "summary": summary,
+                                "scope": "global",
+                                "store_created": r.store_created,
+                            })
+                        );
+                    } else {
+                        if r.store_created {
+                            print_global_store_created();
+                        }
+                        println!("Created global decision {}: {title}", r.id);
+                    }
                 } else {
-                    println!("Created decision {id}: {title}");
+                    let id = commands::decision::add_with_decided_at(
+                        &cwd,
+                        &title,
+                        &rationale,
+                        None,
+                        summary.as_deref(),
+                        &source,
+                        &actor,
+                    )?;
+                    if as_json {
+                        let payload = json!({
+                            "id": id,
+                            "title": title,
+                            "source": source,
+                            "summary": summary,
+                        });
+                        println!("{payload}");
+                    } else {
+                        println!("Created decision {id}: {title}");
+                    }
+                }
+            }
+            DecisionCommand::Promote {
+                id,
+                global,
+                json: as_json,
+                actor,
+            } => {
+                require_global_target(global)?;
+                let actor = resolve_actor(actor.as_deref())?;
+                let r = commands::decision::promote(&cwd, id, &actor)?;
+                if as_json {
+                    println!(
+                        "{}",
+                        json!({
+                            "promoted_from": id,
+                            "id": r.id,
+                            "scope": "global",
+                            "store_created": r.store_created,
+                            "title_collision": r.title_collision,
+                        })
+                    );
+                } else {
+                    if r.store_created {
+                        print_global_store_created();
+                    }
+                    if r.title_collision {
+                        println!(
+                            "Warning: a global decision with this title already exists; \
+                             inserted a duplicate (decisions have no natural key)."
+                        );
+                    }
+                    println!("Promoted decision {id} → global decision {}", r.id);
                 }
             }
             DecisionCommand::SetSummary {
@@ -474,16 +619,22 @@ pub fn run(cli: Cli) -> Result<()> {
             DocCommand::Add {
                 file,
                 title,
+                global,
                 json: as_json,
                 actor,
             } => {
                 let actor = resolve_actor(actor.as_deref())?;
-                let outcome = commands::doc::add(&cwd, &file, title.as_deref(), &actor)?;
+                let outcome = if global {
+                    commands::doc::add_global(&cwd, &file, title.as_deref(), &actor)?
+                } else {
+                    commands::doc::add(&cwd, &file, title.as_deref(), &actor)?
+                };
                 let status = match outcome.status {
                     commands::doc::IngestStatus::Created => "created",
                     commands::doc::IngestStatus::Updated => "updated",
                     commands::doc::IngestStatus::Unchanged => "unchanged",
                 };
+                let scope = if global { "global" } else { "repo" };
                 if as_json {
                     let payload = json!({
                         "id": outcome.doc_id,
@@ -491,20 +642,31 @@ pub fn run(cli: Cli) -> Result<()> {
                         "path": outcome.path,
                         "chunks": outcome.chunk_count,
                         "status": status,
+                        "scope": scope,
                         "enabled_default_recall": outcome.enabled_default_recall,
+                        "store_created": outcome.store_created,
                     });
                     println!("{payload}");
                 } else {
+                    if outcome.store_created {
+                        print_global_store_created();
+                    }
                     println!(
-                        "{} document {}: {} ({} chunks)\n  {}",
-                        status, outcome.doc_id, outcome.title, outcome.chunk_count, outcome.path,
+                        "{} {} document {}: {} ({} chunks)\n  {}",
+                        status,
+                        scope,
+                        outcome.doc_id,
+                        outcome.title,
+                        outcome.chunk_count,
+                        outcome.path,
                     );
                     if outcome.enabled_default_recall {
                         println!(
-                            "  Default doc recall enabled for this repo \
+                            "  Default doc recall enabled for this {} \
                              (first doc ingested) — strong topical matches now\n  \
                              surface in plain `memhub recall`; \
-                             scope to docs only with --source-type doc."
+                             scope to docs only with --source-type doc.",
+                            if global { "machine" } else { "repo" }
                         );
                     } else if outcome.status != commands::doc::IngestStatus::Unchanged {
                         println!("  Searchable via: memhub recall \"<query>\" --source-type doc");
@@ -996,6 +1158,82 @@ pub fn run(cli: Cli) -> Result<()> {
                         "Pruned {} recall rows, {} session rows (retention: {} days).",
                         r.recalls_pruned, r.sessions_pruned, r.retention_days
                     );
+                }
+            }
+        },
+        TopLevelCommand::Global { command } => match command {
+            GlobalCommand::Enable { json: as_json } => {
+                let r = commands::global::enable(&cwd)?;
+                if as_json {
+                    println!(
+                        "{}",
+                        json!({
+                            "enabled": true,
+                            "already_enabled": r.already_enabled,
+                            "store_created": r.store_created,
+                            "path": r.path.display().to_string(),
+                        })
+                    );
+                } else {
+                    if r.store_created {
+                        print_global_store_created();
+                    }
+                    if r.already_enabled {
+                        println!("Machine-global memory already enabled for this repo.");
+                    } else {
+                        println!(
+                            "Machine-global memory enabled for this repo.\n  Store: {}",
+                            r.path.display()
+                        );
+                    }
+                }
+            }
+            GlobalCommand::Disable { json: as_json } => {
+                commands::global::disable(&cwd)?;
+                if as_json {
+                    println!("{}", json!({ "enabled": false }));
+                } else {
+                    println!(
+                        "Machine-global memory disabled for this repo \
+                         (store kept on disk; recall stops merging it)."
+                    );
+                }
+            }
+            GlobalCommand::Status { json: as_json } => {
+                let s = commands::global::status(&cwd)?;
+                if as_json {
+                    println!(
+                        "{}",
+                        json!({
+                            "enabled": s.enabled,
+                            "path": s.path.display().to_string(),
+                            "exists": s.exists,
+                            "schema_version": s.schema_version,
+                            "facts": s.fact_count,
+                            "decisions": s.decision_count,
+                            "doc_chunks": s.doc_chunk_count,
+                        })
+                    );
+                } else {
+                    println!("Machine-global memory");
+                    println!(
+                        "  Enabled (this repo): {}",
+                        if s.enabled { "yes" } else { "no" }
+                    );
+                    println!("  Store path:          {}", s.path.display());
+                    println!(
+                        "  Store exists:        {}",
+                        if s.exists { "yes" } else { "no" }
+                    );
+                    if s.exists {
+                        println!(
+                            "  Schema version:      {}",
+                            s.schema_version.as_deref().unwrap_or("unknown")
+                        );
+                        println!("  Facts:               {}", s.fact_count);
+                        println!("  Decisions:           {}", s.decision_count);
+                        println!("  Doc chunks:          {}", s.doc_chunk_count);
+                    }
                 }
             }
         },

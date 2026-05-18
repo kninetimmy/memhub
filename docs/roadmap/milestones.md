@@ -52,6 +52,16 @@ This repository covers PRD §16 Milestones 1–4 in full, plus the memhub side o
 - `--json` read surfaces on `memhub review list` and `memhub review show` - shipped in `M5-003`
 - Status: memhub side complete. The K9-repo `/wrap-up.md` consumer edit that calls into the v1 contract end-to-end lives outside this repo.
 
-## Milestone 6+
+## Milestone 8: SQL+RAG hybrid recall
 
-Speculative until a mini-PRD exists per feature: continuous confidence decay, `memhub.log_session_note` MCP tool, `memhub stats` success-metric command, broader indexed retrieval over facts / tasks / command history, embeddings, desktop UI, file watchers, richer global DB behavior, and network-backed ingestion.
+- Design anchor: [`docs/reference/memhub-prd-addendum-m8-retrieval.md`](../reference/memhub-prd-addendum-m8-retrieval.md)
+- Status: shipped. Hybrid FTS5 + BGE-small embeddings + cross-encoder rerank, `memhub recall` / `memhub.recall`, eval harness over `tests/retrieval_golden.json`.
+
+## Milestone 9: Machine-global memory
+
+- Design anchor: [`docs/reference/memhub-prd-addendum-m9-machine-global-memory.md`](../reference/memhub-prd-addendum-m9-machine-global-memory.md)
+- Optional, off-by-default machine-global store at `~/.memhub/global.sqlite`, merged into per-repo recall with `scope` provenance. User-gated writes only; agents may propose but never write global. Origin: task 45.
+
+## Milestone 10+
+
+Speculative until a mini-PRD exists per feature: continuous confidence decay, `memhub.log_session_note` MCP tool, `memhub stats` success-metric command, broader indexed retrieval over command history, desktop UI, file watchers, and network-backed ingestion.

@@ -61,10 +61,20 @@ pub struct RecallOptions {
     pub log_metrics: bool,
 }
 
+/// Corpus a recall hit came from. Repo-local always; `"global"` only
+/// when the repo opted into machine-global memory and the store had a
+/// match (M9). Precedence is provenance-tag-only: recall never drops a
+/// hit for being global — the agent applies repo-overrides-global.
+pub const SCOPE_REPO: &str = "repo";
+pub const SCOPE_GLOBAL: &str = "global";
+
 #[derive(Debug, Clone)]
 pub struct RecallHit {
     pub rank: usize,
     pub source_type: String,
+    /// `"repo"` or `"global"` (M9 provenance). Sibling to
+    /// `source_type`; surfaced in CLI JSON and the MCP recall bundle.
+    pub scope: String,
     pub source_id: i64,
     pub title: String,
     pub body: String,
@@ -112,12 +122,79 @@ pub struct RecallResponse {
     pub available_docs: usize,
 }
 
-/// Top-level entry: resolves config, then dispatches to the
-/// in-connection recall implementation.
+/// Top-level entry: resolves config, gathers scored candidates from
+/// the repo store and (when this repo opted into machine-global memory
+/// and the store exists) the global store, merges them with `scope`
+/// provenance, then runs one rerank pass over the unified pool.
+///
+/// The global corpus is consulted only when `[global] enabled` AND
+/// `~/.memhub/global.sqlite` exists; otherwise this is byte-identical
+/// to the pre-M9 single-corpus path (the eval-regression guarantee).
 pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
     let ctx = db::open_project(start)?;
     let resolved = ResolvedOptions::from(&options, &ctx.config.retrieval)?;
-    let response = run(&ctx.conn, &resolved, &ctx.config.retrieval.scoring)?;
+    let scoring = &ctx.config.retrieval.scoring;
+    let started = Instant::now();
+
+    // Embed the query once and reuse it for every corpus gather so the
+    // cross-corpus blended scores are computed on the same basis.
+    let query_vec: Option<Vec<f32>> = if resolved.mode == RetrievalMode::Hybrid {
+        let v = embed_one(&resolved.query)?;
+        if v.len() != EMBEDDING_DIMENSION {
+            return Err(MemhubError::Embedding(format!(
+                "query embedding produced {}-dim vector, expected {EMBEDDING_DIMENSION}",
+                v.len()
+            )));
+        }
+        Some(v)
+    } else {
+        None
+    };
+
+    let mut repo = gather_scored(&ctx.conn, &resolved, scoring, query_vec.as_deref())?;
+    for h in &mut repo.scored {
+        h.scope = SCOPE_REPO.to_string();
+    }
+
+    let mut merged = repo.scored;
+    let mut candidate_count = repo.candidate_count;
+    let mut warnings = repo.warnings;
+    let mut doc_chunk_total = repo.doc_chunk_total;
+
+    if ctx.config.global.enabled
+        && let Some(gctx) = db::open_global_if_exists()?
+    {
+        let mut g = gather_scored(&gctx.conn, &resolved, scoring, query_vec.as_deref())?;
+        for h in &mut g.scored {
+            h.scope = SCOPE_GLOBAL.to_string();
+        }
+        merged.extend(g.scored);
+        candidate_count += g.candidate_count;
+        warnings.extend(g.warnings);
+        doc_chunk_total += g.doc_chunk_total;
+    }
+
+    // Re-sort the unified pool by blended score before the rerank
+    // truncation so the top `rerank_candidate_pool` is drawn from both
+    // corpora, not just whichever gathered first.
+    merged.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.source_type.as_str().cmp(b.source_type.as_str()))
+            .then_with(|| a.scope.cmp(&b.scope))
+            .then_with(|| a.source_id.cmp(&b.source_id))
+    });
+
+    let response = finalize(
+        &resolved,
+        merged,
+        candidate_count,
+        warnings,
+        doc_chunk_total,
+        started,
+    )?;
+
     if options.log_metrics {
         crate::metrics::recall_proxy::log_recall(
             &ctx.conn,
@@ -221,12 +298,29 @@ impl ResolvedOptions {
     }
 }
 
-fn run(
+struct GatherResult {
+    /// Blended-scored, sorted candidates for this single corpus
+    /// (pre-rerank). `scope` is left empty here; the orchestrator
+    /// tags it before the merged rerank pass.
+    scored: Vec<ScoredHit>,
+    candidate_count: usize,
+    warnings: Vec<RecallWarning>,
+    /// `COUNT(*)` of `doc_chunks` in this corpus, summed across
+    /// corpora by the orchestrator for the `available_docs` cue.
+    doc_chunk_total: i64,
+}
+
+/// Connection-scoped candidate gather: FTS + (hybrid) vector + stale
+/// detection + hydrate + filter + blended score + sort. Connection-
+/// agnostic so the orchestrator can run it once per corpus. The query
+/// embedding is computed once by the caller and passed in so both the
+/// repo and global gathers score on the same vector.
+fn gather_scored(
     conn: &Connection,
     opts: &ResolvedOptions,
     scoring: &RetrievalScoringConfig,
-) -> Result<RecallResponse> {
-    let started = Instant::now();
+    query_vec: Option<&[f32]>,
+) -> Result<GatherResult> {
     let mut candidates: HashMap<(SourceType, i64), CandidateRow> = HashMap::new();
 
     let fts_match = build_fts_match(&opts.query);
@@ -250,20 +344,17 @@ fn run(
         entry.fts_raw = Some(*fts_raw);
     }
 
-    // Vector path (hybrid only).
+    // Vector path (hybrid only). The query embedding is supplied by the
+    // orchestrator (computed once, reused across corpora).
     let mut warnings: Vec<RecallWarning> = Vec::new();
     if opts.mode == RetrievalMode::Hybrid {
-        let query_vec = embed_one(&opts.query)?;
-        if query_vec.len() != EMBEDDING_DIMENSION {
-            return Err(MemhubError::Embedding(format!(
-                "query embedding produced {}-dim vector, expected {EMBEDDING_DIMENSION}",
-                query_vec.len()
-            )));
-        }
+        let query_vec = query_vec.ok_or_else(|| {
+            MemhubError::Embedding("hybrid gather requires a precomputed query embedding".into())
+        })?;
         // No vector-path floor — D70/D71 retired `min_vector_score` after
         // the MiniLM bundle landed. Nonsense rejection now lives in the
         // rerank-score filter applied below.
-        let vector_hits = vector_lookup(conn, &opts.source_types, &query_vec, 0.0)?;
+        let vector_hits = vector_lookup(conn, &opts.source_types, query_vec, 0.0)?;
         for hit in &vector_hits {
             let entry = candidates
                 .entry((hit.source_type, hit.source_id))
@@ -311,7 +402,6 @@ fn run(
 
     let candidate_count = surviving.len();
 
-    // Score and rank.
     let mut scored: Vec<ScoredHit> = score(&surviving, scoring);
     scored.sort_by(|a, b| {
         b.score
@@ -321,6 +411,35 @@ fn run(
             .then_with(|| a.source_id.cmp(&b.source_id))
     });
 
+    let doc_chunk_total = conn
+        .query_row(
+            "SELECT COUNT(*) FROM doc_chunks WHERE project_id = 1",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional_row()?
+        .unwrap_or(0)
+        .max(0);
+
+    Ok(GatherResult {
+        scored,
+        candidate_count,
+        warnings,
+        doc_chunk_total,
+    })
+}
+
+/// Merged-pool finalize: one cross-encoder rerank pass over the unified
+/// (repo + global) candidate set, the doc-safety rule, truncation, and
+/// `RecallResponse` assembly with `scope` provenance carried through.
+fn finalize(
+    opts: &ResolvedOptions,
+    mut scored: Vec<ScoredHit>,
+    candidate_count: usize,
+    warnings: Vec<RecallWarning>,
+    doc_chunk_total: i64,
+    started: Instant,
+) -> Result<RecallResponse> {
     // Optional cross-encoder re-rank pass (decision 68). Only runs on
     // hybrid mode and only when the operator hasn't opted out. Takes the
     // top `rerank_candidate_pool` by blended score, reorders them by the
@@ -385,6 +504,11 @@ fn run(
         results.push(RecallHit {
             rank: idx + 1,
             source_type: hit.source_type.as_str().to_string(),
+            scope: if hit.scope.is_empty() {
+                SCOPE_REPO.to_string()
+            } else {
+                hit.scope
+            },
             source_id: hit.source_id,
             title: hit.title,
             body: hit.body,
@@ -423,15 +547,8 @@ fn run(
     let available_docs: usize = if explicitly_doc_scoped {
         0
     } else {
-        let total = conn
-            .query_row(
-                "SELECT COUNT(*) FROM doc_chunks WHERE project_id = 1",
-                [],
-                |r| r.get::<_, i64>(0),
-            )
-            .optional_row()?
-            .unwrap_or(0)
-            .max(0) as usize;
+        // Repo + global doc-chunk count, summed by the orchestrator.
+        let total = doc_chunk_total.max(0) as usize;
         if opts.docs_via_default {
             let surfaced = results
                 .iter()
@@ -502,6 +619,10 @@ impl CandidateRow {
 #[derive(Clone)]
 struct ScoredHit {
     source_type: SourceType,
+    /// Provenance tag, assigned by the orchestrator after a per-corpus
+    /// gather (`SCOPE_REPO` / `SCOPE_GLOBAL`). `score()` leaves it
+    /// empty; it is filled before the merged rerank pass.
+    scope: String,
     source_id: i64,
     title: String,
     body: String,
@@ -971,6 +1092,7 @@ fn score(rows: &[CandidateRow], scoring: &RetrievalScoringConfig) -> Vec<ScoredH
                 scoring.fts_weight * fts_score + scoring.vector_weight * vector_score - penalty;
             ScoredHit {
                 source_type: c.source_type,
+                scope: String::new(),
                 source_id: c.source_id,
                 title: c.title.clone(),
                 body: c.body.clone(),

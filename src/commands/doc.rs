@@ -50,11 +50,21 @@ pub struct DocAddOutcome {
     /// on for the repo (first successful doc add). The CLI surfaces a
     /// one-line notice so the behavior change is visible, not silent.
     pub enabled_default_recall: bool,
+    /// True only for `add_global` when this call created
+    /// `~/.memhub/global.sqlite` (first global write on the machine).
+    /// Always false for the repo path.
+    pub store_created: bool,
 }
 
-/// Ingest (or re-ingest) a markdown file. Unchanged content (same
-/// SHA-256) is a no-op. Changed content replaces every chunk.
-pub fn add(start: &Path, file: &Path, title: Option<&str>, actor: &str) -> Result<DocAddOutcome> {
+struct PreparedDoc {
+    content: String,
+    path_str: String,
+    byte_len: i64,
+    content_hash: String,
+    resolved_title: String,
+}
+
+fn prepare_doc(file: &Path, title: Option<&str>) -> Result<PreparedDoc> {
     let content = fs::read_to_string(file).map_err(|e| {
         crate::MemhubError::InvalidInput(format!("cannot read {}: {e}", file.display()))
     })?;
@@ -66,16 +76,34 @@ pub fn add(start: &Path, file: &Path, title: Option<&str>, actor: &str) -> Resul
         .map(str::to_string)
         .filter(|t| !t.trim().is_empty())
         .unwrap_or_else(|| derive_title(&content, &canonical));
+    Ok(PreparedDoc {
+        content,
+        path_str,
+        byte_len,
+        content_hash,
+        resolved_title,
+    })
+}
 
-    let mut ctx = db::open_project(start)?;
-    let mode = ctx.config.retrieval.mode;
-    let tx = ctx.conn.transaction()?;
+struct IngestResult {
+    doc_id: i64,
+    status: IngestStatus,
+    chunk_count: usize,
+    /// `documents` table was empty before this ingest (the trigger for
+    /// auto-flipping default doc recall). Connection-agnostic: true in
+    /// the global DB only on the first `doc add --global`.
+    was_first_doc: bool,
+}
 
-    // "First successful doc add in this repo" — the literal trigger for
-    // auto-enabling default doc recall — means the documents table was
-    // empty *before* this call. Measured pre-insert so re-adds, updates,
-    // and a second new doc never re-flip a setting the user turned off
-    // (that escape hatch is documented in CLAUDE.md / AGENTS.md).
+/// Connection-agnostic ingest core. Operates entirely on `tx`, so the
+/// caller chooses repo vs. global DB. Does NOT commit — the caller
+/// commits and then applies its target-specific config flip / sync.
+fn ingest_in_tx(
+    tx: &Transaction<'_>,
+    doc: &PreparedDoc,
+    actor: &str,
+    mode: crate::config::RetrievalMode,
+) -> Result<IngestResult> {
     let was_first_doc: bool = tx.query_row(
         "SELECT COUNT(*) FROM documents WHERE project_id = 1",
         [],
@@ -85,28 +113,23 @@ pub fn add(start: &Path, file: &Path, title: Option<&str>, actor: &str) -> Resul
     let existing: Option<(i64, String)> = tx
         .query_row(
             "SELECT id, content_hash FROM documents WHERE project_id = 1 AND path = ?1",
-            params![path_str],
+            params![doc.path_str],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?;
 
     let (doc_id, status) = match existing {
-        Some((id, old_hash)) if old_hash == content_hash => {
+        Some((id, old_hash)) if old_hash == doc.content_hash => {
             let chunk_count: i64 = tx.query_row(
                 "SELECT COUNT(*) FROM doc_chunks WHERE doc_id = ?1",
                 params![id],
                 |r| r.get(0),
             )?;
-            tx.commit()?;
-            let enabled_default_recall =
-                was_first_doc && maybe_enable_default_doc_recall(&mut ctx)?;
-            return Ok(DocAddOutcome {
+            return Ok(IngestResult {
                 doc_id: id,
-                title: resolved_title,
-                path: path_str,
-                chunk_count: chunk_count.max(0) as usize,
                 status: IngestStatus::Unchanged,
-                enabled_default_recall,
+                chunk_count: chunk_count.max(0) as usize,
+                was_first_doc,
             });
         }
         Some((id, _)) => {
@@ -118,7 +141,7 @@ pub fn add(start: &Path, file: &Path, title: Option<&str>, actor: &str) -> Resul
                  SET title = ?1, content_hash = ?2, byte_len = ?3,
                      ingested_at = CURRENT_TIMESTAMP
                  WHERE id = ?4",
-                params![resolved_title, content_hash, byte_len, id],
+                params![doc.resolved_title, doc.content_hash, doc.byte_len, id],
             )?;
             (id, IngestStatus::Updated)
         }
@@ -126,17 +149,17 @@ pub fn add(start: &Path, file: &Path, title: Option<&str>, actor: &str) -> Resul
             tx.execute(
                 "INSERT INTO documents(project_id, path, title, content_hash, byte_len, source)
                  VALUES (1, ?1, ?2, ?3, ?4, 'user')",
-                params![path_str, resolved_title, content_hash, byte_len],
+                params![doc.path_str, doc.resolved_title, doc.content_hash, doc.byte_len],
             )?;
             (tx.last_insert_rowid(), IngestStatus::Created)
         }
     };
 
-    let chunks = chunk_markdown(&content);
-    insert_chunks(&tx, doc_id, &chunks, mode)?;
+    let chunks = chunk_markdown(&doc.content);
+    insert_chunks(tx, doc_id, &chunks, mode)?;
 
     db::log_write(
-        &tx,
+        tx,
         actor,
         "documents",
         Some(doc_id),
@@ -145,19 +168,84 @@ pub fn add(start: &Path, file: &Path, title: Option<&str>, actor: &str) -> Resul
         } else {
             "update"
         },
-        &format!("doc add: {} ({} chunks)", path_str, chunks.len()),
+        &format!("doc add: {} ({} chunks)", doc.path_str, chunks.len()),
     )?;
+
+    Ok(IngestResult {
+        doc_id,
+        status,
+        chunk_count: chunks.len(),
+        was_first_doc,
+    })
+}
+
+/// Ingest (or re-ingest) a markdown file into this repo's store.
+/// Unchanged content (same SHA-256) is a no-op. Changed content
+/// replaces every chunk.
+pub fn add(start: &Path, file: &Path, title: Option<&str>, actor: &str) -> Result<DocAddOutcome> {
+    let doc = prepare_doc(file, title)?;
+
+    let mut ctx = db::open_project(start)?;
+    let mode = ctx.config.retrieval.mode;
+    let tx = ctx.conn.transaction()?;
+    let r = ingest_in_tx(&tx, &doc, actor, mode)?;
     tx.commit()?;
-    let enabled_default_recall = was_first_doc && maybe_enable_default_doc_recall(&mut ctx)?;
+
+    let enabled_default_recall = r.was_first_doc && maybe_enable_default_doc_recall(&mut ctx)?;
     sync_md::sync_if_enabled(start)?;
 
     Ok(DocAddOutcome {
-        doc_id,
-        title: resolved_title,
-        path: path_str,
-        chunk_count: chunks.len(),
-        status,
+        doc_id: r.doc_id,
+        title: doc.resolved_title,
+        path: doc.path_str,
+        chunk_count: r.chunk_count,
+        status: r.status,
         enabled_default_recall,
+        store_created: false,
+    })
+}
+
+/// Ingest a markdown file into the machine-global store (M9). A
+/// global doc is a broadly-applicable guide visible to every repo
+/// that has opted in. Requires `memhub global enable` in this repo.
+/// The first global doc add flips `[global] include_docs_in_default`
+/// in this repo's config (mirrors the repo-scoped behavior).
+pub fn add_global(
+    start: &Path,
+    file: &Path,
+    title: Option<&str>,
+    actor: &str,
+) -> Result<DocAddOutcome> {
+    let doc = prepare_doc(file, title)?;
+
+    let mut repo = db::open_project(start)?;
+    crate::commands::global::ensure_enabled(&repo.config)?;
+    let mode = repo.config.retrieval.mode;
+    let store_created = !db::global_store_exists()?;
+
+    let mut g = db::open_global()?;
+    let tx = g.conn.transaction()?;
+    let r = ingest_in_tx(&tx, &doc, actor, mode)?;
+    tx.commit()?;
+
+    let enabled_default_recall = r.was_first_doc && {
+        if repo.config.global.include_docs_in_default {
+            false
+        } else {
+            repo.config.global.include_docs_in_default = true;
+            repo.config.save(&repo.paths.config_path)?;
+            true
+        }
+    };
+
+    Ok(DocAddOutcome {
+        doc_id: r.doc_id,
+        title: doc.resolved_title,
+        path: doc.path_str,
+        chunk_count: r.chunk_count,
+        status: r.status,
+        enabled_default_recall,
+        store_created,
     })
 }
 

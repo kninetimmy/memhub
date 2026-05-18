@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use rusqlite::{Transaction, params};
+use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::Result;
 use crate::commands::search;
@@ -139,6 +139,105 @@ pub fn set_summary(start: &Path, id: i64, summary: Option<&str>, actor: &str) ->
     tx.commit()?;
     sync_md::sync_if_enabled(start)?;
     Ok(())
+}
+
+#[derive(Debug)]
+pub struct GlobalDecisionOutcome {
+    pub id: i64,
+    pub store_created: bool,
+    /// True when a global decision with the same title already
+    /// existed. Decisions have no natural key, so a re-promote
+    /// duplicates; the CLI surfaces this as a warning.
+    pub title_collision: bool,
+}
+
+/// Born-global decision write (M9). Requires `memhub global enable`
+/// in this repo. Embeds using the *repo's* retrieval mode.
+pub fn add_global(
+    start: &Path,
+    title: &str,
+    rationale: &str,
+    summary: Option<&str>,
+    source: &str,
+    actor: &str,
+) -> Result<GlobalDecisionOutcome> {
+    let mut gw = crate::commands::global::begin_write(start)?;
+    let tx = gw.ctx.conn.transaction()?;
+    let row_id =
+        add_with_decided_at_in_tx(&tx, title, rationale, None, summary, source, actor, gw.mode)?;
+    tx.commit()?;
+    Ok(GlobalDecisionOutcome {
+        id: row_id,
+        store_created: gw.store_created,
+        title_collision: false,
+    })
+}
+
+/// Copy an existing repo decision into the machine-global store
+/// (copy, not move). Decisions have no natural key; re-promoting the
+/// same decision duplicates. `title_collision` reports whether a
+/// global decision with this title already existed so the caller can
+/// warn.
+pub fn promote(start: &Path, id: i64, actor: &str) -> Result<GlobalDecisionOutcome> {
+    let repo = db::open_project(start)?;
+    crate::commands::global::ensure_enabled(&repo.config)?;
+    let mode = repo.config.retrieval.mode;
+
+    let (title, rationale, summary, source): (String, String, Option<String>, String) = repo
+        .conn
+        .query_row(
+            "SELECT title, rationale, summary, source
+             FROM decisions WHERE id = ?1 AND project_id = 1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .map_err(|err| match err {
+            rusqlite::Error::QueryReturnedNoRows => {
+                crate::MemhubError::InvalidInput(format!("no decision with id {id}"))
+            }
+            other => crate::MemhubError::from(other),
+        })?;
+
+    let repo_root = repo.paths.repo_root.display().to_string();
+    let store_created = !db::global_store_exists()?;
+
+    let mut g = db::open_global()?;
+    let tx = g.conn.transaction()?;
+
+    let title_collision: bool = tx
+        .query_row(
+            "SELECT 1 FROM decisions WHERE project_id = 1 AND title = ?1 LIMIT 1",
+            params![title],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+
+    let row_id = add_with_decided_at_in_tx(
+        &tx,
+        &title,
+        &rationale,
+        None,
+        summary.as_deref(),
+        &source,
+        actor,
+        mode,
+    )?;
+    db::log_write(
+        &tx,
+        actor,
+        "decisions",
+        Some(row_id),
+        "promote",
+        &format!("promote from {repo_root}"),
+    )?;
+    tx.commit()?;
+
+    Ok(GlobalDecisionOutcome {
+        id: row_id,
+        store_created,
+        title_collision,
+    })
 }
 
 fn normalize_summary(summary: Option<&str>) -> Option<String> {

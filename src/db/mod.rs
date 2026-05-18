@@ -14,6 +14,11 @@ pub const MEMHUB_DIR: &str = ".memhub";
 pub const DB_FILENAME: &str = "project.sqlite";
 pub const CONFIG_FILENAME: &str = "config.toml";
 pub const CONFIG_EXAMPLE_FILENAME: &str = "config.example.toml";
+/// Machine-global store (M9). One optional DB per machine at
+/// `~/.memhub/global.sqlite`, structurally identical to a repo DB
+/// (same embedded migrations; `project_id = 1` is per-database).
+pub const GLOBAL_MEMHUB_DIRNAME: &str = ".memhub";
+pub const GLOBAL_DB_FILENAME: &str = "global.sqlite";
 
 /// The latest schema version this build will migrate a DB to. Exposed so
 /// tests can verify that `open_project` brought a DB up to head without
@@ -216,6 +221,84 @@ fn upsert_project(conn: &Connection, repo_root: &Path) -> Result<()> {
         ],
     )?;
     Ok(())
+}
+
+/// Resolve the machine home directory without a third-party crate
+/// (boring, offline). `$HOME` on Unix/macOS, `%USERPROFILE%` on
+/// Windows.
+fn home_dir() -> Result<PathBuf> {
+    for key in ["HOME", "USERPROFILE"] {
+        if let Some(val) = std::env::var_os(key)
+            && !val.is_empty()
+        {
+            return Ok(PathBuf::from(val));
+        }
+    }
+    Err(MemhubError::InvalidInput(
+        "cannot resolve home directory ($HOME / %USERPROFILE% unset); \
+         machine-global memory is unavailable"
+            .to_string(),
+    ))
+}
+
+/// `~/.memhub/global.sqlite`. The machine-global store path.
+pub fn global_db_path() -> Result<PathBuf> {
+    Ok(home_dir()?
+        .join(GLOBAL_MEMHUB_DIRNAME)
+        .join(GLOBAL_DB_FILENAME))
+}
+
+/// True iff the machine-global store file already exists on disk.
+/// Used to print a one-time disclosure on the first global write and
+/// to gate `open_global_if_exists`.
+pub fn global_store_exists() -> Result<bool> {
+    Ok(global_db_path()?.exists())
+}
+
+fn global_paths() -> Result<ProjectPaths> {
+    let db_path = global_db_path()?;
+    let memhub_dir = db_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(GLOBAL_MEMHUB_DIRNAME));
+    Ok(ProjectPaths {
+        repo_root: memhub_dir.clone(),
+        db_path,
+        // The global store has no per-machine TOML; recall behavior is
+        // governed entirely by the active repo's config. This path is
+        // a never-read placeholder so `ProjectContext` stays uniform.
+        config_path: memhub_dir.join("global.config.toml"),
+        memhub_dir,
+    })
+}
+
+/// Open (creating + migrating if necessary) the machine-global store.
+///
+/// Structurally identical to `open_project` but: fixed `~/.memhub`
+/// path, no config discovery, no metrics scrape. The returned
+/// `ProjectContext.config` is a defaulted placeholder — callers must
+/// drive retrieval/embedding behavior from the *active repo's* config,
+/// never from this field.
+pub fn open_global() -> Result<ProjectContext> {
+    let paths = global_paths()?;
+    let mut conn = open_connection(&paths.db_path)?;
+    let _ = migrations::apply_all(&mut conn)?;
+    upsert_project(&conn, &paths.repo_root)?;
+    Ok(ProjectContext {
+        config: ProjectConfig::default_for_repo_name("<global>"),
+        paths,
+        conn,
+    })
+}
+
+/// Open the machine-global store only if it already exists. Recall
+/// must not fail in the common repo-with-no-global case, so this
+/// returns `None` rather than creating the store.
+pub fn open_global_if_exists() -> Result<Option<ProjectContext>> {
+    if !global_store_exists()? {
+        return Ok(None);
+    }
+    Ok(Some(open_global()?))
 }
 
 pub fn discover_paths(start: &Path) -> Result<ProjectPaths> {

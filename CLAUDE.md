@@ -231,6 +231,47 @@ same file. Embeddings populate only in `hybrid` mode; `fts` mode
 ingests chunks + FTS and vector recall for docs starts after
 `memhub index rebuild`.
 
+## Machine-global memory
+
+Milestone 9 (design anchor:
+[docs/reference/memhub-prd-addendum-m9-machine-global-memory.md](docs/reference/memhub-prd-addendum-m9-machine-global-memory.md))
+adds an optional second store at `~/.memhub/global.sqlite`,
+structurally identical to a repo DB (same embedded migrations;
+`project_id = 1` is per-database, so zero new SQL migrations). It is
+the global-vs-repo `CLAUDE.md` idea made retrievable.
+
+Off by default and **per-repo**: a repo opts in with
+`memhub global enable` (mirrors `memhub metrics enable|disable`).
+`enabled` lives in `.memhub/config.toml` `[global]`; the tracked
+`.memhub/config.example.toml` baseline ships `false`. When disabled or
+the store is absent, recall is byte-identical to a pre-M9 build (the
+eval-regression guarantee).
+
+When enabled, `recall` merges global hits with repo hits; every hit
+carries `scope: "repo" | "global"`. **Precedence is
+provenance-tag-only** — recall never drops a global hit and does no
+automatic conflict resolution. Apply repo-overrides-global yourself
+(exactly as repo `CLAUDE.md` overrides global `CLAUDE.md`).
+
+Promotable to global: **facts, decisions, docs** only — machine/
+toolchain truths, standing engineering policy, broadly-applicable
+guides. Never global: tasks, rendered narrative, anything naming a
+repo-specific path/symbol. Routing is **user-gated and never
+agent-automatic** (one bad global write poisons every repo). Surfaces:
+`memhub global enable|disable|status`, `--global` on
+`fact|decision|doc add`, `fact|decision promote <id> --global` (CLI) ·
+`memhub.propose_fact|propose_decision(global=true)` (MCP — staged into
+the repo's `pending_writes`, durable only on `memhub review accept`;
+no `global` on MCP `doc_add`) · `/global` (skill). Global memory is
+**not** exported by `memhub export` (per-machine; re-add on another
+machine).
+
+Onboarding exposes two explicit toggles — `[retrieval] mode` (fts vs
+hybrid) and the machine-global store — plus two auto-followers with a
+manual override: `[retrieval] use_reranker` (auto-on with hybrid) and
+`[retrieval] include_docs_in_default` / its `[global]` mirror
+(auto-flips true on the first `doc add` / `doc add --global`).
+
 ## Current Build Focus
 
 The repository currently provides Milestone 1 scaffolding and a usable local CLI foundation. Future work should extend from these boundaries instead of replacing them.

@@ -33,6 +33,13 @@
 #                                       install opts in independently
 #                                       and the transcript paths are
 #                                       auto-resolved per machine)
+#   - global.enabled = false           (opt-in machine-global memory;
+#                                       each repo opts in independently
+#                                       via `memhub global enable`)
+#   - global.include_docs_in_default   (baseline false here; auto-flips
+#                                       to true in the local config on
+#                                       first `doc add --global` — do
+#                                       NOT commit a true value back)
 
 project_name = "memhub"
 auto_sync_md = false
@@ -128,3 +135,20 @@ claude_transcripts_dir = ''
 codex_transcripts_dir = ''
 tokenizer = 'tiktoken-cl100k'
 retention_days = 90
+
+# Machine-global memory (M9). Off by default and per-repo: a repo
+# opts in via `memhub global enable`, which also creates the shared
+# store at ~/.memhub/global.sqlite on first enable anywhere on the
+# machine. When enabled, recall in this repo merges hits from the
+# global store (tagged scope: "global"), and `--global` writes /
+# accepted global proposals are permitted. Disabled or store-absent
+# → recall is byte-identical to a pre-M9 build. The global store is
+# machine-wide and per-machine (never exported, never synced);
+# `enabled` is the per-repo consumption + write gate.
+# include_docs_in_default mirrors retrieval.include_docs_in_default
+# for the global corpus: canonical baseline false here, auto-flips to
+# true in the LOCAL config.toml on the first `doc add --global` — do
+# NOT commit a true value back.
+[global]
+enabled = false
+include_docs_in_default = false

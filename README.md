@@ -95,8 +95,8 @@ Please install memhub for me, then turn on hybrid recall.
    embedding model into the binary.
 3. Run `memhub --version` to verify.
 4. Copy the user-level skills so /wrap-up, /check-init, /init-project,
-   /recall, /reindex, /eval-recall, /doc, /metrics, and /viz all work
-   as slash commands:
+   /recall, /reindex, /eval-recall, /doc, /metrics, /viz, and /global
+   all work as slash commands:
 
        cp ~/src/memhub/templates/skills/claude/*.md ~/.claude/commands/
 
@@ -146,7 +146,8 @@ Please install memhub for me, then turn on hybrid recall.
        args = ["serve"]
 
 5. Copy the user-level skills so /wrap-up, /check-init, /init-project,
-   /recall, /reindex, /eval-recall, /doc, /metrics, and /viz all work:
+   /recall, /reindex, /eval-recall, /doc, /metrics, /viz, and /global
+   all work:
 
        cp -R ~/src/memhub/templates/skills/codex/* ~/.codex/skills/
 

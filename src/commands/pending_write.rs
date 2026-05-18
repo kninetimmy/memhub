@@ -7,6 +7,9 @@ use crate::MemhubError;
 use crate::Result;
 use crate::db;
 
+/// Stage an agent-proposed fact for the repo's review queue. The
+/// common (repo-targeted) case; M9 global proposals use
+/// [`propose_fact_scoped`].
 pub fn propose_fact(
     start: &Path,
     key: &str,
@@ -16,13 +19,43 @@ pub fn propose_fact(
     actor_raw: &str,
     provenance_json: &str,
 ) -> Result<i64> {
+    propose_fact_scoped(
+        start,
+        key,
+        value,
+        rationale,
+        false,
+        actor,
+        actor_raw,
+        provenance_json,
+    )
+}
+
+/// As [`propose_fact`], but `global = true` tags the staged row
+/// `target: "global"` so an accepted proposal lands in the
+/// machine-global store (M9). Still staged; the human `review accept`
+/// remains the only path to a durable global write.
+#[allow(clippy::too_many_arguments)]
+pub fn propose_fact_scoped(
+    start: &Path,
+    key: &str,
+    value: &str,
+    rationale: &str,
+    global: bool,
+    actor: &str,
+    actor_raw: &str,
+    provenance_json: &str,
+) -> Result<i64> {
     ensure_non_empty("fact key", key)?;
     ensure_non_empty("fact value", value)?;
     ensure_non_empty("fact rationale", rationale)?;
-    let payload = json!({
+    let mut payload = json!({
         "key": key,
         "value": value,
     });
+    if global {
+        payload["target"] = json!("global");
+    }
 
     insert_pending_write(
         start,
@@ -36,6 +69,8 @@ pub fn propose_fact(
     )
 }
 
+/// Stage an agent-proposed decision for the repo's review queue. M9
+/// global proposals use [`propose_decision_scoped`].
 pub fn propose_decision(
     start: &Path,
     title: &str,
@@ -44,11 +79,37 @@ pub fn propose_decision(
     actor_raw: &str,
     provenance_json: &str,
 ) -> Result<i64> {
+    propose_decision_scoped(
+        start,
+        title,
+        rationale,
+        false,
+        actor,
+        actor_raw,
+        provenance_json,
+    )
+}
+
+/// As [`propose_decision`], but `global = true` tags the staged row
+/// `target: "global"` (M9).
+#[allow(clippy::too_many_arguments)]
+pub fn propose_decision_scoped(
+    start: &Path,
+    title: &str,
+    rationale: &str,
+    global: bool,
+    actor: &str,
+    actor_raw: &str,
+    provenance_json: &str,
+) -> Result<i64> {
     ensure_non_empty("decision title", title)?;
     ensure_non_empty("decision rationale", rationale)?;
-    let payload = json!({
+    let mut payload = json!({
         "title": title,
     });
+    if global {
+        payload["target"] = json!("global");
+    }
 
     insert_pending_write(
         start,

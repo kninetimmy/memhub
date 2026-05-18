@@ -405,6 +405,7 @@ mod tests {
         RecallHit {
             rank,
             source_type: source_type.to_string(),
+            scope: "repo".to_string(),
             source_id,
             title: title.to_string(),
             body: body.to_string(),

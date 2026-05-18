@@ -73,6 +73,80 @@ pub fn add_in_tx(
     Ok((row_id, created))
 }
 
+#[derive(Debug)]
+pub struct GlobalFactOutcome {
+    pub id: i64,
+    pub created: bool,
+    /// True when this call created `~/.memhub/global.sqlite`.
+    pub store_created: bool,
+}
+
+/// Born-global fact write (M9). Requires `memhub global enable` in
+/// this repo. Embeds using the *repo's* retrieval mode so global rows
+/// stay consistent with how this machine recalls.
+pub fn add_global(
+    start: &Path,
+    key: &str,
+    value: &str,
+    source: &str,
+    actor: &str,
+) -> Result<GlobalFactOutcome> {
+    let mut gw = crate::commands::global::begin_write(start)?;
+    let tx = gw.ctx.conn.transaction()?;
+    let (id, created) = add_in_tx(&tx, key, value, source, actor, gw.mode)?;
+    tx.commit()?;
+    Ok(GlobalFactOutcome {
+        id,
+        created,
+        store_created: gw.store_created,
+    })
+}
+
+/// Copy an existing repo fact into the machine-global store (copy,
+/// not move — the repo row stays and still wins locally). Fact keys
+/// are UNIQUE per DB, so re-promoting a key updates the global fact.
+pub fn promote(start: &Path, id: i64, actor: &str) -> Result<GlobalFactOutcome> {
+    let repo = db::open_project(start)?;
+    crate::commands::global::ensure_enabled(&repo.config)?;
+    let mode = repo.config.retrieval.mode;
+
+    let (key, value, source): (String, String, String) = repo
+        .conn
+        .query_row(
+            "SELECT key, value, source FROM facts WHERE id = ?1 AND project_id = 1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .map_err(|err| match err {
+            rusqlite::Error::QueryReturnedNoRows => {
+                crate::MemhubError::InvalidInput(format!("no fact with id {id}"))
+            }
+            other => crate::MemhubError::from(other),
+        })?;
+
+    let repo_root = repo.paths.repo_root.display().to_string();
+    let store_created = !db::global_store_exists()?;
+
+    let mut g = db::open_global()?;
+    let tx = g.conn.transaction()?;
+    let (gid, created) = add_in_tx(&tx, &key, &value, &source, actor, mode)?;
+    db::log_write(
+        &tx,
+        actor,
+        "facts",
+        Some(gid),
+        "promote",
+        &format!("promote from {repo_root}"),
+    )?;
+    tx.commit()?;
+
+    Ok(GlobalFactOutcome {
+        id: gid,
+        created,
+        store_created,
+    })
+}
+
 pub fn list(start: &Path) -> Result<Vec<Fact>> {
     let ctx = db::open_project(start)?;
     let mut stmt = ctx.conn.prepare(

@@ -108,6 +108,12 @@ pub enum TopLevelCommand {
         #[command(subcommand)]
         command: MetricsCommand,
     },
+    /// Machine-global memory: opt this repo in/out and inspect the
+    /// shared `~/.memhub/global.sqlite` store (M9).
+    Global {
+        #[command(subcommand)]
+        command: GlobalCommand,
+    },
     Recall {
         query: String,
         #[arg(long, value_enum, value_name = "TYPE")]
@@ -192,6 +198,26 @@ pub enum MetricsCommand {
     /// Explicitly run the retention pruner and report how many rows were
     /// deleted.
     Prune {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum GlobalCommand {
+    /// Opt this repo into machine-global memory; create the store on
+    /// first enable anywhere on the machine.
+    Enable {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Opt this repo back out. Non-destructive; the store is kept.
+    Disable {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show enablement, store path, schema version, and row counts.
+    Status {
         #[arg(long)]
         json: bool,
     },
@@ -398,6 +424,23 @@ pub enum FactCommand {
         value: String,
         #[arg(long, default_value = "user")]
         source: String,
+        /// Write to the machine-global store instead of this repo's
+        /// DB. Requires `memhub global enable` in this repo (M9).
+        #[arg(long)]
+        global: bool,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// Copy an existing repo fact into the machine-global store
+    /// (copy, not move — the repo row stays and still wins locally).
+    Promote {
+        id: i64,
+        /// Target the machine-global store. Required (the only
+        /// promotion target in M9).
+        #[arg(long)]
+        global: bool,
         #[arg(long)]
         json: bool,
         #[arg(long)]
@@ -417,6 +460,11 @@ pub enum DocCommand {
         /// the file name).
         #[arg(long)]
         title: Option<String>,
+        /// Ingest into the machine-global store (a broadly-applicable
+        /// guide visible to every repo). Requires `memhub global
+        /// enable` in this repo (M9).
+        #[arg(long)]
+        global: bool,
         #[arg(long)]
         json: bool,
         #[arg(long)]
@@ -456,6 +504,23 @@ pub enum DecisionCommand {
         summary: Option<String>,
         #[arg(long, default_value = "user")]
         source: String,
+        /// Write to the machine-global store instead of this repo's
+        /// DB. Requires `memhub global enable` in this repo (M9).
+        #[arg(long)]
+        global: bool,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// Copy an existing repo decision into the machine-global store
+    /// (copy, not move — the repo row stays and still wins locally).
+    Promote {
+        id: i64,
+        /// Target the machine-global store. Required (the only
+        /// promotion target in M9).
+        #[arg(long)]
+        global: bool,
         #[arg(long)]
         json: bool,
         #[arg(long)]
