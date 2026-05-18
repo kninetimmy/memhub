@@ -273,6 +273,45 @@ manual override: `[retrieval] use_reranker` (auto-on with hybrid) and
 `[retrieval] include_docs_in_default` / its `[global]` mirror
 (auto-flips true on the first `doc add` / `doc add --global`).
 
+## Machine-wide upgrade
+
+`memhub upgrade` (decision 96; resolves task 48, subsumes the
+recurring stale-PATH-binary problem) is the one dependable command to
+bring **every** memhub install on a machine to a coherent state after
+a code change — the binary on PATH, each known repo DB, and the global
+store — not just whichever repo you rebuilt from. Run it **from the
+memhub source repo**; it errors elsewhere.
+
+Flow: `cargo install --path . --force` → one-time, order-independent
+PATH-shadow fix (a regular-file `~/.local/bin/memhub` shadowing
+`~/.cargo/bin/memhub` is replaced **once** with a symlink so future
+installs always take effect; already-a-symlink is an idempotent no-op;
+a non-symlink shadow is replaced only after a y/N confirm or `--yes`,
+otherwise the manual `ln -sf` is printed) → **re-exec the freshly
+installed binary** for the migrate+verify pass so migrations run under
+new code → per-instance `ready/migrated/skipped/ERROR` table (`--json`
+available). `--dry-run` reports the plan and changes nothing.
+
+Instances are enumerated from a **self-maintaining registry**, never a
+filesystem scan: every `db::open_project` does a single guarded,
+debounced UPSERT into `known_projects` in `~/.memhub/global.sqlite`,
+but **only if that store already exists** — the common
+repo-with-no-global path pays one `stat`. A repo memhub has never
+opened since this landed is absent from the first run but
+self-migrates on its next open; seed it explicitly with `memhub
+upgrade --also <path>` (repeatable; also persists it). Migration
+`0015_known_projects` adds the table to the shared MIGRATIONS list; it
+is read only from the global store.
+
+Hard invariants: registry membership is **not** M9 global-memory
+opt-in — recall never reads `known_projects` and stays gated on each
+repo's own `[global] enabled` (a populated registry must not change
+recall output: the eval-regression guarantee, tested in
+`tests/upgrade_registry.rs`). `upgrade` migrates the global store only
+if it already exists; it never creates it (opting in stays the
+explicit `memhub global enable` choice). `known_projects` is
+machine-local and **not** exported by `memhub export`.
+
 ## Current Build Focus
 
 The repository currently provides Milestone 1 scaffolding and a usable local CLI foundation. Future work should extend from these boundaries instead of replacing them.

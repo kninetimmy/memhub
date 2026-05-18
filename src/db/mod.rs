@@ -1,4 +1,5 @@
 mod migrations;
+pub mod registry;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -143,6 +144,14 @@ pub fn open_project(start: &Path) -> Result<ProjectContext> {
     let _ = migrations::apply_all(&mut conn)?;
     upsert_project(&conn, &paths.repo_root)?;
 
+    // Self-maintaining machine-wide upgrade registry (decision 96).
+    // Best-effort, debounced, and a no-op unless a machine-global store
+    // already exists — never creates it, never fails the command, and
+    // (critically) never read by recall, so the M9 eval-regression
+    // guarantee holds: a populated `known_projects` cannot change recall
+    // output, which stays gated on this repo's `[global] enabled`.
+    registry::record_open_best_effort(&paths.repo_root, migrations::latest_version());
+
     // Opportunistic, gated, never-fails token-accounting scrape
     // (decision 74 component B, task #29). Off by default; a no-op
     // unless the user opted in via `memhub metrics enable`.
@@ -226,7 +235,7 @@ fn upsert_project(conn: &Connection, repo_root: &Path) -> Result<()> {
 /// Resolve the machine home directory without a third-party crate
 /// (boring, offline). `$HOME` on Unix/macOS, `%USERPROFILE%` on
 /// Windows.
-fn home_dir() -> Result<PathBuf> {
+pub fn home_dir() -> Result<PathBuf> {
     for key in ["HOME", "USERPROFILE"] {
         if let Some(val) = std::env::var_os(key)
             && !val.is_empty()
@@ -246,6 +255,26 @@ pub fn global_db_path() -> Result<PathBuf> {
     Ok(home_dir()?
         .join(GLOBAL_MEMHUB_DIRNAME)
         .join(GLOBAL_DB_FILENAME))
+}
+
+/// Read a DB's recorded schema version WITHOUT applying migrations.
+/// Used by `memhub upgrade --dry-run` to preview which instances are
+/// behind head without the side effect of bringing them to head.
+/// Returns `Ok(None)` when the file is missing or has no `projects`
+/// row yet.
+pub fn probe_schema_version(db_path: &Path) -> Result<Option<String>> {
+    if !db_path.exists() {
+        return Ok(None);
+    }
+    let conn = Connection::open(db_path)?;
+    let v: Option<String> = conn
+        .query_row(
+            "SELECT schema_version FROM projects WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+    Ok(v)
 }
 
 /// True iff the machine-global store file already exists on disk.

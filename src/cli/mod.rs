@@ -1272,6 +1272,24 @@ pub fn run(cli: Cli) -> Result<()> {
                 }
             }
         },
+        TopLevelCommand::Upgrade {
+            also,
+            dry_run,
+            yes,
+            finish,
+            json: as_json,
+        } => {
+            commands::upgrade::run(
+                &cwd,
+                commands::upgrade::UpgradeArgs {
+                    also,
+                    dry_run,
+                    json: as_json,
+                    finish,
+                    yes,
+                },
+            )?;
+        }
         TopLevelCommand::Recall {
             query,
             source_type,

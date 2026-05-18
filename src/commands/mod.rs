@@ -22,6 +22,7 @@ pub mod stats;
 pub mod status;
 pub mod sync_md;
 pub mod task;
+pub mod upgrade;
 
 use crate::{MemhubError, Result};
 

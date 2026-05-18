@@ -114,6 +114,30 @@ pub enum TopLevelCommand {
         #[command(subcommand)]
         command: GlobalCommand,
     },
+    /// Rebuild + install memhub and bring every memhub instance on this
+    /// machine (each known repo DB + the global store) to head, with a
+    /// one-time fix for the `~/.local/bin` PATH shadow. Run from the
+    /// memhub source repo.
+    Upgrade {
+        /// Also include (and remember) this repo root even if memhub has
+        /// never opened it. Repeatable. The registry bootstrap hatch.
+        #[arg(long, value_name = "PATH")]
+        also: Vec<PathBuf>,
+        /// Report what would happen — no install, no symlink change, no
+        /// migration.
+        #[arg(long)]
+        dry_run: bool,
+        /// Assume "yes" to the prompt before replacing a non-symlink
+        /// `~/.local/bin/memhub` shadow.
+        #[arg(long)]
+        yes: bool,
+        /// Internal: set on the re-exec'd freshly installed binary to
+        /// run only the migrate + verify pass.
+        #[arg(long, hide = true)]
+        finish: bool,
+        #[arg(long)]
+        json: bool,
+    },
     Recall {
         query: String,
         #[arg(long, value_enum, value_name = "TYPE")]
