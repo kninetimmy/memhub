@@ -68,8 +68,14 @@ fn registry_and_eval_regression_guarantee() {
 
     let repo = tempdir().expect("repo");
     init::run(repo.path()).expect("init");
-    fact::add(repo.path(), "registry-probe", "alpha-value", "user", "cli:user")
-        .expect("seed fact");
+    fact::add(
+        repo.path(),
+        "registry-probe",
+        "alpha-value",
+        "user",
+        "cli:user",
+    )
+    .expect("seed fact");
 
     // --- baseline recall with NO global store ------------------------
     assert!(
@@ -127,8 +133,8 @@ fn registry_and_eval_regression_guarantee() {
 
     // --- explicit register() adds an --also-style path --------------
     let other = tempdir().expect("other repo");
-    let added = db::registry::register(other.path(), db::latest_schema_version())
-        .expect("register");
+    let added =
+        db::registry::register(other.path(), db::latest_schema_version()).expect("register");
     assert!(added, "register persists when the global store exists");
     assert_eq!(
         db::registry::list_known().expect("list3").len(),
@@ -151,9 +157,8 @@ fn registry_and_eval_regression_guarantee() {
     assert!(
         dead.iter().any(|p| p == &ghost_path
             || p.canonicalize().ok() == ghost_path.canonicalize().ok()
-            || p.to_string_lossy().contains(
-                ghost_path.file_name().unwrap().to_str().unwrap()
-            )),
+            || p.to_string_lossy()
+                .contains(ghost_path.file_name().unwrap().to_str().unwrap())),
         "the deleted ghost repo must be detected as a dead root"
     );
     let removed = db::registry::prune_dead().expect("prune");
@@ -162,9 +167,10 @@ fn registry_and_eval_regression_guarantee() {
         !db::registry::list_known()
             .expect("list5")
             .iter()
-            .any(|kp| kp.root_path.to_string_lossy().contains(
-                ghost_path.file_name().unwrap().to_str().unwrap()
-            )),
+            .any(|kp| kp
+                .root_path
+                .to_string_lossy()
+                .contains(ghost_path.file_name().unwrap().to_str().unwrap())),
         "ghost row is gone after prune"
     );
 

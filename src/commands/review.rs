@@ -91,6 +91,10 @@ pub fn accept(start: &Path, id: i64, actor: &str) -> Result<AcceptOutcome> {
     // accept can consult [global] config + open the global DB without
     // a borrow conflict.
     let config = ctx.config.clone();
+    // Same reason: the repo root keys the global accept-marker
+    // (replay-safe global accept) and is needed after the repo tx
+    // takes ctx.conn.
+    let repo_root = ctx.paths.repo_root.clone();
     // Immediate behavior acquires the write lock at BEGIN so concurrent acceptors
     // serialize at the lock instead of both racing past the status check.
     let tx = ctx
@@ -118,12 +122,16 @@ pub fn accept(start: &Path, id: i64, actor: &str) -> Result<AcceptOutcome> {
     // pending_writes row + status update stay in the repo DB (it is the
     // repo's review queue). The global durable write commits first; if
     // the subsequent repo-side status update fails the proposal simply
-    // stays `pending` (safe to re-accept) rather than being lost.
+    // stays `pending` rather than being lost. Re-accepting is then
+    // safe because the global write commits an idempotency marker in
+    // the same transaction (see `write_durable_global`) — a replay
+    // returns the already-written row instead of duplicating it.
     let target_global = payload.get("target").and_then(Value::as_str) == Some("global");
 
     let (durable_id, durable_table) = if target_global {
         write_durable_global(
             &config,
+            &repo_root,
             id,
             &pending.kind,
             &payload,
@@ -336,8 +344,10 @@ fn missing_payload_field(id: i64, field: &str) -> MemhubError {
 /// status update can follow. Requires the accepting repo to still
 /// have `[global] enabled` — accepting a global proposal is itself a
 /// machine-global write and obeys the same per-repo gate.
+#[allow(clippy::too_many_arguments)]
 fn write_durable_global(
     config: &crate::config::ProjectConfig,
+    repo_root: &Path,
     pending_id: i64,
     kind: &str,
     payload: &Value,
@@ -349,6 +359,30 @@ fn write_durable_global(
     let mode = config.retrieval.mode;
     let mut g = db::open_global()?;
     let gtx = g.conn.transaction()?;
+
+    // Replay guard. A `(repo_key, pending_id)` marker is committed in
+    // THIS transaction alongside the durable write below, so if a prior
+    // accept committed the global side but lost the repo-side status
+    // flip (crash / repo-DB I/O error in the cross-DB window), the
+    // proposal is still `pending` and gets re-accepted. Without this,
+    // re-accepting a global *decision* would insert a second global row
+    // (facts are protected by key upsert; decisions have no natural
+    // key) and a bad global write poisons every repo. On a hit we
+    // return the already-written row and let the caller retry only the
+    // repo-side update.
+    let repo_key = crate::db::registry::canonical(repo_root);
+    if let Some((table_str, durable_id)) = gtx
+        .query_row(
+            "SELECT durable_table, durable_id
+             FROM global_accept_markers
+             WHERE repo_key = ?1 AND pending_id = ?2",
+            params![repo_key, pending_id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+        )
+        .optional()?
+    {
+        return Ok((durable_id, static_durable_table(&table_str)?));
+    }
 
     let (durable_id, durable_table): (i64, &'static str) = match kind {
         "fact" => {
@@ -387,6 +421,16 @@ fn write_durable_global(
         }
     };
 
+    // Idempotency marker, committed atomically with the durable row
+    // above. After this commit a replayed accept takes the early
+    // return at the top of this function instead of writing again.
+    gtx.execute(
+        "INSERT INTO global_accept_markers
+            (repo_key, pending_id, durable_table, durable_id)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![repo_key, pending_id, durable_table, durable_id],
+    )?;
+
     db::log_write(
         &gtx,
         actor,
@@ -397,6 +441,20 @@ fn write_durable_global(
     )?;
     gtx.commit()?;
     Ok((durable_id, durable_table))
+}
+
+/// Map a marker's stored `durable_table` string back to the
+/// `&'static str` the accept path returns. Only `facts`/`decisions`
+/// are ever written as global durable rows, so anything else is a
+/// corrupt marker.
+fn static_durable_table(name: &str) -> Result<&'static str> {
+    match name {
+        "facts" => Ok("facts"),
+        "decisions" => Ok("decisions"),
+        other => Err(MemhubError::InvalidInput(format!(
+            "global accept marker has unrecognized durable_table '{other}'"
+        ))),
+    }
 }
 
 /// Compose the durable `source` value for a pending write being accepted.

@@ -35,7 +35,12 @@ pub struct KnownProject {
 /// Canonicalize when the path exists so the `root_path` primary key
 /// dedups symlinked / relative spellings of the same repo; fall back to
 /// the path as-given otherwise.
-fn canonical(path: &Path) -> String {
+///
+/// `pub(crate)` because the global accept-marker (replay-safe global
+/// pending-write accept) must key a repo by the *same* canonical form
+/// the registry uses — both are machine-global, repo-keyed tables that
+/// have to agree on what "this repo" is.
+pub(crate) fn canonical(path: &Path) -> String {
     path.canonicalize()
         .unwrap_or_else(|_| path.to_path_buf())
         .to_string_lossy()
@@ -127,10 +132,7 @@ fn upsert_now(conn: &Connection, root_path: &str, schema: &str) -> Result<()> {
 /// open.
 pub fn record_open_best_effort(repo_root: &Path, schema_version: &str) {
     if let Err(e) = record_open_inner(repo_root, schema_version) {
-        debug!(
-            "registry: skipped recording {} ({e})",
-            repo_root.display()
-        );
+        debug!("registry: skipped recording {} ({e})", repo_root.display());
     }
 }
 
@@ -191,7 +193,9 @@ pub fn list_known() -> Result<Vec<KnownProject>> {
 /// row whose repo DB is gone is dead weight (deleted repo, vanished
 /// throwaway clone) and should be pruned.
 fn root_is_live(root: &Path) -> bool {
-    root.join(super::MEMHUB_DIR).join(super::DB_FILENAME).exists()
+    root.join(super::MEMHUB_DIR)
+        .join(super::DB_FILENAME)
+        .exists()
 }
 
 /// Registry roots that no longer have a memhub project on disk. Used by

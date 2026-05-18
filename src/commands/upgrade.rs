@@ -201,16 +201,17 @@ fn finish_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
 
     let mut roots: Vec<PathBuf> = Vec::new();
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let push = |p: &Path, roots: &mut Vec<PathBuf>, seen: &mut std::collections::BTreeSet<String>| {
-        let key = p
-            .canonicalize()
-            .unwrap_or_else(|_| p.to_path_buf())
-            .to_string_lossy()
-            .to_string();
-        if seen.insert(key) {
-            roots.push(p.to_path_buf());
-        }
-    };
+    let push =
+        |p: &Path, roots: &mut Vec<PathBuf>, seen: &mut std::collections::BTreeSet<String>| {
+            let key = p
+                .canonicalize()
+                .unwrap_or_else(|_| p.to_path_buf())
+                .to_string_lossy()
+                .to_string();
+            if seen.insert(key) {
+                roots.push(p.to_path_buf());
+            }
+        };
 
     push(cwd, &mut roots, &mut seen);
     for kp in db::registry::list_known()? {
@@ -632,12 +633,7 @@ fn describe_shadow(cargo_bin: &Path) -> Result<String> {
 fn emit(reports: &[InstanceReport], pruned: usize, skills: &[SkillSync], as_json: bool) {
     let ready = reports
         .iter()
-        .filter(|r| {
-            matches!(
-                r.status,
-                InstanceStatus::Ready | InstanceStatus::Migrated
-            )
-        })
+        .filter(|r| matches!(r.status, InstanceStatus::Ready | InstanceStatus::Migrated))
         .count();
     let total = reports.len();
 
@@ -953,24 +949,22 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 // ---------------------------------------------------------------------
 
 fn bin_name() -> &'static str {
-    if cfg!(windows) { "memhub.exe" } else { "memhub" }
+    if cfg!(windows) {
+        "memhub.exe"
+    } else {
+        "memhub"
+    }
 }
 
 fn cargo_bin_path() -> Result<PathBuf> {
     if let Some(h) = std::env::var_os("CARGO_HOME").filter(|v| !v.is_empty()) {
         return Ok(PathBuf::from(h).join("bin").join(bin_name()));
     }
-    Ok(db::home_dir()?
-        .join(".cargo")
-        .join("bin")
-        .join(bin_name()))
+    Ok(db::home_dir()?.join(".cargo").join("bin").join(bin_name()))
 }
 
 fn local_bin_shadow() -> Result<PathBuf> {
-    Ok(db::home_dir()?
-        .join(".local")
-        .join("bin")
-        .join(bin_name()))
+    Ok(db::home_dir()?.join(".local").join("bin").join(bin_name()))
 }
 
 fn same_file(a: &Path, b: &Path) -> bool {

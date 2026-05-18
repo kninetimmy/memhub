@@ -200,6 +200,64 @@ fn machine_global_memory_end_to_end() {
         "an accepted global proposal must NOT land in the repo DB"
     );
 
+    // --- replay-safe global accept (decision; no key upsert) ---------
+    // Regression: a global decision proposal accepted once, where the
+    // repo-side status flip is then lost (crash / repo-DB error in the
+    // cross-DB commit window), must NOT insert a second global decision
+    // when re-accepted. Facts are protected by key upsert; decisions
+    // have no natural key, so this is the path that previously
+    // duplicated and poisoned every repo.
+    let dpid = pending_write::propose_decision_scoped(
+        repo_b.path(),
+        "global decision title",
+        "global decision rationale",
+        true, // global
+        "codex",
+        "openai-codex",
+        "{\"source\":\"mcp\"}",
+    )
+    .expect("propose global decision");
+    let dec_before = global::status(repo_b.path())
+        .expect("status b dec0")
+        .decision_count;
+    review::accept(repo_b.path(), dpid, "cli:user").expect("accept global decision");
+    let dec_after = global::status(repo_b.path())
+        .expect("status b dec1")
+        .decision_count;
+    assert_eq!(
+        dec_after,
+        dec_before + 1,
+        "accepting a global decision proposal adds exactly one global decision"
+    );
+
+    // Simulate the post-crash state: the global durable write + its
+    // idempotency marker committed, but the repo-side status flip did
+    // not — so the proposal is still `pending` in the repo DB.
+    let repo_db = repo_b.path().join(".memhub").join("project.sqlite");
+    let conn = rusqlite::Connection::open(&repo_db).expect("open repo db");
+    conn.execute(
+        "UPDATE pending_writes SET status = 'pending', reviewed_at = NULL WHERE id = ?1",
+        rusqlite::params![dpid],
+    )
+    .expect("revert repo-side status to pending");
+    drop(conn);
+
+    // Re-accept. The marker is detected, so no second durable row is
+    // written, and the repo-side flip now succeeds.
+    review::accept(repo_b.path(), dpid, "cli:user").expect("replayed accept must succeed");
+    assert_eq!(
+        global::status(repo_b.path())
+            .expect("status b dec2")
+            .decision_count,
+        dec_after,
+        "replaying an interrupted global-decision accept must NOT duplicate the decision"
+    );
+    assert_eq!(
+        review::show(repo_b.path(), dpid).expect("show dpid").status,
+        "accepted",
+        "the replayed accept must still flip the repo-side proposal to accepted"
+    );
+
     // --- disable → recall is pre-M9 (no global merge) ----------------
     global::disable(repo_b.path()).expect("disable b");
     let d = fts_recall(repo_b.path(), "alpha-globalvalue");
