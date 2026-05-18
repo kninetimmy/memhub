@@ -1278,6 +1278,8 @@ pub fn run(cli: Cli) -> Result<()> {
             yes,
             no_skills,
             finish,
+            staged,
+            allow_self_stage,
             json: as_json,
         } => {
             commands::upgrade::run(
@@ -1287,6 +1289,8 @@ pub fn run(cli: Cli) -> Result<()> {
                     dry_run,
                     json: as_json,
                     finish,
+                    staged,
+                    allow_self_stage,
                     yes,
                     no_skills,
                 },

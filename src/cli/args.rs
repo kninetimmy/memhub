@@ -140,6 +140,16 @@ pub enum TopLevelCommand {
         /// run only the migrate + verify pass.
         #[arg(long, hide = true)]
         finish: bool,
+        /// Internal: set on the Windows staged temp copy so it runs the
+        /// real orchestration instead of recursing into another stage.
+        #[arg(long, hide = true)]
+        staged: bool,
+        /// Windows only: permit the staged self-relaunch when no TTY is
+        /// attached (CI/scripts). The invoking shell will receive exit
+        /// code 0 regardless of outcome — read `~/.memhub/last_upgrade.json`
+        /// or the final `memhub upgrade:` line for the real result.
+        #[arg(long)]
+        allow_self_stage: bool,
         #[arg(long)]
         json: bool,
     },

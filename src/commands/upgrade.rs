@@ -10,6 +10,28 @@
 //! phase enumerates instances from the self-maintaining registry
 //! (never a filesystem scan), brings each repo DB + the global store to
 //! head, smoke-tests recall, and prints a per-instance table.
+//!
+//! ## Windows self-replace (the staging hop)
+//!
+//! The two-phase design above assumes the orchestrating process can run
+//! `cargo install` to replace *its own running binary* and then re-exec
+//! the result. That holds on Unix (a running image can be `unlink`'d /
+//! `rename`'d over) but **not on Windows**, where the image of a running
+//! `.exe` is locked. cargo install must overwrite both files in the
+//! conflict set — `target\release\memhub.exe` (its build artifact) and
+//! `~\.cargo\bin\memhub.exe` (its install dest) — and the user always
+//! invokes one of them.
+//!
+//! Fix: an OS-gated pre-hop. On Windows, if the running image is in the
+//! conflict set, copy ourselves to a `%TEMP%` shim, re-launch that with
+//! `--staged`, and exit so the original releases its image lock. The
+//! staged copy (image ∉ conflict set) then runs the unchanged
+//! orchestration. The original cannot wait and propagate the real exit
+//! code (waiting keeps its image locked), so the staged run records the
+//! outcome to `~/.memhub/last_upgrade.json` and a final `memhub
+//! upgrade:` line. Interactive runs stage automatically; non-interactive
+//! runs (CI) require `--allow-self-stage` so the exit-code loss is never
+//! silent. Unix is untouched — `stage_decision` returns `Orchestrate`.
 
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -32,6 +54,13 @@ pub struct UpgradeArgs {
     /// Hidden: set on the re-exec'd child so it runs only the migrate +
     /// verify pass and does not recurse into install / re-exec.
     pub finish: bool,
+    /// Hidden: set on the Windows staged temp copy so it runs the real
+    /// orchestration instead of recursing into another staging hop.
+    pub staged: bool,
+    /// Windows only: permit the staged self-relaunch with no TTY
+    /// attached (CI/scripts). Without it, a non-interactive run that
+    /// would need staging fails loudly instead of silently returning 0.
+    pub allow_self_stage: bool,
     /// Skip the confirmation prompt before replacing a non-symlink
     /// `~/.local/bin/memhub` shadow.
     pub yes: bool,
@@ -50,10 +79,256 @@ const SKILLS_ENV: &str = "MEMHUB_UPGRADE_SKILLS_JSON";
 
 pub fn run(cwd: &Path, args: UpgradeArgs) -> Result<()> {
     if args.finish {
-        finish_phase(cwd, &args)
-    } else {
-        orchestrate_phase(cwd, &args)
+        return finish_phase(cwd, &args);
     }
+
+    // Windows-only self-replace gate. Best-effort sweep first so an
+    // earlier run's abandoned shim never accumulates.
+    if cfg!(windows) && !args.staged {
+        sweep_stale_staging();
+    }
+    let in_conflict = cfg!(windows)
+        && !args.staged
+        && !args.dry_run
+        && current_exe_in_conflict_set(cwd);
+    match stage_decision(
+        cfg!(windows),
+        args.staged,
+        args.dry_run,
+        in_conflict,
+        std::io::stdin().is_terminal(),
+        args.allow_self_stage,
+    ) {
+        StageDecision::Orchestrate => orchestrate_phase(cwd, &args),
+        StageDecision::Stage => stage_and_relaunch(cwd, &args),
+        StageDecision::RefuseNeedsFlag => Err(MemhubError::InvalidInput(
+            "memhub upgrade must replace its own running binary, which \
+             Windows forbids while it is executing. No TTY was detected \
+             (CI/script context), so the staged relaunch is not started \
+             automatically. Re-run with --allow-self-stage to permit it; \
+             note the invoking shell will then receive exit code 0 \
+             regardless of outcome — read ~/.memhub/last_upgrade.json or \
+             the final 'memhub upgrade:' line for the real result."
+                .to_string(),
+        )),
+    }
+}
+
+/// What `run()` should do once the OS / invocation facts are known.
+/// Pure and total so the Windows self-replace policy is unit-testable
+/// without spawning processes or touching the real filesystem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StageDecision {
+    /// Run the orchestration in this process (every Unix run; Windows
+    /// runs whose image is already safe, e.g. the staged copy).
+    Orchestrate,
+    /// Copy self to a temp shim and relaunch it (`--staged`).
+    Stage,
+    /// Would need staging but it is non-interactive and not opted in.
+    RefuseNeedsFlag,
+}
+
+fn stage_decision(
+    is_windows: bool,
+    staged: bool,
+    dry_run: bool,
+    in_conflict: bool,
+    interactive: bool,
+    allow_self_stage: bool,
+) -> StageDecision {
+    // Unix never stages; the staged child, dry-run, and any run whose
+    // image is not in cargo's conflict set orchestrate directly.
+    if !is_windows || staged || dry_run || !in_conflict {
+        return StageDecision::Orchestrate;
+    }
+    if interactive || allow_self_stage {
+        StageDecision::Stage
+    } else {
+        StageDecision::RefuseNeedsFlag
+    }
+}
+
+// ---------------------------------------------------------------------
+// Windows self-replace staging hop
+// ---------------------------------------------------------------------
+
+/// The two files `cargo install --path . --force` overwrites: its build
+/// artifact under the source repo's `target/release/`, and its install
+/// destination in the cargo bin. The orchestrator's own image must be
+/// neither.
+fn conflict_set(cwd: &Path) -> Vec<PathBuf> {
+    let mut set = vec![cwd.join("target").join("release").join(bin_name())];
+    if let Ok(cb) = cargo_bin_path() {
+        set.push(cb);
+    }
+    set
+}
+
+/// Pure membership test (canonicalizing so a symlinked cargo bin or a
+/// relative `target/` still matches). Split out for unit tests.
+fn path_in_conflict_set(exe: &Path, set: &[PathBuf]) -> bool {
+    set.iter().any(|p| same_file(exe, p))
+}
+
+fn current_exe_in_conflict_set(cwd: &Path) -> bool {
+    match std::env::current_exe() {
+        Ok(exe) => path_in_conflict_set(&exe, &conflict_set(cwd)),
+        // If we cannot resolve our own path, assume the worst (in
+        // conflict) so we stage rather than risk the self-replace lock.
+        Err(_) => true,
+    }
+}
+
+/// Copy this binary to a `%TEMP%` shim, relaunch it with `--staged`
+/// inheriting this console, and exit so the original releases its image
+/// lock. The shim image is not in cargo's conflict set, so the staged
+/// run's `cargo install` can replace both files freely (mirrors the
+/// proven manual `%TEMP%` workaround). We cannot wait on the child —
+/// waiting keeps our image locked — so the staged run owns the outcome
+/// reporting (`~/.memhub/last_upgrade.json` + final line).
+fn stage_and_relaunch(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
+    let src = std::env::current_exe().map_err(|e| {
+        MemhubError::InvalidInput(format!("cannot resolve current exe to stage: {e}"))
+    })?;
+    let shim = std::env::temp_dir().join(format!(
+        "memhub-upgrade-{}-{}.exe",
+        std::process::id(),
+        now_stamp()
+    ));
+    std::fs::copy(&src, &shim).map_err(|e| MemhubError::InvalidInput(format!(
+        "could not stage upgrade binary to {}: {e}",
+        shim.display()
+    )))?;
+
+    let mut cmd = Command::new(&shim);
+    cmd.arg("upgrade")
+        .arg("--staged")
+        .current_dir(cwd)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    if args.yes {
+        cmd.arg("--yes");
+    }
+    if args.no_skills {
+        cmd.arg("--no-skills");
+    }
+    if args.json {
+        cmd.arg("--json");
+    }
+    for p in &args.also {
+        cmd.arg("--also").arg(p);
+    }
+
+    // Break away from any job object the terminal placed us in so the
+    // staged child survives our imminent exit. Harmless if not jobbed;
+    // if the job forbids breakaway, fall back to a plain spawn.
+    #[cfg(windows)]
+    let spawned = {
+        use std::os::windows::process::CommandExt;
+        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+        cmd.creation_flags(CREATE_BREAKAWAY_FROM_JOB)
+            .spawn()
+            .or_else(|_| Command::new(&shim)
+                .arg("upgrade")
+                .arg("--staged")
+                .current_dir(cwd)
+                .stdin(Stdio::inherit())
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .spawn())
+    };
+    #[cfg(not(windows))]
+    let spawned = cmd.spawn();
+
+    spawned.map_err(|e| MemhubError::ExternalCommand {
+        command: format!("{} upgrade --staged", shim.display()),
+        stderr: format!("could not launch staged upgrade copy ({e})"),
+    })?;
+
+    println!(
+        "==> Windows: relaunched a staged copy ({}) so cargo can replace \
+         this binary. This shell returns now; watch the staged run's \
+         output and its final 'memhub upgrade:' line, or read \
+         ~/.memhub/last_upgrade.json.",
+        shim.display()
+    );
+    // Do NOT wait: staying alive keeps our image locked and re-creates
+    // the very bug we are fixing. Exit 0 so the lock releases.
+    std::process::exit(0);
+}
+
+/// Remove abandoned staged shims (`memhub-upgrade-*.exe`) older than an
+/// hour from the temp dir. Hour guard avoids racing a concurrent
+/// upgrade; the live shim of the current staged run stays locked and is
+/// simply skipped (best-effort, never fatal).
+fn sweep_stale_staging() {
+    let Ok(rd) = std::fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+    let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    for entry in rd.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !(name.starts_with("memhub-upgrade-") && name.ends_with(".exe")) {
+            continue;
+        }
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .map(|m| m < cutoff)
+            .unwrap_or(false);
+        if old {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// Compact monotonic-ish stamp for unique shim names within a process.
+fn now_stamp() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
+}
+
+/// Run `cargo install --path . --force`, streaming cargo's own output.
+/// When `staged` (Windows staged run), retry a failed attempt a few
+/// times with backoff: the only expected transient is the parent's
+/// image lock lingering past its exit, and cargo's cache makes retries
+/// cheap. Non-staged / Unix keeps the original single-shot fail-fast.
+fn cargo_install_with_retry(cwd: &Path, staged: bool) -> Result<()> {
+    let attempts = if staged { 3 } else { 1 };
+    for attempt in 1..=attempts {
+        let status = Command::new("cargo")
+            .arg("install")
+            .arg("--path")
+            .arg(".")
+            .arg("--force")
+            .current_dir(cwd)
+            .status()
+            .map_err(|e| MemhubError::ExternalCommand {
+                command: "cargo install --path . --force".to_string(),
+                stderr: format!("could not launch cargo ({e}); is it on PATH?"),
+            })?;
+        if status.success() {
+            return Ok(());
+        }
+        if attempt < attempts {
+            eprintln!(
+                "    cargo install failed (attempt {attempt}/{attempts}); the \
+                 prior binary may still be releasing its Windows image \
+                 lock — retrying in {attempt}s…"
+            );
+            std::thread::sleep(std::time::Duration::from_secs(attempt as u64));
+        }
+    }
+    Err(MemhubError::ExternalCommand {
+        command: "cargo install --path . --force".to_string(),
+        stderr: format!(
+            "build/install failed after {attempts} attempt(s); not migrating instances"
+        ),
+    })
 }
 
 // ---------------------------------------------------------------------
@@ -69,25 +344,12 @@ fn orchestrate_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
     }
 
     // 1. Rebuild + install. Stream cargo's own output; abort on failure
-    //    rather than half-upgrade.
+    //    rather than half-upgrade. On a Windows staged run the original
+    //    process may still be releasing its image lock for a few ms, so
+    //    retry: cargo's incremental cache makes a retry cheap (a lock
+    //    failure skips compile entirely and just re-attempts the move).
     println!("==> cargo install --path . --force");
-    let status = Command::new("cargo")
-        .arg("install")
-        .arg("--path")
-        .arg(".")
-        .arg("--force")
-        .current_dir(cwd)
-        .status()
-        .map_err(|e| MemhubError::ExternalCommand {
-            command: "cargo install --path . --force".to_string(),
-            stderr: format!("could not launch cargo ({e}); is it on PATH?"),
-        })?;
-    if !status.success() {
-        return Err(MemhubError::ExternalCommand {
-            command: "cargo install --path . --force".to_string(),
-            stderr: "build/install failed; not migrating instances".to_string(),
-        });
-    }
+    cargo_install_with_retry(cwd, args.staged)?;
     println!("    installed -> {}", cargo_bin.display());
 
     // 2. One-time, order-independent PATH-shadow fix (closes task 39).
@@ -237,13 +499,48 @@ fn finish_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
 
     emit(&reports, pruned, &skills, args.json);
 
-    if reports
+    let failed: Vec<&str> = reports
         .iter()
-        .any(|r| matches!(r.status, InstanceStatus::Error(_)))
-    {
+        .filter(|r| matches!(r.status, InstanceStatus::Error(_)))
+        .map(|r| r.label.as_str())
+        .collect();
+    let ok = failed.is_empty();
+    let summary = if ok {
+        format!("{} instance(s) at head", reports.len())
+    } else {
+        format!("{} instance(s) failed: {}", failed.len(), failed.join(", "))
+    };
+
+    // The invoking shell may only ever see the orchestrator's exit(0)
+    // (Windows staged relaunch can't propagate a real code), so the
+    // outcome must be legible without the exit status: a durable status
+    // file plus an unambiguous final line. Best-effort, never fatal.
+    write_last_upgrade(ok, &summary);
+    if ok {
+        println!("memhub upgrade: SUCCESS — {summary}");
+    } else {
+        println!("memhub upgrade: FAILED — {summary}");
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// Record the upgrade outcome to `~/.memhub/last_upgrade.json` so a
+/// non-interactive caller (whose shell got the staged relaunch's
+/// exit 0) can still poll the real result. Best-effort: a write failure
+/// must not turn a good upgrade into a reported failure.
+fn write_last_upgrade(ok: bool, summary: &str) {
+    let Ok(home) = db::home_dir() else { return };
+    let dir = home.join(".memhub");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let payload = json!({
+        "ok": ok,
+        "summary": summary,
+        "unix_ms": now_stamp(),
+    });
+    let _ = std::fs::write(dir.join("last_upgrade.json"), payload.to_string());
 }
 
 fn verify_repo(root: &Path) -> InstanceReport {
@@ -570,6 +867,12 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
     }
 
     println!("memhub upgrade --dry-run (no changes made)");
+    if cfg!(windows) && current_exe_in_conflict_set(cwd) {
+        println!(
+            "  windows:      a real run would relaunch a staged %TEMP% \
+             copy (auto if a TTY is attached, else needs --allow-self-stage)"
+        );
+    }
     println!("  would run:    cargo install --path . --force");
     println!("  install ->    {}", cargo_bin.display());
     println!("  PATH shadow:  {shadow_state}");
@@ -985,4 +1288,101 @@ fn abbrev(path: &Path) -> String {
         return format!("~/{}", rest.display());
     }
     path.display().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Decision matrix for the Windows self-replace gate. The five-arg
+    // tuple is (is_windows, staged, dry_run, in_conflict, interactive,
+    // allow_self_stage) -> expected.
+    #[test]
+    fn unix_never_stages() {
+        // No combination on a non-Windows host should ever stage.
+        for &staged in &[false, true] {
+            for &dry in &[false, true] {
+                for &conflict in &[false, true] {
+                    for &tty in &[false, true] {
+                        for &allow in &[false, true] {
+                            assert_eq!(
+                                stage_decision(false, staged, dry, conflict, tty, allow),
+                                StageDecision::Orchestrate,
+                                "unix must orchestrate (staged={staged} dry={dry} \
+                                 conflict={conflict} tty={tty} allow={allow})"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn windows_staged_child_orchestrates() {
+        // The relaunched copy carries --staged and must not re-stage,
+        // even though its invocation still looks in-conflict.
+        assert_eq!(
+            stage_decision(true, true, false, true, true, false),
+            StageDecision::Orchestrate
+        );
+    }
+
+    #[test]
+    fn windows_dry_run_never_stages() {
+        assert_eq!(
+            stage_decision(true, false, true, true, true, true),
+            StageDecision::Orchestrate
+        );
+    }
+
+    #[test]
+    fn windows_safe_image_orchestrates_directly() {
+        // current_exe not in cargo's conflict set (e.g. already a temp
+        // shim, or run from an arbitrary path) => no staging needed.
+        assert_eq!(
+            stage_decision(true, false, false, false, false, false),
+            StageDecision::Orchestrate
+        );
+    }
+
+    #[test]
+    fn windows_interactive_in_conflict_auto_stages() {
+        assert_eq!(
+            stage_decision(true, false, false, true, true, false),
+            StageDecision::Stage
+        );
+    }
+
+    #[test]
+    fn windows_noninteractive_in_conflict_refuses_without_flag() {
+        assert_eq!(
+            stage_decision(true, false, false, true, false, false),
+            StageDecision::RefuseNeedsFlag
+        );
+    }
+
+    #[test]
+    fn windows_noninteractive_in_conflict_stages_with_flag() {
+        assert_eq!(
+            stage_decision(true, false, false, true, false, true),
+            StageDecision::Stage
+        );
+    }
+
+    #[test]
+    fn conflict_set_membership_matches_build_and_cargo_bin() {
+        let cwd = std::env::temp_dir();
+        let set = conflict_set(&cwd);
+        let target_release = cwd.join("target").join("release").join(bin_name());
+        assert!(
+            path_in_conflict_set(&target_release, &set),
+            "the source repo's target/release binary is a conflict target"
+        );
+        let elsewhere = cwd.join("definitely-not-memhub-xyz");
+        assert!(
+            !path_in_conflict_set(&elsewhere, &set),
+            "an unrelated path is not in the conflict set"
+        );
+    }
 }
