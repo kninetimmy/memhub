@@ -58,6 +58,7 @@ memhub upgrade --dry-run  # show what would happen; NO install/symlink/migration
 memhub upgrade --json     # machine-readable instance table + skills array
 memhub upgrade --yes      # don't prompt before replacing a non-symlink shadow
 memhub upgrade --no-skills # skip the skill-wrapper resync; binary + DB migrate still run
+memhub upgrade --allow-self-stage # Windows + no TTY (CI/agent): permit the staged relaunch
 ```
 
 Always show the user `--dry-run` output first if there is any doubt
@@ -129,3 +130,31 @@ about what will change.
   never creates `~/.claude/commands` or `~/.codex/skills`.
 - On Windows, symlink creation may need privilege; the shadow fix
   falls back to a copy (re-run `memhub upgrade` after each install).
+
+## Windows: the staged relaunch (and what agents must do)
+
+Windows locks a running `.exe`, so the process that invokes `memhub
+upgrade` cannot have its own binary replaced by `cargo install`. The
+command handles this automatically: it copies itself to a `%TEMP%`
+shim, relaunches that with `--staged`, and the original exits so its
+lock releases. **Consequence: the invoking shell receives exit code 0
+before the upgrade has actually finished or failed.**
+
+- **Interactive (a TTY is attached):** staging happens automatically.
+  Watch the staged run's streamed output and its final
+  `memhub upgrade: SUCCESS|FAILED` line.
+- **Non-interactive (CI, or an agent invoking it — no TTY):** the
+  command **refuses by default** with an explanatory error rather than
+  losing the exit code silently. Re-run with `--allow-self-stage` to
+  permit it.
+
+Because exit code 0 is not a success signal on a staged run, **do not
+report success from the exit code**. The real outcome is durably
+recorded at `~/.memhub/last_upgrade.json`
+(`{"ok":bool,"summary":"...","unix_ms":...}`): a fresh `ok:true` is
+success; `ok:false` with "completion not yet recorded" means it is
+still running or was killed mid-run; any other `ok:false` is a real
+failure. Poll that file (and check `unix_ms` is newer than when you
+launched) to determine the result.
+
+Non-Windows platforms never stage — this whole section is inert there.

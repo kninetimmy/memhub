@@ -51,6 +51,7 @@ memhub upgrade --dry-run  # show what would happen; NO install/symlink/migration
 memhub upgrade --json     # machine-readable instance table + skills array
 memhub upgrade --yes      # don't prompt before replacing a non-symlink shadow
 memhub upgrade --no-skills # skip the skill-wrapper resync; binary + DB migrate still run
+memhub upgrade --allow-self-stage # Windows + no TTY (CI/agent): permit the staged relaunch
 ```
 
 Show the user `--dry-run` first if there is any doubt about what will
@@ -117,3 +118,27 @@ change.
   never creates `~/.claude/commands` or `~/.codex/skills`.
 - On Windows the shadow fix falls back to a copy if symlink creation
   needs privilege (re-run after each install).
+
+## Windows: the staged relaunch (and what agents must do)
+
+Windows locks a running `.exe`, so the process invoking `memhub
+upgrade` cannot have its own binary replaced by `cargo install`. The
+command auto-handles this: it copies itself to a `%TEMP%` shim,
+relaunches that with `--staged`, and the original exits to release its
+lock. **The invoking shell therefore gets exit code 0 before the
+upgrade has finished or failed.**
+
+- **Interactive (TTY attached):** staging is automatic; watch the
+  streamed output and the final `memhub upgrade: SUCCESS|FAILED` line.
+- **Non-interactive (CI, or an agent — no TTY):** refuses by default
+  with an explanatory error instead of losing the exit code silently.
+  Re-run with `--allow-self-stage` to permit it.
+
+Do **not** treat exit 0 as success on a staged run. The real outcome
+is durably recorded at `~/.memhub/last_upgrade.json`
+(`{"ok":bool,"summary":"...","unix_ms":...}`): fresh `ok:true` is
+success; `ok:false` "completion not yet recorded" means still
+running/killed; any other `ok:false` is a real failure. Poll that file
+and check `unix_ms` is newer than your launch time.
+
+Non-Windows platforms never stage — this section is inert there.

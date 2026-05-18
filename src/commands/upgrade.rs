@@ -99,6 +99,27 @@ pub fn run(cwd: &Path, args: UpgradeArgs) -> Result<()> {
         std::io::stdin().is_terminal(),
         args.allow_self_stage,
     ) {
+        StageDecision::Orchestrate if args.staged => {
+            // A parent exited 0 to relaunch us, so this run's real exit
+            // code is lost to the invoking shell. Make every terminal
+            // state durable: write a "started" marker up front (so a
+            // killed-mid-run staged child reads as not-yet-done, never a
+            // stale success), and convert an early orchestrate failure
+            // — cargo install exhausted, re-exec couldn't launch — into
+            // a recorded ok:false. The success and finish-phase-failure
+            // states are already recorded by finish_phase in the
+            // re-exec'd grandchild before this process exits.
+            write_last_upgrade(false, "upgrade started; completion not yet recorded");
+            match orchestrate_phase(cwd, &args) {
+                Ok(()) => Ok(()),
+                Err(e) => {
+                    let msg = format!("upgrade failed before the migrate phase: {e}");
+                    write_last_upgrade(false, &msg);
+                    println!("memhub upgrade: FAILED — {msg}");
+                    Err(e)
+                }
+            }
+        }
         StageDecision::Orchestrate => orchestrate_phase(cwd, &args),
         StageDecision::Stage => stage_and_relaunch(cwd, &args),
         StageDecision::RefuseNeedsFlag => Err(MemhubError::InvalidInput(
