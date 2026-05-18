@@ -302,6 +302,26 @@ never creates `~/.claude/commands` or `~/.codex/skills`, and a
 non-directory at that path is a clean skip, not a clobber (mirrors the
 PATH-shadow and global-store "only act on what exists" rule).
 
+**Build-artifact GC (`memhub gc`).** Cargo's `target/<profile>/deps/`
+is append-only — every rebuild writes a new hash-suffixed artifact and
+never reclaims the old one; with memhub's `include_bytes!`'d ONNX
+models each stale `libmemhub-<hash>.rlib` / test binary is ~1 GB, so a
+few weeks of `cargo test` strands 100+ GB. `memhub gc` keeps only the
+newest-mtime hash per **memhub-owned** stem (`memhub`, `libmemhub`,
+each top-level `tests|benches|examples/*.rs` basename) and deletes the
+superseded hashes plus their `.fingerprint/<stem>-<hash>` dirs.
+Third-party dependency rlibs carry one hash, never balloon, and are
+structurally never considered; `incremental/` is left alone (deleting
+it only slows the next build). Worst case of pruning a superseded hash
+is one rebuilt test binary — Cargo recovers, the current set is never
+touched, so it cannot corrupt a tree. Runs **automatically inside
+`memhub upgrade`** (best-effort, never fatal — same posture as the
+skill/registry writes; `--no-gc` skips it, `--dry-run` reports it) and
+standalone as `memhub gc [--dry-run] [--json]`. Pure `std::fs`,
+OS-agnostic (macOS + Windows). Intentionally not a skill — ops
+housekeeping like `upgrade` itself, surfaced via the CLI and the
+upgrade flow.
+
 ## Current Build Focus
 
 The repository currently provides Milestone 1 scaffolding and a usable local CLI foundation. Future work should extend from these boundaries instead of replacing them.

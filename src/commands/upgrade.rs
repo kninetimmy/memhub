@@ -66,6 +66,8 @@ pub struct UpgradeArgs {
     pub yes: bool,
     /// Skip resyncing installed agent skill wrappers (decision 97).
     pub no_skills: bool,
+    /// Skip the `target/` build-artifact GC step (`memhub gc`).
+    pub no_gc: bool,
 }
 
 /// Internal parent->child handoff for the skill-resync result. The skill
@@ -87,10 +89,8 @@ pub fn run(cwd: &Path, args: UpgradeArgs) -> Result<()> {
     if cfg!(windows) && !args.staged {
         sweep_stale_staging();
     }
-    let in_conflict = cfg!(windows)
-        && !args.staged
-        && !args.dry_run
-        && current_exe_in_conflict_set(cwd);
+    let in_conflict =
+        cfg!(windows) && !args.staged && !args.dry_run && current_exe_in_conflict_set(cwd);
     match stage_decision(
         cfg!(windows),
         args.staged,
@@ -216,10 +216,12 @@ fn stage_and_relaunch(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
         std::process::id(),
         now_stamp()
     ));
-    std::fs::copy(&src, &shim).map_err(|e| MemhubError::InvalidInput(format!(
-        "could not stage upgrade binary to {}: {e}",
-        shim.display()
-    )))?;
+    std::fs::copy(&src, &shim).map_err(|e| {
+        MemhubError::InvalidInput(format!(
+            "could not stage upgrade binary to {}: {e}",
+            shim.display()
+        ))
+    })?;
 
     let mut cmd = Command::new(&shim);
     cmd.arg("upgrade")
@@ -250,14 +252,16 @@ fn stage_and_relaunch(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
         const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
         cmd.creation_flags(CREATE_BREAKAWAY_FROM_JOB)
             .spawn()
-            .or_else(|_| Command::new(&shim)
-                .arg("upgrade")
-                .arg("--staged")
-                .current_dir(cwd)
-                .stdin(Stdio::inherit())
-                .stdout(Stdio::inherit())
-                .stderr(Stdio::inherit())
-                .spawn())
+            .or_else(|_| {
+                Command::new(&shim)
+                    .arg("upgrade")
+                    .arg("--staged")
+                    .current_dir(cwd)
+                    .stdin(Stdio::inherit())
+                    .stdout(Stdio::inherit())
+                    .stderr(Stdio::inherit())
+                    .spawn()
+            })
     };
     #[cfg(not(windows))]
     let spawned = cmd.spawn();
@@ -387,6 +391,19 @@ fn orchestrate_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
     } else {
         sync_skills(cwd, false)
     };
+
+    // 3b. Reclaim superseded build artifacts in the source repo's
+    //     `target/` (Cargo never GCs old hashes; memhub's bundled ONNX
+    //     models make each stale artifact ~1 GB). Best-effort and never
+    //     fatal — same posture as the skill resync and registry writes.
+    if args.no_gc {
+        println!("==> target gc: skipped (--no-gc)");
+    } else {
+        match crate::commands::gc::run(cwd, false) {
+            Ok(out) => println!("==> target gc: {}", out.summary()),
+            Err(e) => println!("==> target gc: skipped ({e})"),
+        }
+    }
 
     // 4. Re-exec the freshly installed binary for the migrate + verify
     //    pass so migrations run under NEW code. Use the explicit
@@ -918,6 +935,14 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
     );
     for s in &skills {
         println!("  skills:       {}", s.dry_line());
+    }
+    if args.no_gc {
+        println!("  target gc:    skipped (--no-gc)");
+    } else {
+        match crate::commands::gc::run(cwd, true) {
+            Ok(out) => println!("  target gc:    {}", out.summary()),
+            Err(e) => println!("  target gc:    skipped ({e})"),
+        }
     }
     Ok(())
 }

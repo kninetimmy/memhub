@@ -1277,6 +1277,7 @@ pub fn run(cli: Cli) -> Result<()> {
             dry_run,
             yes,
             no_skills,
+            no_gc,
             finish,
             staged,
             allow_self_stage,
@@ -1293,8 +1294,27 @@ pub fn run(cli: Cli) -> Result<()> {
                     allow_self_stage,
                     yes,
                     no_skills,
+                    no_gc,
                 },
             )?;
+        }
+        TopLevelCommand::Gc {
+            dry_run,
+            json: as_json,
+        } => {
+            let outcome = commands::gc::run(&cwd, dry_run)?;
+            if as_json {
+                println!("{}", serde_json::to_string(&outcome)?);
+            } else {
+                println!(
+                    "memhub gc ({}): {}",
+                    outcome.root.display(),
+                    outcome.summary()
+                );
+                for line in &outcome.details {
+                    println!("  {line}");
+                }
+            }
         }
         TopLevelCommand::Recall {
             query,

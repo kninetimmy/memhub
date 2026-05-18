@@ -136,6 +136,10 @@ pub enum TopLevelCommand {
         /// `templates/skills/`. The binary + DB migrate still run.
         #[arg(long)]
         no_skills: bool,
+        /// Skip the `target/` build-artifact GC step (see `memhub gc`).
+        /// The binary + DB migrate still run.
+        #[arg(long)]
+        no_gc: bool,
         /// Internal: set on the re-exec'd freshly installed binary to
         /// run only the migrate + verify pass.
         #[arg(long, hide = true)]
@@ -150,6 +154,18 @@ pub enum TopLevelCommand {
         /// or the final `memhub upgrade:` line for the real result.
         #[arg(long)]
         allow_self_stage: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Reclaim disk by deleting superseded build artifacts in this
+    /// repo's `target/` (Cargo never garbage-collects old hashes).
+    /// Keeps only the newest build set of memhub-owned artifacts;
+    /// third-party dependency rlibs are never touched. Also auto-runs
+    /// inside `memhub upgrade`.
+    Gc {
+        /// Report what would be freed without deleting anything.
+        #[arg(long)]
+        dry_run: bool,
         #[arg(long)]
         json: bool,
     },

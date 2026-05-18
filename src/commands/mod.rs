@@ -5,6 +5,7 @@ pub mod doc;
 pub mod eval;
 pub mod export;
 pub mod fact;
+pub mod gc;
 pub mod global;
 pub mod import;
 pub mod index;

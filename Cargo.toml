@@ -34,6 +34,17 @@ tower-http = { version = "0.6", features = ["trace"], optional = true }
 default = ["viz"]
 viz = ["dep:axum", "dep:tower-http"]
 
+# Dev/test artifacts are enormous here because the bge-small + MiniLM
+# ONNX models are `include_bytes!`'d into every binary (~250 MB of real
+# payload) and full DWARF then ~4xs that. `line-tables-only` keeps
+# readable panic / `cargo test` backtraces (file:line) while dropping
+# the heavy variable/type debug info — cutting each debug artifact
+# ~3-5x. For a rare interactive lldb session build once with
+# `RUSTFLAGS="-g" cargo build`, then reclaim with `memhub gc`.
+# Commit-back-here: keep this in parity across machines.
+[profile.dev]
+debug = "line-tables-only"
+
 [build-dependencies]
 sha2 = "0.10"
 ureq = { version = "2.10", default-features = false, features = ["tls"] }
