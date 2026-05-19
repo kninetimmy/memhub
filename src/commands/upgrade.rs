@@ -223,45 +223,20 @@ fn stage_and_relaunch(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
         ))
     })?;
 
-    let mut cmd = Command::new(&shim);
-    cmd.arg("upgrade")
-        .arg("--staged")
-        .current_dir(cwd)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
-    if args.yes {
-        cmd.arg("--yes");
-    }
-    if args.no_skills {
-        cmd.arg("--no-skills");
-    }
-    if args.json {
-        cmd.arg("--json");
-    }
-    for p in &args.also {
-        cmd.arg("--also").arg(p);
-    }
+    let mut cmd = staged_relaunch_command(&shim, cwd, args);
 
     // Break away from any job object the terminal placed us in so the
     // staged child survives our imminent exit. Harmless if not jobbed;
-    // if the job forbids breakaway, fall back to a plain spawn.
+    // if the job forbids breakaway, fall back to a plain spawn — rebuilt
+    // through the SAME helper so the fallback can never diverge from the
+    // primary argv (the original bug: it dropped every forwarded flag).
     #[cfg(windows)]
     let spawned = {
         use std::os::windows::process::CommandExt;
         const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
         cmd.creation_flags(CREATE_BREAKAWAY_FROM_JOB)
             .spawn()
-            .or_else(|_| {
-                Command::new(&shim)
-                    .arg("upgrade")
-                    .arg("--staged")
-                    .current_dir(cwd)
-                    .stdin(Stdio::inherit())
-                    .stdout(Stdio::inherit())
-                    .stderr(Stdio::inherit())
-                    .spawn()
-            })
+            .or_else(|_| staged_relaunch_command(&shim, cwd, args).spawn())
     };
     #[cfg(not(windows))]
     let spawned = cmd.spawn();
@@ -281,6 +256,49 @@ fn stage_and_relaunch(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
     // Do NOT wait: staying alive keeps our image locked and re-creates
     // the very bug we are fixing. Exit 0 so the lock releases.
     std::process::exit(0);
+}
+
+/// Single source of truth for the staged-relaunch argv.
+///
+/// The staged child re-parses its own argv and runs the **full**
+/// orchestration (`orchestrate_phase`), so every user-visible flag with
+/// a side effect must round-trip here. Dropping one silently voids an
+/// explicit opt-out — the original bug: `--no-gc` was not forwarded, so
+/// a staged Windows run (the *normal* path there) deleted build
+/// artifacts the user had explicitly told it not to touch. Both spawn
+/// sites in `stage_and_relaunch` (the breakaway spawn and its
+/// job-forbidden fallback) build their `Command` through this so they
+/// cannot diverge again.
+///
+/// `--staged` is added here; `stage_decision` keys the
+/// orchestrate-vs-stage choice off it. Deliberately NOT forwarded:
+/// `--allow-self-stage` (moot — `--staged` already forces `Orchestrate`
+/// in the child), `--dry-run` (staging is gated on `!dry_run` upstream),
+/// and `--finish` (a different phase with its own minimal flag set).
+fn staged_relaunch_command(shim: &Path, cwd: &Path, args: &UpgradeArgs) -> Command {
+    let mut cmd = Command::new(shim);
+    cmd.arg("upgrade")
+        .arg("--staged")
+        .current_dir(cwd)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    if args.yes {
+        cmd.arg("--yes");
+    }
+    if args.no_skills {
+        cmd.arg("--no-skills");
+    }
+    if args.no_gc {
+        cmd.arg("--no-gc");
+    }
+    if args.json {
+        cmd.arg("--json");
+    }
+    for p in &args.also {
+        cmd.arg("--also").arg(p);
+    }
+    cmd
 }
 
 /// Remove abandoned staged shims (`memhub-upgrade-*.exe`) older than an
@@ -409,6 +427,15 @@ fn orchestrate_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
     //    pass so migrations run under NEW code. Use the explicit
     //    cargo-bin path, not PATH — PATH may still resolve to a shadow
     //    the user declined to fix.
+    //
+    //    This is intentionally NOT `staged_relaunch_command`: the
+    //    `--finish` child only migrates + verifies. The skill resync,
+    //    GC, and PATH-shadow fix have already run in THIS (orchestrate)
+    //    process, so `--no-gc` / `--no-skills` / `--yes` are irrelevant
+    //    to it by design. Only `--json` (output shape) and `--also`
+    //    (extra roots to migrate) carry into the finish phase. Do not
+    //    "unify" this with the staged helper — the flag sets differ on
+    //    purpose.
     let mut child = Command::new(&cargo_bin);
     child
         .arg("upgrade")
@@ -1430,5 +1457,94 @@ mod tests {
             !path_in_conflict_set(&elsewhere, &set),
             "an unrelated path is not in the conflict set"
         );
+    }
+
+    /// `UpgradeArgs` has no `Default` (it is only ever built by the CLI
+    /// parser); a local builder keeps the staged-argv tests readable.
+    fn upgrade_args(
+        json: bool,
+        yes: bool,
+        no_skills: bool,
+        no_gc: bool,
+        also: &[&str],
+    ) -> UpgradeArgs {
+        UpgradeArgs {
+            also: also.iter().map(PathBuf::from).collect(),
+            dry_run: false,
+            json,
+            finish: false,
+            staged: false,
+            allow_self_stage: true, // set on purpose: must NOT be forwarded
+            yes,
+            no_skills,
+            no_gc,
+        }
+    }
+
+    fn argv(cmd: &Command) -> Vec<String> {
+        cmd.get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn staged_relaunch_forwards_every_side_effecting_flag() {
+        // Regression for the adversarial-review finding: a staged
+        // Windows relaunch must carry every flag that changes a side
+        // effect of the FULL orchestration the child runs — especially
+        // `--no-gc`, whose omission silently re-enabled artifact
+        // deletion the user explicitly opted out of.
+        let args = upgrade_args(true, true, true, true, &["/repo/a", "/repo/b"]);
+        let cmd = staged_relaunch_command(Path::new("/tmp/shim.exe"), Path::new("/cwd"), &args);
+        let a = argv(&cmd);
+
+        assert_eq!(a[0], "upgrade");
+        assert_eq!(a[1], "--staged");
+        for flag in ["--yes", "--no-skills", "--no-gc", "--json"] {
+            assert!(
+                a.iter().any(|x| x == flag),
+                "staged relaunch dropped {flag}; argv = {a:?}"
+            );
+        }
+        assert!(
+            a.windows(2).any(|w| w[0] == "--also" && w[1] == "/repo/a"),
+            "first --also root not forwarded; argv = {a:?}"
+        );
+        assert!(
+            a.windows(2).any(|w| w[0] == "--also" && w[1] == "/repo/b"),
+            "second --also root not forwarded; argv = {a:?}"
+        );
+        // Deliberately not forwarded — see `staged_relaunch_command` doc.
+        assert!(!a.iter().any(|x| x == "--allow-self-stage"));
+        assert!(!a.iter().any(|x| x == "--dry-run"));
+        assert!(!a.iter().any(|x| x == "--finish"));
+    }
+
+    #[test]
+    fn staged_relaunch_omits_unset_flags() {
+        // The forwarding is conditional, not unconditional: an unset
+        // flag must stay absent so the child's parsed args match the
+        // operator's actual invocation.
+        let args = upgrade_args(false, false, false, false, &[]);
+        let a = argv(&staged_relaunch_command(
+            Path::new("/s.exe"),
+            Path::new("/c"),
+            &args,
+        ));
+        assert_eq!(a, vec!["upgrade".to_string(), "--staged".to_string()]);
+    }
+
+    #[test]
+    fn staged_relaunch_primary_and_fallback_argv_are_identical() {
+        // The anti-divergence guarantee. The breakaway spawn and its
+        // job-forbidden fallback both build through this one helper, so
+        // their argv must be byte-identical — the regression guard for
+        // the original fallback that dropped every forwarded flag.
+        let args = upgrade_args(true, false, true, true, &["/x"]);
+        let primary = staged_relaunch_command(Path::new("/s.exe"), Path::new("/c"), &args);
+        let fallback = staged_relaunch_command(Path::new("/s.exe"), Path::new("/c"), &args);
+        let pa: Vec<_> = primary.get_args().map(|s| s.to_os_string()).collect();
+        let fa: Vec<_> = fallback.get_args().map(|s| s.to_os_string()).collect();
+        assert_eq!(pa, fa, "primary and fallback staged argv diverged");
     }
 }
