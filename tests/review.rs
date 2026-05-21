@@ -16,6 +16,26 @@ fn stage_fact(path: &std::path::Path, key: &str, value: &str, rationale: &str) -
     .expect("propose fact")
 }
 
+fn stage_fact_from_agent(
+    path: &std::path::Path,
+    key: &str,
+    value: &str,
+    rationale: &str,
+    actor: &str,
+    actor_raw: &str,
+) -> i64 {
+    pending_write::propose_fact(
+        path,
+        key,
+        value,
+        rationale,
+        actor,
+        actor_raw,
+        "{\"source\":\"mcp\"}",
+    )
+    .expect("propose fact")
+}
+
 fn stage_decision(path: &std::path::Path, title: &str, rationale: &str) -> i64 {
     pending_write::propose_decision(
         path,
@@ -118,6 +138,27 @@ fn review_accept_promotes_fact_and_marks_pending_accepted() {
     let summary = status::run(temp.path()).expect("status");
     assert_eq!(summary.pending_writes, 0);
     assert_eq!(summary.facts, 1);
+}
+
+#[test]
+fn review_accept_preserves_opencode_source() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    let pending_id = stage_fact_from_agent(
+        temp.path(),
+        "opencode-test-command",
+        "cargo test",
+        "OpenCode surfaced this command for review.",
+        "opencode",
+        "OpenCode",
+    );
+
+    review::accept(temp.path(), pending_id, "cli:user").expect("accept");
+
+    let facts = fact::list(temp.path()).expect("fact list");
+    assert_eq!(facts.len(), 1);
+    assert_eq!(facts[0].source, "user+agent:opencode");
 }
 
 #[test]

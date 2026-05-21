@@ -101,7 +101,9 @@ mod tests {
         validate_source("git").expect("git");
         validate_source("observed").expect("observed");
         validate_source("agent:codex").expect("agent:codex");
+        validate_source("agent:opencode").expect("agent:opencode");
         validate_source("user+agent:claude-code").expect("user+agent:claude-code");
+        validate_source("user+agent:opencode").expect("user+agent:opencode");
         validate_source("user+agent:my_client.v2").expect("user+agent:my_client.v2");
     }
 

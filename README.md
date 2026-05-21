@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/SQLite-bundled-003B57?style=flat&logo=sqlite&logoColor=white" alt="SQLite bundled"/>
   <br/>
   <img src="https://img.shields.io/badge/Recall-FTS5%20%2B%20RAG-5E81AC?style=flat" alt="Recall: FTS5 + RAG"/>
-  <img src="https://img.shields.io/badge/MCP-Claude%20%C2%B7%20Codex-D97757?style=flat&logo=anthropic&logoColor=white" alt="MCP: Claude and Codex"/>
+  <img src="https://img.shields.io/badge/MCP-Claude%20%C2%B7%20Codex%20%C2%B7%20OpenCode-D97757?style=flat&logo=anthropic&logoColor=white" alt="MCP: Claude, Codex, and OpenCode"/>
   <img src="https://img.shields.io/badge/Offline-local--first-4C566A?style=flat" alt="Offline, local-first"/>
   <br/>
   <img src="https://img.shields.io/badge/Platform-macOS%20%C2%B7%20Linux%20%C2%B7%20Windows-607D8B?style=flat" alt="Platform: macOS, Linux, Windows"/>
@@ -18,7 +18,7 @@
 
 If you've ever started a coding session by re-explaining your build setup, your naming conventions, or why that one architectural decision was made — that's the problem memhub solves.
 
-memhub is a small, offline memory system for AI coding assistants — per-repo by default, with an optional machine-wide layer for cross-repo truths. It gives Claude Code and Codex CLI one shared, searchable store of project knowledge — decisions, facts, tasks, notes, and your own reference docs — built on SQLite with semantic search bundled into the binary.
+memhub is a small, offline memory system for AI coding assistants — per-repo by default, with an optional machine-wide layer for cross-repo truths. It gives Claude Code, Codex CLI, and OpenCode CLI one shared, searchable store of project knowledge — decisions, facts, tasks, notes, and your own reference docs — built on SQLite with semantic search bundled into the binary.
 
 No cloud. No account. No daemon. No model download at runtime. Just a `.sqlite` file next to your code and a binary on your PATH.
 
@@ -36,7 +36,7 @@ No cloud. No account. No daemon. No model download at runtime. Just a `.sqlite` 
 - **Decisions with reasons.** Six months from now you'll know *why* a call was made, not just that it was made. "We switched to rusqlite bundled mode because X" stays findable forever.
 - **Your docs are searchable too.** Point memhub at an API spec, design system, or compliance doc and the agent pulls the relevant section on demand — no pasting the whole file into the prompt. A styling question surfaces the right color token table; a backend question stays completely silent on the style guide.
 - **You stay in control.** Agent proposals stage for review before anything becomes durable. You see exactly what the agent wants to commit, and you can say no.
-- **Both agents, same memory.** Claude Code and Codex share the same rows. Switching tools doesn't cost you context.
+- **Same memory across agents.** Claude Code, Codex, and OpenCode share the same rows. Switching tools doesn't cost you context.
 - **Optional machine-wide memory.** Truths that aren't about one repo — toolchain facts, a standing engineering rule, a universal style guide — can live in an opt-in store shared by every repo on the machine. Off by default; you promote to it deliberately.
 - **Small context, relevant content.** A targeted recall bundle is much smaller than pasting your full project README into every prompt. The Token Metrics dashboard estimates how much context you're saving.
 - **It's just a file.** SQLite, gitignored, in your repo. No accounts, no services, no vendor lock-in. Back it up, move it, or `rm -rf .memhub/` and it's gone.
@@ -201,6 +201,81 @@ step 9 — the machine-global store at ~/.memhub/global.sqlite (outside
 this repo, in my home directory; that is expected).
 ```
 
+### Install via OpenCode CLI
+
+Open OpenCode in the repo you want to track and paste:
+
+```
+Please install memhub for me, then turn on hybrid recall.
+
+1. Clone https://github.com/kninetimmy/memhub.git into ~/src/memhub if it
+   isn't already there (`git pull` if it is). Stop if the Rust toolchain
+   (1.85+) is missing.
+2. Run `cargo install --path ~/src/memhub --force` so `memhub` ends up on
+   PATH (~/.cargo/bin must be on PATH; warn me if it isn't). First build
+   takes a couple of minutes — it downloads and bundles a ~130 MB
+   embedding model into the binary.
+3. Run `memhub --version` to verify.
+4. Register memhub as an MCP server so you can call it as a structured
+   tool. Add this to ~/.config/opencode/opencode.json:
+
+       {
+         "$schema": "https://opencode.ai/config.json",
+         "mcp": {
+           "memhub": {
+             "type": "local",
+             "command": ["memhub", "serve"],
+             "enabled": true
+           }
+         }
+       }
+
+   If that file already exists, merge only the `mcp.memhub` block.
+5. Copy the user-level skills so /wrap-up, /check-init, /init-project,
+   /recall, /reindex, /eval-recall, /doc, /metrics, /viz, /global, and
+   /upgrade all work:
+
+       mkdir -p ~/.config/opencode/skills ~/.config/opencode/commands
+       cp -R ~/src/memhub/templates/skills/opencode/* ~/.config/opencode/skills/
+       cp ~/src/memhub/templates/commands/opencode/*.md ~/.config/opencode/commands/
+
+6. Restart OpenCode so it reloads config, skills, and commands.
+7. cd back to this repo and run `memhub init`, then `memhub status`.
+   Tell me what status reports.
+8. Ask me: hybrid recall (recommended — semantic + keyword) or FTS-only
+   (lighter, keyword search only)?
+     - If I say hybrid: append `[retrieval]\nmode = "hybrid"` to
+       .memhub/config.toml, then run `memhub index rebuild --actor
+       opencode:reindex`. Report how many rows were embedded.
+     - If I say FTS: nothing to do; the default is already FTS.
+9. Run `memhub recall "<some keyword from my project>" --max-results 3`
+   so I can see the recall surface working end-to-end.
+10. Tell me about the optional machine-global store: a second SQLite at
+    ~/.memhub/global.sqlite, shared by every repo on this machine, for
+    machine/toolchain facts and standing engineering policy — it's the
+    global-vs-repo AGENTS.md idea, made retrievable. Off by default and
+    per-repo opt-in. Ask whether to enable it for this repo:
+      - If I say yes: run `memhub global enable` and report the store
+        path. Note that writing to global is always a deliberate human
+        action — never promote to global on your own; repo is the safe
+        default.
+      - If I say no: just note `/global` and `memhub global enable` are
+        available anytime.
+11. Tell me memhub can also ingest long reference docs (design specs,
+    API contracts) as RAG-searchable material. After the first doc add,
+    relevant doc chunks automatically surface in plain recall — gated by
+    a relevance threshold so off-topic docs stay silent. Ask whether I
+    want to ingest one now — if I give you a path, run
+    `memhub doc add "<path>" --json` and report the chunk count;
+    if not, just note `/doc` is available anytime.
+
+Don't touch any files in this repo other than what `memhub init` writes
+(.memhub/ and the generated-output .gitignore entries), the
+.memhub/config.toml edits in steps 8 and 10, and — only if I opt in at
+step 10 — the machine-global store at ~/.memhub/global.sqlite (outside
+this repo, in my home directory; that is expected).
+```
+
 ### Install by hand
 
 ```bash
@@ -216,14 +291,20 @@ cd /path/to/your/project
 memhub init
 memhub status
 
-# 4. Agent skills (Claude + Codex)
+# 4. Agent skills / command wrappers (Claude + Codex + OpenCode)
 cp ~/src/memhub/templates/skills/claude/*.md ~/.claude/commands/
 cp -R ~/src/memhub/templates/skills/codex/*  ~/.codex/skills/
+mkdir -p ~/.config/opencode/skills ~/.config/opencode/commands
+cp -R ~/src/memhub/templates/skills/opencode/* ~/.config/opencode/skills/
+cp ~/src/memhub/templates/commands/opencode/*.md ~/.config/opencode/commands/
 
 # 5. MCP for Codex — append to ~/.codex/config.toml:
 #   [mcp_servers.memhub]
 #   command = "memhub"
 #   args = ["serve"]
+
+# MCP for OpenCode — merge into ~/.config/opencode/opencode.json:
+#   { "mcp": { "memhub": { "type": "local", "command": ["memhub", "serve"], "enabled": true } } }
 
 # 6. (Recommended) Turn on hybrid recall
 #    Add to .memhub/config.toml:
@@ -432,7 +513,7 @@ The result is a ranked, cited evidence bundle. You get `title`, `body`, `score`,
 
 ### 3. The agent bridge (MCP + skills)
 
-memhub speaks [MCP](https://modelcontextprotocol.io/) (Model Context Protocol), the standard tool-call interface that Claude Code and Codex both use. When the agent needs context, it calls `memhub.recall` — a structured tool call, not a file read. It gets back a ranked bundle, not a wall of markdown.
+memhub speaks [MCP](https://modelcontextprotocol.io/) (Model Context Protocol), the standard tool-call interface that Claude Code, Codex, and OpenCode use. When the agent needs context, it calls `memhub.recall` — a structured tool call, not a file read. It gets back a ranked bundle, not a wall of markdown.
 
 When the agent wants to *write* something, it calls `propose_fact` or `propose_decision`. The proposal lands in `pending_writes` — a staging area — and waits until you review it. Nothing an agent proposes becomes durable fact until you've said yes.
 
@@ -467,7 +548,7 @@ Tasks and session notes write directly — they're low-stakes (intent and scratc
 | `memhub metrics enable/status` | Opt-in token accounting (Claude Code transcript scraping) |
 | `memhub viz` | Open the local read-only web dashboard |
 | `memhub export/import` | Portable JSON backup; cross-machine restore |
-| `memhub serve` | Stdio MCP server for Claude Code / Codex |
+| `memhub serve` | Stdio MCP server for Claude Code / Codex / OpenCode |
 
 `fact add`, `decision add`, and `doc add` take `--global`; `fact promote <id> --global` and `decision promote <id> --global` copy an existing repo row up into the machine-wide store. See [Shared memory across repos](#shared-memory-across-repos-optional). Run any command with `--help` for flags.
 
@@ -523,7 +604,15 @@ include_docs_in_default = false  # auto-flips on first `doc add --global`
 - MCP server registered in `~/.codex/config.toml` as `[mcp_servers.memhub]`. Codex's MCP client identifies as `codex`; memhub auto-attributes writes accordingly.
 - Skill writes are attributed `actor=codex:wrap-up`, `source=user+agent:codex`.
 
-**Both at once**
+**OpenCode CLI**
+
+- Reads `AGENTS.md` at session start (same role as Codex).
+- User-level skills at `~/.config/opencode/skills/`: same set as above.
+- User-level slash-command wrappers at `~/.config/opencode/commands/`: same command names as above.
+- MCP server registered in `~/.config/opencode/opencode.json` as `mcp.memhub`. OpenCode's MCP client identifies as `opencode`; memhub auto-attributes writes accordingly.
+- Skill writes are attributed `actor=opencode:wrap-up`, `source=user+agent:opencode`.
+
+**All three at once**
 
 Same DB, same rows. Every write is tagged. `memhub fact list` and `memhub decision list` show the `source` column, so you always know who surfaced it.
 
@@ -533,8 +622,10 @@ source                      Meaning
 user                        You typed `memhub fact add` directly
 agent:codex                 Codex proposed it (still in pending_writes)
 agent:claude-code           Claude proposed it
+agent:opencode              OpenCode proposed it
 user+agent:codex            Codex surfaced via /wrap-up, you approved
 user+agent:claude-code      Same, Claude-side
+user+agent:opencode         Same, OpenCode-side
 git                         Reserved for git ingestion
 observed                    Reserved for observed signals
 ```
@@ -544,7 +635,7 @@ observed                    Reserved for observed signals
 Two columns split the work:
 
 - `source` on `facts` and `decisions` — *origin of the claim*. One of `user`, `agent:<id>`, `user+agent:<id>`, `git`, `observed`.
-- `actor` on `writes_log` and `pending_writes` — *who performed the write*. Free-form, e.g. `cli:user`, `claude:wrap-up`, `codex:wrap-up`.
+- `actor` on `writes_log` and `pending_writes` — *who performed the write*. Free-form, e.g. `cli:user`, `claude:wrap-up`, `codex:wrap-up`, `opencode:wrap-up`.
 
 When you accept a pending MCP proposal via `memhub review accept`, the durable row's `source` becomes `user+agent:<actor>` automatically — both signals preserved without you passing anything.
 

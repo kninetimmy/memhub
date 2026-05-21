@@ -42,13 +42,34 @@ fn count_codex_templates(repo: &Path) -> usize {
         .count()
 }
 
+fn count_opencode_skill_templates(repo: &Path) -> usize {
+    std::fs::read_dir(repo.join("templates").join("skills").join("opencode"))
+        .expect("opencode skill templates dir")
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .count()
+}
+
+fn count_opencode_command_templates(repo: &Path) -> usize {
+    std::fs::read_dir(repo.join("templates").join("commands").join("opencode"))
+        .expect("opencode command templates dir")
+        .flatten()
+        .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("md"))
+        .count()
+}
+
 #[test]
 fn skill_resync_additive_idempotent_and_conservative() {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR"));
     let expect_claude = count_claude_templates(repo);
     let expect_codex = count_codex_templates(repo);
+    let expect_opencode_skills = count_opencode_skill_templates(repo);
+    let expect_opencode_commands = count_opencode_command_templates(repo);
     assert!(
-        expect_claude > 0 && expect_codex > 0,
+        expect_claude > 0
+            && expect_codex > 0
+            && expect_opencode_skills > 0
+            && expect_opencode_commands > 0,
         "fixture sanity: the source repo must ship skill templates"
     );
 
@@ -63,8 +84,12 @@ fn skill_resync_additive_idempotent_and_conservative() {
     let reports = sync_skills(repo, false);
     let claude = find(&reports, "claude");
     let codex = find(&reports, "codex");
+    let opencode_skills = find(&reports, "opencode-skills");
+    let opencode_commands = find(&reports, "opencode-commands");
     assert_eq!(claude.status, SkillSyncStatus::Skipped);
     assert_eq!(codex.status, SkillSyncStatus::Skipped);
+    assert_eq!(opencode_skills.status, SkillSyncStatus::Skipped);
+    assert_eq!(opencode_commands.status, SkillSyncStatus::Skipped);
     assert_eq!(claude.synced, 0);
     assert!(
         !home.path().join(".claude").join("commands").exists(),
@@ -74,22 +99,62 @@ fn skill_resync_additive_idempotent_and_conservative() {
         !home.path().join(".codex").join("skills").exists(),
         "absent Codex dir must NOT be created by a resync"
     );
+    assert!(
+        !home
+            .path()
+            .join(".config")
+            .join("opencode")
+            .join("skills")
+            .exists(),
+        "absent OpenCode skills dir must NOT be created by a resync"
+    );
+    assert!(
+        !home
+            .path()
+            .join(".config")
+            .join("opencode")
+            .join("commands")
+            .exists(),
+        "absent OpenCode commands dir must NOT be created by a resync"
+    );
 
     // --- 2. Create the agent dirs => additive real copy --------------
     let claude_dir = home.path().join(".claude").join("commands");
     let codex_dir = home.path().join(".codex").join("skills");
+    let opencode_skills_dir = home.path().join(".config").join("opencode").join("skills");
+    let opencode_commands_dir = home
+        .path()
+        .join(".config")
+        .join("opencode")
+        .join("commands");
     std::fs::create_dir_all(&claude_dir).expect("mk claude dir");
     std::fs::create_dir_all(&codex_dir).expect("mk codex dir");
+    std::fs::create_dir_all(&opencode_skills_dir).expect("mk opencode skills dir");
+    std::fs::create_dir_all(&opencode_commands_dir).expect("mk opencode commands dir");
     // A user's own skill in the shared dir must survive (additive only).
     std::fs::write(claude_dir.join("user-own.md"), b"keep me").expect("seed user skill");
 
     let reports = sync_skills(repo, false);
     let claude = find(&reports, "claude");
     let codex = find(&reports, "codex");
+    let opencode_skills = find(&reports, "opencode-skills");
+    let opencode_commands = find(&reports, "opencode-commands");
     assert_eq!(claude.status, SkillSyncStatus::Synced, "{claude:?}");
     assert_eq!(codex.status, SkillSyncStatus::Synced, "{codex:?}");
+    assert_eq!(
+        opencode_skills.status,
+        SkillSyncStatus::Synced,
+        "{opencode_skills:?}"
+    );
+    assert_eq!(
+        opencode_commands.status,
+        SkillSyncStatus::Synced,
+        "{opencode_commands:?}"
+    );
     assert_eq!(claude.synced, expect_claude);
     assert_eq!(codex.synced, expect_codex);
+    assert_eq!(opencode_skills.synced, expect_opencode_skills);
+    assert_eq!(opencode_commands.synced, expect_opencode_commands);
     // The copy is real, not just a count.
     assert!(
         claude_dir.join("recall.md").is_file(),
@@ -98,6 +163,17 @@ fn skill_resync_additive_idempotent_and_conservative() {
     assert!(
         codex_dir.join("recall").join("SKILL.md").is_file(),
         "a known Codex skill dir (with SKILL.md) must land on disk"
+    );
+    assert!(
+        opencode_skills_dir
+            .join("recall")
+            .join("SKILL.md")
+            .is_file(),
+        "a known OpenCode skill dir (with SKILL.md) must land on disk"
+    );
+    assert!(
+        opencode_commands_dir.join("recall.md").is_file(),
+        "a known OpenCode command wrapper must land on disk"
     );
     // Additive: the user's unrelated skill is untouched.
     assert_eq!(
@@ -111,6 +187,14 @@ fn skill_resync_additive_idempotent_and_conservative() {
     assert_eq!(find(&reports, "claude").status, SkillSyncStatus::Synced);
     assert_eq!(find(&reports, "claude").synced, expect_claude);
     assert_eq!(find(&reports, "codex").synced, expect_codex);
+    assert_eq!(
+        find(&reports, "opencode-skills").synced,
+        expect_opencode_skills
+    );
+    assert_eq!(
+        find(&reports, "opencode-commands").synced,
+        expect_opencode_commands
+    );
 
     // --- 4. Dry-run counts but mutates nothing -----------------------
     let probe = claude_dir.join("__dry_probe__.md");

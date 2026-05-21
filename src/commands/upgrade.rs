@@ -1097,12 +1097,12 @@ pub enum SkillSyncStatus {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SkillSync {
-    /// "claude" | "codex" | "(all)" for the `--no-skills` sentinel.
+    /// Agent surface label, or "(all)" for the `--no-skills` sentinel.
     pub agent: String,
     /// `$HOME`-abbreviated install dir, or empty for the sentinel.
     pub target: String,
     pub status: SkillSyncStatus,
-    /// Skill units copied: `.md` files for Claude, skill dirs for Codex.
+    /// Skill or command units copied.
     pub synced: usize,
     /// Skip reason or warning text.
     pub detail: Option<String>,
@@ -1152,9 +1152,9 @@ impl SkillSync {
 }
 
 enum CopyKind {
-    /// Claude: flat `*.md` files in `templates/skills/claude/`.
+    /// Flat `*.md` files, used by Claude commands and OpenCode commands.
     FlatMd,
-    /// Codex: one dir per skill in `templates/skills/codex/`.
+    /// One dir per skill, used by Codex and OpenCode skills.
     DirPerSkill,
 }
 
@@ -1163,11 +1163,12 @@ enum CopyKind {
 /// created — mirrors `upgrade`'s "only act on what exists" posture for
 /// the PATH shadow and the global store). Idempotent; best-effort.
 ///
-/// Additive only: a skill removed/renamed in `templates/` leaves a
+/// Additive only: a skill/command removed or renamed in `templates/` leaves a
 /// harmless installed orphan. Settled against mirror-with-prune because
 /// pruning shared user-global dirs (`~/.claude/commands`,
-/// `~/.codex/skills`) risks a user's own same-named skill, while an
-/// orphan is just a stale slash-command, not a correctness bug.
+/// `~/.codex/skills`, `~/.config/opencode/skills`,
+/// `~/.config/opencode/commands`) risks a user's own same-named file,
+/// while an orphan is just a stale slash-command, not a correctness bug.
 ///
 /// `dry` stats and counts but performs no filesystem mutation.
 pub fn sync_skills(source_repo: &Path, dry: bool) -> Vec<SkillSync> {
@@ -1184,6 +1185,7 @@ pub fn sync_skills(source_repo: &Path, dry: bool) -> Vec<SkillSync> {
         }
     };
     let skills_root = source_repo.join("templates").join("skills");
+    let commands_root = source_repo.join("templates").join("commands");
     vec![
         sync_one(
             "claude",
@@ -1197,6 +1199,20 @@ pub fn sync_skills(source_repo: &Path, dry: bool) -> Vec<SkillSync> {
             &skills_root.join("codex"),
             &home.join(".codex").join("skills"),
             CopyKind::DirPerSkill,
+            dry,
+        ),
+        sync_one(
+            "opencode-skills",
+            &skills_root.join("opencode"),
+            &home.join(".config").join("opencode").join("skills"),
+            CopyKind::DirPerSkill,
+            dry,
+        ),
+        sync_one(
+            "opencode-commands",
+            &commands_root.join("opencode"),
+            &home.join(".config").join("opencode").join("commands"),
+            CopyKind::FlatMd,
             dry,
         ),
     ]

@@ -1,4 +1,4 @@
-//! Contract test: the Claude and Codex agent surfaces must stay in
+//! Contract test: the Claude, Codex, and OpenCode agent surfaces must stay in
 //! parity, and the README install blocks plus the two tracked
 //! orientation files must not drift away from the actual skill set.
 //!
@@ -21,12 +21,13 @@ fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// Skills that are intentionally only on one side. Empty today — both
+/// Skills that are intentionally only on one side. Empty today — all
 /// agents expose the identical set. A future intentional divergence
 /// goes here *with a comment*, so "we meant that" is explicit and the
 /// reviewer sees it in the diff rather than the test silently passing.
 const CLAUDE_ONLY_SKILLS: &[&str] = &[];
 const CODEX_ONLY_SKILLS: &[&str] = &[];
+const OPENCODE_ONLY_SKILLS: &[&str] = &[];
 
 /// `## ` headers that intentionally exist in only one orientation
 /// file. `AGENTS.md` carries a Codex-specific attribution section that
@@ -70,42 +71,123 @@ fn codex_skill_names() -> BTreeSet<String> {
         .collect()
 }
 
+/// OpenCode skills are `templates/skills/opencode/<name>/SKILL.md`.
+fn opencode_skill_names() -> BTreeSet<String> {
+    dir_per_skill_names("templates/skills/opencode")
+}
+
+fn dir_per_skill_names(relative: &str) -> BTreeSet<String> {
+    let dir = repo_root().join(relative);
+    fs::read_dir(&dir)
+        .unwrap_or_else(|_| panic!("read {relative}"))
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .filter(|e| e.path().join("SKILL.md").is_file())
+        .filter_map(|e| {
+            e.path()
+                .file_name()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string())
+        })
+        .collect()
+}
+
+fn opencode_command_names() -> BTreeSet<String> {
+    let dir = repo_root().join("templates/commands/opencode");
+    fs::read_dir(&dir)
+        .expect("read templates/commands/opencode")
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let path = e.path();
+            if path.extension().and_then(|x| x.to_str()) == Some("md") {
+                path.file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 /// The canonical skill set both agents must expose: every skill that
 /// is not on an allowlist must appear on both sides.
 fn canonical_skill_set() -> BTreeSet<String> {
     let mut set = claude_skill_names();
     set.extend(codex_skill_names());
-    for s in CLAUDE_ONLY_SKILLS.iter().chain(CODEX_ONLY_SKILLS.iter()) {
+    set.extend(opencode_skill_names());
+    for s in CLAUDE_ONLY_SKILLS
+        .iter()
+        .chain(CODEX_ONLY_SKILLS.iter())
+        .chain(OPENCODE_ONLY_SKILLS.iter())
+    {
         set.remove(*s);
     }
     set
 }
 
 #[test]
-fn claude_and_codex_skill_template_sets_match() {
+fn agent_skill_template_sets_match() {
     let claude = claude_skill_names();
     let codex = codex_skill_names();
+    let opencode = opencode_skill_names();
 
     assert!(!claude.is_empty(), "no Claude skill templates discovered");
     assert!(!codex.is_empty(), "no Codex skill templates discovered");
+    assert!(
+        !opencode.is_empty(),
+        "no OpenCode skill templates discovered"
+    );
 
     let allowed_claude_only: BTreeSet<String> =
         CLAUDE_ONLY_SKILLS.iter().map(|s| s.to_string()).collect();
     let allowed_codex_only: BTreeSet<String> =
         CODEX_ONLY_SKILLS.iter().map(|s| s.to_string()).collect();
+    let allowed_opencode_only: BTreeSet<String> =
+        OPENCODE_ONLY_SKILLS.iter().map(|s| s.to_string()).collect();
 
-    let claude_only: BTreeSet<_> = claude.difference(&codex).cloned().collect();
-    let codex_only: BTreeSet<_> = codex.difference(&claude).cloned().collect();
+    let canonical = canonical_skill_set();
+    let claude_only: BTreeSet<_> = claude.difference(&canonical).cloned().collect();
+    let codex_only: BTreeSet<_> = codex.difference(&canonical).cloned().collect();
+    let opencode_only: BTreeSet<_> = opencode.difference(&canonical).cloned().collect();
+    let missing_claude: BTreeSet<_> = canonical.difference(&claude).cloned().collect();
+    let missing_codex: BTreeSet<_> = canonical.difference(&codex).cloned().collect();
+    let missing_opencode: BTreeSet<_> = canonical.difference(&opencode).cloned().collect();
 
     assert_eq!(
         claude_only, allowed_claude_only,
-        "skills present only under templates/skills/claude/ (add the Codex \
-         SKILL.md counterpart, or allowlist it in CLAUDE_ONLY_SKILLS with a reason)"
+        "unexpected Claude-only skills"
     );
     assert_eq!(
         codex_only, allowed_codex_only,
-        "skills present only under templates/skills/codex/ (add the Claude \
-         .md counterpart, or allowlist it in CODEX_ONLY_SKILLS with a reason)"
+        "unexpected Codex-only skills"
+    );
+    assert_eq!(
+        opencode_only, allowed_opencode_only,
+        "unexpected OpenCode-only skills"
+    );
+    assert!(
+        missing_claude.is_empty(),
+        "missing Claude skills: {missing_claude:?}"
+    );
+    assert!(
+        missing_codex.is_empty(),
+        "missing Codex skills: {missing_codex:?}"
+    );
+    assert!(
+        missing_opencode.is_empty(),
+        "missing OpenCode skills: {missing_opencode:?}"
+    );
+}
+
+#[test]
+fn opencode_command_wrappers_match_skill_set() {
+    let commands = opencode_command_names();
+    let canonical = canonical_skill_set();
+
+    assert_eq!(
+        commands, canonical,
+        "OpenCode command wrappers must match the canonical memhub skill set"
     );
 }
 
@@ -138,7 +220,7 @@ fn slash_tokens(segment: &str) -> BTreeSet<String> {
 fn readme_install_blocks_enumerate_every_skill() {
     let readme = fs::read_to_string(repo_root().join("README.md")).expect("read README.md");
 
-    // Both the Claude and Codex install blocks carry one stable
+    // The Claude, Codex, and OpenCode install blocks carry one stable
     // sentence: "Copy the user-level skills so <list> all work".
     // Scrape each occurrence's enumeration and require the full set.
     let marker = "Copy the user-level skills so";
@@ -156,9 +238,9 @@ fn readme_install_blocks_enumerate_every_skill() {
 
     assert_eq!(
         segments.len(),
-        2,
-        "expected exactly two install-block skill enumerations \
-         (Claude + Codex); found {}",
+        3,
+        "expected exactly three install-block skill enumerations \
+         (Claude + Codex + OpenCode); found {}",
         segments.len()
     );
 

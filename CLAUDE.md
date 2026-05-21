@@ -1,6 +1,6 @@
 # memhub
 
-Local-first Rust CLI for durable per-repo project memory shared between Codex and Claude Code. Treat [docs/reference/memhub-prd.md](docs/reference/memhub-prd.md) as the product authority and do not silently diverge from it.
+Local-first Rust CLI for durable per-repo project memory shared between Codex, Claude Code, and OpenCode. Treat [docs/reference/memhub-prd.md](docs/reference/memhub-prd.md) as the product authority and do not silently diverge from it.
 
 ## Session Continuity
 
@@ -299,8 +299,10 @@ Skill resync (decision 97; resolves task 50, internalizes the fact-10
 manual `cp`): the same `memhub upgrade` also refreshes the installed
 slash-command wrappers so they never lag the binary. For each agent
 dir that **already exists** — `~/.claude/commands/` (flat `*.md`),
-`~/.codex/skills/` (dir-per-skill) — it copies from the source repo's
-`templates/skills/{claude,codex}/`. It runs in the orchestrate phase
+`~/.codex/skills/` (dir-per-skill), `~/.config/opencode/skills/`
+(dir-per-skill), and `~/.config/opencode/commands/` (flat `*.md`) — it
+copies from the source repo's `templates/skills/{claude,codex,opencode}/`
+and `templates/commands/opencode/`. It runs in the orchestrate phase
 (the old binary, where `templates/` lives) and the result is rendered
 by the re-exec'd child in one table. The copy is **additive**: a skill
 removed/renamed in `templates/` leaves a harmless installed orphan —
@@ -332,7 +334,8 @@ if it already exists; it never creates it (opting in stays the
 explicit `memhub global enable` choice). `known_projects` is
 machine-local and **not** exported by `memhub export`. Skill resync
 likewise only ever writes into an agent dir that already exists — it
-never creates `~/.claude/commands` or `~/.codex/skills`, and a
+never creates `~/.claude/commands`, `~/.codex/skills`,
+`~/.config/opencode/skills`, or `~/.config/opencode/commands`, and a
 non-directory at that path is a clean skip, not a clobber (mirrors the
 PATH-shadow and global-store "only act on what exists" rule).
 

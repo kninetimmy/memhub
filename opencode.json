@@ -1,0 +1,52 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "command": {
+    "check-init": {
+      "description": "Check memhub project health",
+      "template": "Use the memhub check-init skill. Arguments: $ARGUMENTS"
+    },
+    "init-project": {
+      "description": "Initialize memhub for this repo",
+      "template": "Use the memhub init-project skill. Arguments: $ARGUMENTS"
+    },
+    "recall": {
+      "description": "Recall memhub project memory",
+      "template": "Use the memhub recall skill. Arguments: $ARGUMENTS"
+    },
+    "wrap-up": {
+      "description": "Wrap up this memhub session",
+      "template": "Use the memhub wrap-up skill. Arguments: $ARGUMENTS"
+    },
+    "doc": {
+      "description": "Ingest a markdown reference doc",
+      "template": "Use the memhub doc skill. Arguments: $ARGUMENTS"
+    },
+    "eval-recall": {
+      "description": "Run memhub recall eval",
+      "template": "Use the memhub eval-recall skill. Arguments: $ARGUMENTS"
+    },
+    "global": {
+      "description": "Manage memhub global memory",
+      "template": "Use the memhub global skill. Arguments: $ARGUMENTS"
+    },
+    "metrics": {
+      "description": "Show memhub metrics",
+      "template": "Use the memhub metrics skill. Arguments: $ARGUMENTS"
+    },
+    "reindex": {
+      "description": "Rebuild memhub embeddings",
+      "template": "Use the memhub reindex skill. Arguments: $ARGUMENTS"
+    },
+    "upgrade": {
+      "description": "Upgrade memhub on this machine",
+      "template": "Use the memhub upgrade skill. Arguments: $ARGUMENTS"
+    },
+    "viz": {
+      "description": "Open memhub dashboard",
+      "template": "Use the memhub viz skill. Arguments: $ARGUMENTS"
+    }
+  },
+  "skills": {
+    "paths": ["templates/skills/opencode"]
+  }
+}

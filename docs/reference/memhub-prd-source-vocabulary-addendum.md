@@ -17,7 +17,7 @@ continues to read from the PRD as-written.
 | PRD section | Status after addendum | Reason |
 |---|---|---|
 | §8 "Data model" — `decisions` table lacks a `source` column | **Extended.** Migration `0008_decisions_source` adds `source TEXT NOT NULL DEFAULT 'user'` to decisions, matching facts. | Symmetry with facts; multi-agent attribution applies to decisions too. |
-| §9 indexing principle — `source` value enumeration | **Refined.** The source enumeration becomes the compound vocabulary below. `agent:claude-code` / `agent:codex` / `user` / `git` / `observed` remain valid; `user+agent:<id>` is added for agent-mediated user-approved writes. | Codex bridge work; distinguishes "user typed it directly" from "agent surfaced it, user approved". |
+| §9 indexing principle — `source` value enumeration | **Refined.** The source enumeration becomes the compound vocabulary below. `agent:claude-code` / `agent:codex` / `agent:opencode` / `user` / `git` / `observed` remain valid; `user+agent:<id>` is added for agent-mediated user-approved writes. | Multi-agent bridge work; distinguishes "user typed it directly" from "agent surfaced it, user approved". |
 | §11 write-back policy — accept path source assignment | **Specified.** When a pending write is accepted via `memhub review accept`, the durable row's `source` is derived from `pending_writes.actor` as `user+agent:<actor>` (or plain `user` if the actor is `user` / `unknown`). | The previous accept implementation hardcoded `source="user"`, dropping agent attribution. |
 
 The PRD's design principles (§3), non-goals (§4), router design (§10),
@@ -40,12 +40,12 @@ Valid `source` values:
 |---|---|
 | `user` | Direct human action. The operator ran `memhub fact add` (or equivalent) themselves with no agent intermediary. |
 | `agent:<id>` | Agent-only assertion. A specific agent generated this claim; no user has endorsed it yet. Used for in-pipeline records and reserved for future direct-agent writes. Today, agent claims live in `pending_writes` until accepted, so this slot is rare on `facts` / `decisions`. |
-| `user+agent:<id>` | Agent-mediated user-approved. An agent (Claude Code, Codex) surfaced the claim and a human approved it — typically via the `/wrap-up` flow. Both the user signal and the mediating agent are preserved. |
+| `user+agent:<id>` | Agent-mediated user-approved. An agent (Claude Code, Codex, OpenCode) surfaced the claim and a human approved it — typically via the `/wrap-up` flow. Both the user signal and the mediating agent are preserved. |
 | `git` | Ingested from git history (commit messages, file moves, etc.). Reserved for the future git-ingestion path. |
 | `observed` | Derived from observed signals (command exit codes, test results). Reserved for future writers. |
 
 Format rules:
-- `<id>` is the normalized client identity (e.g., `claude-code`, `codex`) as produced by the MCP `clientInfo.name` normalization map.
+- `<id>` is the normalized client identity (e.g., `claude-code`, `codex`, `opencode`) as produced by the MCP `clientInfo.name` normalization map.
 - The compound `user+agent:<id>` parses by splitting once on `+`; the left side is always `user`, the right side always begins with `agent:`.
 - The column is unconstrained TEXT at the schema level; the vocabulary above is a convention enforced by writers, not by a CHECK constraint. This keeps the door open for additional facets without a migration.
 
@@ -73,6 +73,7 @@ Agent wrap-up flows MUST pass `--source` explicitly on CLI writes:
 
 - Claude Code `/wrap-up` (~/.claude/commands/wrap-up.md): `--source user+agent:claude-code`
 - Codex `/wrap-up` (~/.codex/skills/wrap-up/SKILL.md): `--source user+agent:codex`
+- OpenCode `/wrap-up` (~/.config/opencode/skills/wrap-up/SKILL.md): `--source user+agent:opencode`
 
 This applies to `memhub fact add` and (post-0008) `memhub decision add`
 when the write originates from an agent-mediated approval step in the

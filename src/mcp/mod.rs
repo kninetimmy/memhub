@@ -283,7 +283,7 @@ impl MemhubServer {
             id: outcome.doc_id,
             title: outcome.title,
             path: outcome.path,
-            chunks: outcome.chunk_count,
+            chunks: usize_to_i64(outcome.chunk_count),
             status: status.to_string(),
             enabled_default_recall: outcome.enabled_default_recall,
             actor: actor.normalized,
@@ -683,7 +683,7 @@ struct StatusToolResponse {
     chunks: i64,
     pending_writes: i64,
     writes_logged: i64,
-    deny_patterns: usize,
+    deny_patterns: i64,
     k9_detected: bool,
     k9_enabled: bool,
     k9_agent_docs_path: String,
@@ -709,7 +709,7 @@ impl From<StatusSummary> for StatusToolResponse {
             chunks: value.chunks,
             pending_writes: value.pending_writes,
             writes_logged: value.writes_logged,
-            deny_patterns: value.deny_patterns,
+            deny_patterns: usize_to_i64(value.deny_patterns),
             k9_detected: value.k9_detected,
             k9_enabled: value.k9_enabled,
             k9_agent_docs_path: value.k9_agent_docs_path,
@@ -962,7 +962,7 @@ struct DocAddToolResponse {
     id: i64,
     title: String,
     path: String,
-    chunks: usize,
+    chunks: i64,
     /// `created` | `updated` | `unchanged`.
     status: String,
     /// True when this call flipped on default-bundle doc recall for
@@ -1066,21 +1066,21 @@ struct RecallToolResponse {
     query: String,
     mode: String,
     results: Vec<RecallToolHit>,
-    candidate_count: usize,
-    returned_count: usize,
+    candidate_count: i64,
+    returned_count: i64,
     /// Ingested doc chunks that exist but were NOT searched because the
     /// call did not scope to `doc`. Non-zero is a cue to consider a
     /// follow-up `recall(..., source_types=["doc"])` when the question is
     /// design/spec/architecture-flavored. Docs are opt-in and never in
     /// the default bundle.
-    available_docs: usize,
+    available_docs: i64,
     warnings: Vec<RecallToolWarning>,
     provenance: RecallToolProvenance,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 struct RecallToolHit {
-    rank: usize,
+    rank: i64,
     source_type: String,
     /// `"repo"` or `"global"` (M9). Repo-local always wins on
     /// conflict; a `"global"` hit may be overridden by repo memory.
@@ -1100,8 +1100,8 @@ struct RecallToolHit {
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 struct RecallToolWarning {
     kind: String,
-    stale_count: usize,
-    total_count: usize,
+    stale_count: i64,
+    total_count: i64,
     reason: String,
     fix: String,
 }
@@ -1109,13 +1109,13 @@ struct RecallToolWarning {
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 struct RecallToolProvenance {
     matcher: String,
-    elapsed_ms: u128,
+    elapsed_ms: i64,
 }
 
 impl From<RecallHit> for RecallToolHit {
     fn from(value: RecallHit) -> Self {
         Self {
-            rank: value.rank,
+            rank: usize_to_i64(value.rank),
             source_type: value.source_type,
             scope: value.scope,
             source_id: value.source_id,
@@ -1136,8 +1136,8 @@ impl From<RecallWarning> for RecallToolWarning {
     fn from(value: RecallWarning) -> Self {
         Self {
             kind: value.kind,
-            stale_count: value.stale_count,
-            total_count: value.total_count,
+            stale_count: usize_to_i64(value.stale_count),
+            total_count: usize_to_i64(value.total_count),
             reason: value.reason,
             fix: value.fix,
         }
@@ -1154,9 +1154,9 @@ impl From<RecallResponse> for RecallToolResponse {
             query: value.query,
             mode,
             results: value.results.into_iter().map(RecallToolHit::from).collect(),
-            candidate_count: value.candidate_count,
-            returned_count: value.returned_count,
-            available_docs: value.available_docs,
+            candidate_count: usize_to_i64(value.candidate_count),
+            returned_count: usize_to_i64(value.returned_count),
+            available_docs: usize_to_i64(value.available_docs),
             warnings: value
                 .warnings
                 .into_iter()
@@ -1164,7 +1164,7 @@ impl From<RecallResponse> for RecallToolResponse {
                 .collect(),
             provenance: RecallToolProvenance {
                 matcher: value.matcher,
-                elapsed_ms: value.elapsed_ms,
+                elapsed_ms: u128_to_i64(value.elapsed_ms),
             },
         }
     }
@@ -1263,12 +1263,21 @@ fn normalize_client_name(name: &str) -> String {
     match name.trim().to_ascii_lowercase().as_str() {
         "claude-ai" | "claude code" | "claude-code" => "claude-code".to_string(),
         "codex" | "codex-cli" | "openai-codex" => "codex".to_string(),
+        "opencode" | "open-code" | "opencode-cli" => "opencode".to_string(),
         other => other.to_string(),
     }
 }
 
 fn sanitize_for_log(value: &str) -> String {
     value.chars().flat_map(char::escape_default).collect()
+}
+
+fn usize_to_i64(value: usize) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+fn u128_to_i64(value: u128) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
 }
 
 // ── MetricsToolResponse ──────────────────────────────────────────────────────
@@ -1555,6 +1564,8 @@ mod tests {
         assert_eq!(normalize_client_name("claude-ai"), "claude-code");
         assert_eq!(normalize_client_name("Claude Code"), "claude-code");
         assert_eq!(normalize_client_name("openai-codex"), "codex");
+        assert_eq!(normalize_client_name("OpenCode"), "opencode");
+        assert_eq!(normalize_client_name("opencode-cli"), "opencode");
         assert_eq!(normalize_client_name("CustomClient"), "customclient");
     }
 
@@ -1903,6 +1914,58 @@ mod tests {
 
         assert_eq!(writes_log_row.0, "codex");
         assert_eq!(writes_log_row.1, "mcp propose_fact");
+    }
+
+    #[test]
+    fn opencode_mcp_identity_stages_pending_writes_as_opencode() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+
+        let server = MemhubServer::new(temp.path().to_path_buf());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let raw = "OpenCode";
+        let actor = ClientIdentity {
+            normalized: normalize_client_name(raw),
+            raw: raw.to_string(),
+        };
+        let provenance_json = pending_write_provenance_json(
+            &NumberOrString::String("req-opencode".into()),
+            &Meta::default(),
+            Some(&InitializeRequestParams::new(
+                Default::default(),
+                Implementation::new(raw, "1.0.0"),
+            )),
+        );
+
+        let result = runtime
+            .block_on(server.propose_fact_impl(
+                Parameters(ProposeFactParams {
+                    key: "test-command".to_string(),
+                    value: "cargo test".to_string(),
+                    rationale: "OpenCode proposed a verified command candidate.".to_string(),
+                    global: false,
+                }),
+                actor,
+                provenance_json,
+            ))
+            .expect("propose fact");
+
+        assert_eq!(result.0.actor, "opencode");
+
+        let ctx = db::open_project(temp.path()).expect("open project");
+        let staged: (String, String) = ctx
+            .conn
+            .query_row(
+                "SELECT actor, actor_raw FROM pending_writes ORDER BY id DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("staged write");
+        assert_eq!(staged.0, "opencode");
+        assert_eq!(staged.1, "OpenCode");
     }
 
     #[test]
