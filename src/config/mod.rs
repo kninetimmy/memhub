@@ -71,6 +71,16 @@ pub const DEFAULT_METRICS_RETENTION_DAYS: u32 = 90;
 pub const DEFAULT_GLOBAL_ENABLED: bool = false;
 pub const DEFAULT_GLOBAL_INCLUDE_DOCS_IN_DEFAULT: bool = false;
 
+/// Cross-machine Drive sync (M10). Off by default and per-repo: a repo
+/// opts in via `memhub sync enable`. memhub itself stays offline — this
+/// only governs the local-file `sync snapshot|status|adopt|commit`
+/// commands; the agent's Drive access is the transport. `project_id` is
+/// normally derived from the git remote URL and left empty here; it is
+/// only set when a repo has no git remote and the operator must pin an
+/// identity for the Drive folder. See addendum
+/// `docs/reference/memhub-prd-addendum-m10-drive-sync.md`.
+pub const DEFAULT_SYNC_ENABLED: bool = false;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RetrievalMode {
@@ -176,6 +186,9 @@ fn default_global_enabled() -> bool {
 }
 fn default_global_include_docs_in_default() -> bool {
     DEFAULT_GLOBAL_INCLUDE_DOCS_IN_DEFAULT
+}
+fn default_sync_enabled() -> bool {
+    DEFAULT_SYNC_ENABLED
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -292,6 +305,38 @@ impl Default for GlobalConfig {
     }
 }
 
+/// Opt-in cross-machine Drive sync config (M10). Per-repo; off by
+/// default. When `enabled`, the `memhub sync` family operates on local
+/// files (snapshot/status/adopt/commit) so an agent courier can move
+/// the snapshot through a Drive folder. memhub never makes a network
+/// call. Disabled → the `sync` subcommands refuse with a hint to run
+/// `memhub sync enable`.
+///
+/// `project_id` overrides the git-remote-derived Drive folder identity
+/// and is only needed for a repo with no git remote; empty means
+/// "derive from the git remote URL". `drive_subpath` is a human-facing
+/// hint for the skill (where under the user's Drive the memhub folder
+/// lives); memhub does not read or resolve it — the agent does.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncConfig {
+    #[serde(default = "default_sync_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub project_id: String,
+    #[serde(default)]
+    pub drive_subpath: String,
+}
+
+impl Default for SyncConfig {
+    fn default() -> Self {
+        Self {
+            enabled: DEFAULT_SYNC_ENABLED,
+            project_id: String::new(),
+            drive_subpath: String::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RenderConfig {
     #[serde(default = "default_render_output_dir")]
@@ -327,6 +372,8 @@ pub struct ProjectConfig {
     pub metrics: MetricsConfig,
     #[serde(default)]
     pub global: GlobalConfig,
+    #[serde(default)]
+    pub sync: SyncConfig,
 }
 
 impl ProjectConfig {
@@ -341,6 +388,7 @@ impl ProjectConfig {
             retrieval: RetrievalConfig::default(),
             metrics: MetricsConfig::default(),
             global: GlobalConfig::default(),
+            sync: SyncConfig::default(),
         }
     }
 

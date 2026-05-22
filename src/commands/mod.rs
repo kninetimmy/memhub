@@ -21,6 +21,7 @@ pub mod search;
 pub mod session_note;
 pub mod stats;
 pub mod status;
+pub mod sync;
 pub mod sync_md;
 pub mod task;
 pub mod upgrade;

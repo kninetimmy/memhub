@@ -170,6 +170,31 @@ the new DB state, backing up the prior versions under
 
 Surface what got written and any backup paths.
 
+## Cross-machine sync push (only if enabled)
+
+If this repo syncs across machines, push the freshly-updated DB to
+Google Drive so your other machines can `/catch-up`. memhub stays
+offline — you are the courier.
+
+1. Run `memhub sync status --json`. If `enabled` is false, **skip this
+   whole section silently** — most repos don't sync.
+2. If enabled, write a clean snapshot to a temp dir:
+   `memhub sync snapshot /tmp/memhub-push-<project_id>/`. This emits
+   `project.sqlite` + `manifest.json`.
+3. Using your Google Drive integration (not memhub — it has no
+   network), upload both files to
+   `<drive_subpath>/memhub/<project_id>/`, overwriting the previous
+   snapshot. Use `project_id` / `drive_subpath` from the status JSON;
+   if `drive_subpath` is empty, ask me once where the memhub sync
+   folder lives.
+4. After the upload succeeds, run
+   `memhub sync commit /tmp/memhub-push-<project_id>/` so the next
+   `/catch-up` on this machine reads `up-to-date`.
+
+If the upload fails, say so and stop — do **not** run `commit`, since
+that would falsely record a push that didn't land. The local DB is
+unaffected either way.
+
 ## Reminder, not a commit
 
 Tell me:

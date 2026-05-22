@@ -40,6 +40,12 @@
 #                                       to true in the local config on
 #                                       first `doc add --global` — do
 #                                       NOT commit a true value back)
+#   - sync.enabled = false             (opt-in cross-machine Drive sync;
+#                                       each repo opts in per machine via
+#                                       `memhub sync enable`)
+#   - sync.project_id / sync.drive_subpath (per-repo; project_id is
+#                                       normally derived from the git
+#                                       remote and left empty)
 
 project_name = "memhub"
 auto_sync_md = false
@@ -152,3 +158,18 @@ retention_days = 90
 [global]
 enabled = false
 include_docs_in_default = false
+
+# Cross-machine Drive sync (M10). Off by default and per-repo; opt in
+# via `memhub sync enable`. memhub itself stays OFFLINE — the `sync`
+# commands (snapshot/check/adopt/commit) operate on local files only,
+# and the agent's Drive access is the transport. The Drive-folder
+# project id is normally derived from the git remote URL, so leave
+# project_id empty; set it only for a repo with no git remote.
+# drive_subpath is a human hint for the courier skill (where under your
+# Drive the memhub folder lives); memhub does not read it. Keep
+# `enabled = false` in this committed baseline — opting in is a
+# per-machine choice that lives in the local config.toml.
+[sync]
+enabled = false
+project_id = ""
+drive_subpath = ""

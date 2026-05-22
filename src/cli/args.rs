@@ -157,6 +157,14 @@ pub enum TopLevelCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Cross-machine Drive sync (M10). memhub stays offline; these
+    /// commands operate on local files so an agent courier can move a
+    /// snapshot through a Drive folder. Opt in per repo with
+    /// `memhub sync enable`.
+    Sync {
+        #[command(subcommand)]
+        command: SyncCommand,
+    },
     /// Reclaim disk by deleting superseded build artifacts in this
     /// repo's `target/` (Cargo never garbage-collects old hashes).
     /// Keeps only the newest build set of memhub-owned artifacts;
@@ -273,6 +281,70 @@ pub enum GlobalCommand {
     },
     /// Show enablement, store path, schema version, and row counts.
     Status {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+/// Cross-machine Drive sync (M10). All subcommands operate on **local
+/// files only** — the agent's Drive access moves the snapshot.
+#[derive(Debug, Subcommand)]
+pub enum SyncCommand {
+    /// Write a consistent single-file DB snapshot + manifest.json into
+    /// the given directory (for the courier to upload to Drive).
+    Snapshot {
+        /// Output directory; `project.sqlite` and `manifest.json` are
+        /// written inside it.
+        out_dir: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Opt this repo into cross-machine sync.
+    Enable {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Opt this repo back out. Non-destructive.
+    Disable {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show enablement, the Drive-folder project id, local logical
+    /// version, and the last-sync marker. No Drive comparison.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Compare the local DB against a downloaded Drive snapshot and
+    /// report the fast-forward verdict (up-to-date / local-ahead /
+    /// drive-ahead / diverged). Reads only the manifest.
+    Check {
+        /// Directory holding the downloaded `project.sqlite` +
+        /// `manifest.json` (or a path to `manifest.json`).
+        remote: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Replace the local DB with a downloaded Drive snapshot. Requires
+    /// `--yes`; refuses on project-id mismatch, a newer snapshot
+    /// schema, or a checksum that disagrees with the manifest.
+    Adopt {
+        /// Directory holding the downloaded `project.sqlite` +
+        /// `manifest.json` (or a path to `manifest.json`).
+        remote: PathBuf,
+        /// Confirm the destructive overwrite of the local DB.
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Record that the local DB now equals a just-pushed snapshot, so
+    /// the next `status` reads up-to-date. Call after a successful
+    /// upload.
+    Commit {
+        /// Directory holding the pushed `project.sqlite` +
+        /// `manifest.json` (or a path to `manifest.json`).
+        remote: PathBuf,
         #[arg(long)]
         json: bool,
     },

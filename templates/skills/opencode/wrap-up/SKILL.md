@@ -14,4 +14,5 @@ Workflow:
 - Attribute OpenCode skill writes with `--actor opencode:wrap-up`; accepted agent-surfaced facts/decisions should use source `user+agent:opencode`.
 - Record useful session notes and completed tasks when the user confirms them.
 - Run `memhub render` after durable writes land.
+- If `memhub sync status --json` reports `enabled`, push to Google Drive: `memhub sync snapshot /tmp/memhub-push-<project_id>/`, upload `project.sqlite` + `manifest.json` to `<drive_subpath>/memhub/<project_id>/` via your Drive access, then `memhub sync commit` that dir. Skip silently if sync is disabled; don't run `commit` if the upload failed.
 - End with what was recorded, what was skipped, and any pending review items.

@@ -9,7 +9,7 @@ pub use args::{
     Cli, CommandCommand, CommandKind, DecisionCommand, DocCommand, EvalCommand, FactCommand,
     GlobalCommand, IndexCommand, IntegrationsCommand, MetricsCommand, NarrativeCommand,
     NoteCommand, PendingStatus, RecallModeArg, RecallSourceTypeArg, ReviewCommand, StatsWindowArg,
-    TaskCommand, TaskStatus, TopLevelCommand,
+    SyncCommand, TaskCommand, TaskStatus, TopLevelCommand,
 };
 use output::{
     eval_summary_to_json, index_status_to_json, metrics_status_to_json, narrative_entry_to_json,
@@ -1298,6 +1298,222 @@ pub fn run(cli: Cli) -> Result<()> {
                 },
             )?;
         }
+        TopLevelCommand::Sync { command } => match command {
+            SyncCommand::Snapshot { out_dir, json: as_json } => {
+                let summary = commands::sync::snapshot(&cwd, &out_dir)?;
+                if as_json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "project_id": summary.project_id,
+                            "snapshot_path": summary.snapshot_path.display().to_string(),
+                            "manifest_path": summary.manifest_path.display().to_string(),
+                            "schema_version": summary.schema_version,
+                            "logical_version": {
+                                "writes_log_max_id": summary.logical_version.writes_log_max_id,
+                                "writes_log_count": summary.logical_version.writes_log_count,
+                            },
+                            "file_sha256": summary.file_sha256,
+                            "bytes": summary.bytes,
+                        })
+                    );
+                } else {
+                    println!("Wrote memhub snapshot for project '{}'", summary.project_id);
+                    println!("  snapshot: {}", summary.snapshot_path.display());
+                    println!("  manifest: {}", summary.manifest_path.display());
+                    println!("  schema:   {}", summary.schema_version);
+                    println!(
+                        "  logical:  writes_log max_id={} count={}",
+                        summary.logical_version.writes_log_max_id,
+                        summary.logical_version.writes_log_count
+                    );
+                    println!("  size:     {} bytes", summary.bytes);
+                    println!(
+                        "  sha256:   {}",
+                        &summary.file_sha256[..summary.file_sha256.len().min(16)]
+                    );
+                }
+            }
+            SyncCommand::Enable { json: as_json } => {
+                let result = commands::sync::enable(&cwd)?;
+                if as_json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "enabled": true,
+                            "already_enabled": result.already_enabled,
+                            "project_id": result.project_id.as_deref().ok(),
+                            "project_id_error": result.project_id.as_ref().err(),
+                        })
+                    );
+                } else if result.already_enabled {
+                    println!("Cross-machine sync already enabled for this repo.");
+                } else {
+                    println!("Cross-machine sync enabled for this repo.");
+                }
+                match &result.project_id {
+                    Ok(id) => println!("  Drive folder project id: {id}"),
+                    Err(e) => println!(
+                        "  ⚠ {e}\n  set `[sync] project_id` in .memhub/config.toml before syncing"
+                    ),
+                }
+            }
+            SyncCommand::Disable { json: as_json } => {
+                commands::sync::disable(&cwd)?;
+                if as_json {
+                    println!("{}", serde_json::json!({ "enabled": false }));
+                } else {
+                    println!("Cross-machine sync disabled for this repo (marker kept).");
+                }
+            }
+            SyncCommand::Status { json: as_json } => {
+                let s = commands::sync::enablement_status(&cwd)?;
+                if as_json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "enabled": s.enabled,
+                            "project_id": s.project_id.as_deref().ok(),
+                            "project_id_error": s.project_id.as_ref().err(),
+                            "drive_subpath": s.drive_subpath,
+                            "local_schema": s.local_schema,
+                            "local_logical": {
+                                "writes_log_max_id": s.local_logical.writes_log_max_id,
+                                "writes_log_count": s.local_logical.writes_log_count,
+                                "digest": s.local_logical.digest,
+                            },
+                            "marker": s.marker,
+                        })
+                    );
+                } else {
+                    println!("cross-machine sync: {}", if s.enabled { "enabled" } else { "disabled" });
+                    match &s.project_id {
+                        Ok(id) => println!("  project id: {id}"),
+                        Err(e) => println!("  project id: <unresolved> ({e})"),
+                    }
+                    if !s.drive_subpath.is_empty() {
+                        println!("  drive subpath hint: {}", s.drive_subpath);
+                    }
+                    println!("  local schema: {}", s.local_schema);
+                    println!(
+                        "  local logical: max_id={} count={} digest={}",
+                        s.local_logical.writes_log_max_id,
+                        s.local_logical.writes_log_count,
+                        &s.local_logical.digest[..s.local_logical.digest.len().min(12)]
+                    );
+                    match &s.marker {
+                        Some(m) => println!(
+                            "  last sync: {} ({}) baseline digest={}",
+                            m.synced_at,
+                            m.last_action,
+                            &m.baseline.digest[..m.baseline.digest.len().min(12)]
+                        ),
+                        None => println!("  last sync: never"),
+                    }
+                }
+            }
+            SyncCommand::Check { remote, json: as_json } => {
+                let report = commands::sync::check(&cwd, &remote)?;
+                if as_json {
+                    println!("{}", serde_json::to_string(&report)?);
+                } else {
+                    println!("sync status for project '{}'", report.project_id);
+                    println!("  verdict: {}", report.verdict.as_str());
+                    if !report.baseline_present {
+                        println!("  (no prior sync baseline — first sync)");
+                    }
+                    println!(
+                        "  local:  schema={} logical(max_id={}, count={})",
+                        report.local_schema,
+                        report.local_logical.writes_log_max_id,
+                        report.local_logical.writes_log_count
+                    );
+                    match (&report.remote_schema, &report.remote_logical) {
+                        (Some(schema), Some(logical)) => println!(
+                            "  drive:  schema={} logical(max_id={}, count={}){}{}",
+                            schema,
+                            logical.writes_log_max_id,
+                            logical.writes_log_count,
+                            report
+                                .remote_machine_id
+                                .as_deref()
+                                .map(|m| format!("  from {m}"))
+                                .unwrap_or_default(),
+                            report
+                                .remote_created_at
+                                .as_deref()
+                                .map(|t| format!(" @ {t}"))
+                                .unwrap_or_default(),
+                        ),
+                        _ => println!("  drive:  no snapshot found at {}", remote.display()),
+                    }
+                    if let Some(other) = &report.project_id_mismatch {
+                        println!(
+                            "  ⚠ project id mismatch: snapshot is '{other}', not this repo — do NOT adopt"
+                        );
+                    }
+                    if report.schema_blocks_adopt {
+                        println!(
+                            "  ⚠ snapshot schema is newer than this binary — run `memhub upgrade` before adopting"
+                        );
+                    }
+                }
+            }
+            SyncCommand::Adopt { remote, yes, json: as_json } => {
+                let summary = commands::sync::adopt(&cwd, &remote, yes)?;
+                if as_json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "project_id": summary.project_id,
+                            "adopted_from_machine": summary.adopted_from_machine,
+                            "previous_schema": summary.previous_schema,
+                            "new_schema": summary.new_schema,
+                            "baseline": {
+                                "writes_log_max_id": summary.baseline.writes_log_max_id,
+                                "writes_log_count": summary.baseline.writes_log_count,
+                            },
+                            "backup_path": summary.backup_path.display().to_string(),
+                        })
+                    );
+                } else {
+                    println!(
+                        "Adopted Drive snapshot for '{}' (from {})",
+                        summary.project_id, summary.adopted_from_machine
+                    );
+                    if summary.previous_schema != summary.new_schema {
+                        println!(
+                            "  migrated schema {} → {}",
+                            summary.previous_schema, summary.new_schema
+                        );
+                    }
+                    println!("  replaced DB backed up to {}", summary.backup_path.display());
+                    println!("  run `memhub render` to refresh the local view");
+                }
+            }
+            SyncCommand::Commit { remote, json: as_json } => {
+                let summary = commands::sync::commit(&cwd, &remote)?;
+                if as_json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "project_id": summary.project_id,
+                            "baseline": {
+                                "writes_log_max_id": summary.baseline.writes_log_max_id,
+                                "writes_log_count": summary.baseline.writes_log_count,
+                            },
+                        })
+                    );
+                } else {
+                    println!(
+                        "Recorded push baseline for '{}' (logical max_id={}, count={})",
+                        summary.project_id,
+                        summary.baseline.writes_log_max_id,
+                        summary.baseline.writes_log_count
+                    );
+                }
+            }
+        },
         TopLevelCommand::Gc {
             dry_run,
             json: as_json,
