@@ -1,17 +1,19 @@
 ---
 name: catch-up
-description: Pull this repo's memhub DB from the Google Drive sync folder, compare it to local, and (with your approval) adopt the newer state so this machine has memory from sessions on your other machines.
+description: Pull this repo's memhub DB from the Google Drive synced folder, compare it to local, and (with your approval) adopt the newer state so this machine has memory from sessions on your other machines.
 framework: memhub
 framework_version: 1.0.0
 last_updated: 2026-05-22
 ---
 
 Bring this machine's memhub memory up to date with what you did on
-another machine. memhub itself is offline — **you** are the courier:
-you move one file down from Google Drive, and memhub does the compare
-and the (gated) replace on local files. Run this at the **start** of a
-session on a repo you sync across machines. The matching push happens
-at the end of `/wrap-up`.
+another machine. The transport is an **OS-level synced folder** —
+Google Drive for Desktop (macOS/Windows) or an rclone mount (Linux) —
+that mirrors a Drive folder to a local path. memhub stays fully
+offline: it just reads and writes that local path, and Google's app
+syncs the bytes in the background. No network calls, no MCP, no
+base64. Run this at the **start** of a session on a repo you sync
+across machines; the matching push is the tail of `/wrap-up`.
 
 See `docs/reference/memhub-prd-addendum-m10-drive-sync.md` for the
 model: whole-DB snapshot, last-writer-wins, divergence is detected and
@@ -27,41 +29,33 @@ operator-gated.
 `command -v memhub >/dev/null 2>&1 && echo present || echo absent`
 - `absent` → stop. Tell me to put `memhub` on PATH.
 
-**Check 3 — sync enabled.**
+**Check 3 — sync enabled, and resolve the synced folder.**
 Run `memhub sync status --json`.
 - `enabled == false` → stop. Tell me: "Cross-machine sync isn't enabled
   for this repo. Run `memhub sync enable`, then re-run `/catch-up`."
-- If `project_id` is null and `project_id_error` is set (no git
-  remote) → stop and tell me to set `[sync] project_id` in
-  `.memhub/config.toml`.
-- Otherwise keep the `project_id` and `drive_subpath` for the next step.
+- `project_id` null with a `project_id_error` (no git remote) → stop;
+  tell me to set `[sync] project_id` in `.memhub/config.toml`.
+- `drive_subpath` empty → stop; tell me to set `[sync] drive_subpath`
+  to the absolute path of the synced Drive folder on this machine
+  (e.g. `~/Library/CloudStorage/GoogleDrive-<me>/My Drive/memhub-sync`
+  on macOS, `G:\My Drive\memhub-sync` on Windows).
 
-## Download from Drive
-
-Using your Google Drive integration (do **not** ask memhub to do this —
-it has no network access), download both files from the project's sync
-folder into a fresh temp directory, e.g. `/tmp/memhub-catchup-<project_id>/`:
-
-- `<drive_subpath>/memhub/<project_id>/project.sqlite`
-- `<drive_subpath>/memhub/<project_id>/manifest.json`
-
-(`drive_subpath` is the hint from config for where under my Drive the
-memhub folder lives; if empty, ask me where the memhub sync folder is
-the first time.)
-
-If the folder or files don't exist on Drive yet → stop and tell me:
-"No remote snapshot for this project yet — nothing to catch up. Your
-next `/wrap-up` will push the first one." This is the expected first-run
-state, not an error.
+The remote snapshot dir is `REMOTE = <drive_subpath>/memhub/<project_id>`.
+Confirm it exists: `test -d "<REMOTE>" && echo present || echo absent`.
+- `absent` → stop and tell me: "No remote snapshot for this project
+  yet — nothing to catch up. Your next `/wrap-up` will push the first
+  one." Expected first-run state, not an error. (If the Drive app is
+  still syncing, the folder may not have appeared yet — give it a
+  moment.)
 
 ## Compare
 
-Run `memhub sync check <temp-dir> --json`. Read the `verdict` and the
+Run `memhub sync check "<REMOTE>" --json`. Read the `verdict` and the
 guard flags:
 
-- **`project_id_mismatch` is set** → STOP. The downloaded snapshot
-  belongs to a different project (wrong Drive folder). Do not adopt;
-  tell me what id it carries.
+- **`project_id_mismatch` is set** → STOP. The snapshot in that folder
+  belongs to a different project. Do not adopt; tell me what id it
+  carries.
 - **`schema_blocks_adopt` is true** → STOP. The snapshot is from a
   newer memhub than this machine. Tell me to run `memhub upgrade`
   first, then re-run `/catch-up`.
@@ -81,19 +75,19 @@ Only adopt on `drive-ahead` or `diverged`, and only after I confirm.
 
 - **`drive-ahead`**: summarize what's incoming (the `remote` machine id
   and timestamp from the check output) and ask me to confirm. On yes,
-  run `memhub sync adopt <temp-dir> --yes`.
-- **`diverged`**: this is the lossy case. Tell me plainly that both this
-  machine and Drive changed since the last sync, so adopting the Drive
-  copy **discards the local-only changes** made here. Show the local vs
+  run `memhub sync adopt "<REMOTE>" --yes`.
+- **`diverged`**: the lossy case. Tell me plainly that both this machine
+  and Drive changed since the last sync, so adopting the Drive copy
+  **discards the local-only changes** made here. Show the local vs
   drive logical versions. Require an explicit "yes, overwrite local"
-  before running `memhub sync adopt <temp-dir> --yes`. If I'd rather
+  before running `memhub sync adopt "<REMOTE>" --yes`. If I'd rather
   keep local, do nothing — `/wrap-up` will push local up and Drive
   becomes the one that's behind.
 
 `adopt` makes a single safety copy of the replaced DB under
 `.memhub/backups/sync/` before swapping, and refuses on its own if the
-checksum, schema, or project id don't check out — so a bad download
-can't corrupt local.
+checksum, schema, or project id don't check out — so a half-synced or
+wrong file can't corrupt local.
 
 ## After adopting
 
@@ -105,9 +99,10 @@ can't corrupt local.
 
 ## Notes
 
-- This never runs `git` operations and never commits anything. The
-  Drive snapshot carries only memhub's local DB, which is gitignored.
-- memhub stays offline by design; if you can't reach Drive, say so and
-  stop — do not fabricate a verdict.
-- One file each way, manual cadence: `/catch-up` to pull at the start,
-  `/wrap-up` to push at the end. There is no background sync.
+- Never run `git` operations or commits. The snapshot carries only
+  memhub's local DB, which is gitignored.
+- If the synced folder isn't present (Drive app not installed/signed
+  in, or still syncing), say so and stop — do not fabricate a verdict.
+- Manual, one snapshot each way: `/catch-up` pulls at the start,
+  `/wrap-up` pushes at the end. There is no background memhub sync —
+  only Google's app moving the file you wrote.

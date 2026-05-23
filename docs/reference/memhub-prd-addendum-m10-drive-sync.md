@@ -28,10 +28,10 @@ run every session. M10 makes that workflow a one-command session ritual.
 
 | PRD section | Status after addendum | Reason |
 |---|---|---|
-| §3.2 "Local-first" / §3.5 "boring tech" | **Unchanged — load-bearing.** memhub itself stays 100% offline. It never makes a network call, never holds a Drive credential, never speaks OAuth. The sync *transport* is the agent's existing Drive access; memhub only reads and writes **local files**. | M10 §1. |
+| §3.2 "Local-first" / §3.5 "boring tech" | **Unchanged — load-bearing.** memhub itself stays 100% offline. It never makes a network call, never holds a Drive credential, never speaks OAuth. The sync *transport* is an OS-level synced folder (Google Drive for Desktop / rclone); memhub only reads and writes **local files**. | M10 §1. |
 | §3.6 "One DB file = one repo" / "per-machine" | **Relaxed (narrow).** A repo's `.memhub/project.sqlite` may now be pushed to / pulled from an out-of-band Drive folder as an opt-in snapshot. Still one DB per repo per machine; the Drive copy is a transport artifact, not a second live store. | M10 §2. |
-| §4 "Non-goals" — "no cloud" / "no multi-user sync" | **Clarified, not overturned.** This is **single-user, single-DB, multi-machine** sync via a folder the *user already controls*. It is not a server, not multi-user, not real-time, and not a memhub-hosted cloud. memhub stays offline; the agent is the courier. | M10 §1, §9. |
-| §13 "CLI surface" | **Extended.** Adds `memhub sync snapshot\|status\|adopt\|commit`. All operate on local files only. | M10 §5. |
+| §4 "Non-goals" — "no cloud" / "no multi-user sync" | **Clarified, not overturned.** This is **single-user, single-DB, multi-machine** sync via a folder the *user already controls*. It is not a server, not multi-user, not real-time, and not a memhub-hosted cloud. memhub stays offline; an OS-level synced folder moves the bytes. | M10 §1, §9. |
+| §13 "CLI surface" | **Extended.** Adds `memhub sync enable\|disable\|status\|snapshot\|check\|adopt\|commit`. All operate on local files only. | M10 §5. |
 | §16 "Milestones" | **Extended.** "Milestone 10: cross-machine Drive sync" added. | M10. |
 
 The PRD's design principles, other non-goals, export/import (§14),
@@ -43,44 +43,51 @@ is **not** part of a per-project snapshot (§9).
 
 ---
 
-## 1. Architecture: memhub offline, the agent is the courier
+## 1. Architecture: memhub offline, the OS syncs the folder
 
 The defining constraint: **memhub does not grow a network client.** A
 built-in Google Drive client would mean OAuth, token storage, refresh
 handling, an HTTP stack, and a live network dependency — a direct
 assault on "local-first, offline-capable, intentionally boring."
 
-It is also unnecessary. Claude Code and Codex already have Google Drive
-access (MCP). So the division of labor is:
+It is also unnecessary, because the transport is an **OS-level synced
+folder**: Google Drive for Desktop on macOS/Windows, or an `rclone`
+mount on Linux, mirrors a Drive folder to a local path. So the division
+of labor is:
 
 - **memhub (offline core)** provides local-file commands: produce a
   clean snapshot, compare a snapshot against the local DB, adopt a
   snapshot, and record that a sync happened. Every one of these reads
   or writes only the local filesystem.
-- **The skills (couriers)** use the agent's Drive access to move one
-  file in each direction, and call the memhub commands around it.
+- **The OS Drive client** moves the bytes up and down in the
+  background. memhub writes the snapshot *into* the synced folder and
+  reads it back from there; it never knows the folder is special.
+- **The skills** just point the memhub commands at
+  `<drive_subpath>/memhub/<project_id>/` — no temp copy, no upload step.
 
-memhub never knows or cares *how* the file reached the local disk —
-Drive MCP, `rclone`, or a synced Drive desktop folder all work
-identically. This is also what makes the design agent-neutral: it
-answers OpenCode for free, since any agent that can move a file can
-drive the same offline commands.
+**Why not the Drive MCP connector?** (Decision 104.) The agent's Drive
+connector *can* read and write files, but every byte travels through
+the model context as base64: the ~2.8 MB whole-DB snapshot is ~987K
+tokens per push *and* per pull — past tool-result/context limits and
+prohibitively expensive. The snapshot model assumes out-of-band byte
+movement, which is exactly what a synced folder provides for free. The
+design stays agent-neutral (it answers OpenCode too) because nothing
+depends on any agent's Drive integration — only on a local path.
 
 ```
-┌─ /catch-up (skill) ──────────────────────────────────────┐
-│  agent Drive-MCP: download Drive/<id>/project.sqlite → tmp │
-│  memhub sync status <tmp>        # offline: compare        │
-│  → verdict: up-to-date | drive-ahead | local-ahead |       │
-│             diverged                                       │
-│  on operator y:  memhub sync adopt <tmp>   # offline       │
-└────────────────────────────────────────────────────────────┘
+┌─ /catch-up (skill) ──────────────────────────────────────────┐
+│  REMOTE = <drive_subpath>/memhub/<project_id>   (synced folder)│
+│  memhub sync check  REMOTE        # offline: compare           │
+│  → verdict: up-to-date | drive-ahead | local-ahead | diverged  │
+│  on operator y:  memhub sync adopt REMOTE --yes   # offline    │
+└────────────────────────────────────────────────────────────────┘
 
-┌─ /wrap-up (skill, extended) ─────────────────────────────┐
-│  ...normal wrap-up + memhub render...                     │
-│  memhub sync snapshot <tmp>       # offline: clean backup  │
-│  agent Drive-MCP: upload <tmp> → Drive/<id>/project.sqlite │
-│  memhub sync commit <tmp>         # offline: update marker │
-└────────────────────────────────────────────────────────────┘
+┌─ /wrap-up (skill, extended) ─────────────────────────────────┐
+│  ...normal wrap-up + memhub render...                         │
+│  memhub sync snapshot REMOTE      # offline: clean write       │
+│  memhub sync commit   REMOTE      # offline: update marker     │
+│  (Google Drive for Desktop / rclone uploads REMOTE in the bg)  │
+└────────────────────────────────────────────────────────────────┘
 ```
 
 ## 2. Sync model: snapshot, last-writer-wins, divergence-gated
@@ -91,7 +98,7 @@ merge** in M10 (see §8 for why, and what a merge model would cost).
 State is tracked with a **last-sync marker** stored locally under
 `.memhub/` (gitignored, per-machine). The marker records the logical
 version (§3) of the DB the last time this machine successfully synced,
-for both sides. `sync status` then reduces to git-style fast-forward
+for both sides. `sync check` then reduces to git-style fast-forward
 logic:
 
 | local changed since marker? | Drive changed since marker? | verdict | action |
@@ -163,21 +170,24 @@ The manifest's `schema_version` enables the safety check in §6; its
 
 | Command | Behavior |
 |---|---|
-| `memhub sync snapshot <out>` | Emit a **consistent** single-file copy of the DB (SQLite backup API / `VACUUM INTO`, never a raw `cp` of a live WAL'd file — see §7) plus `manifest.json`. |
-| `memhub sync status <snapshot>` | Compare the given snapshot against the local DB and the marker; print `up-to-date` / `drive-ahead` / `local-ahead` / `diverged` and the schema-version verdict (§6). `--json` for skills. |
-| `memhub sync adopt <snapshot>` | Replace the local DB with the snapshot. **Refuses without `--yes`** (mirrors `import --force`). Records the new marker. |
-| `memhub sync commit <snapshot>` | After a successful push, record that the local DB == this snapshot in the marker, so the next `status` is `up-to-date`. |
+| `memhub sync enable` / `disable` | Per-repo opt-in (mirrors `memhub global enable`). Off by default. |
+| `memhub sync status` | Show enablement, the Drive-folder project id, local logical version, and the last-sync marker. No Drive comparison. |
+| `memhub sync snapshot <dir>` | Emit a **consistent** single-file copy of the DB (`VACUUM INTO`, never a raw `cp` of a live WAL'd file — see §7) plus `manifest.json` into `<dir>`. Written directly into the synced folder. |
+| `memhub sync check <dir>` | Compare the snapshot in `<dir>` against the local DB and the marker; print `up-to-date` / `drive-ahead` / `local-ahead` / `diverged` plus the schema-version and project-id guard flags (§6). `--json` for skills. |
+| `memhub sync adopt <dir>` | Replace the local DB with the snapshot in `<dir>`. **Refuses without `--yes`** (mirrors `import --force`); hard-refuses on project-id mismatch, newer schema, or checksum mismatch; backs up the replaced DB under `.memhub/backups/sync/`. Records the new marker. |
+| `memhub sync commit <dir>` | After a push, record that the local DB == that snapshot in the marker, so the next `check` is `up-to-date`. |
 
 `[sync]` config, **off by default**, baseline ships disabled in
 `config.example.toml` (mirrors `[metrics]` and `[global]` opt-in).
-Stores the Drive folder identifier and the optional `project_id`
-fallback.
+`enabled` and `drive_subpath` (the absolute synced-folder path) are
+per-machine; `project_id` is normally derived from the git remote and
+left empty (set only when there is no remote).
 
 ## 6. Schema-version coupling
 
 A raw `.sqlite` carries a schema version, and migrations are
 **forward-only** — an older binary cannot open a newer-schema DB. So
-`sync status` reads the manifest's `schema_version`:
+`sync check` reads the manifest's `schema_version`:
 
 - snapshot schema **≤** local → fine; `open_project` auto-migrates
   forward on adopt.
@@ -248,4 +258,4 @@ too lossy in practice.
 | Torn/partial Drive download adopted as truth. | `file_sha256` in the manifest verified before adopt (§4). |
 | Older binary pulls a newer-schema snapshot. | `schema_version` check refuses adopt and points at `memhub upgrade` (§6). |
 | Live-WAL snapshot captures a torn DB. | Backup API / `VACUUM INTO`, never a raw copy (§7). |
-| memhub accreting a network stack. | memhub stays offline; the agent is the only network actor (§1). |
+| memhub accreting a network stack. | memhub stays offline; the OS Drive client is the only network actor (§1). |

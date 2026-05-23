@@ -178,25 +178,25 @@ Surface what got written and any backup paths.
 
 ## Cross-machine sync push (only if enabled)
 
-If this repo syncs across machines, push the freshly-updated DB to
-Google Drive so other machines can `/catch-up`. memhub stays offline —
-Codex is the courier.
+If this repo syncs across machines, push the freshly-updated DB into
+the synced Drive folder so other machines can `/catch-up`. The
+transport is an OS-level synced folder (Google Drive for Desktop, or an
+rclone mount on Linux); memhub just writes a local path and Google's
+app uploads it.
 
 1. `memhub sync status --json`. If `enabled` is false, **skip this
-   section silently**.
-2. If enabled, snapshot to a temp dir:
-   `memhub sync snapshot /tmp/memhub-push-<project_id>/` (emits
-   `project.sqlite` + `manifest.json`).
-3. Using your Google Drive access (not memhub), upload both files to
-   `<drive_subpath>/memhub/<project_id>/`, overwriting the prior
-   snapshot. Take `project_id` / `drive_subpath` from the status JSON;
-   if `drive_subpath` is empty, ask the user once.
-4. On a successful upload, run
-   `memhub sync commit /tmp/memhub-push-<project_id>/` so the next
-   `/catch-up` reads `up-to-date`.
+   section silently**. Otherwise read `project_id` / `drive_subpath`;
+   if `drive_subpath` is empty, ask the user once for the absolute path
+   of the synced folder and tell them to set `[sync] drive_subpath`.
+2. Snapshot **directly into the synced folder**:
+   `memhub sync snapshot "<drive_subpath>/memhub/<project_id>"` (emits
+   `project.sqlite` + `manifest.json`; `VACUUM INTO` writes a complete
+   file, so no half-written upload).
+3. Record the baseline so the next `/catch-up` reads `up-to-date`:
+   `memhub sync commit "<drive_subpath>/memhub/<project_id>"`.
 
-If the upload fails, say so and **do not** run `commit` (it would
-record a push that didn't land). The local DB is unaffected.
+If `sync snapshot` fails (e.g. the synced folder doesn't exist yet),
+say so and **do not** run `commit`. The local DB is unaffected.
 
 ## Reminder, not a commit
 

@@ -172,28 +172,29 @@ Surface what got written and any backup paths.
 
 ## Cross-machine sync push (only if enabled)
 
-If this repo syncs across machines, push the freshly-updated DB to
-Google Drive so your other machines can `/catch-up`. memhub stays
-offline — you are the courier.
+If this repo syncs across machines, push the freshly-updated DB into
+the synced Drive folder so your other machines can `/catch-up`. The
+transport is an OS-level synced folder (Google Drive for Desktop, or an
+rclone mount on Linux); memhub just writes a local path and Google's
+app uploads it in the background.
 
 1. Run `memhub sync status --json`. If `enabled` is false, **skip this
-   whole section silently** — most repos don't sync.
-2. If enabled, write a clean snapshot to a temp dir:
-   `memhub sync snapshot /tmp/memhub-push-<project_id>/`. This emits
-   `project.sqlite` + `manifest.json`.
-3. Using your Google Drive integration (not memhub — it has no
-   network), upload both files to
-   `<drive_subpath>/memhub/<project_id>/`, overwriting the previous
-   snapshot. Use `project_id` / `drive_subpath` from the status JSON;
-   if `drive_subpath` is empty, ask me once where the memhub sync
-   folder lives.
-4. After the upload succeeds, run
-   `memhub sync commit /tmp/memhub-push-<project_id>/` so the next
-   `/catch-up` on this machine reads `up-to-date`.
+   whole section silently** — most repos don't sync. Otherwise read
+   `project_id` and `drive_subpath`; if `drive_subpath` is empty, ask
+   me once for the absolute path of the synced Drive folder on this
+   machine and tell me to set `[sync] drive_subpath` in
+   `.memhub/config.toml`.
+2. Write the snapshot **directly into the synced folder**:
+   `memhub sync snapshot "<drive_subpath>/memhub/<project_id>"`. This
+   emits `project.sqlite` + `manifest.json`, which Google's app then
+   syncs up. (`VACUUM INTO` writes a complete file, so there's no
+   half-written upload.)
+3. Record the baseline so the next `/catch-up` here reads `up-to-date`:
+   `memhub sync commit "<drive_subpath>/memhub/<project_id>"`.
 
-If the upload fails, say so and stop — do **not** run `commit`, since
-that would falsely record a push that didn't land. The local DB is
-unaffected either way.
+If `sync snapshot` fails (e.g. the synced folder doesn't exist yet —
+Drive app not installed/signed in), say so and stop; do **not** run
+`commit`. The local DB is unaffected either way.
 
 ## Reminder, not a commit
 

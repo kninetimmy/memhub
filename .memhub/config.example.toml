@@ -161,14 +161,17 @@ include_docs_in_default = false
 
 # Cross-machine Drive sync (M10). Off by default and per-repo; opt in
 # via `memhub sync enable`. memhub itself stays OFFLINE — the `sync`
-# commands (snapshot/check/adopt/commit) operate on local files only,
-# and the agent's Drive access is the transport. The Drive-folder
-# project id is normally derived from the git remote URL, so leave
-# project_id empty; set it only for a repo with no git remote.
-# drive_subpath is a human hint for the courier skill (where under your
-# Drive the memhub folder lives); memhub does not read it. Keep
-# `enabled = false` in this committed baseline — opting in is a
-# per-machine choice that lives in the local config.toml.
+# commands (snapshot/check/adopt/commit) operate on local files only.
+# The transport is an OS-level synced folder: Google Drive for Desktop
+# on macOS/Windows, or an rclone mount on Linux. The project id is
+# normally derived from the git remote URL, so leave project_id empty;
+# set it only for a repo with no git remote. drive_subpath is the
+# ABSOLUTE local path of the synced Drive folder ON THIS MACHINE (e.g.
+# ~/Library/CloudStorage/GoogleDrive-<you>/My Drive/memhub-sync on
+# macOS, G:\My Drive\memhub-sync on Windows) — the snapshot is written
+# to/read from <drive_subpath>/memhub/<project_id>/. Both `enabled` and
+# `drive_subpath` are PER-MACHINE: keep them out of this committed
+# baseline and set them in the local config.toml.
 [sync]
 enabled = false
 project_id = ""
