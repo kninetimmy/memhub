@@ -367,6 +367,89 @@ impl MemhubServer {
         .map_err(map_tool_error)?;
         Ok(Json(RecallToolResponse::from(response)))
     }
+
+    /// Resolve a `sync_*` tool's target dir: an explicit `remote`
+    /// override if given, else the canonical
+    /// `<drive_subpath>/memhub/<project_id>` from config.
+    fn resolve_sync_remote(
+        &self,
+        remote: Option<&str>,
+    ) -> std::result::Result<PathBuf, McpError> {
+        match remote {
+            Some(p) if !p.trim().is_empty() => Ok(PathBuf::from(p)),
+            _ => commands::sync::default_remote_dir(&self.start).map_err(map_tool_error),
+        }
+    }
+
+    async fn sync_status_impl(
+        &self,
+    ) -> std::result::Result<Json<SyncStatusToolResponse>, McpError> {
+        let s = commands::sync::enablement_status(&self.start).map_err(map_tool_error)?;
+        Ok(Json(SyncStatusToolResponse::from(s)))
+    }
+
+    async fn sync_snapshot_impl(
+        &self,
+        Parameters(params): Parameters<SyncRemoteParams>,
+    ) -> std::result::Result<Json<SyncSnapshotToolResponse>, McpError> {
+        let out_dir = self.resolve_sync_remote(params.remote.as_deref())?;
+        let summary = commands::sync::snapshot(&self.start, &out_dir).map_err(map_tool_error)?;
+        Ok(Json(SyncSnapshotToolResponse::from(summary)))
+    }
+
+    async fn sync_check_impl(
+        &self,
+        Parameters(params): Parameters<SyncRemoteParams>,
+    ) -> std::result::Result<Json<SyncCheckToolResponse>, McpError> {
+        let remote = self.resolve_sync_remote(params.remote.as_deref())?;
+        let report = commands::sync::check(&self.start, &remote).map_err(map_tool_error)?;
+        Ok(Json(SyncCheckToolResponse::from((
+            report,
+            remote.display().to_string(),
+        ))))
+    }
+
+    async fn sync_adopt_impl(
+        &self,
+        Parameters(params): Parameters<SyncAdoptParams>,
+    ) -> std::result::Result<Json<SyncAdoptToolResponse>, McpError> {
+        let remote = self.resolve_sync_remote(params.remote.as_deref())?;
+        // Destructive overwrite of the local DB. The MCP gate is an
+        // explicit `confirm: true` (maps to the CLI `--yes`); without
+        // it, return the would-change verdict so the agent surfaces it
+        // to the user before any swap (decision 103: operator-gated).
+        if !params.confirm.unwrap_or(false) {
+            let report = commands::sync::check(&self.start, &remote).map_err(map_tool_error)?;
+            return Ok(Json(SyncAdoptToolResponse {
+                adopted: false,
+                reason: Some(
+                    "adopt overwrites the local DB with the Drive snapshot; re-call with \
+                     confirm=true after the user approves"
+                        .to_string(),
+                ),
+                verdict: Some(report.verdict.as_str().to_string()),
+                project_id_mismatch: report.project_id_mismatch,
+                schema_blocks_adopt: Some(report.schema_blocks_adopt),
+                project_id: None,
+                adopted_from_machine: None,
+                previous_schema: None,
+                new_schema: None,
+                baseline: None,
+                backup_path: None,
+            }));
+        }
+        let summary = commands::sync::adopt(&self.start, &remote, true).map_err(map_tool_error)?;
+        Ok(Json(SyncAdoptToolResponse::from(summary)))
+    }
+
+    async fn sync_commit_impl(
+        &self,
+        Parameters(params): Parameters<SyncRemoteParams>,
+    ) -> std::result::Result<Json<SyncCommitToolResponse>, McpError> {
+        let remote = self.resolve_sync_remote(params.remote.as_deref())?;
+        let summary = commands::sync::commit(&self.start, &remote).map_err(map_tool_error)?;
+        Ok(Json(SyncCommitToolResponse::from(summary)))
+    }
 }
 
 #[tool_router(router = tool_router)]
@@ -572,6 +655,58 @@ impl MemhubServer {
     )]
     async fn metrics(&self) -> std::result::Result<Json<MetricsToolResponse>, McpError> {
         self.metrics_impl().await
+    }
+
+    #[tool(
+        name = "sync_status",
+        description = "Cross-machine Drive sync (M10): show enablement, the Drive-folder project id, the resolved remote dir (<drive_subpath>/memhub/<project_id>), the local logical version, and the last-sync marker. No Drive comparison. memhub stays offline; the synced folder (Google Drive for Desktop) is the transport."
+    )]
+    async fn sync_status(&self) -> std::result::Result<Json<SyncStatusToolResponse>, McpError> {
+        self.sync_status_impl().await
+    }
+
+    #[tool(
+        name = "sync_snapshot",
+        description = "Cross-machine Drive sync (M10): write a consistent single-file DB snapshot + manifest into the synced Drive folder. With the OS-synced-folder transport this IS the push — follow with sync_commit to record the baseline. Defaults the target to <drive_subpath>/memhub/<project_id>; pass `remote` to override. Requires `memhub sync enable` for this repo."
+    )]
+    async fn sync_snapshot(
+        &self,
+        params: Parameters<SyncRemoteParams>,
+    ) -> std::result::Result<Json<SyncSnapshotToolResponse>, McpError> {
+        self.sync_snapshot_impl(params).await
+    }
+
+    #[tool(
+        name = "sync_check",
+        description = "Cross-machine Drive sync (M10): compare the local DB against the Drive snapshot and report the fast-forward verdict (up-to-date / local-ahead / drive-ahead / diverged / no-remote). Reads only the manifest, never the multi-MB snapshot. Surface `project_id_mismatch` and `schema_blocks_adopt` to the user — both block a safe adopt. Defaults to <drive_subpath>/memhub/<project_id>; pass `remote` to override."
+    )]
+    async fn sync_check(
+        &self,
+        params: Parameters<SyncRemoteParams>,
+    ) -> std::result::Result<Json<SyncCheckToolResponse>, McpError> {
+        self.sync_check_impl(params).await
+    }
+
+    #[tool(
+        name = "sync_adopt",
+        description = "Cross-machine Drive sync (M10): replace the local DB with the Drive snapshot (the pull). DESTRUCTIVE and lossy on a diverged history. Gated: without `confirm=true` it returns the would-change verdict and refuses — surface that to the user and only re-call with confirm=true after they approve. Hard refusals regardless of confirm: project-id mismatch, a snapshot schema newer than this binary (run `memhub upgrade`), or a checksum that disagrees with the manifest. Defaults to <drive_subpath>/memhub/<project_id>; pass `remote` to override."
+    )]
+    async fn sync_adopt(
+        &self,
+        params: Parameters<SyncAdoptParams>,
+    ) -> std::result::Result<Json<SyncAdoptToolResponse>, McpError> {
+        self.sync_adopt_impl(params).await
+    }
+
+    #[tool(
+        name = "sync_commit",
+        description = "Cross-machine Drive sync (M10): record that the local DB now equals the just-pushed snapshot, so the next sync_check reads up-to-date. Call after sync_snapshot. Defaults to <drive_subpath>/memhub/<project_id>; pass `remote` to override."
+    )]
+    async fn sync_commit(
+        &self,
+        params: Parameters<SyncRemoteParams>,
+    ) -> std::result::Result<Json<SyncCommitToolResponse>, McpError> {
+        self.sync_commit_impl(params).await
     }
 }
 
@@ -1166,6 +1301,195 @@ impl From<RecallResponse> for RecallToolResponse {
                 matcher: value.matcher,
                 elapsed_ms: u128_to_i64(value.elapsed_ms),
             },
+        }
+    }
+}
+
+// ── Cross-machine Drive sync (M10) tool shapes ──────────────────────
+
+/// Logical content version, flattened for the MCP schema.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct LogicalVersionJson {
+    writes_log_max_id: i64,
+    writes_log_count: i64,
+    digest: String,
+}
+
+impl From<commands::sync::LogicalVersion> for LogicalVersionJson {
+    fn from(v: commands::sync::LogicalVersion) -> Self {
+        Self {
+            writes_log_max_id: v.writes_log_max_id,
+            writes_log_count: v.writes_log_count,
+            digest: v.digest,
+        }
+    }
+}
+
+/// Optional explicit remote dir. Omit to use the canonical
+/// `<drive_subpath>/memhub/<project_id>` derived from config.
+#[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
+struct SyncRemoteParams {
+    remote: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
+struct SyncAdoptParams {
+    remote: Option<String>,
+    /// Must be `true` to perform the destructive overwrite. Without it
+    /// the tool returns the would-change verdict and refuses.
+    confirm: Option<bool>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct SyncStatusToolResponse {
+    enabled: bool,
+    project_id: Option<String>,
+    project_id_error: Option<String>,
+    drive_subpath: String,
+    /// Canonical `<drive_subpath>/memhub/<project_id>` push/pull dir.
+    remote_dir: Option<String>,
+    remote_dir_error: Option<String>,
+    local_schema: String,
+    local_logical: LogicalVersionJson,
+    last_sync_at: Option<String>,
+    last_sync_action: Option<String>,
+}
+
+impl From<commands::sync::SyncStatus> for SyncStatusToolResponse {
+    fn from(s: commands::sync::SyncStatus) -> Self {
+        let (project_id, project_id_error) = match s.project_id {
+            Ok(id) => (Some(id), None),
+            Err(e) => (None, Some(e)),
+        };
+        let (remote_dir, remote_dir_error) = match s.remote_dir {
+            Ok(d) => (Some(d), None),
+            Err(e) => (None, Some(e)),
+        };
+        Self {
+            enabled: s.enabled,
+            project_id,
+            project_id_error,
+            drive_subpath: s.drive_subpath,
+            remote_dir,
+            remote_dir_error,
+            local_schema: s.local_schema,
+            local_logical: s.local_logical.into(),
+            last_sync_at: s.marker.as_ref().map(|m| m.synced_at.clone()),
+            last_sync_action: s.marker.map(|m| m.last_action),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct SyncSnapshotToolResponse {
+    project_id: String,
+    snapshot_path: String,
+    manifest_path: String,
+    schema_version: String,
+    logical_version: LogicalVersionJson,
+    file_sha256: String,
+    bytes: i64,
+}
+
+impl From<commands::sync::SnapshotSummary> for SyncSnapshotToolResponse {
+    fn from(s: commands::sync::SnapshotSummary) -> Self {
+        Self {
+            project_id: s.project_id,
+            snapshot_path: s.snapshot_path.display().to_string(),
+            manifest_path: s.manifest_path.display().to_string(),
+            schema_version: s.schema_version,
+            logical_version: s.logical_version.into(),
+            file_sha256: s.file_sha256,
+            bytes: s.bytes as i64,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct SyncCheckToolResponse {
+    /// `up-to-date` | `local-ahead` | `drive-ahead` | `diverged` | `no-remote`.
+    verdict: String,
+    baseline_present: bool,
+    project_id: String,
+    remote_dir: String,
+    local_schema: String,
+    local_logical: LogicalVersionJson,
+    remote_schema: Option<String>,
+    remote_logical: Option<LogicalVersionJson>,
+    /// Snapshot schema is newer than this binary — adopt is refused;
+    /// run `memhub upgrade` first.
+    schema_blocks_adopt: bool,
+    /// Set when the snapshot is for a different project — do NOT adopt.
+    project_id_mismatch: Option<String>,
+    remote_machine_id: Option<String>,
+    remote_created_at: Option<String>,
+}
+
+impl From<(commands::sync::CheckReport, String)> for SyncCheckToolResponse {
+    fn from((r, remote_dir): (commands::sync::CheckReport, String)) -> Self {
+        Self {
+            verdict: r.verdict.as_str().to_string(),
+            baseline_present: r.baseline_present,
+            project_id: r.project_id,
+            remote_dir,
+            local_schema: r.local_schema,
+            local_logical: r.local_logical.into(),
+            remote_schema: r.remote_schema,
+            remote_logical: r.remote_logical.map(Into::into),
+            schema_blocks_adopt: r.schema_blocks_adopt,
+            project_id_mismatch: r.project_id_mismatch,
+            remote_machine_id: r.remote_machine_id,
+            remote_created_at: r.remote_created_at,
+        }
+    }
+}
+
+/// Adopt result. `adopted=false` is the confirm-gate refusal (carries
+/// the would-change verdict); `adopted=true` carries the swap summary.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct SyncAdoptToolResponse {
+    adopted: bool,
+    reason: Option<String>,
+    verdict: Option<String>,
+    project_id_mismatch: Option<String>,
+    schema_blocks_adopt: Option<bool>,
+    project_id: Option<String>,
+    adopted_from_machine: Option<String>,
+    previous_schema: Option<String>,
+    new_schema: Option<String>,
+    baseline: Option<LogicalVersionJson>,
+    backup_path: Option<String>,
+}
+
+impl From<commands::sync::AdoptSummary> for SyncAdoptToolResponse {
+    fn from(s: commands::sync::AdoptSummary) -> Self {
+        Self {
+            adopted: true,
+            reason: None,
+            verdict: None,
+            project_id_mismatch: None,
+            schema_blocks_adopt: None,
+            project_id: Some(s.project_id),
+            adopted_from_machine: Some(s.adopted_from_machine),
+            previous_schema: Some(s.previous_schema),
+            new_schema: Some(s.new_schema),
+            baseline: Some(s.baseline.into()),
+            backup_path: Some(s.backup_path.display().to_string()),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct SyncCommitToolResponse {
+    project_id: String,
+    baseline: LogicalVersionJson,
+}
+
+impl From<commands::sync::CommitSummary> for SyncCommitToolResponse {
+    fn from(s: commands::sync::CommitSummary) -> Self {
+        Self {
+            project_id: s.project_id,
+            baseline: s.baseline.into(),
         }
     }
 }
@@ -2239,5 +2563,63 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].input_tokens, 1000);
         assert_eq!(sessions[0].recall_calls, 3);
+    }
+
+    /// Enable sync with a pinned project id + drive subpath so the
+    /// remote dir resolves without a git remote.
+    fn enable_sync_for(temp: &std::path::Path, drive: &std::path::Path) {
+        let ctx = db::open_project(temp).expect("open");
+        let mut cfg = ctx.config.clone();
+        cfg.sync.enabled = true;
+        cfg.sync.project_id = "mcp-test-proj".to_string();
+        cfg.sync.drive_subpath = drive.display().to_string();
+        cfg.save(&ctx.paths.config_path).expect("save config");
+    }
+
+    #[test]
+    fn mcp_sync_status_reports_resolved_remote_dir() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let drive = temp.path().join("drive");
+        enable_sync_for(temp.path(), &drive);
+
+        let server = MemhubServer::new(temp.path().to_path_buf());
+        let resp = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(server.sync_status_impl())
+            .expect("sync_status");
+
+        assert!(resp.0.enabled);
+        let remote = resp.0.remote_dir.expect("remote_dir resolved");
+        assert!(
+            remote.ends_with(&format!("memhub{}mcp-test-proj", std::path::MAIN_SEPARATOR)),
+            "remote dir is <drive>/memhub/<project_id>: {remote}"
+        );
+    }
+
+    #[test]
+    fn mcp_sync_adopt_refuses_without_confirm() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let drive = temp.path().join("drive");
+        enable_sync_for(temp.path(), &drive);
+
+        let server = MemhubServer::new(temp.path().to_path_buf());
+        let resp = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(server.sync_adopt_impl(Parameters(SyncAdoptParams {
+                remote: None,
+                confirm: None,
+            })))
+            .expect("sync_adopt");
+
+        assert!(!resp.0.adopted, "must refuse without confirm=true");
+        assert!(resp.0.reason.is_some(), "refusal carries a reason");
+        // No snapshot in the drive folder yet → verdict is no-remote.
+        assert_eq!(resp.0.verdict.as_deref(), Some("no-remote"));
     }
 }

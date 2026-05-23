@@ -294,8 +294,9 @@ pub enum SyncCommand {
     /// the given directory (for the courier to upload to Drive).
     Snapshot {
         /// Output directory; `project.sqlite` and `manifest.json` are
-        /// written inside it.
-        out_dir: PathBuf,
+        /// written inside it. Omit to use the canonical
+        /// `<drive_subpath>/memhub/<project_id>` from config.
+        out_dir: Option<PathBuf>,
         #[arg(long)]
         json: bool,
     },
@@ -320,8 +321,9 @@ pub enum SyncCommand {
     /// drive-ahead / diverged). Reads only the manifest.
     Check {
         /// Directory holding the downloaded `project.sqlite` +
-        /// `manifest.json` (or a path to `manifest.json`).
-        remote: PathBuf,
+        /// `manifest.json` (or a path to `manifest.json`). Omit to use
+        /// the canonical `<drive_subpath>/memhub/<project_id>` from config.
+        remote: Option<PathBuf>,
         #[arg(long)]
         json: bool,
     },
@@ -330,8 +332,9 @@ pub enum SyncCommand {
     /// schema, or a checksum that disagrees with the manifest.
     Adopt {
         /// Directory holding the downloaded `project.sqlite` +
-        /// `manifest.json` (or a path to `manifest.json`).
-        remote: PathBuf,
+        /// `manifest.json` (or a path to `manifest.json`). Omit to use
+        /// the canonical `<drive_subpath>/memhub/<project_id>` from config.
+        remote: Option<PathBuf>,
         /// Confirm the destructive overwrite of the local DB.
         #[arg(long)]
         yes: bool,
@@ -343,8 +346,9 @@ pub enum SyncCommand {
     /// upload.
     Commit {
         /// Directory holding the pushed `project.sqlite` +
-        /// `manifest.json` (or a path to `manifest.json`).
-        remote: PathBuf,
+        /// `manifest.json` (or a path to `manifest.json`). Omit to use
+        /// the canonical `<drive_subpath>/memhub/<project_id>` from config.
+        remote: Option<PathBuf>,
         #[arg(long)]
         json: bool,
     },

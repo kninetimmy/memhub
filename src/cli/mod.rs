@@ -1300,6 +1300,10 @@ pub fn run(cli: Cli) -> Result<()> {
         }
         TopLevelCommand::Sync { command } => match command {
             SyncCommand::Snapshot { out_dir, json: as_json } => {
+                let out_dir = match out_dir {
+                    Some(p) => p,
+                    None => commands::sync::default_remote_dir(&cwd)?,
+                };
                 let summary = commands::sync::snapshot(&cwd, &out_dir)?;
                 if as_json {
                     println!(
@@ -1376,6 +1380,8 @@ pub fn run(cli: Cli) -> Result<()> {
                             "project_id": s.project_id.as_deref().ok(),
                             "project_id_error": s.project_id.as_ref().err(),
                             "drive_subpath": s.drive_subpath,
+                            "remote_dir": s.remote_dir.as_deref().ok(),
+                            "remote_dir_error": s.remote_dir.as_ref().err(),
                             "local_schema": s.local_schema,
                             "local_logical": {
                                 "writes_log_max_id": s.local_logical.writes_log_max_id,
@@ -1393,6 +1399,10 @@ pub fn run(cli: Cli) -> Result<()> {
                     }
                     if !s.drive_subpath.is_empty() {
                         println!("  drive subpath hint: {}", s.drive_subpath);
+                    }
+                    match &s.remote_dir {
+                        Ok(dir) => println!("  remote dir: {dir}"),
+                        Err(e) => println!("  remote dir: <unresolved> ({e})"),
                     }
                     println!("  local schema: {}", s.local_schema);
                     println!(
@@ -1413,6 +1423,10 @@ pub fn run(cli: Cli) -> Result<()> {
                 }
             }
             SyncCommand::Check { remote, json: as_json } => {
+                let remote = match remote {
+                    Some(p) => p,
+                    None => commands::sync::default_remote_dir(&cwd)?,
+                };
                 let report = commands::sync::check(&cwd, &remote)?;
                 if as_json {
                     println!("{}", serde_json::to_string(&report)?);
@@ -1460,6 +1474,10 @@ pub fn run(cli: Cli) -> Result<()> {
                 }
             }
             SyncCommand::Adopt { remote, yes, json: as_json } => {
+                let remote = match remote {
+                    Some(p) => p,
+                    None => commands::sync::default_remote_dir(&cwd)?,
+                };
                 let summary = commands::sync::adopt(&cwd, &remote, yes)?;
                 if as_json {
                     println!(
@@ -1492,6 +1510,10 @@ pub fn run(cli: Cli) -> Result<()> {
                 }
             }
             SyncCommand::Commit { remote, json: as_json } => {
+                let remote = match remote {
+                    Some(p) => p,
+                    None => commands::sync::default_remote_dir(&cwd)?,
+                };
                 let summary = commands::sync::commit(&cwd, &remote)?;
                 if as_json {
                     println!(

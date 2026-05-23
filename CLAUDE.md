@@ -99,6 +99,67 @@ for every machine. Fields that should not drift (deny_list, retrieval
 weights, render output dir, integrations) are documented at the top
 of the example as commit-back-here fields.
 
+## Cross-machine Drive sync
+
+Milestone 10 (design anchor:
+[docs/reference/memhub-prd-addendum-m10-drive-sync.md](docs/reference/memhub-prd-addendum-m10-drive-sync.md))
+makes one user's repo memory follow them between their own machines
+through a synced folder, **without memhub ever going online**. It is
+the export/import flow above, automated and made fast-forward-aware.
+
+**Model (decisions 102/103/104).** Whole-DB **snapshot**, not row
+merge: each push writes a consistent single-file DB copy (`VACUUM
+INTO`) plus a `manifest.json`. Divergence is decided from a **logical
+version** (a digest of the durable content tables, never file bytes —
+SQLite is byte-unstable), so `check` reports a git-style verdict:
+`up-to-date` / `local-ahead` / `drive-ahead` / `diverged` /
+`no-remote`. The single lossy case (both sides changed) is **operator-
+gated**, never automatic. Scope is deliberately **single-user across
+their own machines**: last-writer-wins on a diverged history is an
+accepted cost; no snapshot-history/undo buffer, no multi-user plumbing
+— do not re-propose either (decision 103).
+
+**Transport is an OS-level synced folder, NOT the Drive MCP connector
+(decision 104).** memhub stays fully offline and only reads/writes a
+local path. Google Drive for Desktop (macOS/Windows) or an rclone
+mount (Linux) does the byte movement out of band — so writing a
+snapshot *into* the synced folder *is* the push. (The base64-over-MCP
+courier framing in the addendum is superseded: a 2.8 MB snapshot is
+~987K tokens per transfer.)
+
+**Canonical remote path** is resolved in code (`sync::resolve_remote_dir`),
+no longer hand-concatenated: `<drive_subpath>/memhub/<project_id>`,
+where `drive_subpath` is the absolute synced-folder mount in `[sync]`
+and `project_id` derives from the git remote (or an explicit `[sync]
+project_id` override for a no-remote repo). CLI sync commands default
+to it when the path arg is omitted.
+
+**Per-repo opt-in** (mirrors `memhub global enable`): `memhub sync
+enable`. `enabled` + `drive_subpath` live in `.memhub/config.toml`
+`[sync]`; the tracked `.memhub/config.example.toml` baseline ships
+`enabled = false`. When disabled, every sync command refuses.
+
+Surfaces:
+- CLI: `memhub sync enable|disable|status|snapshot|check|adopt|commit`.
+  A push is `snapshot` then `commit`; a pull is `check` then `adopt
+  --yes`. `status` shows the resolved `remote dir`.
+- MCP (the agent-first surface): `memhub.sync_status`,
+  `memhub.sync_snapshot`, `memhub.sync_check`, `memhub.sync_commit`,
+  and `memhub.sync_adopt`. All default the target to the canonical
+  path; pass `remote` to override. **`sync_adopt` is gated**: it
+  overwrites the local DB (the one destructive op), so without
+  `confirm=true` it returns the would-change verdict and refuses —
+  surface that to the user and only re-call with `confirm=true` after
+  they approve. Hard refusals regardless of confirm: project-id
+  mismatch, a snapshot schema newer than this binary (run `memhub
+  upgrade`), or a checksum that disagrees with the manifest.
+- Skill: `/catch-up` orchestrates the pull side (check → summarize →
+  adopt with your approval).
+
+`known_projects`/registry membership and the M9 global store are
+**unrelated** to sync. Sync state (`[sync]`, the `sync_marker.json`
+baseline) is per-machine and **not** exported by `memhub export`.
+
 ## Project Guardrails
 
 - Local-first, offline-capable, and intentionally boring.

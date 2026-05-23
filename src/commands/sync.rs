@@ -30,6 +30,11 @@ use crate::{MemhubError, Result};
 pub const SNAPSHOT_FILENAME: &str = "project.sqlite";
 pub const MANIFEST_FILENAME: &str = "manifest.json";
 
+/// Sub-namespace inside `[sync] drive_subpath` so memhub owns its own
+/// folder even when the synced directory is shared with other tools.
+/// The canonical layout is `<drive_subpath>/memhub/<project_id>/`.
+pub const DRIVE_NAMESPACE: &str = "memhub";
+
 /// Bumped only on an incompatible manifest shape change. Additive
 /// fields ride on `#[serde(default)]` like the export format.
 pub const MANIFEST_VERSION: u32 = 1;
@@ -646,6 +651,10 @@ pub struct SyncStatus {
     pub enabled: bool,
     pub project_id: std::result::Result<String, String>,
     pub drive_subpath: String,
+    /// Canonical `<drive_subpath>/memhub/<project_id>` push/pull dir, or
+    /// the resolution-error message when `drive_subpath` is unset or the
+    /// project id cannot be derived.
+    pub remote_dir: std::result::Result<String, String>,
     pub local_logical: LogicalVersion,
     pub local_schema: String,
     pub marker: Option<SyncMarker>,
@@ -664,10 +673,14 @@ pub fn enablement_status(start: &Path) -> Result<SyncStatus> {
         |row| row.get(0),
     )?;
     let marker = load_marker(&ctx.paths.memhub_dir)?;
+    let remote_dir = resolve_remote_dir(&ctx.paths.repo_root, &ctx.config.sync)
+        .map(|p| p.display().to_string())
+        .map_err(|e| e.to_string());
     Ok(SyncStatus {
         enabled: ctx.config.sync.enabled,
         project_id,
         drive_subpath: ctx.config.sync.drive_subpath.clone(),
+        remote_dir,
         local_logical,
         local_schema,
         marker,
@@ -703,6 +716,33 @@ pub fn resolve_project_id(repo_root: &Path, cfg: &SyncConfig) -> Result<String> 
                 .into(),
         )),
     }
+}
+
+/// Canonical Drive snapshot directory for this repo:
+/// `<drive_subpath>/memhub/<project_id>`. This is the single source of
+/// truth for the layout the skills used to hand-concatenate in prose.
+/// Errors when `[sync] drive_subpath` is unset or the project id cannot
+/// be resolved (no git remote and no `[sync] project_id` override).
+pub fn resolve_remote_dir(repo_root: &Path, cfg: &SyncConfig) -> Result<PathBuf> {
+    let subpath = cfg.drive_subpath.trim();
+    if subpath.is_empty() {
+        return Err(MemhubError::InvalidInput(
+            "no `[sync] drive_subpath` set in .memhub/config.toml; set it to the absolute \
+             path of the synced Drive folder (e.g. your Google Drive for Desktop mount) \
+             before syncing"
+                .into(),
+        ));
+    }
+    let project_id = resolve_project_id(repo_root, cfg)?;
+    Ok(Path::new(subpath).join(DRIVE_NAMESPACE).join(project_id))
+}
+
+/// Open the project and resolve its canonical remote dir from config.
+/// Used by the CLI no-arg default and the MCP `sync_*` tools so neither
+/// has to reconstruct `<drive_subpath>/memhub/<project_id>` by hand.
+pub fn default_remote_dir(start: &Path) -> Result<PathBuf> {
+    let ctx = db::open_project(start)?;
+    resolve_remote_dir(&ctx.paths.repo_root, &ctx.config.sync)
 }
 
 /// `git -C <root> remote get-url origin`, trimmed. `None` when there is
@@ -897,6 +937,33 @@ mod tests {
         };
         let got = resolve_project_id(Path::new("/nonexistent"), &cfg).expect("override");
         assert_eq!(got, "pinned-id", "override is trimmed and used verbatim");
+    }
+
+    #[test]
+    fn resolve_remote_dir_joins_namespace_and_project_id() {
+        let cfg = SyncConfig {
+            enabled: true,
+            project_id: "pinned-id".into(),
+            drive_subpath: "/mnt/drive/memhub-sync".into(),
+        };
+        let dir = resolve_remote_dir(Path::new("/nonexistent"), &cfg).expect("resolve");
+        assert_eq!(
+            dir,
+            Path::new("/mnt/drive/memhub-sync").join("memhub").join("pinned-id"),
+            "canonical layout is <drive_subpath>/memhub/<project_id>"
+        );
+    }
+
+    #[test]
+    fn resolve_remote_dir_errors_without_drive_subpath() {
+        let cfg = SyncConfig {
+            enabled: true,
+            project_id: "pinned-id".into(),
+            drive_subpath: "   ".into(),
+        };
+        let err = resolve_remote_dir(Path::new("/nonexistent"), &cfg)
+            .expect_err("must require drive_subpath");
+        assert!(matches!(err, MemhubError::InvalidInput(_)));
     }
 
     #[test]
