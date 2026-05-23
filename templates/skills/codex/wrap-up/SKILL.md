@@ -185,15 +185,17 @@ rclone mount on Linux); memhub just writes a local path and Google's
 app uploads it.
 
 1. `memhub sync status --json`. If `enabled` is false, **skip this
-   section silently**. Otherwise read `project_id` / `drive_subpath`;
-   if `drive_subpath` is empty, ask the user once for the absolute path
-   of the synced folder and tell them to set `[sync] drive_subpath`.
-2. Snapshot **directly into the synced folder**:
-   `memhub sync snapshot "<drive_subpath>/memhub/<project_id>"` (emits
-   `project.sqlite` + `manifest.json`; `VACUUM INTO` writes a complete
-   file, so no half-written upload).
+   section silently**. If `remote_dir_error` is set (usually an empty
+   `drive_subpath`), ask the user once for the absolute path of the
+   synced folder and tell them to set `[sync] drive_subpath`. Otherwise
+   the resolved `remote_dir` is the target.
+2. Snapshot **directly into the synced folder**: `memhub sync snapshot`
+   — omit the path; it defaults to the canonical
+   `<drive_subpath>/memhub/<project_id>` (emits `project.sqlite` +
+   `manifest.json`; `VACUUM INTO` writes a complete file, so no
+   half-written upload).
 3. Record the baseline so the next `/catch-up` reads `up-to-date`:
-   `memhub sync commit "<drive_subpath>/memhub/<project_id>"`.
+   `memhub sync commit` (same path-less default).
 
 If `sync snapshot` fails (e.g. the synced folder doesn't exist yet),
 say so and **do not** run `commit`. The local DB is unaffected.

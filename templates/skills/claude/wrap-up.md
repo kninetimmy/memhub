@@ -179,18 +179,19 @@ rclone mount on Linux); memhub just writes a local path and Google's
 app uploads it in the background.
 
 1. Run `memhub sync status --json`. If `enabled` is false, **skip this
-   whole section silently** — most repos don't sync. Otherwise read
-   `project_id` and `drive_subpath`; if `drive_subpath` is empty, ask
-   me once for the absolute path of the synced Drive folder on this
-   machine and tell me to set `[sync] drive_subpath` in
-   `.memhub/config.toml`.
-2. Write the snapshot **directly into the synced folder**:
-   `memhub sync snapshot "<drive_subpath>/memhub/<project_id>"`. This
+   whole section silently** — most repos don't sync. If `remote_dir_error`
+   is set (usually an empty `drive_subpath`), ask me once for the absolute
+   path of the synced Drive folder on this machine and tell me to set
+   `[sync] drive_subpath` in `.memhub/config.toml`. Otherwise carry on —
+   the resolved `remote_dir` is the snapshot target.
+2. Write the snapshot **directly into the synced folder**: `memhub sync
+   snapshot`. Omit the path — it defaults to the canonical
+   `<drive_subpath>/memhub/<project_id>`, so you never hand-build it. This
    emits `project.sqlite` + `manifest.json`, which Google's app then
    syncs up. (`VACUUM INTO` writes a complete file, so there's no
    half-written upload.)
 3. Record the baseline so the next `/catch-up` here reads `up-to-date`:
-   `memhub sync commit "<drive_subpath>/memhub/<project_id>"`.
+   `memhub sync commit` (same path-less default).
 
 If `sync snapshot` fails (e.g. the synced folder doesn't exist yet —
 Drive app not installed/signed in), say so and stop; do **not** run

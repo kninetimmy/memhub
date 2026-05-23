@@ -37,6 +37,7 @@ No cloud. No account. No daemon. No model download at runtime. Just a `.sqlite` 
 - **Your docs are searchable too.** Point memhub at an API spec, design system, or compliance doc and the agent pulls the relevant section on demand — no pasting the whole file into the prompt. A styling question surfaces the right color token table; a backend question stays completely silent on the style guide.
 - **You stay in control.** Agent proposals stage for review before anything becomes durable. You see exactly what the agent wants to commit, and you can say no.
 - **Same memory across agents.** Claude Code, Codex, and OpenCode share the same rows. Switching tools doesn't cost you context.
+- **Memory that follows you between machines.** Opt in per repo and your laptop and desktop stay in sync through a folder that's already syncing (Google Drive for Desktop, or an rclone mount) — memhub still never goes online. `/catch-up` when you sit down, `/wrap-up` when you're done.
 - **Optional machine-wide memory.** Truths that aren't about one repo — toolchain facts, a standing engineering rule, a universal style guide — can live in an opt-in store shared by every repo on the machine. Off by default; you promote to it deliberately.
 - **Small context, relevant content.** A targeted recall bundle is much smaller than pasting your full project README into every prompt. The Token Metrics dashboard estimates how much context you're saving.
 - **It's just a file.** SQLite, gitignored, in your repo. No accounts, no services, no vendor lock-in. Back it up, move it, or `rm -rf .memhub/` and it's gone.
@@ -129,11 +130,24 @@ Please install memhub for me, then turn on hybrid recall.
    want to ingest one now — if I give you a path, run
    `memhub doc add "<path>" --json` and report the chunk count;
    if not, just note `/doc` is available anytime.
+10. Tell me memhub can sync this repo's memory between my own machines
+    through a folder that already syncs (Google Drive for Desktop, or an
+    rclone mount on Linux) — memhub stays offline and only reads/writes a
+    local path. It's off by default and opt-in per repo. Ask whether I
+    work across machines:
+      - If I say yes: run `memhub sync enable`, then ask me for the
+        absolute path of the synced folder on this machine and set it as
+        `[sync] drive_subpath` in .memhub/config.toml. Run
+        `memhub sync status` and report the resolved remote dir. Note
+        that `/catch-up` pulls at session start and `/wrap-up` pushes at
+        the end.
+      - If I say no: just note `/catch-up`, `/wrap-up`, and
+        `memhub sync enable` are available anytime.
 
 Don't touch any files in this repo other than what `memhub init` writes
 (.memhub/ and the generated-output .gitignore entries), the
-.memhub/config.toml edits in steps 6 and 8, and — only if I opt in at
-step 8 — the machine-global store at ~/.memhub/global.sqlite (outside
+.memhub/config.toml edits in steps 6, 8, and 10, and — only if I opt in
+at step 8 — the machine-global store at ~/.memhub/global.sqlite (outside
 this repo, in my home directory; that is expected).
 ```
 
@@ -193,11 +207,25 @@ Please install memhub for me, then turn on hybrid recall.
     want to ingest one now — if I give you a path, run
     `memhub doc add "<path>" --json` and report the chunk count;
     if not, just note `/doc` is available anytime.
+11. Tell me memhub can sync this repo's memory between my own machines
+    through a folder that already syncs (Google Drive for Desktop, or an
+    rclone mount on Linux) — memhub stays offline and only reads/writes a
+    local path. The `memhub.sync_*` MCP tools are the agent-first
+    surface; they default to the canonical synced folder. It's off by
+    default and opt-in per repo. Ask whether I work across machines:
+      - If I say yes: run `memhub sync enable`, then ask me for the
+        absolute path of the synced folder on this machine and set it as
+        `[sync] drive_subpath` in .memhub/config.toml. Run
+        `memhub.sync_status` and report the resolved remote dir. Note
+        that `/catch-up` pulls at session start and `/wrap-up` pushes at
+        the end.
+      - If I say no: just note `/catch-up`, `/wrap-up`, and
+        `memhub sync enable` are available anytime.
 
 Don't touch any files in this repo other than what `memhub init` writes
 (.memhub/ and the generated-output .gitignore entries), the
-.memhub/config.toml edits in steps 7 and 9, and — only if I opt in at
-step 9 — the machine-global store at ~/.memhub/global.sqlite (outside
+.memhub/config.toml edits in steps 7, 9, and 11, and — only if I opt in
+at step 9 — the machine-global store at ~/.memhub/global.sqlite (outside
 this repo, in my home directory; that is expected).
 ```
 
@@ -268,11 +296,25 @@ Please install memhub for me, then turn on hybrid recall.
     want to ingest one now — if I give you a path, run
     `memhub doc add "<path>" --json` and report the chunk count;
     if not, just note `/doc` is available anytime.
+12. Tell me memhub can sync this repo's memory between my own machines
+    through a folder that already syncs (Google Drive for Desktop, or an
+    rclone mount on Linux) — memhub stays offline and only reads/writes a
+    local path. The `memhub.sync_*` MCP tools are the agent-first
+    surface; they default to the canonical synced folder. It's off by
+    default and opt-in per repo. Ask whether I work across machines:
+      - If I say yes: run `memhub sync enable`, then ask me for the
+        absolute path of the synced folder on this machine and set it as
+        `[sync] drive_subpath` in .memhub/config.toml. Run
+        `memhub.sync_status` and report the resolved remote dir. Note
+        that `/catch-up` pulls at session start and `/wrap-up` pushes at
+        the end.
+      - If I say no: just note `/catch-up`, `/wrap-up`, and
+        `memhub sync enable` are available anytime.
 
 Don't touch any files in this repo other than what `memhub init` writes
 (.memhub/ and the generated-output .gitignore entries), the
-.memhub/config.toml edits in steps 8 and 10, and — only if I opt in at
-step 10 — the machine-global store at ~/.memhub/global.sqlite (outside
+.memhub/config.toml edits in steps 8, 10, and 12, and — only if I opt in
+at step 10 — the machine-global store at ~/.memhub/global.sqlite (outside
 this repo, in my home directory; that is expected).
 ```
 
@@ -324,6 +366,17 @@ memhub global status
 #    automatically surface in plain recall (relevance-gated; off-topic
 #    docs stay silent). /doc wraps this as a slash command.
 memhub doc add path/to/design-spec.md --json
+
+# 9. (Optional) Cross-machine sync via a synced folder (Google Drive for
+#    Desktop, or an rclone mount on Linux). memhub stays offline and only
+#    reads/writes a local path. Opt in per repo, then set [sync]
+#    drive_subpath in .memhub/config.toml to the absolute synced-folder
+#    path. /catch-up pulls at session start; /wrap-up pushes at the end.
+memhub sync enable
+#    .memhub/config.toml:
+#       [sync]
+#       drive_subpath = "/abs/path/to/your/synced/folder"
+memhub sync status   # confirms enablement + the resolved remote dir
 ```
 
 ---
@@ -489,6 +542,76 @@ The export format is versioned JSON. It covers facts, decisions, tasks, commands
 
 ---
 
+## Sync across your machines (Google Drive)
+
+The export/import dance above works, but it's manual and it's easy to forget which side is newer. **Cross-machine sync** is that same flow automated and made fast-forward-aware: your repo's memory follows you between *your own* machines through a folder that's already syncing — and memhub still never goes online.
+
+This is for one person across their own laptop and desktop, not a team. It's off by default and opt-in per repo.
+
+### How it works
+
+- **Transport is an OS-level synced folder — not a memhub network call.** You point memhub at a local path that Google Drive for Desktop (macOS/Windows) or an rclone mount (Linux) already mirrors to the cloud. memhub only ever reads and writes that local path; Google's app moves the bytes in the background. memhub itself stays fully offline — no account, no API, no base64-over-the-wire.
+- **It syncs a whole-DB snapshot, not a row-by-row merge.** A push writes one consistent single-file copy of your database (via SQLite `VACUUM INTO`) plus a small `manifest.json` into the synced folder. There's no half-written file to sync up.
+- **Divergence is detected like git.** memhub compares a *logical version* — a digest of your durable content, not the raw file bytes (SQLite files aren't byte-stable) — and reports one of five verdicts:
+
+  | verdict | meaning | what you do |
+  |---|---|---|
+  | `no-remote` | nothing in the folder yet | first run — your next push seeds it |
+  | `up-to-date` | local already matches the folder | nothing |
+  | `local-ahead` | this machine is newer | push (it happens at `/wrap-up`) |
+  | `drive-ahead` | another machine pushed newer state | pull — a safe fast-forward |
+  | `diverged` | **both** sides changed since last sync | you choose; see below |
+
+- **The one lossy case is operator-gated.** If both machines changed since the last sync (`diverged`), adopting the remote copy discards this machine's local-only changes. memhub never does that automatically — it shows you both logical versions and requires an explicit yes. Scope is deliberately single-user: last-writer-wins on a diverged history is the accepted trade, so there's no snapshot history or undo buffer.
+- **Adopt is the only destructive op, and it's guarded.** Before swapping the local DB it writes a backup under `.memhub/backups/sync/`, and it refuses outright on a project-id mismatch, a snapshot from a newer memhub schema (run `memhub upgrade` first), or a checksum that disagrees with the manifest.
+
+### Prerequisites
+
+1. **A synced folder on every machine.** Install Google Drive for Desktop (macOS/Windows) or set up an rclone mount (Linux), sign in, and confirm a local folder mirrors to the cloud. Note its absolute path — e.g. `~/Library/CloudStorage/GoogleDrive-<you>@gmail.com/My Drive/memhub-sync` on macOS, `G:\My Drive\memhub-sync` on Windows.
+2. **memhub built and on PATH on each machine** (the Quickstart above), with the **same repo cloned** on each.
+3. **A git remote on the repo** (so the project id derives automatically), *or* an explicit `[sync] project_id` in `.memhub/config.toml` for a repo with no remote.
+
+### Step by step
+
+```bash
+# --- once per repo, on each machine ---
+memhub sync enable                       # opt this repo in
+# then set the absolute synced-folder path in .memhub/config.toml:
+#   [sync]
+#   drive_subpath = "/Users/you/Library/CloudStorage/GoogleDrive-.../My Drive/memhub-sync"
+memhub sync status                       # confirms enablement + the resolved remote dir
+```
+
+memhub resolves the actual snapshot location for you as `<drive_subpath>/memhub/<project_id>` — you never hand-build that path. Every `sync` command defaults to it when you omit the path argument.
+
+```bash
+# --- push (end of a session on machine A) ---
+memhub sync snapshot                     # write DB snapshot + manifest into the synced folder
+memhub sync commit                       # record the baseline so the next check reads up-to-date
+
+# --- pull (start of a session on machine B) ---
+memhub sync check                        # prints the verdict (drive-ahead / diverged / ...)
+memhub sync adopt --yes                  # replace local with the snapshot (--yes is the confirm gate)
+memhub render                            # refresh the local PROJECT.md view
+```
+
+**You rarely type these by hand.** The agent skills wrap both ends:
+
+- **`/catch-up`** (start of session) — pulls: runs `sync_check`, summarizes what's incoming, and adopts *only* after you approve. On `diverged` it spells out exactly what local changes would be lost first.
+- **`/wrap-up`** (end of session) — after routing your memory updates, if the repo has sync enabled it pushes the freshly-updated DB into the synced folder. If sync is off it skips this silently.
+
+So the everyday loop is just: `/catch-up` when you sit down at the other machine, `/wrap-up` when you're done. Give Google's app a moment to finish syncing between the two.
+
+### Surfaces
+
+- **CLI:** `memhub sync enable | disable | status | snapshot | check | adopt | commit`
+- **MCP (agent-first):** `memhub.sync_status`, `memhub.sync_snapshot`, `memhub.sync_check`, `memhub.sync_commit`, `memhub.sync_adopt` — all default to the canonical path; `sync_adopt` is gated (without `confirm=true` it returns the would-change verdict and changes nothing)
+- **Skills:** `/catch-up` (pull) and the push tail of `/wrap-up`
+
+Sync state (`[sync]` config and the per-machine baseline marker) is local to each machine and is **not** part of `memhub export` — it's wiring, not memory.
+
+---
+
 ## How it works
 
 <br>
@@ -548,6 +671,7 @@ Tasks and session notes write directly — they're low-stakes (intent and scratc
 | `memhub metrics enable/status` | Opt-in token accounting (Claude Code transcript scraping) |
 | `memhub viz` | Open the local read-only web dashboard |
 | `memhub export/import` | Portable JSON backup; cross-machine restore |
+| `memhub sync enable/status/snapshot/check/adopt/commit` | Cross-machine Drive sync (M10); push/pull a whole-DB snapshot through a synced folder |
 | `memhub serve` | Stdio MCP server for Claude Code / Codex / OpenCode |
 
 `fact add`, `decision add`, and `doc add` take `--global`; `fact promote <id> --global` and `decision promote <id> --global` copy an existing repo row up into the machine-wide store. See [Shared memory across repos](#shared-memory-across-repos-optional). Run any command with `--help` for flags.
@@ -594,7 +718,7 @@ include_docs_in_default = false  # auto-flips on first `doc add --global`
 **Claude Code**
 
 - Reads `CLAUDE.md` at session start.
-- User-level slash commands at `~/.claude/commands/`: `/wrap-up`, `/check-init`, `/init-project`, `/recall`, `/reindex`, `/eval-recall`, `/doc`, `/metrics`, `/viz`, `/global`.
+- User-level slash commands at `~/.claude/commands/`: `/wrap-up`, `/catch-up`, `/check-init`, `/init-project`, `/recall`, `/reindex`, `/eval-recall`, `/doc`, `/metrics`, `/viz`, `/global`, `/upgrade`.
 - Skill writes are attributed `actor=claude:wrap-up`, `source=user+agent:claude-code`.
 
 **Codex CLI**
@@ -646,6 +770,7 @@ When you accept a pending MCP proposal via `memhub review accept`, the durable r
 - **Read:** `status`, `search`, `recall`, `list_tasks`, `list_decisions`, `list_facts`, `list_pending_writes`, `get_command`
 - **Write (direct):** `task_add`, `task_done`, `record_command`, `log_session_note`, `render`
 - **Write (staged for review):** `propose_fact`, `propose_decision` — both take an optional `global` flag; a `global=true` proposal stages in the repo's `pending_writes` and only becomes durable in `~/.memhub/global.sqlite` on human `memhub review accept`. There is no `global` parameter on any MCP write — the global path is never agent-automatic.
+- **Cross-machine sync (M10):** `sync_status`, `sync_snapshot`, `sync_check`, `sync_commit`, `sync_adopt` — all default the target to the canonical `<drive_subpath>/memhub/<project_id>` folder. `sync_adopt` is gated: without `confirm=true` it returns the would-change verdict and changes nothing (the one destructive op). See [Sync across your machines](#sync-across-your-machines-google-drive).
 
 ### Token accounting
 
