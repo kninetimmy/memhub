@@ -567,7 +567,18 @@ This is for one person across their own laptop and desktop, not a team. It's off
 
 ### Prerequisites
 
-1. **A synced folder on every machine.** Install Google Drive for Desktop (macOS/Windows) or set up an rclone mount (Linux), sign in, and confirm a local folder mirrors to the cloud. Note its absolute path — e.g. `~/Library/CloudStorage/GoogleDrive-<you>@gmail.com/My Drive/memhub-sync` on macOS, `G:\My Drive\memhub-sync` on Windows.
+1. **A synced folder on every machine.** Install Google Drive for Desktop (macOS/Windows) or set up an rclone mount (Linux), sign in, and confirm a local folder mirrors to the cloud. Note its path — e.g. `~/Library/CloudStorage/GoogleDrive-<you>@gmail.com/My Drive/memhub-sync` on macOS, `G:\My Drive\memhub-sync` on Windows, or your rclone mountpoint on Linux. A leading `~` in `drive_subpath` expands to the home directory.
+
+   On Linux, point rclone at the **same** Drive account and mount it before syncing — e.g.
+
+   ```bash
+   rclone config                                   # one-time: add a "gdrive" remote (Google Drive)
+   mkdir -p ~/gdrive
+   rclone mount gdrive: ~/gdrive --vfs-cache-mode writes --daemon
+   ls ~/gdrive/My\ Drive/memhub-sync               # confirm the shared folder is visible
+   ```
+
+   then set `drive_subpath = "~/gdrive/My Drive/memhub-sync"` (matching the macOS/Windows folder). For an unattended Pi, a systemd user unit running that `rclone mount` keeps the mount up across reboots.
 2. **memhub built and on PATH on each machine** (the Quickstart above), with the **same repo cloned** on each.
 3. **A git remote on the repo** (so the project id derives automatically), *or* an explicit `[sync] project_id` in `.memhub/config.toml` for a repo with no remote.
 

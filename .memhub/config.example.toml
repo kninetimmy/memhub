@@ -166,10 +166,13 @@ include_docs_in_default = false
 # on macOS/Windows, or an rclone mount on Linux. The project id is
 # normally derived from the git remote URL, so leave project_id empty;
 # set it only for a repo with no git remote. drive_subpath is the
-# ABSOLUTE local path of the synced Drive folder ON THIS MACHINE (e.g.
+# local path of the synced Drive folder ON THIS MACHINE (e.g.
 # ~/Library/CloudStorage/GoogleDrive-<you>/My Drive/memhub-sync on
-# macOS, G:\My Drive\memhub-sync on Windows) — the snapshot is written
-# to/read from <drive_subpath>/memhub/<project_id>/. Both `enabled` and
+# macOS, G:\My Drive\memhub-sync on Windows, or your rclone mount on
+# Linux such as ~/gdrive/memhub-sync) — the snapshot is written
+# to/read from <drive_subpath>/memhub/<project_id>/. A leading ~ (or
+# ~/) expands to the home directory; any other path is used verbatim,
+# so an absolute path also works everywhere. Both `enabled` and
 # `drive_subpath` are PER-MACHINE: keep them out of this committed
 # baseline and set them in the local config.toml.
 [sync]

@@ -733,8 +733,30 @@ pub fn resolve_remote_dir(repo_root: &Path, cfg: &SyncConfig) -> Result<PathBuf>
                 .into(),
         ));
     }
+    let base = expand_home(subpath)?;
     let project_id = resolve_project_id(repo_root, cfg)?;
-    Ok(Path::new(subpath).join(DRIVE_NAMESPACE).join(project_id))
+    Ok(base.join(DRIVE_NAMESPACE).join(project_id))
+}
+
+/// Expand a leading `~` / `~/` (or `~\` on Windows) in `drive_subpath`
+/// to the machine home directory. rclone mounts on Linux commonly live
+/// under `~` (e.g. `~/gdrive/memhub-sync`), and the config example
+/// itself advertises a `~/Library/CloudStorage/...` macOS path — but
+/// `Path::join` treats a literal `~` as a directory named `~`, so an
+/// un-expanded tilde silently writes the snapshot into a bogus `./~`
+/// tree. Only a leading `~` is expanded (no `~user` form); any other
+/// path is returned verbatim, so absolute paths are unaffected.
+fn expand_home(subpath: &str) -> Result<PathBuf> {
+    if subpath == "~" {
+        return db::home_dir();
+    }
+    if let Some(rest) = subpath
+        .strip_prefix("~/")
+        .or_else(|| subpath.strip_prefix("~\\"))
+    {
+        return Ok(db::home_dir()?.join(rest));
+    }
+    Ok(PathBuf::from(subpath))
 }
 
 /// Open the project and resolve its canonical remote dir from config.
@@ -951,6 +973,42 @@ mod tests {
             dir,
             Path::new("/mnt/drive/memhub-sync").join("memhub").join("pinned-id"),
             "canonical layout is <drive_subpath>/memhub/<project_id>"
+        );
+    }
+
+    #[test]
+    fn resolve_remote_dir_expands_leading_tilde() {
+        // rclone mounts on Linux (and the advertised macOS CloudStorage
+        // path) commonly start with `~`; it must resolve to $HOME, not a
+        // literal `~` directory.
+        let home = db::home_dir().expect("home dir for test");
+        let cfg = SyncConfig {
+            enabled: true,
+            project_id: "pinned-id".into(),
+            drive_subpath: "~/gdrive/memhub-sync".into(),
+        };
+        let dir = resolve_remote_dir(Path::new("/nonexistent"), &cfg).expect("resolve");
+        assert_eq!(
+            dir,
+            home.join("gdrive")
+                .join("memhub-sync")
+                .join("memhub")
+                .join("pinned-id"),
+            "leading ~/ expands to $HOME"
+        );
+        assert!(
+            !dir.components().any(|c| c.as_os_str() == "~"),
+            "no literal ~ component survives: {dir:?}"
+        );
+    }
+
+    #[test]
+    fn expand_home_leaves_absolute_paths_verbatim() {
+        // An absolute path (the macOS/Windows setups in use today) must
+        // be untouched — only a *leading* tilde is special.
+        assert_eq!(
+            expand_home("/mnt/drive/memhub-sync").expect("abs"),
+            PathBuf::from("/mnt/drive/memhub-sync"),
         );
     }
 
