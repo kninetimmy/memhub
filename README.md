@@ -569,7 +569,9 @@ This is for one person across their own laptop and desktop, not a team. It's off
 
 1. **A synced folder on every machine.** Install Google Drive for Desktop (macOS/Windows) or set up an rclone mount (Linux), sign in, and confirm a local folder mirrors to the cloud. Note its path — e.g. `~/Library/CloudStorage/GoogleDrive-<you>@gmail.com/My Drive/memhub-sync` on macOS, `G:\My Drive\memhub-sync` on Windows, or your rclone mountpoint on Linux. A leading `~` in `drive_subpath` expands to the home directory.
 
-   On Linux, point rclone at the **same** Drive account and mount it before syncing — e.g.
+   > **Linux / rclone — advanced users only.** Google doesn't ship Drive for Desktop on Linux, so you mount Drive yourself with [rclone](https://rclone.org/). It works fine but it's genuinely fiddly to set up and keep running (OAuth config, a FUSE mount, keeping it alive across reboots). If you're not comfortable with that, the simplest path is to skip cross-machine sync and use `memhub export` / `import` by hand, or just do your syncing on a macOS/Windows machine.
+
+   If you do want it: point rclone at the **same** Drive account and mount it before syncing — e.g.
 
    ```bash
    rclone config                                   # one-time: add a "gdrive" remote (Google Drive)
@@ -578,7 +580,7 @@ This is for one person across their own laptop and desktop, not a team. It's off
    ls ~/gdrive/My\ Drive/memhub-sync               # confirm the shared folder is visible
    ```
 
-   then set `drive_subpath = "~/gdrive/My Drive/memhub-sync"` (matching the macOS/Windows folder). For an unattended Pi, a systemd user unit running that `rclone mount` keeps the mount up across reboots.
+   then set `drive_subpath = "~/gdrive/My Drive/memhub-sync"` (matching the macOS/Windows folder). The mount has to be live whenever you sync — if `~/gdrive` isn't mounted, memhub just sees an empty/missing folder. For an unattended box (e.g. a Pi), a systemd user unit running that `rclone mount` keeps it up across reboots.
 2. **memhub built and on PATH on each machine** (the Quickstart above), with the **same repo cloned** on each.
 3. **A git remote on the repo** (so the project id derives automatically), *or* an explicit `[sync] project_id` in `.memhub/config.toml` for a repo with no remote.
 
