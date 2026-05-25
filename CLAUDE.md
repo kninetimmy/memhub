@@ -244,6 +244,28 @@ savings events and contribute nothing to the offset. The rendered label is
 "context offset vs full-ledger baseline" — not "tokens saved" — because the
 agent would not necessarily have loaded the full ledger anyway.
 
+**Empirical counterfactual baseline (task 64, decision 109).** The assumed
+full-ledger baseline above is a guess. Task 64 adds a *measured* baseline
+alongside it: `session_metrics.baseline_input_tokens` (migration 0017) records
+the **full prompt of each session's first usage turn** — `input_tokens +
+cache_read_input_tokens + cache_creation_input_tokens` — which approximates
+everything loaded at session start (system prompt + CLAUDE.md + PROJECT.md +
+any handoff md). It is `input + both cache fields`, **not `input_tokens`
+alone**, because under prompt caching the bulk of startup context is billed as
+cache_creation/cache_read; `input_tokens` alone undercounts startup ~10×. The
+scraper sets it once per session, on the first usage line (`COALESCE` keeps the
+earliest), so it pins the session-START cost. In `render_period_block` the
+headline "Context offset" now prefers the **median `baseline_input_tokens`
+across the window's no-recall sessions** (`recall_calls = 0`) as the
+denominator (`recall_sessions × that median`), with the assumed full-ledger
+percentage shown on an aligned line beneath so the gap is visible. The column
+is **machine-local, not exported, and not applied retroactively** — existing
+sessions are already past their first-turn offset, so the empirical baseline
+accrues from new sessions forward (an uncalibrated/empty install renders only
+the assumed line, byte-identical to before). The dashboard burn-up chart
+(`query_series`) still uses the assumed ledger counterfactual; only the period
+block changed.
+
 **Tokenizer caveat:** tiktoken cl100k is ±10% off Anthropic's real
 tokenizer. Ratios stay sound because both sides of every comparison use the
 same yardstick; treat absolute token counts as estimates, not ground truth.

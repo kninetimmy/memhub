@@ -25,16 +25,47 @@ pub struct PeriodTotals {
     /// per-session in SQL (not derivable from the summed fields above), so
     /// it is carried as a field rather than a method.
     pub mean_session_churn_pct: Option<f64>,
+    /// Number of distinct sessions in the window that had ≥1 non-empty
+    /// recall — the sessions the empirical counterfactual is charged
+    /// against. Multiplies `empirical_baseline` to form the empirical
+    /// denominator (task 64).
+    pub recall_sessions: i64,
+    /// Median first-turn startup cost (`baseline_input_tokens`) across the
+    /// window's NO-recall sessions (`recall_calls = 0`). This is the
+    /// measured counterfactual baseline: what a session that didn't use
+    /// recall actually cost to start. `None` when no no-recall session in
+    /// the window has a recorded baseline yet (task 64, decision 109).
+    pub empirical_baseline: Option<i64>,
 }
 
 impl PeriodTotals {
-    /// Ratio of bundle tokens to ledger tokens as a percentage [0, ∞).
-    /// None when ledger_tokens == 0 (nothing to compare against).
+    /// Ratio of bundle tokens to the ASSUMED full-ledger baseline as a
+    /// percentage [0, ∞). This is the legacy counterfactual: we guess the
+    /// agent would otherwise have loaded the whole `PROJECT_LEDGER.md`.
+    /// Shown alongside `empirical_offset_pct` so the gap between the
+    /// assumption and the measured cost is visible. None when
+    /// ledger_tokens == 0 (nothing to compare against).
     pub fn context_offset_pct(&self) -> Option<f64> {
         if self.ledger_tokens == 0 {
             return None;
         }
         Some(self.bundle_tokens as f64 / self.ledger_tokens as f64 * 100.0)
+    }
+
+    /// Ratio of bundle tokens to the MEASURED counterfactual baseline as a
+    /// percentage [0, ∞) — the empirical headline (task 64). The
+    /// denominator is `recall_sessions × empirical_baseline`: what the
+    /// recall-using sessions would have cost at startup had they instead
+    /// cold-loaded like a session that used no recall. `None` when there is
+    /// no measured baseline yet or no recall-using session to charge it
+    /// against.
+    pub fn empirical_offset_pct(&self) -> Option<f64> {
+        let baseline = self.empirical_baseline?;
+        let denom = self.recall_sessions.checked_mul(baseline)?;
+        if denom <= 0 {
+            return None;
+        }
+        Some(self.bundle_tokens as f64 / denom as f64 * 100.0)
     }
 
     /// Window-level cache churn as a percentage: the share of all cache
@@ -70,7 +101,7 @@ pub struct SessionSummary {
     pub recall_calls: i64,
 }
 
-/// Render a 4-line period block for `label` (e.g. "Last 7 days").
+/// Render a period block for `label` (e.g. "Last 7 days").
 ///
 /// Shape:
 /// ```text
@@ -78,11 +109,15 @@ pub struct SessionSummary {
 /// Sessions:       N
 /// Real tokens:    in=N  out=N  cache_read=N  cache_creation=N
 /// Cache churn:    N% (cache_creation share) · N% per-session mean
-/// Context offset: N% of full-ledger baseline
+/// Context offset: N% of measured no-recall startup (~N tok/session)
+///                 N% of assumed full-ledger baseline
 /// ```
 /// The cache-churn line is omitted when there was no cache activity; the
 /// `· N% per-session mean` tail is dropped when no session carried cache
-/// data. The context-offset line is omitted when `ledger_tokens == 0`.
+/// data. The context-offset block prefers the measured no-recall baseline
+/// (task 64) and shows the assumed full-ledger baseline beneath it so the
+/// gap is visible; each of the two offset lines is omitted when its baseline
+/// is unavailable, and the whole block is omitted when neither is.
 pub fn render_period_block(label: &str, t: &PeriodTotals) -> String {
     let mut lines = vec![
         format!("### {label}"),
@@ -103,8 +138,27 @@ pub fn render_period_block(label: &str, t: &PeriodTotals) -> String {
         }
         lines.push(line);
     }
-    if let Some(pct) = t.context_offset_pct() {
-        lines.push(format!("Context offset: {pct:.0}% of full-ledger baseline"));
+    // Context offset prefers the measured no-recall baseline (task 64); the
+    // assumed full-ledger baseline follows on an aligned continuation line so
+    // the gap between assumption and measurement is visible. The label
+    // (16 cols) is printed only on whichever line comes first.
+    let empirical = t.empirical_offset_pct();
+    let assumed = t.context_offset_pct();
+    let mut printed_label = false;
+    if let (Some(pct), Some(baseline)) = (empirical, t.empirical_baseline) {
+        lines.push(format!(
+            "Context offset: {pct:.0}% of measured no-recall startup (~{} tok/session)",
+            fmt_n(baseline)
+        ));
+        printed_label = true;
+    }
+    if let Some(pct) = assumed {
+        let prefix = if printed_label {
+            "                "
+        } else {
+            "Context offset: "
+        };
+        lines.push(format!("{prefix}{pct:.0}% of assumed full-ledger baseline"));
     }
     lines.join("\n")
 }
@@ -250,7 +304,7 @@ mod tests {
     }
 
     #[test]
-    fn render_period_block_includes_offset_when_ledger_nonzero() {
+    fn render_period_block_includes_assumed_offset_when_ledger_nonzero() {
         let t = PeriodTotals {
             recalls: 5,
             bundle_tokens: 500,
@@ -259,7 +313,69 @@ mod tests {
             ..Default::default()
         };
         let block = render_period_block("Last 7 days", &t);
-        assert!(block.contains("Context offset: 50% of full-ledger baseline"));
+        // No empirical baseline → the assumed line carries the label.
+        assert!(block.contains("Context offset: 50% of assumed full-ledger baseline"));
+        assert!(!block.contains("measured no-recall startup"));
+    }
+
+    #[test]
+    fn empirical_offset_pct_uses_recall_sessions_times_baseline() {
+        let t = PeriodTotals {
+            bundle_tokens: 5_000,
+            recall_sessions: 4,
+            empirical_baseline: Some(25_000), // denom = 100_000
+            ..Default::default()
+        };
+        assert_eq!(t.empirical_offset_pct(), Some(5.0));
+    }
+
+    #[test]
+    fn empirical_offset_pct_is_none_without_baseline_or_sessions() {
+        let no_baseline = PeriodTotals {
+            bundle_tokens: 5_000,
+            recall_sessions: 4,
+            empirical_baseline: None,
+            ..Default::default()
+        };
+        assert_eq!(no_baseline.empirical_offset_pct(), None);
+
+        let no_sessions = PeriodTotals {
+            bundle_tokens: 5_000,
+            recall_sessions: 0,
+            empirical_baseline: Some(25_000),
+            ..Default::default()
+        };
+        assert_eq!(no_sessions.empirical_offset_pct(), None);
+    }
+
+    #[test]
+    fn render_period_block_prefers_measured_baseline_and_shows_assumed_alongside() {
+        let t = PeriodTotals {
+            recalls: 5,
+            bundle_tokens: 5_000,
+            ledger_tokens: 50_000, // assumed: 10%
+            sessions: 6,
+            recall_sessions: 4,
+            empirical_baseline: Some(25_000), // measured: 5_000 / 100_000 = 5%
+            ..Default::default()
+        };
+        let block = render_period_block("Last 7 days", &t);
+        assert!(
+            block.contains("Context offset: 5% of measured no-recall startup (~25,000 tok/session)")
+        );
+        assert!(block.contains("                10% of assumed full-ledger baseline"));
+    }
+
+    #[test]
+    fn render_period_block_omits_both_offsets_when_no_baseline_at_all() {
+        let t = PeriodTotals {
+            recalls: 3,
+            bundle_tokens: 400,
+            sessions: 1,
+            ..Default::default()
+        };
+        let block = render_period_block("Last 7 days", &t);
+        assert!(!block.contains("Context offset"));
     }
 
     #[test]

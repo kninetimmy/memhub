@@ -299,16 +299,19 @@ fn scrape_codex_file(conn: &Connection, path: &Path, canonical_root: &Path) -> R
         "INSERT INTO session_metrics \
             (session_id, agent, started_at, ended_at, \
              input_tokens, output_tokens, cache_read_tokens, \
-             cache_creation_tokens, recall_calls, last_scanned_offset) \
+             cache_creation_tokens, recall_calls, last_scanned_offset, \
+             baseline_input_tokens) \
          VALUES (?1, ?2, COALESCE(?3, CURRENT_TIMESTAMP), ?4, \
-                 ?5, ?6, ?7, 0, 0, ?8) \
+                 ?5, ?6, ?7, 0, 0, ?8, ?9) \
          ON CONFLICT(session_id) DO UPDATE SET \
             input_tokens          = input_tokens          + excluded.input_tokens, \
             output_tokens         = output_tokens         + excluded.output_tokens, \
             cache_read_tokens     = cache_read_tokens     + excluded.cache_read_tokens, \
             cache_creation_tokens = cache_creation_tokens + excluded.cache_creation_tokens, \
             ended_at              = COALESCE(excluded.ended_at, session_metrics.ended_at), \
-            last_scanned_offset   = excluded.last_scanned_offset",
+            last_scanned_offset   = excluded.last_scanned_offset, \
+            baseline_input_tokens = COALESCE(session_metrics.baseline_input_tokens, \
+                                             excluded.baseline_input_tokens)",
         params![
             session_id,
             CODEX_AGENT,
@@ -318,6 +321,7 @@ fn scrape_codex_file(conn: &Connection, path: &Path, canonical_root: &Path) -> R
             d.output,
             d.cache_read,
             new_offset,
+            d.baseline(),
         ],
     )?;
 
@@ -492,6 +496,23 @@ struct Delta {
     turns: Vec<TurnRecord>,
 }
 
+impl Delta {
+    /// Full prompt size of this pass's FIRST usage turn — input plus both
+    /// cache fields (task 64, decision 109). On a session's first pass
+    /// (offset 0) that turn is the session's true first usage line, so the
+    /// sum approximates everything loaded at session start (system prompt +
+    /// CLAUDE.md + PROJECT.md + any handoff md). Under prompt caching most
+    /// of that is billed as cache_read/cache_creation rather than
+    /// input_tokens, so all three are summed. `None` when the pass consumed
+    /// no usage line; the UPSERT then leaves `baseline_input_tokens` NULL
+    /// for a later pass to fill.
+    fn baseline(&self) -> Option<i64> {
+        self.turns
+            .first()
+            .map(|t| t.input + t.cache_read + t.cache_creation)
+    }
+}
+
 fn scrape_claude_file(conn: &Connection, path: &Path) -> Result<()> {
     // Claude Code names the file `<session-id>.jsonl`; the stem is the
     // stable per-session key (the in-line `sessionId` is expected to
@@ -600,16 +621,19 @@ fn scrape_claude_file(conn: &Connection, path: &Path) -> Result<()> {
         "INSERT INTO session_metrics \
             (session_id, agent, started_at, ended_at, \
              input_tokens, output_tokens, cache_read_tokens, \
-             cache_creation_tokens, recall_calls, last_scanned_offset) \
+             cache_creation_tokens, recall_calls, last_scanned_offset, \
+             baseline_input_tokens) \
          VALUES (?1, ?2, COALESCE(?3, CURRENT_TIMESTAMP), ?4, \
-                 ?5, ?6, ?7, ?8, 0, ?9) \
+                 ?5, ?6, ?7, ?8, 0, ?9, ?10) \
          ON CONFLICT(session_id) DO UPDATE SET \
             input_tokens          = input_tokens          + excluded.input_tokens, \
             output_tokens         = output_tokens         + excluded.output_tokens, \
             cache_read_tokens     = cache_read_tokens     + excluded.cache_read_tokens, \
             cache_creation_tokens = cache_creation_tokens + excluded.cache_creation_tokens, \
             ended_at              = COALESCE(excluded.ended_at, session_metrics.ended_at), \
-            last_scanned_offset   = excluded.last_scanned_offset",
+            last_scanned_offset   = excluded.last_scanned_offset, \
+            baseline_input_tokens = COALESCE(session_metrics.baseline_input_tokens, \
+                                             excluded.baseline_input_tokens)",
         params![
             session_id,
             CLAUDE_AGENT,
@@ -620,6 +644,7 @@ fn scrape_claude_file(conn: &Connection, path: &Path) -> Result<()> {
             d.cache_read,
             d.cache_creation,
             new_offset,
+            d.baseline(),
         ],
     )?;
 
@@ -877,6 +902,103 @@ mod tests {
             .expect("session query");
         assert_eq!(agg_in, 400);
         assert_eq!(agg_out, 60);
+    }
+
+    #[test]
+    fn baseline_is_first_turn_full_prompt_and_not_overwritten_on_resume() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::commands::init::run(temp.path()).expect("init");
+        let ctx = crate::db::open_project(temp.path()).expect("open");
+        let conn = &ctx.conn;
+        let file = temp.path().join("sess-base.jsonl");
+
+        // First usage line: full startup prompt is split across input +
+        // cache_read + cache_creation under caching → baseline = 2615 + 9209
+        // + 13702 = 25526 (the real-data shape from the DB).
+        write(
+            &file,
+            &[
+                r#"{"type":"user","timestamp":"2026-05-15T10:00:00.000Z","message":{"role":"user"}}"#,
+                r#"{"type":"assistant","timestamp":"2026-05-15T10:00:01.000Z","message":{"usage":{"input_tokens":2615,"output_tokens":40,"cache_read_input_tokens":9209,"cache_creation_input_tokens":13702}}}"#,
+            ],
+        );
+        scrape_claude_file(conn, &file).expect("scrape 1");
+
+        let baseline: Option<i64> = conn
+            .query_row(
+                "SELECT baseline_input_tokens FROM session_metrics \
+                 WHERE session_id = 'sess-base'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("baseline query");
+        assert_eq!(baseline, Some(25_526), "input + cache_read + cache_creation");
+
+        // A later turn (larger input) must NOT move the baseline — it is the
+        // session-START cost, captured once.
+        write(
+            &file,
+            &[
+                r#"{"type":"user","timestamp":"2026-05-15T10:00:00.000Z","message":{"role":"user"}}"#,
+                r#"{"type":"assistant","timestamp":"2026-05-15T10:00:01.000Z","message":{"usage":{"input_tokens":2615,"output_tokens":40,"cache_read_input_tokens":9209,"cache_creation_input_tokens":13702}}}"#,
+                r#"{"type":"assistant","timestamp":"2026-05-15T10:09:00.000Z","message":{"usage":{"input_tokens":80000,"output_tokens":50,"cache_read_input_tokens":100,"cache_creation_input_tokens":0}}}"#,
+            ],
+        );
+        scrape_claude_file(conn, &file).expect("scrape 2");
+
+        let baseline_after: Option<i64> = conn
+            .query_row(
+                "SELECT baseline_input_tokens FROM session_metrics \
+                 WHERE session_id = 'sess-base'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("baseline query 2");
+        assert_eq!(baseline_after, Some(25_526), "first-turn baseline is pinned");
+    }
+
+    #[test]
+    fn baseline_stays_null_until_a_usage_line_arrives() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::commands::init::run(temp.path()).expect("init");
+        let ctx = crate::db::open_project(temp.path()).expect("open");
+        let conn = &ctx.conn;
+        let file = temp.path().join("sess-late.jsonl");
+
+        // A pass with only a user turn (no usage) creates the row but leaves
+        // baseline NULL for a later usage-bearing pass to fill.
+        write(
+            &file,
+            &[r#"{"type":"user","timestamp":"2026-05-15T10:00:00.000Z","message":{"role":"user"}}"#],
+        );
+        scrape_claude_file(conn, &file).expect("scrape 1");
+        let baseline: Option<i64> = conn
+            .query_row(
+                "SELECT baseline_input_tokens FROM session_metrics \
+                 WHERE session_id = 'sess-late'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("baseline query");
+        assert_eq!(baseline, None, "no usage line yet → NULL baseline");
+
+        write(
+            &file,
+            &[
+                r#"{"type":"user","timestamp":"2026-05-15T10:00:00.000Z","message":{"role":"user"}}"#,
+                r#"{"type":"assistant","timestamp":"2026-05-15T10:00:01.000Z","message":{"usage":{"input_tokens":50,"output_tokens":5,"cache_read_input_tokens":0,"cache_creation_input_tokens":700}}}"#,
+            ],
+        );
+        scrape_claude_file(conn, &file).expect("scrape 2");
+        let baseline_after: Option<i64> = conn
+            .query_row(
+                "SELECT baseline_input_tokens FROM session_metrics \
+                 WHERE session_id = 'sess-late'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("baseline query 2");
+        assert_eq!(baseline_after, Some(750), "first usage line fills the baseline");
     }
 
     #[test]

@@ -106,6 +106,21 @@ pub fn query_tool_data(start: &Path) -> Result<MetricsToolData> {
     })
 }
 
+/// Median of a pre-sorted ascending slice. Even-length sets average the two
+/// middle values (integer division — a token estimate, not exact arithmetic).
+/// `None` on an empty slice.
+fn median_i64(sorted: &[i64]) -> Option<i64> {
+    let n = sorted.len();
+    if n == 0 {
+        return None;
+    }
+    if n % 2 == 1 {
+        Some(sorted[n / 2])
+    } else {
+        Some((sorted[n / 2 - 1] + sorted[n / 2]) / 2)
+    }
+}
+
 pub(crate) fn query_period_totals(conn: &rusqlite::Connection, days: u32) -> Result<PeriodTotals> {
     let modifier = format!("-{days} days");
 
@@ -190,6 +205,42 @@ pub(crate) fn query_period_totals(conn: &rusqlite::Connection, days: u32) -> Res
         )
         .unwrap_or(None);
 
+    // Distinct sessions in the window that had ≥1 non-empty recall — the
+    // sessions the empirical counterfactual is charged against (task 64).
+    // Same grouping/HAVING as the ledger baseline above, counted.
+    let recall_sessions: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM ( \
+                 SELECT session_id FROM recall_metrics \
+                 WHERE datetime(ts) >= datetime('now', ?1) \
+                   AND session_id IS NOT NULL \
+                 GROUP BY session_id \
+                 HAVING SUM(CASE WHEN bundle_tokens > 0 THEN 1 ELSE 0 END) > 0 \
+             )",
+            params![modifier],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+
+    // Empirical counterfactual baseline (task 64): the MEDIAN first-turn
+    // startup cost across the window's NO-recall sessions. SQLite has no
+    // median aggregate, so pull the (small) set of values and compute it in
+    // Rust. recall_calls is owned by the reconciler; a session that never
+    // recalled stays at 0.
+    let baselines: Vec<i64> = {
+        let mut stmt = conn.prepare(
+            "SELECT baseline_input_tokens FROM session_metrics \
+             WHERE datetime(started_at) >= datetime('now', ?1) \
+               AND recall_calls = 0 \
+               AND baseline_input_tokens IS NOT NULL \
+             ORDER BY baseline_input_tokens",
+        )?;
+        stmt.query_map(params![modifier], |r| r.get(0))?
+            .filter_map(|x| x.ok())
+            .collect()
+    };
+    let empirical_baseline = median_i64(&baselines);
+
     Ok(PeriodTotals {
         recalls,
         bundle_tokens,
@@ -200,6 +251,8 @@ pub(crate) fn query_period_totals(conn: &rusqlite::Connection, days: u32) -> Res
         cache_read_tokens,
         cache_creation_tokens,
         mean_session_churn_pct,
+        recall_sessions,
+        empirical_baseline,
     })
 }
 
@@ -1371,6 +1424,60 @@ mod tests {
         // Per-session mean = (10% + 50%) / 2 = 30%, equal-weighted.
         let mean = t.mean_session_churn_pct.expect("per-session mean");
         assert!((mean - 30.0).abs() < 1e-9, "per-session mean = {mean}");
+    }
+
+    #[test]
+    fn median_i64_handles_odd_even_and_empty() {
+        assert_eq!(median_i64(&[]), None);
+        assert_eq!(median_i64(&[7]), Some(7));
+        assert_eq!(median_i64(&[10, 20, 30]), Some(20));
+        assert_eq!(median_i64(&[10, 20, 30, 40]), Some(25));
+    }
+
+    #[test]
+    fn period_totals_empirical_baseline_is_median_of_no_recall_sessions() {
+        let temp = tempdir().expect("tempdir");
+        init_project(temp.path());
+        enable(temp.path()).expect("enable");
+        {
+            let ctx = db::open_project(temp.path()).expect("open");
+            // Three no-recall sessions (recall_calls = 0) with baselines
+            // 10k / 20k / 30k → median 20k. A recall-using session carries a
+            // wildly different baseline and recall_calls > 0; it must be
+            // excluded from the median (task 64).
+            ctx.conn
+                .execute(
+                    "INSERT INTO session_metrics \
+                     (session_id, agent, started_at, recall_calls, baseline_input_tokens) VALUES \
+                     ('n1','claude-code',datetime('now','-1 hour'),0,10000), \
+                     ('n2','claude-code',datetime('now','-2 hours'),0,20000), \
+                     ('n3','claude-code',datetime('now','-3 hours'),0,30000), \
+                     ('r1','claude-code',datetime('now','-4 hours'),2,999999)",
+                    [],
+                )
+                .expect("sessions");
+            // The recall-using session has two non-empty recalls, both
+            // attributed to it → recall_sessions = 1, bundle_tokens = 2000.
+            ctx.conn
+                .execute(
+                    "INSERT INTO recall_metrics \
+                     (ts, session_id, query_hash, bundle_tokens, ledger_tokens, \
+                      rerank_used, result_count) VALUES \
+                     (datetime('now','-4 hours'),'r1','h1',1000,50000,1,3), \
+                     (datetime('now','-4 hours'),'r1','h2',1000,50000,1,3)",
+                    [],
+                )
+                .expect("recalls");
+        }
+
+        let ctx = db::open_project(temp.path()).expect("reopen");
+        let t = query_period_totals(&ctx.conn, 7).expect("totals");
+
+        assert_eq!(t.empirical_baseline, Some(20_000), "median of 10k/20k/30k");
+        assert_eq!(t.recall_sessions, 1, "one session had a non-empty recall");
+        assert_eq!(t.bundle_tokens, 2_000);
+        // Empirical offset = 2000 / (1 * 20000) = 10%.
+        assert_eq!(t.empirical_offset_pct(), Some(10.0));
     }
 
     #[test]

@@ -1,0 +1,25 @@
+-- Migration 0017: empirical session-start baseline (task 64, decision 109).
+--
+-- session_metrics (0012) accumulates per-session token totals but kept
+-- no record of how large the context was at session START. The headline
+-- "context offset" therefore compared recall bundles against an ASSUMED
+-- baseline (the size of the PROJECT_LEDGER.md we guessed the agent would
+-- otherwise have loaded). This column replaces that guess with a
+-- measured number: the FIRST usage line's full prompt for the session.
+--
+-- "Full prompt" is input_tokens + cache_read_input_tokens +
+-- cache_creation_input_tokens of that first usage turn. Under prompt
+-- caching the bulk of a session's startup context (system prompt +
+-- CLAUDE.md + PROJECT.md + any handoff md) is billed as
+-- cache_creation/cache_read rather than input_tokens, so all three are
+-- summed; input_tokens alone undercounts startup by ~10x. The column
+-- keeps the task-64 name `baseline_input_tokens` for traceability even
+-- though it holds the full first-turn prompt, not input_tokens alone.
+--
+-- NULL = not yet observed (the session's scraped lines carried no usage
+-- turn yet). The scraper sets it once, on the first usage line per
+-- session, and never overwrites a non-NULL value (COALESCE on conflict).
+-- Like the rest of the metrics tables it is machine-local and is NOT
+-- part of `memhub export`.
+
+ALTER TABLE session_metrics ADD COLUMN baseline_input_tokens INTEGER;
