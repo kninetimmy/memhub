@@ -18,6 +18,13 @@ pub struct PeriodTotals {
     pub output_tokens: i64,
     pub cache_read_tokens: i64,
     pub cache_creation_tokens: i64,
+    /// Mean of each in-window session's own churn ratio
+    /// (`cache_creation / (cache_read + cache_creation)`), weighting every
+    /// session equally so one large session cannot dominate the figure.
+    /// `None` when no session in the window had any cache activity. Computed
+    /// per-session in SQL (not derivable from the summed fields above), so
+    /// it is carried as a field rather than a method.
+    pub mean_session_churn_pct: Option<f64>,
 }
 
 impl PeriodTotals {
@@ -28,6 +35,22 @@ impl PeriodTotals {
             return None;
         }
         Some(self.bundle_tokens as f64 / self.ledger_tokens as f64 * 100.0)
+    }
+
+    /// Window-level cache churn as a percentage: the share of all cache
+    /// tokens that were *creation* (rebuilt prefix) rather than *read*
+    /// (reused prefix). At a 1M-token window the real recurring cost is
+    /// cumulative per-turn `cache_read`, so a high creation share is the
+    /// honest "we kept rebuilding the cache" signal. Summed across the
+    /// window, so it is dominated by the largest sessions — read alongside
+    /// `mean_session_churn_pct` for the per-session view.
+    /// `None` when there was no cache activity at all.
+    pub fn churn_pct(&self) -> Option<f64> {
+        let denom = self.cache_read_tokens + self.cache_creation_tokens;
+        if denom <= 0 {
+            return None;
+        }
+        Some(self.cache_creation_tokens as f64 / denom as f64 * 100.0)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -54,9 +77,12 @@ pub struct SessionSummary {
 /// Recalls:        N
 /// Sessions:       N
 /// Real tokens:    in=N  out=N  cache_read=N  cache_creation=N
+/// Cache churn:    N% (cache_creation share) · N% per-session mean
 /// Context offset: N% of full-ledger baseline
 /// ```
-/// Line 4 is omitted when `ledger_tokens == 0`.
+/// The cache-churn line is omitted when there was no cache activity; the
+/// `· N% per-session mean` tail is dropped when no session carried cache
+/// data. The context-offset line is omitted when `ledger_tokens == 0`.
 pub fn render_period_block(label: &str, t: &PeriodTotals) -> String {
     let mut lines = vec![
         format!("### {label}"),
@@ -70,6 +96,13 @@ pub fn render_period_block(label: &str, t: &PeriodTotals) -> String {
             fmt_n(t.cache_creation_tokens),
         ),
     ];
+    if let Some(churn) = t.churn_pct() {
+        let mut line = format!("Cache churn:    {churn:.0}% (cache_creation share)");
+        if let Some(mean) = t.mean_session_churn_pct {
+            line.push_str(&format!(" · {mean:.0}% per-session mean"));
+        }
+        lines.push(line);
+    }
     if let Some(pct) = t.context_offset_pct() {
         lines.push(format!("Context offset: {pct:.0}% of full-ledger baseline"));
     }
@@ -227,6 +260,63 @@ mod tests {
         };
         let block = render_period_block("Last 7 days", &t);
         assert!(block.contains("Context offset: 50% of full-ledger baseline"));
+    }
+
+    #[test]
+    fn churn_pct_is_creation_share_of_cache_tokens() {
+        let t = PeriodTotals {
+            cache_read_tokens: 900,
+            cache_creation_tokens: 100,
+            ..Default::default()
+        };
+        assert_eq!(t.churn_pct(), Some(10.0));
+    }
+
+    #[test]
+    fn churn_pct_is_none_without_cache_activity() {
+        let t = PeriodTotals {
+            input_tokens: 500,
+            ..Default::default()
+        };
+        assert_eq!(t.churn_pct(), None);
+    }
+
+    #[test]
+    fn render_period_block_includes_churn_with_mean() {
+        let t = PeriodTotals {
+            sessions: 2,
+            cache_read_tokens: 880,
+            cache_creation_tokens: 120,
+            mean_session_churn_pct: Some(18.0),
+            ..Default::default()
+        };
+        let block = render_period_block("Last 7 days", &t);
+        assert!(block.contains("Cache churn:    12% (cache_creation share) · 18% per-session mean"));
+    }
+
+    #[test]
+    fn render_period_block_churn_drops_mean_tail_when_absent() {
+        let t = PeriodTotals {
+            sessions: 1,
+            cache_read_tokens: 900,
+            cache_creation_tokens: 100,
+            mean_session_churn_pct: None,
+            ..Default::default()
+        };
+        let block = render_period_block("Last 7 days", &t);
+        assert!(block.contains("Cache churn:    10% (cache_creation share)"));
+        assert!(!block.contains("per-session mean"));
+    }
+
+    #[test]
+    fn render_period_block_omits_churn_without_cache_activity() {
+        let t = PeriodTotals {
+            sessions: 1,
+            input_tokens: 100,
+            ..Default::default()
+        };
+        let block = render_period_block("Last 7 days", &t);
+        assert!(!block.contains("Cache churn"));
     }
 
     #[test]

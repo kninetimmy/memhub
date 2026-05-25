@@ -171,6 +171,25 @@ pub(crate) fn query_period_totals(conn: &rusqlite::Connection, days: u32) -> Res
         )
         .unwrap_or((0, 0, 0, 0, 0));
 
+    // Per-session mean churn: each in-window session's own
+    // cache_creation/(cache_read+cache_creation), averaged with equal
+    // weight so one large session can't dominate. Sessions with no cache
+    // activity are excluded from the denominator; AVG over zero qualifying
+    // rows yields SQL NULL → None.
+    let mean_session_churn_pct: Option<f64> = conn
+        .query_row(
+            "SELECT AVG( \
+                 cache_creation_tokens * 1.0 \
+                 / (cache_read_tokens + cache_creation_tokens) \
+             ) * 100.0 \
+             FROM session_metrics \
+             WHERE datetime(started_at) >= datetime('now', ?1) \
+               AND (cache_read_tokens + cache_creation_tokens) > 0",
+            params![modifier],
+            |r| r.get(0),
+        )
+        .unwrap_or(None);
+
     Ok(PeriodTotals {
         recalls,
         bundle_tokens,
@@ -180,6 +199,7 @@ pub(crate) fn query_period_totals(conn: &rusqlite::Connection, days: u32) -> Res
         output_tokens,
         cache_read_tokens,
         cache_creation_tokens,
+        mean_session_churn_pct,
     })
 }
 
@@ -1244,5 +1264,69 @@ mod tests {
         // All 4 recall calls should still be counted.
         assert_eq!(last.recalls, 4);
         assert!(s.has_recall_signal);
+    }
+
+    #[test]
+    fn period_totals_cache_churn_window_vs_per_session_mean() {
+        let temp = tempdir().expect("tempdir");
+        init_project(temp.path());
+        enable(temp.path()).expect("enable");
+        {
+            let ctx = db::open_project(temp.path()).expect("open");
+            // Session A: low churn (10%). Session B: high churn (50%).
+            // Window aggregate is token-weighted, so A's larger volume pulls
+            // it toward 10%; the per-session mean weights both equally → 30%.
+            ctx.conn
+                .execute(
+                    "INSERT INTO session_metrics \
+                     (session_id, agent, started_at, ended_at, \
+                      input_tokens, output_tokens, \
+                      cache_read_tokens, cache_creation_tokens) VALUES \
+                     ('a', 'claude-code', datetime('now','-1 hour'), \
+                      datetime('now'), 10, 10, 900, 100), \
+                     ('b', 'claude-code', datetime('now','-2 hours'), \
+                      datetime('now','-1 hour'), 10, 10, 200, 200)",
+                    [],
+                )
+                .expect("sessions");
+        }
+
+        let ctx = db::open_project(temp.path()).expect("reopen");
+        let t = query_period_totals(&ctx.conn, 7).expect("totals");
+
+        // Window churn = 300 creation / 1400 total ≈ 21.4%.
+        let window = t.churn_pct().expect("window churn");
+        assert!(
+            (window - 300.0 / 1400.0 * 100.0).abs() < 1e-9,
+            "window churn = {window}"
+        );
+
+        // Per-session mean = (10% + 50%) / 2 = 30%, equal-weighted.
+        let mean = t.mean_session_churn_pct.expect("per-session mean");
+        assert!((mean - 30.0).abs() < 1e-9, "per-session mean = {mean}");
+    }
+
+    #[test]
+    fn period_totals_churn_none_without_cache_activity() {
+        let temp = tempdir().expect("tempdir");
+        init_project(temp.path());
+        enable(temp.path()).expect("enable");
+        {
+            let ctx = db::open_project(temp.path()).expect("open");
+            ctx.conn
+                .execute(
+                    "INSERT INTO session_metrics \
+                     (session_id, agent, started_at, ended_at, \
+                      input_tokens, output_tokens) VALUES \
+                     ('a', 'claude-code', datetime('now','-1 hour'), \
+                      datetime('now'), 100, 200)",
+                    [],
+                )
+                .expect("session");
+        }
+        let ctx = db::open_project(temp.path()).expect("reopen");
+        let t = query_period_totals(&ctx.conn, 7).expect("totals");
+        assert_eq!(t.churn_pct(), None);
+        assert_eq!(t.mean_session_churn_pct, None);
     }
 }

@@ -248,6 +248,20 @@ agent would not necessarily have loaded the full ledger anyway.
 tokenizer. Ratios stay sound because both sides of every comparison use the
 same yardstick; treat absolute token counts as estimates, not ground truth.
 
+**Cache churn (task 62).** Each rendered period block also carries a
+`Cache churn:` line — the share of cache tokens that were *creation*
+(rebuilt prefix) rather than *read* (reused prefix). At a 1M-token
+window the real recurring cost is cumulative per-turn `cache_read`, so a
+high creation share is the honest "we kept rebuilding the cache" signal.
+Two figures: the token-weighted window churn (dominated by the largest
+sessions) and a per-session mean (each session weighted equally, so one
+huge session can't dominate). Both derive from the already-logged
+`cache_read_tokens` / `cache_creation_tokens` — no migration. The line
+is omitted when a window had no cache activity. Rendered only in
+`render_period_block` surfaces (the `/metrics` panel, MCP
+`rendered_panel`, and the PROJECT.md digest); the plain `memhub metrics
+status` CLI text keeps its leaner per-line layout.
+
 Dashboard surfaces: `memhub metrics status` (CLI) · `memhub.metrics` (MCP
 tool) · `/metrics` (skill). `memhub render` appends a 7-day digest to
 `PROJECT.md` when enabled and ≥1 row exists; the section is omitted
