@@ -264,6 +264,18 @@ pub enum MetricsCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Calibrate the cl100k token estimate against Anthropic's real
+    /// tokenizer (one-time; the only command that uses the network).
+    /// Reads ANTHROPIC_API_KEY from the environment and sends a fixed
+    /// bundled corpus — never your project's content — to count_tokens.
+    Calibrate {
+        /// Model id for the count_tokens request (default: a current
+        /// Claude model; the tokenizer is shared across the family).
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

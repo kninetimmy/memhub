@@ -1,0 +1,80 @@
+memhub tokenizer calibration corpus.
+
+This fixed sample is sent to Anthropic's count_tokens endpoint exactly once,
+when a user runs `memhub metrics calibrate`, to measure the ratio between the
+local cl100k_base estimate and Anthropic's real tokenizer. Nothing from the
+user's own project ever leaves the machine: the calibration only measures a
+property of the tokenizer itself, which is a property of the text-encoding
+scheme rather than of any particular repository. The corpus therefore blends
+the kinds of text memhub actually counts at runtime — durable facts, recorded
+decisions, task notes, and rendered recall bundles — so the measured multiplier
+reflects realistic input rather than artificially clean prose.
+
+Plain English prose forms the largest share, because most durable memory is
+written as ordinary sentences. A fact reads like a short declarative claim:
+"The release build embeds the BGE-small embedding model and the ms-marco
+cross-encoder re-ranker directly into the binary, so a built artifact never
+reaches out to Hugging Face at runtime." A decision reads like a paragraph of
+reasoning followed by a verdict: "We considered both whole-database snapshots
+and row-level merge for cross-machine synchronization. Row merge promised
+finer-grained conflict handling, but it required a vector clock per table and
+a reconciliation pass that could silently reorder history. The snapshot model
+is byte-stable enough when paired with a logical content digest, and it keeps
+the lossy case — both machines edited since the last sync — operator-gated
+rather than automatic. We chose the snapshot model and accepted last-writer-
+wins as the cost of staying single-user across one person's own machines."
+
+Technical writing of this kind mixes natural language with a steady sprinkle of
+identifiers, file paths, command invocations, and small code fragments, and
+those tokenize quite differently from clean prose. A tokenizer trained on web
+text splits a snake_case identifier like cache_creation_tokens or
+session_turn_metrics into several subword pieces; a camelCase name like
+PeriodTotals or RecallResponse splits along the case boundaries; a fully
+qualified path such as src/metrics/recall_proxy.rs or
+.memhub/rendered/PROJECT_LEDGER.md fragments at every slash, dot, and
+underscore. Including these in the corpus keeps the calibration honest, because
+a factor measured purely on flowing English would understate how the real
+content of a memory store actually encodes.
+
+Here is a representative slice of the kind of structured text a recall bundle
+returns to an agent mid-session. The hybrid retriever combines a BM25 score
+from the FTS5 virtual table with a cosine similarity over BGE-small embeddings,
+blends the two, and then re-ranks the top candidates with a bundled cross-
+encoder before truncating to max_results. A candidate whose cross-encoder logit
+falls below min_rerank_score is dropped, primarily so that a gibberish query
+returns an empty bundle instead of a confident-looking but irrelevant hit.
+Decisions can carry an optional natural-language summary that is prepended to
+both the bi-encoder embed text and the cross-encoder rerank input, which lets a
+decision with a jargon-heavy title still surface for a plain-English question.
+
+A short SQL fragment of the sort that appears in migrations and in decision
+notes: SELECT AVG(cache_creation_tokens * 1.0 / (cache_read_tokens +
+cache_creation_tokens)) * 100.0 FROM session_metrics WHERE
+datetime(started_at) >= datetime('now', ?1) AND (cache_read_tokens +
+cache_creation_tokens) > 0. And a small Rust fragment of the sort that appears
+when a decision quotes the code it is about: pub fn tokens_of(s: &str) -> usize
+{ let raw = raw_token_count(s); let factor = calibration_factor(); if factor ==
+1.0 { return raw; } (raw as f64 * factor).round() as usize }.
+
+Numbers and units appear often in engineering memory and tokenize in their own
+way: a 2.8 MB snapshot costs roughly 987,000 tokens to ship as base64 over a
+message channel, which is why the transport is an operating-system synced folder
+instead. The re-ranker adds about 275 milliseconds per recall at a candidate
+pool of 20, in exchange for roughly 17 percentage points of Recall@1 on the
+project's own golden set. Retention defaults to 90 days. The cl100k estimate is
+acknowledged to be within about 10 percent of the real count, and the whole
+point of this calibration is to remove that systematic bias once and for all.
+
+Finally, a stretch of ordinary narrative prose with no special tokens at all,
+to balance the identifier-heavy sections above and keep the corpus
+representative of the documentation and session notes that make up so much of a
+mature project memory. When a new engineer joins a project, the first thing they
+need is not a list of files but a story: what the system is for, what was tried
+and abandoned, which constraints are load-bearing and which are incidental, and
+where the sharp edges are. A good memory store captures that story incrementally,
+one durable note at a time, so that the narrative is never reconstructed from
+scratch and never depends on a single person's recollection. The goal is modest
+and concrete. Make it cheap to remember the right thing, make it hard to promote
+a careless claim into durable truth, and keep the whole apparatus boring,
+offline, and local-first, so that it keeps working on a laptop on an airplane
+with no network and no surprises.

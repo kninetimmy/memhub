@@ -468,6 +468,14 @@ pub(crate) fn print_metrics_status_human(s: &commands::metrics::MetricsStatus) {
         }
     );
     println!("  tokenizer:          {}", s.config.tokenizer);
+    if (s.config.calibration_factor - 1.0).abs() < f64::EPSILON {
+        println!("  calibration:        uncalibrated (run `memhub metrics calibrate`)");
+    } else {
+        println!(
+            "  calibration:        {:.4}x (vs Anthropic count_tokens)",
+            s.config.calibration_factor
+        );
+    }
     println!(
         "  retention:          {}",
         if s.config.retention_days == 0 {
@@ -568,6 +576,7 @@ pub(crate) fn metrics_status_to_json(s: &commands::metrics::MetricsStatus) -> se
             "enabled": s.config.enabled,
             "session_accounting": s.config.session_accounting,
             "tokenizer": s.config.tokenizer,
+            "calibration_factor": s.config.calibration_factor,
             "retention_days": s.config.retention_days,
             "claude_transcripts_dir": s.config.claude_transcripts_dir,
             "codex_transcripts_dir": s.config.codex_transcripts_dir,

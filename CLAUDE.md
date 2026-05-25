@@ -248,6 +248,26 @@ agent would not necessarily have loaded the full ledger anyway.
 tokenizer. Ratios stay sound because both sides of every comparison use the
 same yardstick; treat absolute token counts as estimates, not ground truth.
 
+**Tokenizer calibration (task 63, decision 109).** The ±10% above is a
+fixed multiplier, so it can be corrected once. `memhub metrics calibrate`
+sends a **fixed bundled corpus** — never your project's content — to
+Anthropic's `count_tokens` endpoint, measures the cl100k→real ratio, and
+writes it back to `[metrics] calibration_factor`. `tokenizer::tokens_of`
+then scales every estimate by it (default `1.0` = uncalibrated
+passthrough, so an uncalibrated install and every unit test is
+byte-identical to before). It corrects *absolute* counts and the
+ledger-vs-bundle *offset*; the context-offset **percentage** is a ratio
+of two equally-scaled numbers and is unchanged. **This is the only
+command in all of memhub that touches the network** (via `ureq`,
+compiled in but never reached otherwise) — offline-first holds because
+the call is explicit and one-time. It is **CLI-only ops housekeeping like
+`gc`/`upgrade`, deliberately not an MCP/agent surface** (an agent must
+not reach the network on its own). The factor is **per-machine** (a
+property of the local binary's tokenizer, not the repo) and **not
+applied retroactively** — rows written before calibration keep their
+earlier scaling; re-run after a binary/tokenizer change. Needs
+`ANTHROPIC_API_KEY` in the environment; refuses cleanly without it.
+
 **Cache churn (task 62).** Each rendered period block also carries a
 `Cache churn:` line — the share of cache tokens that were *creation*
 (rebuilt prefix) rather than *read* (reused prefix). At a 1M-token

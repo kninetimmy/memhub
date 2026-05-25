@@ -132,7 +132,12 @@ doc_min_rerank_score = 0.0
 # +/-10% off Anthropic's real tokenizer; symmetric across both sides
 # of the comparison so the ratio stays sound. Retention: closed
 # session_metrics and old recall_metrics rows past retention_days are
-# pruned opportunistically (no daemon).
+# pruned opportunistically (no daemon). calibration_factor (task 63)
+# corrects the cl100k bias: 1.0 is an uncalibrated passthrough; run
+# `memhub metrics calibrate` to measure the real cl100k->Anthropic ratio
+# (the only command that uses the network) and write it back. It is
+# PER-MACHINE — a property of the local binary's tokenizer, not the repo
+# — so do NOT commit a non-default value back into this example.
 [metrics]
 enabled = false
 recall_proxy = true
@@ -141,6 +146,7 @@ claude_transcripts_dir = ''
 codex_transcripts_dir = ''
 tokenizer = 'tiktoken-cl100k'
 retention_days = 90
+calibration_factor = 1.0
 
 # Machine-global memory (M9). Off by default and per-repo: a repo
 # opts in via `memhub global enable`, which also creates the shared

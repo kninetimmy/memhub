@@ -157,6 +157,9 @@ fn tracked_example_config_pins_metrics_defaults() {
     assert_eq!(config.metrics.codex_transcripts_dir, "");
     assert_eq!(config.metrics.tokenizer, "tiktoken-cl100k");
     assert_eq!(config.metrics.retention_days, 90);
+    // Calibration ships uncalibrated (task 63); a non-1.0 value here
+    // would mean a per-machine factor leaked into the tracked example.
+    assert_eq!(config.metrics.calibration_factor, 1.0);
 }
 
 /// An install that hasn't pulled the new example (no `[metrics]` block
@@ -181,4 +184,7 @@ log_level = "info"
     assert!(config.metrics.recall_proxy);
     assert_eq!(config.metrics.tokenizer, "tiktoken-cl100k");
     assert_eq!(config.metrics.retention_days, 90);
+    // A legacy config with no [metrics] block still defaults to
+    // uncalibrated (serde default), never NaN/0.
+    assert_eq!(config.metrics.calibration_factor, 1.0);
 }

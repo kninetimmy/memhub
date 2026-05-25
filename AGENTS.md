@@ -172,6 +172,32 @@ agent would not necessarily have loaded the full ledger anyway.
 tokenizer. Ratios stay sound because both sides of every comparison use the
 same yardstick; treat absolute token counts as estimates, not ground truth.
 
+**Tokenizer calibration (task 63, decision 109).** The ±10% above is a
+fixed multiplier, so it can be corrected once. `memhub metrics calibrate`
+sends a **fixed bundled corpus** — never your project's content — to
+Anthropic's `count_tokens` endpoint, measures the cl100k→real ratio, and
+writes it back to `[metrics] calibration_factor`. `tokenizer::tokens_of`
+then scales every estimate by it (default `1.0` = uncalibrated
+passthrough). It corrects *absolute* counts and the ledger-vs-bundle
+*offset*; the context-offset **percentage** is a ratio of equally-scaled
+numbers and is unchanged. **This is the only command in all of memhub
+that touches the network** (via `ureq`, compiled in but never reached
+otherwise) — offline-first holds because the call is explicit and
+one-time. It is **CLI-only ops housekeeping like `gc`/`upgrade`,
+deliberately not an MCP/agent surface**. The factor is **per-machine**
+and **not applied retroactively**. Needs `ANTHROPIC_API_KEY` in the
+environment; refuses cleanly without it.
+
+**Cache churn (task 62).** Each rendered period block also carries a
+`Cache churn:` line — the share of cache tokens that were *creation*
+(rebuilt prefix) rather than *read* (reused prefix), the honest "we kept
+rebuilding the cache" signal at a 1M-token window. Two figures: the
+token-weighted window churn and an equal-weighted per-session mean, both
+from the already-logged `cache_read_tokens` / `cache_creation_tokens` (no
+migration). Omitted when a window had no cache activity. Rendered only in
+`render_period_block` surfaces; the plain `memhub metrics status` CLI
+text keeps its leaner layout.
+
 Dashboard surfaces: `memhub metrics status` (CLI) · `memhub.metrics` (MCP
 tool) · `/metrics` (skill). `memhub render` appends a 7-day digest to
 `PROJECT.md` when enabled and ≥1 row exists; the section is omitted

@@ -807,6 +807,73 @@ pub fn disable(start: &Path) -> Result<()> {
     Ok(())
 }
 
+/// What `memhub metrics calibrate` reports.
+#[derive(Debug, Clone)]
+pub struct CalibrateResult {
+    pub cl100k_tokens: usize,
+    pub real_tokens: usize,
+    pub previous_factor: f64,
+    pub factor: f64,
+    pub model: String,
+}
+
+/// Run a one-time tokenizer calibration and persist the multiplier to
+/// `[metrics] calibration_factor`. Reads `ANTHROPIC_API_KEY` from the
+/// environment — this is the only memhub command that touches the
+/// network, and only when explicitly invoked. Metrics need not be
+/// enabled to calibrate (the stored factor is inert until metrics run),
+/// but a project must exist so the factor lands in the repo's local
+/// config. The factor is *not* applied retroactively: rows written
+/// before calibration keep their earlier scaling. Calibration corrects a
+/// fixed ±10% bias, so re-running it occasionally is the intended way to
+/// refresh after a binary/tokenizer change.
+pub fn calibrate(start: &Path, model: Option<String>) -> Result<CalibrateResult> {
+    let api_key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| {
+        MemhubError::InvalidInput(
+            "ANTHROPIC_API_KEY is not set; calibration needs it for the one-time \
+             count_tokens call. Export it and re-run `memhub metrics calibrate`."
+                .to_string(),
+        )
+    })?;
+
+    let model = model
+        .unwrap_or_else(|| crate::metrics::calibrate::DEFAULT_CALIBRATION_MODEL.to_string());
+
+    let ctx = db::open_project(start)?;
+    let previous_factor = ctx.config.metrics.calibration_factor;
+
+    // The single network call lives behind this — fails loudly with a
+    // clear message and leaves config untouched on any error.
+    let result = crate::metrics::calibrate::calibrate(&api_key, &model)?;
+
+    let mut new_config = ctx.config.clone();
+    new_config.metrics.calibration_factor = result.factor;
+    new_config.save(&ctx.paths.config_path)?;
+
+    // Apply immediately so any tokens_of later in this process is calibrated.
+    crate::metrics::tokenizer::set_calibration_factor(result.factor);
+
+    db::log_write(
+        &ctx.conn,
+        METRICS_ACTOR,
+        "config",
+        None,
+        "update",
+        &format!(
+            "metrics calibrate: factor {:.4} (cl100k={} real={} model={})",
+            result.factor, result.cl100k_tokens, result.real_tokens, result.model
+        ),
+    )?;
+
+    Ok(CalibrateResult {
+        cl100k_tokens: result.cl100k_tokens,
+        real_tokens: result.real_tokens,
+        previous_factor,
+        factor: result.factor,
+        model: result.model,
+    })
+}
+
 pub fn rescan(start: &Path) -> Result<RescanResult> {
     let ctx = db::open_project(start)?;
     let cfg = &ctx.config.metrics;

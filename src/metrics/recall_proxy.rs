@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 
 use crate::Result;
 use crate::config::MetricsConfig;
-use crate::metrics::tokenizer::tokens_of;
+use crate::metrics::tokenizer::{set_calibration_factor, tokens_of};
 use crate::retrieval::RecallResponse;
 
 /// Process-wide ledger token cache. CLI one-shots build it once per
@@ -51,6 +51,11 @@ pub fn log_recall(
     if !cfg.enabled || !cfg.recall_proxy {
         return;
     }
+    // Apply the machine's stored tokenizer calibration (task 63) so the
+    // bundle/ledger counts written below approximate Anthropic's real
+    // tokenizer. Default 1.0 is an exact passthrough, so an uncalibrated
+    // install logs identical numbers to a pre-calibration build.
+    set_calibration_factor(cfg.calibration_factor);
     if let Err(err) = try_log_recall(conn, project_root, render_output_dir, query, response) {
         log::warn!("recall_metrics insert failed: {err}");
     }

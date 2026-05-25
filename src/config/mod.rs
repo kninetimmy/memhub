@@ -61,6 +61,10 @@ pub const DEFAULT_METRICS_RECALL_PROXY: bool = true;
 pub const DEFAULT_METRICS_SESSION_ACCOUNTING: bool = true;
 pub const DEFAULT_METRICS_TOKENIZER: &str = "tiktoken-cl100k";
 pub const DEFAULT_METRICS_RETENTION_DAYS: u32 = 90;
+/// Tokenizer calibration multiplier (task 63). `1.0` is an uncalibrated
+/// passthrough; `memhub metrics calibrate` measures and writes back the
+/// real cl100k→Anthropic ratio. Per-machine, never committed.
+pub const DEFAULT_METRICS_CALIBRATION_FACTOR: f64 = 1.0;
 
 /// Machine-global memory (M9). Off by default and per-repo: a repo
 /// opts into reading from / writing to the machine-wide
@@ -181,6 +185,9 @@ fn default_metrics_tokenizer() -> String {
 fn default_metrics_retention_days() -> u32 {
     DEFAULT_METRICS_RETENTION_DAYS
 }
+fn default_metrics_calibration_factor() -> f64 {
+    DEFAULT_METRICS_CALIBRATION_FACTOR
+}
 fn default_global_enabled() -> bool {
     DEFAULT_GLOBAL_ENABLED
 }
@@ -262,6 +269,13 @@ pub struct MetricsConfig {
     pub tokenizer: String,
     #[serde(default = "default_metrics_retention_days")]
     pub retention_days: u32,
+    /// Multiplier applied to every cl100k token estimate to approximate
+    /// Anthropic's real tokenizer (task 63). `1.0` is uncalibrated;
+    /// `memhub metrics calibrate` measures and writes back the ratio.
+    /// Per-machine and never committed — calibration is a property of the
+    /// local binary's tokenizer, not of the repo.
+    #[serde(default = "default_metrics_calibration_factor")]
+    pub calibration_factor: f64,
 }
 
 impl Default for MetricsConfig {
@@ -274,6 +288,7 @@ impl Default for MetricsConfig {
             codex_transcripts_dir: String::new(),
             tokenizer: DEFAULT_METRICS_TOKENIZER.to_string(),
             retention_days: DEFAULT_METRICS_RETENTION_DAYS,
+            calibration_factor: DEFAULT_METRICS_CALIBRATION_FACTOR,
         }
     }
 }

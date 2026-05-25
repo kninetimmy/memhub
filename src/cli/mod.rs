@@ -1195,6 +1195,35 @@ pub fn run(cli: Cli) -> Result<()> {
                     );
                 }
             }
+            MetricsCommand::Calibrate {
+                model,
+                json: as_json,
+            } => {
+                let r = commands::metrics::calibrate(&cwd, model)?;
+                if as_json {
+                    let payload = json!({
+                        "cl100k_tokens": r.cl100k_tokens,
+                        "real_tokens": r.real_tokens,
+                        "previous_factor": r.previous_factor,
+                        "factor": r.factor,
+                        "model": r.model,
+                    });
+                    println!("{payload}");
+                } else {
+                    println!("Tokenizer calibrated against Anthropic count_tokens.");
+                    println!("  Model:          {}", r.model);
+                    println!("  cl100k tokens:  {}", r.cl100k_tokens);
+                    println!("  real tokens:    {}", r.real_tokens);
+                    println!(
+                        "  factor:         {:.4}  (was {:.4})",
+                        r.factor, r.previous_factor
+                    );
+                    println!(
+                        "Saved to [metrics] calibration_factor. Future token \
+                         estimates are scaled by it; existing rows are unchanged."
+                    );
+                }
+            }
         },
         TopLevelCommand::Global { command } => match command {
             GlobalCommand::Enable { json: as_json } => {

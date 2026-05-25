@@ -29,6 +29,14 @@ tiktoken-rs = "0.11"
 tokio = { version = "1.48.0", features = ["io-std", "net", "rt-multi-thread", "signal", "time"] }
 toml = "0.8.23"
 tower-http = { version = "0.6", features = ["trace"], optional = true }
+# Minimal blocking HTTP+TLS client, used by exactly one code path:
+# `memhub metrics calibrate` (src/metrics/calibrate.rs), the one-time
+# tokenizer calibration against Anthropic's count_tokens endpoint (task
+# 63). Compiled in but never reached during normal operation, so the
+# offline-first guarantee holds — the network is touched only when a
+# user explicitly runs that command. Already vendored as a build- and
+# dev-dependency for the HF asset fetch and the rerank bake-off.
+ureq = { version = "2.10", default-features = false, features = ["tls", "json"] }
 
 [features]
 default = ["viz"]
