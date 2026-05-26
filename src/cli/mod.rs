@@ -6,14 +6,15 @@ mod args;
 mod output;
 
 pub use args::{
-    Cli, CommandCommand, CommandKind, DecisionCommand, DocCommand, EvalCommand, FactCommand,
-    GlobalCommand, IndexCommand, IntegrationsCommand, MetricsCommand, NarrativeCommand,
-    NoteCommand, PendingStatus, RecallModeArg, RecallSourceTypeArg, ReviewCommand, StatsWindowArg,
-    SyncCommand, TaskCommand, TaskStatus, TopLevelCommand,
+    Cli, CodeCommand, CommandCommand, CommandKind, DecisionCommand, DocCommand, EvalCommand,
+    FactCommand, GlobalCommand, IndexCommand, IntegrationsCommand, MetricsCommand,
+    NarrativeCommand, NoteCommand, PendingStatus, RecallModeArg, RecallSourceTypeArg,
+    ReviewCommand, StatsWindowArg, SyncCommand, TaskCommand, TaskStatus, TopLevelCommand,
 };
 use output::{
-    eval_summary_to_json, index_status_to_json, metrics_status_to_json, narrative_entry_to_json,
-    pending_write_record_to_json, print_eval_summary, print_index_status, print_init_result,
+    code_status_to_json, eval_summary_to_json, index_status_to_json, locate_response_to_json,
+    metrics_status_to_json, narrative_entry_to_json, pending_write_record_to_json,
+    print_code_status, print_eval_summary, print_index_status, print_init_result, print_locate,
     print_metrics_status_human, print_recall_human, print_stats_human, print_stats_json,
     recall_response_to_json,
 };
@@ -1328,7 +1329,10 @@ pub fn run(cli: Cli) -> Result<()> {
             )?;
         }
         TopLevelCommand::Sync { command } => match command {
-            SyncCommand::Snapshot { out_dir, json: as_json } => {
+            SyncCommand::Snapshot {
+                out_dir,
+                json: as_json,
+            } => {
                 let out_dir = match out_dir {
                     Some(p) => p,
                     None => commands::sync::default_remote_dir(&cwd)?,
@@ -1421,7 +1425,10 @@ pub fn run(cli: Cli) -> Result<()> {
                         })
                     );
                 } else {
-                    println!("cross-machine sync: {}", if s.enabled { "enabled" } else { "disabled" });
+                    println!(
+                        "cross-machine sync: {}",
+                        if s.enabled { "enabled" } else { "disabled" }
+                    );
                     match &s.project_id {
                         Ok(id) => println!("  project id: {id}"),
                         Err(e) => println!("  project id: <unresolved> ({e})"),
@@ -1451,7 +1458,10 @@ pub fn run(cli: Cli) -> Result<()> {
                     }
                 }
             }
-            SyncCommand::Check { remote, json: as_json } => {
+            SyncCommand::Check {
+                remote,
+                json: as_json,
+            } => {
                 let remote = match remote {
                     Some(p) => p,
                     None => commands::sync::default_remote_dir(&cwd)?,
@@ -1502,7 +1512,11 @@ pub fn run(cli: Cli) -> Result<()> {
                     }
                 }
             }
-            SyncCommand::Adopt { remote, yes, json: as_json } => {
+            SyncCommand::Adopt {
+                remote,
+                yes,
+                json: as_json,
+            } => {
                 let remote = match remote {
                     Some(p) => p,
                     None => commands::sync::default_remote_dir(&cwd)?,
@@ -1534,11 +1548,17 @@ pub fn run(cli: Cli) -> Result<()> {
                             summary.previous_schema, summary.new_schema
                         );
                     }
-                    println!("  replaced DB backed up to {}", summary.backup_path.display());
+                    println!(
+                        "  replaced DB backed up to {}",
+                        summary.backup_path.display()
+                    );
                     println!("  run `memhub render` to refresh the local view");
                 }
             }
-            SyncCommand::Commit { remote, json: as_json } => {
+            SyncCommand::Commit {
+                remote,
+                json: as_json,
+            } => {
                 let remote = match remote {
                     Some(p) => p,
                     None => commands::sync::default_remote_dir(&cwd)?,
@@ -1638,6 +1658,96 @@ pub fn run(cli: Cli) -> Result<()> {
                     println!("{}", eval_summary_to_json(&summary));
                 } else {
                     print_eval_summary(&summary);
+                }
+            }
+        },
+        TopLevelCommand::Locate {
+            query,
+            limit,
+            rerank,
+            json: as_json,
+        } => {
+            let opts = crate::code_index::locate::LocateOptions {
+                query,
+                limit,
+                use_reranker: rerank,
+            };
+            let response = crate::code_index::locate::locate(&cwd, opts)?;
+            if as_json {
+                println!("{}", locate_response_to_json(&response));
+            } else {
+                print_locate(&response);
+            }
+        }
+        TopLevelCommand::Code { command } => match command {
+            CodeCommand::Index {
+                rebuild,
+                json: as_json,
+            } => {
+                if rebuild {
+                    crate::code_index::remove_index(&cwd)?;
+                }
+                let summary = crate::code_index::refresh(&cwd)?;
+                if as_json {
+                    let payload = json!({
+                        "rebuild": rebuild,
+                        "files_total": summary.files_total,
+                        "chunks_total": summary.chunks_total,
+                        "new_files": summary.new_files,
+                        "changed_files": summary.changed_files,
+                        "unchanged_files": summary.unchanged_files,
+                        "deleted_files": summary.deleted_files,
+                        "skipped_files": summary.skipped_files,
+                        "binary_skipped": summary.binary_skipped,
+                        "embedded_chunks": summary.embedded_chunks,
+                        "head": summary.head,
+                    });
+                    println!("{payload}");
+                } else {
+                    println!(
+                        "Code index {} ({} files, {} chunks)",
+                        if rebuild { "rebuilt" } else { "refreshed" },
+                        summary.files_total,
+                        summary.chunks_total,
+                    );
+                    println!(
+                        "  new: {}  changed: {}  unchanged: {}  deleted: {}  skipped: {}",
+                        summary.new_files,
+                        summary.changed_files,
+                        summary.unchanged_files,
+                        summary.deleted_files,
+                        summary.skipped_files,
+                    );
+                    if summary.embedded_chunks > 0 {
+                        println!("  embedded chunks: {}", summary.embedded_chunks);
+                    }
+                    if let Some(head) = &summary.head {
+                        println!("  HEAD: {head}");
+                    }
+                }
+            }
+            CodeCommand::Status { json: as_json } => {
+                let status = crate::code_index::status(&cwd)?;
+                if as_json {
+                    println!("{}", code_status_to_json(&status));
+                } else {
+                    print_code_status(&status);
+                }
+            }
+            CodeCommand::Rm { json: as_json } => {
+                let outcome = crate::code_index::remove_index(&cwd)?;
+                if as_json {
+                    println!(
+                        "{}",
+                        json!({
+                            "removed": outcome.removed,
+                            "db_path": outcome.db_path,
+                        })
+                    );
+                } else if outcome.removed {
+                    println!("Removed code index at {}", outcome.db_path.display());
+                } else {
+                    println!("No code index to remove at {}", outcome.db_path.display());
                 }
             }
         },

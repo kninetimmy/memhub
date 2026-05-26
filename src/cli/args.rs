@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
+use crate::code_index;
 use crate::commands;
 use crate::commands::narrative::DEFAULT_HISTORY_LIMIT;
 use crate::config::RetrievalMode;
@@ -206,6 +207,54 @@ pub enum TopLevelCommand {
     Eval {
         #[command(subcommand)]
         command: EvalCommand,
+    },
+    /// Locate code by meaning: blend FTS + vector over the sibling code
+    /// index and return ranked `path:line-range` breadcrumbs with snippets
+    /// (M11). Refreshes the index to the working tree first. Read-only —
+    /// never returns full files, never edits.
+    Locate {
+        query: String,
+        #[arg(long, default_value_t = code_index::locate::DEFAULT_LOCATE_LIMIT)]
+        limit: usize,
+        /// Apply the bundled cross-encoder re-ranker over the candidate
+        /// pool. Off by default in M11 — the NL-trained reranker's fit on
+        /// code is still being calibrated.
+        #[arg(long)]
+        rerank: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Manage the sibling code index at `.memhub/code_index.sqlite`
+    /// (M11). It is gitignored, never exported, never synced, never read
+    /// by recall.
+    Code {
+        #[command(subcommand)]
+        command: CodeCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum CodeCommand {
+    /// Bring the index in line with the working tree (lazy staleness diff).
+    /// `--rebuild` drops and rebuilds the whole index from scratch.
+    Index {
+        /// Drop the sibling DB and rebuild every chunk from scratch.
+        #[arg(long)]
+        rebuild: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show index counts, schema version, and HEAD staleness. Read-only;
+    /// never creates the index.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Delete the sibling code index. It is a regenerable cache, so this is
+    /// a wipe, not data loss — rebuild with `memhub code index`.
+    Rm {
+        #[arg(long)]
+        json: bool,
     },
 }
 

@@ -65,23 +65,73 @@ pub struct LogicalVersion {
 /// mirroring what `memhub export` carries. Order is fixed so the
 /// digest is deterministic.
 const CONTENT_TABLES: &[(&str, &[&str])] = &[
-    ("facts", &["id", "key", "value", "confidence", "source", "verified_at", "created_at"]),
+    (
+        "facts",
+        &[
+            "id",
+            "key",
+            "value",
+            "confidence",
+            "source",
+            "verified_at",
+            "created_at",
+        ],
+    ),
     (
         "decisions",
-        &["id", "title", "rationale", "status", "decided_at", "superseded_by", "source", "summary"],
+        &[
+            "id",
+            "title",
+            "rationale",
+            "status",
+            "decided_at",
+            "superseded_by",
+            "source",
+            "summary",
+        ],
     ),
-    ("tasks", &["id", "title", "status", "notes", "created_at", "updated_at"]),
+    (
+        "tasks",
+        &["id", "title", "status", "notes", "created_at", "updated_at"],
+    ),
     (
         "commands",
-        &["id", "kind", "cmdline", "last_exit_code", "last_run_at", "success_count", "fail_count"],
+        &[
+            "id",
+            "kind",
+            "cmdline",
+            "last_exit_code",
+            "last_run_at",
+            "success_count",
+            "fail_count",
+        ],
     ),
     (
         "pending_writes",
-        &["id", "kind", "payload_json", "rationale", "status", "actor", "actor_raw", "created_at", "reviewed_at"],
+        &[
+            "id",
+            "kind",
+            "payload_json",
+            "rationale",
+            "status",
+            "actor",
+            "actor_raw",
+            "created_at",
+            "reviewed_at",
+        ],
     ),
-    ("session_notes", &["id", "actor", "actor_raw", "text", "created_at"]),
-    ("project_state", &["id", "body", "actor", "actor_raw", "created_at"]),
-    ("project_arch", &["id", "body", "actor", "actor_raw", "created_at"]),
+    (
+        "session_notes",
+        &["id", "actor", "actor_raw", "text", "created_at"],
+    ),
+    (
+        "project_state",
+        &["id", "body", "actor", "actor_raw", "created_at"],
+    ),
+    (
+        "project_arch",
+        &["id", "body", "actor", "actor_raw", "created_at"],
+    ),
 ];
 
 impl LogicalVersion {
@@ -113,7 +163,11 @@ impl LogicalVersion {
                 hasher.update(rendered.as_bytes());
             }
         }
-        let digest = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
+        let digest = hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
 
         Ok(Self {
             writes_log_max_id: max_id.unwrap_or(0),
@@ -183,9 +237,9 @@ pub fn snapshot(start: &Path, out_dir: &Path) -> Result<SnapshotSummary> {
         |row| row.get(0),
     )?;
     let logical_version = LogicalVersion::read(&ctx.conn)?;
-    let created_at: String =
-        ctx.conn
-            .query_row("SELECT CURRENT_TIMESTAMP", [], |row| row.get(0))?;
+    let created_at: String = ctx
+        .conn
+        .query_row("SELECT CURRENT_TIMESTAMP", [], |row| row.get(0))?;
 
     fs::create_dir_all(out_dir)?;
     let snapshot_path = out_dir.join(SNAPSHOT_FILENAME);
@@ -346,8 +400,10 @@ pub fn check(start: &Path, remote: &Path) -> Result<CheckReport> {
         });
     };
 
-    let project_id_mismatch = (manifest.project_id != project_id).then(|| manifest.project_id.clone());
-    let schema_blocks_adopt = schema_ordinal(&manifest.schema_version) > schema_ordinal(&local_schema);
+    let project_id_mismatch =
+        (manifest.project_id != project_id).then(|| manifest.project_id.clone());
+    let schema_blocks_adopt =
+        schema_ordinal(&manifest.schema_version) > schema_ordinal(&local_schema);
 
     // Did each side move off the shared baseline? With no baseline this
     // is the first sync: equal logical → already in step, else the
@@ -532,9 +588,9 @@ pub fn adopt(start: &Path, remote: &Path, force: bool) -> Result<AdoptSummary> {
         [],
         |row| row.get(0),
     )?;
-    let synced_at: String =
-        ctx.conn
-            .query_row("SELECT CURRENT_TIMESTAMP", [], |row| row.get(0))?;
+    let synced_at: String = ctx
+        .conn
+        .query_row("SELECT CURRENT_TIMESTAMP", [], |row| row.get(0))?;
     drop(ctx);
 
     // The agreed baseline is the snapshot's logical version (local now
@@ -586,9 +642,9 @@ pub fn commit(start: &Path, remote: &Path) -> Result<CommitSummary> {
             manifest.project_id, project_id
         )));
     }
-    let synced_at: String =
-        ctx.conn
-            .query_row("SELECT CURRENT_TIMESTAMP", [], |row| row.get(0))?;
+    let synced_at: String = ctx
+        .conn
+        .query_row("SELECT CURRENT_TIMESTAMP", [], |row| row.get(0))?;
     save_marker(
         &ctx.paths.memhub_dir,
         &SyncMarker {
@@ -627,7 +683,14 @@ pub fn enable(start: &Path) -> Result<EnableResult> {
     let mut new_config = ctx.config.clone();
     new_config.sync.enabled = true;
     new_config.save(&ctx.paths.config_path)?;
-    db::log_write(&ctx.conn, SYNC_ACTOR, "config", None, "update", "sync enable")?;
+    db::log_write(
+        &ctx.conn,
+        SYNC_ACTOR,
+        "config",
+        None,
+        "update",
+        "sync enable",
+    )?;
 
     Ok(EnableResult {
         already_enabled,
@@ -642,7 +705,14 @@ pub fn disable(start: &Path) -> Result<()> {
     let mut new_config = ctx.config.clone();
     new_config.sync.enabled = false;
     new_config.save(&ctx.paths.config_path)?;
-    db::log_write(&ctx.conn, SYNC_ACTOR, "config", None, "update", "sync disable")?;
+    db::log_write(
+        &ctx.conn,
+        SYNC_ACTOR,
+        "config",
+        None,
+        "update",
+        "sync disable",
+    )?;
     Ok(())
 }
 
@@ -867,7 +937,11 @@ fn machine_id() -> String {
             return name;
         }
     }
-    let env_var = if cfg!(windows) { "COMPUTERNAME" } else { "HOSTNAME" };
+    let env_var = if cfg!(windows) {
+        "COMPUTERNAME"
+    } else {
+        "HOSTNAME"
+    };
     std::env::var(env_var)
         .ok()
         .map(|s| s.trim().to_string())
@@ -880,9 +954,9 @@ fn machine_id() -> String {
 /// quote) rather than bind, since `VACUUM` is not a prepared-parameter
 /// statement. The path is memhub-internal, never user SQL.
 fn vacuum_into(conn: &Connection, dest: &Path) -> Result<()> {
-    let dest = dest.to_str().ok_or_else(|| {
-        MemhubError::InvalidInput("snapshot path is not valid UTF-8".into())
-    })?;
+    let dest = dest
+        .to_str()
+        .ok_or_else(|| MemhubError::InvalidInput("snapshot path is not valid UTF-8".into()))?;
     let escaped = dest.replace('\'', "''");
     conn.execute_batch(&format!("VACUUM INTO '{escaped}';"))?;
     Ok(())
@@ -899,7 +973,11 @@ pub fn sha256_file(path: &Path) -> Result<String> {
         }
         hasher.update(&buf[..n]);
     }
-    Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
 }
 
 #[cfg(test)]
@@ -943,9 +1021,17 @@ mod tests {
         let id_ssh = remote_to_id("git@github.com:kninetimmy/memhub.git");
         let id_https = remote_to_id("https://github.com/kninetimmy/memhub/");
         assert_eq!(id_ssh, id_https, "ssh and https forms must share an id");
-        assert!(id_ssh.starts_with("memhub-"), "id carries repo slug: {id_ssh}");
         assert!(
-            id_ssh.rsplit('-').next().unwrap().chars().all(|c| c.is_ascii_hexdigit()),
+            id_ssh.starts_with("memhub-"),
+            "id carries repo slug: {id_ssh}"
+        );
+        assert!(
+            id_ssh
+                .rsplit('-')
+                .next()
+                .unwrap()
+                .chars()
+                .all(|c| c.is_ascii_hexdigit()),
             "id ends in a hex hash: {id_ssh}"
         );
     }
@@ -971,7 +1057,9 @@ mod tests {
         let dir = resolve_remote_dir(Path::new("/nonexistent"), &cfg).expect("resolve");
         assert_eq!(
             dir,
-            Path::new("/mnt/drive/memhub-sync").join("memhub").join("pinned-id"),
+            Path::new("/mnt/drive/memhub-sync")
+                .join("memhub")
+                .join("pinned-id"),
             "canonical layout is <drive_subpath>/memhub/<project_id>"
         );
     }
@@ -1068,17 +1156,15 @@ mod tests {
 
         // The snapshot is a real SQLite file (consistent VACUUM INTO copy).
         let header = fs::read(&summary.snapshot_path).expect("read");
-        assert!(header.starts_with(b"SQLite format 3\0"), "valid sqlite file");
+        assert!(
+            header.starts_with(b"SQLite format 3\0"),
+            "valid sqlite file"
+        );
     }
 
     /// Write a manifest with a chosen logical/schema version into `dir`,
     /// so status tests can stand in for "what another machine pushed".
-    fn write_remote_manifest(
-        dir: &Path,
-        project_id: &str,
-        logical: LogicalVersion,
-        schema: &str,
-    ) {
+    fn write_remote_manifest(dir: &Path, project_id: &str, logical: LogicalVersion, schema: &str) {
         fs::create_dir_all(dir).expect("mkdir");
         let manifest = Manifest {
             manifest_version: MANIFEST_VERSION,
@@ -1102,9 +1188,11 @@ mod tests {
         let lv = LogicalVersion::read(&ctx.conn).expect("logical");
         let schema: String = ctx
             .conn
-            .query_row("SELECT schema_version FROM projects WHERE id = 1", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT schema_version FROM projects WHERE id = 1",
+                [],
+                |r| r.get(0),
+            )
             .expect("schema");
         (lv, schema)
     }
@@ -1144,7 +1232,10 @@ mod tests {
         write_remote_manifest(&diff, "test-proj-abcd1234", bumped, &schema);
         let report = check(temp.path(), &diff).expect("status");
         assert_eq!(report.verdict, SyncVerdict::Diverged);
-        assert!(!report.baseline_present, "first-sync diverge has no baseline");
+        assert!(
+            !report.baseline_present,
+            "first-sync diverge has no baseline"
+        );
     }
 
     #[test]
@@ -1305,13 +1396,19 @@ mod tests {
         let mismatched = a.path().join("mismatch");
         snapshot(a.path(), &mismatched).expect("snapshot");
         rewrite_manifest(&mismatched, |m| m.project_id = "other".into());
-        assert!(adopt(b.path(), &mismatched, true).is_err(), "project mismatch refused");
+        assert!(
+            adopt(b.path(), &mismatched, true).is_err(),
+            "project mismatch refused"
+        );
 
         // Newer schema than this binary.
         let newer = a.path().join("newer");
         snapshot(a.path(), &newer).expect("snapshot");
         rewrite_manifest(&newer, |m| m.schema_version = "9999_future".into());
-        assert!(adopt(b.path(), &newer, true).is_err(), "newer schema refused");
+        assert!(
+            adopt(b.path(), &newer, true).is_err(),
+            "newer schema refused"
+        );
 
         // Checksum disagreement (tampered snapshot).
         let tampered = a.path().join("tampered");
@@ -1324,7 +1421,10 @@ mod tests {
                 .expect("open snapshot");
             f.write_all(b"corruption").expect("tamper");
         }
-        assert!(adopt(b.path(), &tampered, true).is_err(), "bad checksum refused");
+        assert!(
+            adopt(b.path(), &tampered, true).is_err(),
+            "bad checksum refused"
+        );
 
         // Through all refusals, b's DB is still its pristine empty self.
         assert!(fact_keys(b.path()).is_empty(), "no partial adopt occurred");
@@ -1341,7 +1441,9 @@ mod tests {
         // but commit is what records the agreement after a push.
         commit(a.path(), &drive).expect("commit");
         let ctx = db::open_project(a.path()).expect("open");
-        let marker = load_marker(&ctx.paths.memhub_dir).expect("load").expect("marker");
+        let marker = load_marker(&ctx.paths.memhub_dir)
+            .expect("load")
+            .expect("marker");
         assert_eq!(marker.last_action, "push");
 
         // A further local write now reads as local-ahead, proving the

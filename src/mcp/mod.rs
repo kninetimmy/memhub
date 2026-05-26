@@ -17,6 +17,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::MemhubError;
+use crate::code_index;
+use crate::code_index::locate::{LocateHit, LocateOptions, LocateResponse};
 use crate::commands;
 use crate::config::RetrievalMode;
 use crate::models::{
@@ -368,13 +370,26 @@ impl MemhubServer {
         Ok(Json(RecallToolResponse::from(response)))
     }
 
+    async fn locate_impl(
+        &self,
+        Parameters(params): Parameters<LocateParams>,
+    ) -> std::result::Result<Json<LocateToolResponse>, McpError> {
+        let response = code_index::locate::locate(
+            &self.start,
+            LocateOptions {
+                query: params.query,
+                limit: params.limit.unwrap_or(0),
+                use_reranker: params.rerank.unwrap_or(false),
+            },
+        )
+        .map_err(map_tool_error)?;
+        Ok(Json(LocateToolResponse::from(response)))
+    }
+
     /// Resolve a `sync_*` tool's target dir: an explicit `remote`
     /// override if given, else the canonical
     /// `<drive_subpath>/memhub/<project_id>` from config.
-    fn resolve_sync_remote(
-        &self,
-        remote: Option<&str>,
-    ) -> std::result::Result<PathBuf, McpError> {
+    fn resolve_sync_remote(&self, remote: Option<&str>) -> std::result::Result<PathBuf, McpError> {
         match remote {
             Some(p) if !p.trim().is_empty() => Ok(PathBuf::from(p)),
             _ => commands::sync::default_remote_dir(&self.start).map_err(map_tool_error),
@@ -646,6 +661,17 @@ impl MemhubServer {
     }
 
     #[tool(
+        name = "locate",
+        description = "Locate code in this repo by intent (M11). SQL+RAG hybrid search (FTS5 BM25 + cosine when hybrid mode is configured) over a sibling code index at .memhub/code_index.sqlite, lazily refreshed to the working tree on each call. Returns ranked breadcrumbs — {path, start_line, end_line, symbol, kind, score, snippet} — where `snippet` is a CLIPPED excerpt (≤6 lines), never the full chunk. Read-only: never returns whole files and never edits. Use this to find WHERE code lives before reading it with your own file tools. `rerank` runs the bundled cross-encoder over the candidate pool (off by default; its code fit is unproven until M11 PR5 calibrates it)."
+    )]
+    async fn locate(
+        &self,
+        params: Parameters<LocateParams>,
+    ) -> std::result::Result<Json<LocateToolResponse>, McpError> {
+        self.locate_impl(params).await
+    }
+
+    #[tool(
         name = "metrics",
         description = "Return token-accounting totals and a pre-rendered dashboard panel. \
                        When metrics are disabled returns {enabled:false} only. \
@@ -716,7 +742,7 @@ impl ServerHandler for MemhubServer {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("memhub", env!("CARGO_PKG_VERSION")))
             .with_instructions(
-                "Local-first per-repo project memory. Read tools are direct (status, search, recall, list_tasks, list_decisions, list_facts, list_pending_writes, get_command, metrics). Prefer `recall` over reading PROJECT_LEDGER.md mid-session — it does SQL+RAG hybrid retrieval across facts, decisions, and tasks. Tasks write directly (task_add, task_done) since tasks are intent. `doc_add` ingests a user-pointed markdown file as reference material; the first ingest in a repo turns on default-bundle doc recall, after which only strong topical doc matches surface in plain `recall` (scope to docs alone with source_types=[\"doc\"]; recall's `available_docs` counts ingested chunks that did not surface this call). Facts and decisions stage via propose_fact / propose_decision and require human acceptance through `memhub review accept`. Session notes are write-only scratch. `render` regenerates the configured local PROJECT.md from the DB. `metrics` returns token-accounting totals and a pre-rendered dashboard panel for the /metrics skill.",
+                "Local-first per-repo project memory. Read tools are direct (status, search, recall, locate, list_tasks, list_decisions, list_facts, list_pending_writes, get_command, metrics). Prefer `recall` over reading PROJECT_LEDGER.md mid-session — it does SQL+RAG hybrid retrieval across facts, decisions, and tasks. `locate` is the code-finder: SQL+RAG hybrid search over a sibling code index that returns ranked file:line breadcrumbs with clipped snippets (never full code, never edits) — use it to find where code lives before reading it. Tasks write directly (task_add, task_done) since tasks are intent. `doc_add` ingests a user-pointed markdown file as reference material; the first ingest in a repo turns on default-bundle doc recall, after which only strong topical doc matches surface in plain `recall` (scope to docs alone with source_types=[\"doc\"]; recall's `available_docs` counts ingested chunks that did not surface this call). Facts and decisions stage via propose_fact / propose_decision and require human acceptance through `memhub review accept`. Session notes are write-only scratch. `render` regenerates the configured local PROJECT.md from the DB. `metrics` returns token-accounting totals and a pre-rendered dashboard panel for the /metrics skill.",
             )
     }
 
@@ -1301,6 +1327,98 @@ impl From<RecallResponse> for RecallToolResponse {
                 matcher: value.matcher,
                 elapsed_ms: u128_to_i64(value.elapsed_ms),
             },
+        }
+    }
+}
+
+// ── Code locator (M11) tool shapes ──────────────────────────────────
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct LocateParams {
+    /// Natural-language description of the code you're looking for.
+    query: String,
+    /// Max results. 0 / omitted uses the locator default (10).
+    limit: Option<usize>,
+    /// Run the bundled cross-encoder over the candidate pool. Off by
+    /// default; ignored in `fts` mode (no embed pool to reorder).
+    rerank: Option<bool>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct LocateToolResponse {
+    query: String,
+    mode: String,
+    results: Vec<LocateToolHit>,
+    /// Distinct chunks that matched before truncation to `limit`.
+    candidate_count: i64,
+    returned_count: i64,
+    /// Whether the cross-encoder actually ran this call.
+    reranked: bool,
+    /// Files / chunks in the index after the pre-query refresh.
+    files_total: i64,
+    chunks_total: i64,
+    /// Indexed `HEAD` after the refresh, if resolvable.
+    head: Option<String>,
+    elapsed_ms: i64,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct LocateToolHit {
+    rank: i64,
+    /// Repo-relative, forward-slashed path.
+    path: String,
+    /// 1-indexed inclusive line range of the chunk.
+    start_line: i64,
+    end_line: i64,
+    /// Symbol name when symbol-aware; `null` for line windows.
+    symbol: Option<String>,
+    /// Chunk kind tag (`function`, `struct`, `line-window`, …).
+    kind: String,
+    /// Blended fusion score.
+    score: f64,
+    fts_score: f64,
+    vector_score: f64,
+    /// Cross-encoder relevance logit when `rerank` ran, else `null`.
+    rerank_score: Option<f32>,
+    /// Clipped excerpt of the chunk body — NOT the full chunk.
+    snippet: String,
+}
+
+impl From<LocateHit> for LocateToolHit {
+    fn from(value: LocateHit) -> Self {
+        Self {
+            rank: usize_to_i64(value.rank),
+            path: value.path,
+            start_line: usize_to_i64(value.start_line),
+            end_line: usize_to_i64(value.end_line),
+            symbol: value.symbol,
+            kind: value.kind,
+            score: value.score,
+            fts_score: value.fts_score,
+            vector_score: value.vector_score,
+            rerank_score: value.rerank_score,
+            snippet: value.snippet,
+        }
+    }
+}
+
+impl From<LocateResponse> for LocateToolResponse {
+    fn from(value: LocateResponse) -> Self {
+        let mode = match value.mode {
+            RetrievalMode::Fts => "fts".to_string(),
+            RetrievalMode::Hybrid => "hybrid".to_string(),
+        };
+        Self {
+            query: value.query,
+            mode,
+            results: value.results.into_iter().map(LocateToolHit::from).collect(),
+            candidate_count: usize_to_i64(value.candidate_count),
+            returned_count: usize_to_i64(value.returned_count),
+            reranked: value.reranked,
+            files_total: usize_to_i64(value.files_total),
+            chunks_total: usize_to_i64(value.chunks_total),
+            head: value.head,
+            elapsed_ms: u128_to_i64(value.elapsed_ms),
         }
     }
 }
@@ -2450,6 +2568,74 @@ mod tests {
         };
         let message = err.message.to_string();
         assert!(message.contains("turbo"), "unexpected error: {message}");
+    }
+
+    /// Run a git command in `repo`, asserting success. Locate's lazy
+    /// refresh is git-aware, so the code-index test needs a real repo.
+    fn git_in(repo: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .status()
+            .expect("spawn git");
+        assert!(status.success(), "git {args:?} failed");
+    }
+
+    #[test]
+    fn mcp_locate_returns_ranked_breadcrumbs() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path();
+        git_in(root, &["init"]);
+        std::fs::create_dir_all(root.join("src")).expect("mkdir");
+        std::fs::write(
+            root.join("src/parser.rs"),
+            "pub fn parse_manifest() -> bool { true }\n",
+        )
+        .expect("write");
+        std::fs::write(root.join("src/render.rs"), "pub fn draw_widget() {}\n").expect("write");
+        init::run(root).expect("init");
+        git_in(root, &["add", "-A"]);
+        git_in(
+            root,
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-m",
+                "init",
+            ],
+        );
+
+        let server = MemhubServer::new(root.to_path_buf());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+
+        let response = runtime
+            .block_on(server.locate_impl(Parameters(LocateParams {
+                query: "parse manifest".to_string(),
+                limit: Some(5),
+                rerank: None,
+            })))
+            .expect("locate");
+
+        // Lazy refresh built the index on the fly and found the symbol.
+        assert!(response.0.chunks_total >= 1);
+        assert!(!response.0.results.is_empty(), "should locate the symbol");
+        let top = &response.0.results[0];
+        assert_eq!(top.path, "src/parser.rs");
+        assert_eq!(top.symbol.as_deref(), Some("parse_manifest"));
+        assert_eq!(top.kind, "function");
+        assert!(top.start_line >= 1);
+        // Breadcrumb only — a clipped snippet, never the full file.
+        assert!(top.snippet.contains("parse_manifest"));
+        // Reranker is off by default (PR3 contract).
+        assert!(!response.0.reranked);
+        assert!(top.rerank_score.is_none());
     }
 
     #[test]
