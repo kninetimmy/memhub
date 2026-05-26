@@ -932,7 +932,11 @@ mod tests {
                 |r| r.get(0),
             )
             .expect("baseline query");
-        assert_eq!(baseline, Some(25_526), "input + cache_read + cache_creation");
+        assert_eq!(
+            baseline,
+            Some(25_526),
+            "input + cache_read + cache_creation"
+        );
 
         // A later turn (larger input) must NOT move the baseline — it is the
         // session-START cost, captured once.
@@ -954,7 +958,11 @@ mod tests {
                 |r| r.get(0),
             )
             .expect("baseline query 2");
-        assert_eq!(baseline_after, Some(25_526), "first-turn baseline is pinned");
+        assert_eq!(
+            baseline_after,
+            Some(25_526),
+            "first-turn baseline is pinned"
+        );
     }
 
     #[test]
@@ -969,7 +977,9 @@ mod tests {
         // baseline NULL for a later usage-bearing pass to fill.
         write(
             &file,
-            &[r#"{"type":"user","timestamp":"2026-05-15T10:00:00.000Z","message":{"role":"user"}}"#],
+            &[
+                r#"{"type":"user","timestamp":"2026-05-15T10:00:00.000Z","message":{"role":"user"}}"#,
+            ],
         );
         scrape_claude_file(conn, &file).expect("scrape 1");
         let baseline: Option<i64> = conn
@@ -998,7 +1008,11 @@ mod tests {
                 |r| r.get(0),
             )
             .expect("baseline query 2");
-        assert_eq!(baseline_after, Some(750), "first usage line fills the baseline");
+        assert_eq!(
+            baseline_after,
+            Some(750),
+            "first usage line fills the baseline"
+        );
     }
 
     #[test]

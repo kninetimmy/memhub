@@ -889,8 +889,8 @@ pub fn calibrate(start: &Path, model: Option<String>) -> Result<CalibrateResult>
         )
     })?;
 
-    let model = model
-        .unwrap_or_else(|| crate::metrics::calibrate::DEFAULT_CALIBRATION_MODEL.to_string());
+    let model =
+        model.unwrap_or_else(|| crate::metrics::calibrate::DEFAULT_CALIBRATION_MODEL.to_string());
 
     let ctx = db::open_project(start)?;
     let previous_factor = ctx.config.metrics.calibration_factor;
