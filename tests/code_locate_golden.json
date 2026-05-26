@@ -1,0 +1,150 @@
+{
+  "version": 1,
+  "description": "M11 PR5 code-locate golden set (task 65, decision 107). Recall@K acceptance for `memhub eval locate` over memhub's own tree via the sibling code index. Matchers run case-insensitive substring checks against each locate hit's repo-relative `path` (and optional `symbol`), so queries survive line-range shifts and chunk re-splits. The acceptance bar is decision 107's deliberately-lossy one: the EXPECTED FILE in the top K, not a perfect chunk — precision is recovered by the agent's real Read afterward. `kind: match` queries contribute to Recall@1/@K; `kind: empty` queries are nonsense safety probes. NOTE: plain hybrid locate has no score floor, so it returns the top-N by cosine for ANY string — empty probes only reject under `--rerank --min-rerank-score <F>`, which is precisely the floor signal this set exists to measure. Queries are intentionally plain-English 'where does X live' phrasings that avoid the symbol vocabulary, giving the cross-encoder reranker headroom to prove (or not) on code above the FTS+vector fusion baseline.",
+  "queries": [
+    {
+      "id": "cosine-similarity",
+      "query": "compute the cosine similarity between two embedding vectors",
+      "kind": "match",
+      "path_contains": ["src/code_index/locate.rs"],
+      "symbol_contains": "cosine",
+      "notes": "cosine_similarity helper in the locate fusion path."
+    },
+    {
+      "id": "build-fts-match",
+      "query": "turn a free text query into a quoted FTS5 AND expression",
+      "kind": "match",
+      "path_contains": ["src/code_index/locate.rs"],
+      "symbol_contains": "fts_match",
+      "notes": "build_fts_match tokenizer."
+    },
+    {
+      "id": "clip-snippet",
+      "query": "read a short clipped excerpt of a chunk body from disk",
+      "kind": "match",
+      "path_contains": ["src/code_index/locate.rs"],
+      "symbol_contains": "snippet",
+      "notes": "read_snippet breadcrumb clipper."
+    },
+    {
+      "id": "drive-divergence-verdict",
+      "query": "decide if the local database and the synced drive copy have diverged",
+      "kind": "match",
+      "path_contains": ["src/commands/sync.rs"],
+      "notes": "git-style up-to-date/local-ahead/drive-ahead/diverged verdict."
+    },
+    {
+      "id": "resolve-remote-dir",
+      "query": "resolve the canonical remote folder path for cross machine sync",
+      "kind": "match",
+      "path_contains": ["src/commands/sync.rs"],
+      "symbol_contains": "remote",
+      "notes": "resolve_remote_dir; <drive_subpath>/memhub/<project_id>."
+    },
+    {
+      "id": "gc-prune-build-artifacts",
+      "query": "delete superseded cargo build artifacts to reclaim disk space",
+      "kind": "match",
+      "path_contains": ["src/commands/gc.rs"],
+      "notes": "build-artifact GC over target/<profile>/deps."
+    },
+    {
+      "id": "tokenizer-calibrate-endpoint",
+      "query": "call the anthropic count tokens endpoint to calibrate the tokenizer ratio",
+      "kind": "match",
+      "path_contains": ["src/metrics/calibrate.rs"],
+      "notes": "the one network-touching command; cl100k to real ratio."
+    },
+    {
+      "id": "walker-tracked-files",
+      "query": "list the git tracked files filtered through the deny list",
+      "kind": "match",
+      "path_contains": ["src/code_index/walker.rs"],
+      "symbol_contains": "tracked",
+      "notes": "list_tracked_files = git ls-files through PathMatcher."
+    },
+    {
+      "id": "deny-path-excluded",
+      "query": "check whether a file path is excluded by the ignore patterns",
+      "kind": "match",
+      "path_contains": ["src/config/deny.rs"],
+      "notes": "PathMatcher::is_denied glob matching."
+    },
+    {
+      "id": "session-baseline-first-turn",
+      "query": "record the full prompt size of the first turn of a session",
+      "kind": "match",
+      "path_contains": ["src/metrics/session_scraper.rs"],
+      "notes": "baseline_input_tokens scraped from the first usage line."
+    },
+    {
+      "id": "retrieval-eval-harness",
+      "query": "harness that measures how often the expected row lands in the top results",
+      "kind": "match",
+      "path_contains": ["src/commands/eval.rs"],
+      "notes": "run_retrieval Recall@K harness (the sibling of this very harness)."
+    },
+    {
+      "id": "chunk-rust-by-symbol",
+      "query": "split rust source into chunks by function struct and impl block",
+      "kind": "match",
+      "path_contains": ["src/code_index/chunker.rs"],
+      "notes": "tree-sitter symbol-aware chunker."
+    },
+    {
+      "id": "refresh-index-to-tree",
+      "query": "bring the code index in line with the current working tree",
+      "kind": "match",
+      "path_contains": ["src/code_index/mod.rs"],
+      "symbol_contains": "refresh",
+      "notes": "lazy git-aware staleness refresh."
+    },
+    {
+      "id": "cross-encoder-rerank",
+      "query": "reorder candidate results by relevance with a cross encoder model",
+      "kind": "match",
+      "path_contains": ["src/retrieval/rerank.rs"],
+      "notes": "ms-marco cross-encoder reranker."
+    },
+    {
+      "id": "embed-text-vector",
+      "query": "turn a piece of text into a fixed length embedding vector",
+      "kind": "match",
+      "path_contains": ["src/retrieval/embeddings.rs"],
+      "notes": "embed_one / embed_batch BGE-small."
+    },
+    {
+      "id": "hybrid-recall-stale-penalty",
+      "query": "blend keyword and vector scores and penalize stale facts during recall",
+      "kind": "match",
+      "path_contains": ["src/retrieval/recall.rs"],
+      "notes": "recall fusion with stale penalty (distinct from locate's no-decay fusion)."
+    },
+    {
+      "id": "apply-db-migrations",
+      "query": "apply pending database schema migrations idempotently on open",
+      "kind": "match",
+      "path_contains": ["src/db/migrations.rs"],
+      "notes": "apply_all against schema_migrations."
+    },
+    {
+      "id": "schema-drop-rebuild",
+      "query": "drop and rebuild the sibling index when the schema version mismatches",
+      "kind": "match",
+      "path_contains": ["src/code_index/schema.rs"],
+      "notes": "CREATE TABLE IF NOT EXISTS + version-mismatch DROP+REBUILD."
+    },
+    {
+      "id": "empty-gibberish-1",
+      "query": "zxqv plorptin wqxz frobnicate gzorp",
+      "kind": "empty",
+      "notes": "Pure nonsense — should reject under a rerank floor; documents that fusion-only locate has no nonsense gate."
+    },
+    {
+      "id": "empty-gibberish-2",
+      "query": "asdfghjkl qwertyuiop mnbvcxz lkjhgfdsa",
+      "kind": "empty",
+      "notes": "Keyboard-mash nonsense safety probe."
+    }
+  ]
+}

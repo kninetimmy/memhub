@@ -282,6 +282,29 @@ pub enum EvalCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Recall@1/@K harness for the M11 code locator over the sibling code
+    /// index (task 65, decision 107). A/B the cross-encoder reranker on code
+    /// against FTS+vector fusion: run once plain, once with `--rerank`.
+    Locate {
+        /// Code golden set (defaults to tests/code_locate_golden.json).
+        #[arg(long, value_name = "PATH")]
+        golden: Option<PathBuf>,
+        #[arg(long, default_value_t = commands::eval::DEFAULT_K)]
+        k: usize,
+        /// Run the bundled cross-encoder reranker over the candidate pool.
+        /// Off by default (mirrors `memhub locate`); the whole point of this
+        /// harness is to measure whether flipping it on helps on code.
+        #[arg(long)]
+        rerank: bool,
+        /// Harness-side cross-encoder floor: drop returned hits whose rerank
+        /// logit is below this before scoring. Ignored without `--rerank`.
+        /// Sweep it to decide whether locate needs a nonsense-rejection floor.
+        /// Use the `=` form for negative values: `--min-rerank-score=-2`.
+        #[arg(long, value_name = "F")]
+        min_rerank_score: Option<f32>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
