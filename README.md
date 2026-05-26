@@ -16,11 +16,11 @@
 
 ---
 
-If you've ever started a coding session by re-explaining your build setup, your naming conventions, or why that one architectural decision was made — that's the problem memhub solves.
+Every new session, your AI agent starts from zero — you re-explain the build command, the naming conventions, why you chose Postgres over SQLite six months ago. memhub gives the agent a persistent, searchable memory of your project, so it looks those things up instead of asking you again.
 
-memhub is a small, offline memory system for AI coding assistants — per-repo by default, with an optional machine-wide layer for cross-repo truths. It gives Claude Code, Codex CLI, and OpenCode CLI one shared, searchable store of project knowledge — decisions, facts, tasks, notes, and your own reference docs — built on SQLite with semantic search bundled into the binary.
+It's one offline binary and one `.sqlite` file next to your code. Claude Code, Codex, and OpenCode all share the same store: decisions (with the *why* behind them), facts, tasks, your own reference docs, and an index of where things live in your codebase.
 
-No cloud. No account. No daemon. No model download at runtime. Just a `.sqlite` file next to your code and a binary on your PATH.
+When the agent needs context, it pulls a small, ranked bundle of just the relevant rows — not your whole README or project ledger — so prompts stay short and your token bill stays down. No cloud, no account, no daemon, no runtime model download. Everything, including semantic search, runs locally.
 
 <br>
 
@@ -35,6 +35,7 @@ No cloud. No account. No daemon. No model download at runtime. Just a `.sqlite` 
 - **Context that sticks.** "What's the build command?" gets a real answer on day 90, not just day 1. The agent looks it up; you stop repeating yourself.
 - **Decisions with reasons.** Six months from now you'll know *why* a call was made, not just that it was made. "We switched to rusqlite bundled mode because X" stays findable forever.
 - **Your docs are searchable too.** Point memhub at an API spec, design system, or compliance doc and the agent pulls the relevant section on demand — no pasting the whole file into the prompt. A styling question surfaces the right color token table; a backend question stays completely silent on the style guide.
+- **It knows where your code lives.** Ask "where's the retry logic?" and memhub answers with ranked `file:line` breadcrumbs from a local index of your codebase — so you (or the agent) jump straight to the right function instead of grepping around. It returns clipped snippets, never whole files, so finding code costs almost no context.
 - **You stay in control.** Agent proposals stage for review before anything becomes durable. You see exactly what the agent wants to commit, and you can say no.
 - **Same memory across agents.** Claude Code, Codex, and OpenCode share the same rows. Switching tools doesn't cost you context.
 - **Memory that follows you between machines.** Opt in per repo and your laptop and desktop stay in sync through a folder that's already syncing (Google Drive for Desktop, or an rclone mount) — memhub still never goes online. `/catch-up` when you sit down, `/wrap-up` when you're done.
@@ -81,7 +82,10 @@ memhub render
 
 ## Quickstart
 
-### Install via Claude Code (recommended)
+Each agent below gets a copy-paste prompt that installs memhub end-to-end — expand the one you use. Prefer to run the steps yourself? See **Install by hand**.
+
+<details>
+<summary><b>Install via Claude Code</b> — recommended</summary>
 
 Open Claude Code in the repo you want memhub to track and paste:
 
@@ -97,7 +101,7 @@ Please install memhub for me, then turn on hybrid recall.
    embedding model into the binary.
 3. Run `memhub --version` to verify.
 4. Copy the user-level skills so /wrap-up, /catch-up, /check-init,
-   /init-project, /recall, /reindex, /eval-recall, /doc, /metrics, /viz,
+   /init-project, /recall, /locate, /reindex, /eval-recall, /doc, /metrics, /viz,
    /global, and /upgrade all work as slash commands:
 
        cp ~/src/memhub/templates/skills/claude/*.md ~/.claude/commands/
@@ -151,7 +155,10 @@ at step 8 — the machine-global store at ~/.memhub/global.sqlite (outside
 this repo, in my home directory; that is expected).
 ```
 
-### Install via Codex CLI
+</details>
+
+<details>
+<summary><b>Install via Codex CLI</b></summary>
 
 Open Codex in the repo you want to track and paste:
 
@@ -174,7 +181,7 @@ Please install memhub for me, then turn on hybrid recall.
        args = ["serve"]
 
 5. Copy the user-level skills so /wrap-up, /catch-up, /check-init,
-   /init-project, /recall, /reindex, /eval-recall, /doc, /metrics, /viz,
+   /init-project, /recall, /locate, /reindex, /eval-recall, /doc, /metrics, /viz,
    /global, and /upgrade all work:
 
        cp -R ~/src/memhub/templates/skills/codex/* ~/.codex/skills/
@@ -229,7 +236,10 @@ at step 9 — the machine-global store at ~/.memhub/global.sqlite (outside
 this repo, in my home directory; that is expected).
 ```
 
-### Install via OpenCode CLI
+</details>
+
+<details>
+<summary><b>Install via OpenCode CLI</b></summary>
 
 Open OpenCode in the repo you want to track and paste:
 
@@ -260,7 +270,7 @@ Please install memhub for me, then turn on hybrid recall.
 
    If that file already exists, merge only the `mcp.memhub` block.
 5. Copy the user-level skills so /wrap-up, /catch-up, /check-init,
-   /init-project, /recall, /reindex, /eval-recall, /doc, /metrics, /viz,
+   /init-project, /recall, /locate, /reindex, /eval-recall, /doc, /metrics, /viz,
    /global, and /upgrade all work:
 
        mkdir -p ~/.config/opencode/skills ~/.config/opencode/commands
@@ -318,7 +328,10 @@ at step 10 — the machine-global store at ~/.memhub/global.sqlite (outside
 this repo, in my home directory; that is expected).
 ```
 
-### Install by hand
+</details>
+
+<details>
+<summary><b>Install by hand</b></summary>
 
 ```bash
 # 1. Build + install the binary (slow on first build; bundles BGE-small)
@@ -379,6 +392,8 @@ memhub sync enable
 memhub sync status   # confirms enablement + the resolved remote dir
 ```
 
+</details>
+
 ---
 
 ## What gets saved (and when)
@@ -435,6 +450,38 @@ A few things to know:
 - Re-ingesting an unchanged file is a no-op. Changed content replaces every chunk in place.
 - `memhub doc ls / show / rm` to manage what's ingested.
 - Set `include_docs_in_default = false` in config to revert to strict opt-in if you prefer manual control.
+
+---
+
+## Find where code lives
+
+Memory answers "what did we decide?" Sometimes the question is "*where is the code that does X?*" — and the honest answer, three months into a project, is usually a few minutes of grepping for the right symbol name you can't quite remember.
+
+memhub builds a local **code index** for that. It walks your repo, splits each source file into symbol-aware chunks (functions, structs, impls — via tree-sitter), embeds them, and lets you search by intent:
+
+```bash
+memhub code index                 # build / refresh the index
+memhub locate "where does the retry backoff happen"
+```
+
+You get back ranked breadcrumbs — `path`, line range, symbol name, and a **clipped** snippet — not a wall of code:
+
+```
+1. src/net/client.rs:88-121   fn send_with_retry      (score 0.91)
+     async fn send_with_retry(&self, req: Request) -> Result<Response> {
+         let mut backoff = Duration::from_millis(50);…
+2. src/config/retry.rs:12-19   struct RetryPolicy      (score 0.74)
+```
+
+Then you open those exact lines with your own editor or the agent's file tools. It's a **locator, not a reader** — it returns snippets, never whole files, so finding code costs almost no context.
+
+A few things that keep it honest and cheap:
+
+- **Separate from your memory.** The index is a sibling database (`.memhub/code_index.sqlite`), not part of project memory. Recall never reads it, and it never pollutes your decisions/facts bundle — `locate` is its own query path.
+- **It's a throwaway cache.** Gitignored, never exported, never synced between machines. Delete it anytime (`memhub code rm`) and rebuild; it's derived entirely from your source.
+- **Freshness is automatic.** Every `locate` first does a lazy staleness check against the working tree — unchanged files are skipped (stat-only), edited ones re-chunk transparently. You don't have to remember to re-index after editing.
+
+Surfaces: `memhub code index|status|rm` and `memhub locate` (CLI) · `memhub.locate` (MCP) · `/locate` (Claude Code / Codex / OpenCode skill).
 
 ---
 
@@ -675,16 +722,21 @@ Tasks and session notes write directly — they're low-stakes (intent and scratc
 | `memhub arch set/show` | The architecture narrative |
 | `memhub ingest-git` | Pull commit + file history into the DB |
 | `memhub doc add/ls/rm/show` | Ingest external markdown docs; scope recall with `--source-type doc` |
+| `memhub locate <query>` | Find code by intent — ranked `file:line` breadcrumbs from the sibling code index |
+| `memhub code index/status/rm` | Build / inspect / drop the local code index (`.memhub/code_index.sqlite`) |
 | `memhub global enable/disable/status` | Opt this repo into the optional machine-wide store (`~/.memhub/global.sqlite`) |
 | `memhub review list/accept/reject` | Triage agent-proposed writes |
 | `memhub render` | Emit local `PROJECT.md` and `PROJECT_LEDGER.md` from the DB |
 | `memhub index status/rebuild` | Embedding coverage; backfill for `fts → hybrid` migrations |
 | `memhub eval retrieval` | Run the Recall@K harness against `tests/retrieval_golden.json` |
+| `memhub eval locate` | Recall@K harness for the code locator |
 | `memhub stats --window 7d` | Write activity by actor, review rate, stale-fact counts |
 | `memhub metrics enable/status` | Opt-in token accounting (Claude Code transcript scraping) |
 | `memhub viz` | Open the local read-only web dashboard |
 | `memhub export/import` | Portable JSON backup; cross-machine restore |
 | `memhub sync enable/status/snapshot/check/adopt/commit` | Cross-machine Drive sync (M10); push/pull a whole-DB snapshot through a synced folder |
+| `memhub upgrade` | Rebuild + install the binary and bring every memhub instance on this machine to head schema; resync skill wrappers |
+| `memhub gc` | Reclaim stale Cargo build artifacts (memhub-owned `target/` rlibs and test binaries) |
 | `memhub serve` | Stdio MCP server for Claude Code / Codex / OpenCode |
 
 `fact add`, `decision add`, and `doc add` take `--global`; `fact promote <id> --global` and `decision promote <id> --global` copy an existing repo row up into the machine-wide store. See [Shared memory across repos](#shared-memory-across-repos-optional). Run any command with `--help` for flags.
@@ -731,7 +783,7 @@ include_docs_in_default = false  # auto-flips on first `doc add --global`
 **Claude Code**
 
 - Reads `CLAUDE.md` at session start.
-- User-level slash commands at `~/.claude/commands/`: `/wrap-up`, `/catch-up`, `/check-init`, `/init-project`, `/recall`, `/reindex`, `/eval-recall`, `/doc`, `/metrics`, `/viz`, `/global`, `/upgrade`.
+- User-level slash commands at `~/.claude/commands/`: `/wrap-up`, `/catch-up`, `/check-init`, `/init-project`, `/recall`, `/locate`, `/reindex`, `/eval-recall`, `/doc`, `/metrics`, `/viz`, `/global`, `/upgrade`.
 - Skill writes are attributed `actor=claude:wrap-up`, `source=user+agent:claude-code`.
 
 **Codex CLI**
@@ -780,7 +832,7 @@ When you accept a pending MCP proposal via `memhub review accept`, the durable r
 
 `memhub serve` starts a stdio MCP server. Tools:
 
-- **Read:** `status`, `search`, `recall`, `list_tasks`, `list_decisions`, `list_facts`, `list_pending_writes`, `get_command`
+- **Read:** `status`, `search`, `recall`, `locate`, `list_tasks`, `list_decisions`, `list_facts`, `list_pending_writes`, `get_command`
 - **Write (direct):** `task_add`, `task_done`, `record_command`, `log_session_note`, `render`
 - **Write (staged for review):** `propose_fact`, `propose_decision` — both take an optional `global` flag; a `global=true` proposal stages in the repo's `pending_writes` and only becomes durable in `~/.memhub/global.sqlite` on human `memhub review accept`. There is no `global` parameter on any MCP write — the global path is never agent-automatic.
 - **Cross-machine sync (M10):** `sync_status`, `sync_snapshot`, `sync_check`, `sync_commit`, `sync_adopt` — all default the target to the canonical `<drive_subpath>/memhub/<project_id>` folder. `sync_adopt` is gated: without `confirm=true` it returns the would-change verdict and changes nothing (the one destructive op). See [Sync across your machines](#sync-across-your-machines-google-drive).
@@ -793,7 +845,12 @@ Two independent sub-switches under `[metrics]`:
 - `recall_proxy = true` — logs one row to `recall_metrics` per `memhub recall` call: actual bundle size vs a full-ledger counterfactual.
 - `session_accounting = true` — scrapes Claude Code transcript JSONL into `session_metrics` for real input/output/cache token totals.
 
-The dashboard Token Metrics panel and `memhub metrics status` surface both components. `memhub render` appends a 7-day digest to `PROJECT.md` when enabled.
+Three refinements layer on top once accounting is on:
+- **Measured baseline.** Alongside the assumed full-ledger counterfactual, each session records its real session-start prompt size, so the rendered "context offset" can be reported against what you *actually* loaded — not just an estimate.
+- **Cache churn.** Each rendered period block reports the share of cache tokens spent *rebuilding* the prompt prefix versus *reusing* it — the honest signal for "we kept busting the cache" at a large context window.
+- **Tokenizer calibration.** `memhub metrics calibrate` corrects the ~10% gap between the bundled tiktoken estimate and Anthropic's real tokenizer. It sends a fixed built-in corpus (never your project's content) to Anthropic's `count_tokens` endpoint — **the only command in all of memhub that touches the network**, one-time, needs `ANTHROPIC_API_KEY`, and refuses cleanly without it. Offline-first otherwise holds.
+
+The dashboard Token Metrics panel and `memhub metrics status` surface all of this. `memhub render` appends a 7-day digest to `PROJECT.md` when enabled.
 
 ### Backup and restore
 
@@ -839,12 +896,14 @@ memhub CLI / MCP
    ├── src/config/      per-repo TOML (incl. [retrieval] and [metrics] blocks)
    ├── src/mcp/         stdio MCP server, client identity normalization
    ├── src/retrieval/   BGE-small bi-encoder + ms-marco cross-encoder, hybrid recall
+   ├── src/code_index/  tree-sitter chunker + walker + `locate` over the sibling code index
    ├── src/dashboard/   read-only local web UI (viz feature flag)
    ├── src/metrics/     opt-in token accounting + session scraper
    ├── src/render/      PROJECT.md and PROJECT_LEDGER.md emit
    └── src/export/      v1 portable JSON
        │
-       └── SQLite (.memhub/project.sqlite) + bundled BGE-small + ms-marco ONNX
+       ├── SQLite (.memhub/project.sqlite) + bundled BGE-small + ms-marco ONNX
+       └── SQLite (.memhub/code_index.sqlite)  ← sibling code index, locate-only
 ```
 
 ---

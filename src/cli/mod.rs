@@ -12,11 +12,11 @@ pub use args::{
     ReviewCommand, StatsWindowArg, SyncCommand, TaskCommand, TaskStatus, TopLevelCommand,
 };
 use output::{
-    code_status_to_json, eval_summary_to_json, index_status_to_json, locate_response_to_json,
-    metrics_status_to_json, narrative_entry_to_json, pending_write_record_to_json,
-    print_code_status, print_eval_summary, print_index_status, print_init_result, print_locate,
-    print_metrics_status_human, print_recall_human, print_stats_human, print_stats_json,
-    recall_response_to_json,
+    code_status_to_json, eval_summary_to_json, index_status_to_json, locate_eval_summary_to_json,
+    locate_response_to_json, metrics_status_to_json, narrative_entry_to_json,
+    pending_write_record_to_json, print_code_status, print_eval_summary, print_index_status,
+    print_init_result, print_locate, print_locate_eval_summary, print_metrics_status_human,
+    print_recall_human, print_stats_human, print_stats_json, recall_response_to_json,
 };
 use serde_json::json;
 
@@ -1658,6 +1658,28 @@ pub fn run(cli: Cli) -> Result<()> {
                     println!("{}", eval_summary_to_json(&summary));
                 } else {
                     print_eval_summary(&summary);
+                }
+            }
+            EvalCommand::Locate {
+                golden,
+                k,
+                rerank,
+                min_rerank_score,
+                json: as_json,
+            } => {
+                let golden_path =
+                    golden.unwrap_or_else(|| cwd.join(commands::eval::DEFAULT_CODE_GOLDEN_PATH));
+                let opts = commands::eval::LocateEvalOptions {
+                    golden_path,
+                    k,
+                    use_reranker: rerank,
+                    min_rerank_score,
+                };
+                let summary = commands::eval::run_locate(&cwd, opts)?;
+                if as_json {
+                    println!("{}", locate_eval_summary_to_json(&summary));
+                } else {
+                    print_locate_eval_summary(&summary);
                 }
             }
         },

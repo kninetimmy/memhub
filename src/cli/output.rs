@@ -454,6 +454,124 @@ pub(crate) fn print_eval_summary(summary: &commands::eval::EvalSummary) {
     }
 }
 
+pub(crate) fn locate_eval_summary_to_json(
+    summary: &commands::eval::LocateEvalSummary,
+) -> serde_json::Value {
+    let outcomes = summary
+        .outcomes
+        .iter()
+        .map(|o| {
+            json!({
+                "id": o.id,
+                "query": o.query,
+                "kind": match o.kind {
+                    commands::eval::GoldenKind::Match => "match",
+                    commands::eval::GoldenKind::Empty => "empty",
+                },
+                "passed": o.passed,
+                "passed_at_1": o.passed_at_1,
+                "matched_rank": o.matched_rank,
+                "matched_score": o.matched_score,
+                "matched_rerank": o.matched_rerank,
+                "returned_count": o.returned_count,
+                "failure_reason": o.failure_reason,
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "golden_path": summary.golden_path.display().to_string(),
+        "mode": recall_mode_label(summary.mode),
+        "k": summary.k,
+        "reranked": summary.reranked,
+        "min_rerank_score": summary.min_rerank_score,
+        "totals": {
+            "queries": summary.total_queries,
+            "match_queries": summary.match_queries,
+            "empty_queries": summary.empty_queries,
+            "match_passes_at_1": summary.match_passes_at_1,
+            "match_passes_at_k": summary.match_passes_at_k,
+            "empty_passes": summary.empty_passes,
+            "safety_failures": summary.safety_failures,
+        },
+        "recall_at_1": summary.recall_at_1,
+        "recall_at_k": summary.recall_at_k,
+        "elapsed_ms": summary.elapsed_ms,
+        "outcomes": outcomes,
+    })
+}
+
+pub(crate) fn print_locate_eval_summary(summary: &commands::eval::LocateEvalSummary) {
+    println!(
+        "memhub eval locate — {} ({} queries)",
+        summary.golden_path.display(),
+        summary.total_queries,
+    );
+    let floor = match summary.min_rerank_score {
+        Some(f) if summary.reranked => format!("  |  Floor: {f:.2}"),
+        _ => String::new(),
+    };
+    println!(
+        "Mode: {}{}  |  K: {}{}  |  Elapsed: {} ms",
+        recall_mode_label(summary.mode),
+        if summary.reranked { " +rerank" } else { "" },
+        summary.k,
+        floor,
+        summary.elapsed_ms,
+    );
+    println!(
+        "Recall@1: {p1}/{total} = {pct1:.1}%   Recall@{k}: {pk}/{total} = {pctk:.1}%",
+        p1 = summary.match_passes_at_1,
+        pk = summary.match_passes_at_k,
+        total = summary.match_queries,
+        k = summary.k,
+        pct1 = summary.recall_at_1 * 100.0,
+        pctk = summary.recall_at_k * 100.0,
+    );
+    if summary.empty_queries > 0 {
+        println!(
+            "Safety: {pass}/{total} nonsense probes returned no results{failed}",
+            pass = summary.empty_passes,
+            total = summary.empty_queries,
+            failed = if summary.safety_failures > 0 {
+                format!("  [{} leaked]", summary.safety_failures)
+            } else {
+                String::new()
+            },
+        );
+    }
+    println!();
+    println!("Per-query outcomes:");
+    for outcome in &summary.outcomes {
+        let glyph = if outcome.passed { "PASS" } else { "FAIL" };
+        let kind = match outcome.kind {
+            commands::eval::GoldenKind::Match => "match",
+            commands::eval::GoldenKind::Empty => "empty",
+        };
+        let detail = match outcome.matched_rank {
+            Some(rank) => format!(
+                "rank {rank}, score {score:.3}{rerank}",
+                score = outcome.matched_score.unwrap_or(0.0),
+                rerank = match outcome.matched_rerank {
+                    Some(r) => format!(", rerank {r:.2}"),
+                    None => String::new(),
+                },
+            ),
+            None => match outcome.kind {
+                commands::eval::GoldenKind::Empty => {
+                    format!("{} hit(s) returned", outcome.returned_count)
+                }
+                commands::eval::GoldenKind::Match => {
+                    format!("{} hit(s) returned, no match", outcome.returned_count)
+                }
+            },
+        };
+        println!("  [{glyph}] {id} ({kind}) — {detail}", id = outcome.id);
+        if let Some(reason) = &outcome.failure_reason {
+            println!("        {reason}");
+        }
+    }
+}
+
 pub(crate) fn print_metrics_status_human(s: &commands::metrics::MetricsStatus) {
     let status_label = if s.config.enabled {
         "enabled"
