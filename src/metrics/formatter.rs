@@ -361,7 +361,8 @@ mod tests {
         };
         let block = render_period_block("Last 7 days", &t);
         assert!(
-            block.contains("Context offset: 5% of measured no-recall startup (~25,000 tok/session)")
+            block
+                .contains("Context offset: 5% of measured no-recall startup (~25,000 tok/session)")
         );
         assert!(block.contains("                10% of assumed full-ledger baseline"));
     }
@@ -407,7 +408,9 @@ mod tests {
             ..Default::default()
         };
         let block = render_period_block("Last 7 days", &t);
-        assert!(block.contains("Cache churn:    12% (cache_creation share) · 18% per-session mean"));
+        assert!(
+            block.contains("Cache churn:    12% (cache_creation share) · 18% per-session mean")
+        );
     }
 
     #[test]

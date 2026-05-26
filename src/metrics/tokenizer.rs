@@ -64,11 +64,7 @@ pub fn set_calibration_factor(factor: f64) {
 /// Current calibration multiplier; `1.0` when unset.
 pub fn calibration_factor() -> f64 {
     let bits = CALIBRATION_BITS.load(Ordering::Relaxed);
-    if bits == 0 {
-        1.0
-    } else {
-        f64::from_bits(bits)
-    }
+    if bits == 0 { 1.0 } else { f64::from_bits(bits) }
 }
 
 /// Raw cl100k_base token count for `s`, with no calibration applied.
