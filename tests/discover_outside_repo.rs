@@ -12,6 +12,21 @@
 //! Single test / own `HOME` override so the env mutation cannot race
 //! other tests (separate integration-test binaries are separate
 //! processes).
+//!
+//! Unix-only. The test isolates discovery by pointing `HOME` at a
+//! throwaway `tempfile::tempdir()` and walking up from a non-repo dir
+//! nested under it. That hinges on the temp dir living *outside* the
+//! real home: on Unix it lands in `/tmp`, so the upward walk never
+//! crosses the real `~/.memhub`. On Windows `tempfile` roots under
+//! `%USERPROFILE%\AppData\Local\Temp`, i.e. *inside* the real profile,
+//! so the walk climbs straight through the real `~/.memhub` and
+//! adopts it — defeating the isolation regardless of any `HOME` /
+//! `USERPROFILE` override (discovery correctly skips the test's
+//! global store, then keeps climbing). There is no reliably-writable
+//! temp root outside the profile on Windows without elevation, so the
+//! discovery-guard logic — which is itself platform-agnostic — is
+//! exercised on Unix only.
+#![cfg(unix)]
 
 use std::fs;
 
@@ -23,9 +38,10 @@ use memhub::db::{discover_paths, open_global, open_project};
 fn global_store_dir_is_never_discovered_as_a_repo_project() {
     let home = tempfile::tempdir().expect("home tempdir");
     // SAFETY: single-test binary; no other thread reads HOME concurrently.
+    // Unix-gated (see module header), so HOME is the only home-resolution
+    // input `db::home_dir` consults here.
     unsafe {
         std::env::set_var("HOME", home.path());
-        std::env::remove_var("USERPROFILE");
     }
 
     // Create the machine-global store at `$HOME/.memhub/global.sqlite`.
