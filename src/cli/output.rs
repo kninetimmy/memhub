@@ -1,5 +1,7 @@
 use serde_json::json;
 
+use crate::code_index::CodeIndexStatus;
+use crate::code_index::locate::LocateResponse;
 use crate::commands;
 use crate::config::RetrievalMode;
 use crate::models::{InitResult, NarrativeEntry, NarrativeKind, PendingWriteRecord, StatsSummary};
@@ -638,5 +640,125 @@ pub(crate) fn print_init_result(result: &InitResult) {
             "Migrations applied: {}",
             result.migrations_applied.join(", ")
         );
+    }
+}
+
+pub(crate) fn locate_response_to_json(response: &LocateResponse) -> serde_json::Value {
+    let results = response
+        .results
+        .iter()
+        .map(|hit| {
+            json!({
+                "rank": hit.rank,
+                "path": hit.path,
+                "start_line": hit.start_line,
+                "end_line": hit.end_line,
+                "symbol": hit.symbol,
+                "kind": hit.kind,
+                "score": hit.score,
+                "fts_score": hit.fts_score,
+                "vector_score": hit.vector_score,
+                "rerank_score": hit.rerank_score,
+                "snippet": hit.snippet,
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "query": response.query,
+        "mode": recall_mode_label(response.mode),
+        "results": results,
+        "candidate_count": response.candidate_count,
+        "returned_count": response.returned_count,
+        "reranked": response.reranked,
+        "files_total": response.files_total,
+        "chunks_total": response.chunks_total,
+        "head": response.head,
+        "elapsed_ms": response.elapsed_ms,
+    })
+}
+
+pub(crate) fn print_locate(response: &LocateResponse) {
+    println!(
+        "locate \"{}\" — mode: {}{} ({} files, {} chunks indexed)",
+        response.query,
+        recall_mode_label(response.mode),
+        if response.reranked { " +rerank" } else { "" },
+        response.files_total,
+        response.chunks_total,
+    );
+    if response.results.is_empty() {
+        println!("  no matches.");
+        return;
+    }
+    for hit in &response.results {
+        let symbol = hit.symbol.as_deref().unwrap_or("—");
+        println!(
+            "{:>2}. {}:{}-{}  [{} {}]  score {:.3}{}",
+            hit.rank,
+            hit.path,
+            hit.start_line,
+            hit.end_line,
+            hit.kind,
+            symbol,
+            hit.score,
+            match hit.rerank_score {
+                Some(s) => format!("  rerank {s:.2}"),
+                None => String::new(),
+            },
+        );
+        for line in hit.snippet.lines() {
+            println!("      {line}");
+        }
+    }
+    println!(
+        "({} of {} candidates, {} ms)",
+        response.returned_count, response.candidate_count, response.elapsed_ms
+    );
+}
+
+pub(crate) fn code_status_to_json(status: &CodeIndexStatus) -> serde_json::Value {
+    json!({
+        "db_path": status.db_path,
+        "exists": status.exists,
+        "schema_version": status.schema_version,
+        "mode": recall_mode_label(status.mode),
+        "files_total": status.files_total,
+        "chunks_total": status.chunks_total,
+        "embeddings_total": status.embeddings_total,
+        "last_head": status.last_head,
+        "current_head": status.current_head,
+        "head_stale": status.head_stale(),
+    })
+}
+
+pub(crate) fn print_code_status(status: &CodeIndexStatus) {
+    println!("Code index: {}", status.db_path.display());
+    if !status.exists {
+        println!("  not built yet — run `memhub code index` or `memhub locate <query>`.");
+        return;
+    }
+    println!(
+        "  schema version: {}",
+        status
+            .schema_version
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "unknown".to_string())
+    );
+    println!("  mode:           {}", recall_mode_label(status.mode));
+    println!("  files:          {}", status.files_total);
+    println!("  chunks:         {}", status.chunks_total);
+    println!("  embeddings:     {}", status.embeddings_total);
+    println!(
+        "  indexed HEAD:   {}",
+        status.last_head.as_deref().unwrap_or("(none)")
+    );
+    println!(
+        "  current HEAD:   {}",
+        status.current_head.as_deref().unwrap_or("(none)")
+    );
+    if status.head_stale() {
+        println!("  staleness:      HEAD moved since last index — run `memhub code index`.");
+    } else {
+        println!("  staleness:      up to date with HEAD");
     }
 }

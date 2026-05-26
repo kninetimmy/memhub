@@ -16,6 +16,7 @@
 
 pub mod chunker;
 pub mod grammar;
+pub mod locate;
 pub mod schema;
 pub mod walker;
 
@@ -304,6 +305,130 @@ pub fn refresh(start: &Path) -> Result<RefreshSummary> {
         summary.embedded_chunks = embed_missing(&mut conn)?;
     }
     Ok(summary)
+}
+
+/// A read-only snapshot of the sibling code index for `memhub code status`.
+#[derive(Debug, Clone)]
+pub struct CodeIndexStatus {
+    /// Absolute path to the sibling DB.
+    pub db_path: PathBuf,
+    /// Whether the DB file exists yet (a never-indexed repo reports false
+    /// with all-zero counts; status never creates the DB).
+    pub exists: bool,
+    /// Stored schema version, or `None` when absent/unparseable.
+    pub schema_version: Option<i64>,
+    /// Configured retrieval mode (governs whether vectors are populated).
+    pub mode: RetrievalMode,
+    pub files_total: i64,
+    pub chunks_total: i64,
+    pub embeddings_total: i64,
+    /// `HEAD` recorded at the last refresh.
+    pub last_head: Option<String>,
+    /// Current repo `HEAD`, if resolvable.
+    pub current_head: Option<String>,
+}
+
+impl CodeIndexStatus {
+    /// True when the index was built against a different commit than the
+    /// current `HEAD` — a coarse staleness cue. `false` when either side is
+    /// unknown (no claim either way) or the index is empty.
+    pub fn head_stale(&self) -> bool {
+        match (&self.last_head, &self.current_head) {
+            (Some(last), Some(current)) => last != current,
+            _ => false,
+        }
+    }
+}
+
+/// Snapshot the sibling index without refreshing it. Reports `exists:
+/// false` (and zero counts) when the DB has never been created, rather than
+/// bootstrapping it — a status check must not have side effects.
+pub fn status(start: &Path) -> Result<CodeIndexStatus> {
+    let paths = db::discover_paths(start)?;
+    let repo_root = paths.repo_root.clone();
+    let config = if paths.config_path.exists() {
+        ProjectConfig::load(&paths.config_path)?
+    } else {
+        let repo_name = repo_root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("memhub");
+        ProjectConfig::default_for_repo_name(repo_name)
+    };
+    let db_path = code_index_db_path(&repo_root);
+    let current_head = walker::current_head(&repo_root);
+
+    if !db_path.exists() {
+        return Ok(CodeIndexStatus {
+            db_path,
+            exists: false,
+            schema_version: None,
+            mode: config.retrieval.mode,
+            files_total: 0,
+            chunks_total: 0,
+            embeddings_total: 0,
+            last_head: None,
+            current_head,
+        });
+    }
+
+    let conn = Connection::open(&db_path)?;
+    let schema_version = schema::stored_version(&conn)?;
+    let files_total = conn.query_row("SELECT COUNT(*) FROM indexed_files", [], |r| r.get(0))?;
+    let chunks_total = conn.query_row("SELECT COUNT(*) FROM code_chunks", [], |r| r.get(0))?;
+    let embeddings_total =
+        conn.query_row("SELECT COUNT(*) FROM code_embeddings", [], |r| r.get(0))?;
+    let last_head: Option<String> = conn
+        .query_row(
+            "SELECT value FROM index_meta WHERE key = 'last_head'",
+            [],
+            |r| r.get(0),
+        )
+        .ok();
+
+    Ok(CodeIndexStatus {
+        db_path,
+        exists: true,
+        schema_version,
+        mode: config.retrieval.mode,
+        files_total,
+        chunks_total,
+        embeddings_total,
+        last_head,
+        current_head,
+    })
+}
+
+/// Outcome of [`remove_index`].
+#[derive(Debug, Clone)]
+pub struct RemoveOutcome {
+    pub db_path: PathBuf,
+    /// True when the main DB file existed and was deleted.
+    pub removed: bool,
+}
+
+/// Delete the sibling code-index DB (and its `-wal` / `-shm` companions).
+/// The index is fully regenerable from the working tree (decision 107), so
+/// this is a disposable-cache wipe, not a destructive data loss. A
+/// `removed: false` means there was nothing to delete.
+pub fn remove_index(start: &Path) -> Result<RemoveOutcome> {
+    let paths = db::discover_paths(start)?;
+    let db_path = code_index_db_path(&paths.repo_root);
+    let removed = db_path.exists();
+    for suffix in ["", "-wal", "-shm"] {
+        let candidate = if suffix.is_empty() {
+            db_path.clone()
+        } else {
+            let mut name = db_path.as_os_str().to_os_string();
+            name.push(suffix);
+            PathBuf::from(name)
+        };
+        if candidate.exists() {
+            // A missing WAL/SHM is fine; only surface a real removal error.
+            fs::remove_file(&candidate)?;
+        }
+    }
+    Ok(RemoveOutcome { db_path, removed })
 }
 
 /// Embed every `code_chunks` row that has no `code_embeddings` row yet and
