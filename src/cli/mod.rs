@@ -1299,7 +1299,10 @@ pub fn run(cli: Cli) -> Result<()> {
             )?;
         }
         TopLevelCommand::Sync { command } => match command {
-            SyncCommand::Snapshot { out_dir, json: as_json } => {
+            SyncCommand::Snapshot {
+                out_dir,
+                json: as_json,
+            } => {
                 let out_dir = match out_dir {
                     Some(p) => p,
                     None => commands::sync::default_remote_dir(&cwd)?,
@@ -1392,7 +1395,10 @@ pub fn run(cli: Cli) -> Result<()> {
                         })
                     );
                 } else {
-                    println!("cross-machine sync: {}", if s.enabled { "enabled" } else { "disabled" });
+                    println!(
+                        "cross-machine sync: {}",
+                        if s.enabled { "enabled" } else { "disabled" }
+                    );
                     match &s.project_id {
                         Ok(id) => println!("  project id: {id}"),
                         Err(e) => println!("  project id: <unresolved> ({e})"),
@@ -1422,7 +1428,10 @@ pub fn run(cli: Cli) -> Result<()> {
                     }
                 }
             }
-            SyncCommand::Check { remote, json: as_json } => {
+            SyncCommand::Check {
+                remote,
+                json: as_json,
+            } => {
                 let remote = match remote {
                     Some(p) => p,
                     None => commands::sync::default_remote_dir(&cwd)?,
@@ -1473,7 +1482,11 @@ pub fn run(cli: Cli) -> Result<()> {
                     }
                 }
             }
-            SyncCommand::Adopt { remote, yes, json: as_json } => {
+            SyncCommand::Adopt {
+                remote,
+                yes,
+                json: as_json,
+            } => {
                 let remote = match remote {
                     Some(p) => p,
                     None => commands::sync::default_remote_dir(&cwd)?,
@@ -1505,11 +1518,17 @@ pub fn run(cli: Cli) -> Result<()> {
                             summary.previous_schema, summary.new_schema
                         );
                     }
-                    println!("  replaced DB backed up to {}", summary.backup_path.display());
+                    println!(
+                        "  replaced DB backed up to {}",
+                        summary.backup_path.display()
+                    );
                     println!("  run `memhub render` to refresh the local view");
                 }
             }
-            SyncCommand::Commit { remote, json: as_json } => {
+            SyncCommand::Commit {
+                remote,
+                json: as_json,
+            } => {
                 let remote = match remote {
                     Some(p) => p,
                     None => commands::sync::default_remote_dir(&cwd)?,

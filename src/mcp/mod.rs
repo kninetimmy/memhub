@@ -371,10 +371,7 @@ impl MemhubServer {
     /// Resolve a `sync_*` tool's target dir: an explicit `remote`
     /// override if given, else the canonical
     /// `<drive_subpath>/memhub/<project_id>` from config.
-    fn resolve_sync_remote(
-        &self,
-        remote: Option<&str>,
-    ) -> std::result::Result<PathBuf, McpError> {
+    fn resolve_sync_remote(&self, remote: Option<&str>) -> std::result::Result<PathBuf, McpError> {
         match remote {
             Some(p) if !p.trim().is_empty() => Ok(PathBuf::from(p)),
             _ => commands::sync::default_remote_dir(&self.start).map_err(map_tool_error),
