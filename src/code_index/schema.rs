@@ -30,10 +30,16 @@ const META_VERSION_KEY: &str = "schema_version";
 /// [`CODE_INDEX_SCHEMA_VERSION`], the whole index is dropped and rebuilt.
 /// Otherwise the `CREATE TABLE IF NOT EXISTS` statements are idempotent.
 pub fn bootstrap(conn: &Connection) -> Result<()> {
-    let stored = stored_version(conn)?;
-    if let Some(version) = stored
-        && version != CODE_INDEX_SCHEMA_VERSION
-    {
+    let needs_rebuild = match stored_version(conn)? {
+        Some(version) => version != CODE_INDEX_SCHEMA_VERSION,
+        // `index_meta` exists but holds no parseable version: a corrupt or
+        // partially-written prior state. Treat it as a mismatch and rebuild
+        // — the index is regenerable, so a spurious rebuild is only cheap,
+        // never lossy. A genuinely fresh DB has no `index_meta` table and
+        // is reported as `false` here, so it is created, not dropped.
+        None => meta_table_present(conn)?,
+    };
+    if needs_rebuild {
         drop_all(conn)?;
     }
 
@@ -51,14 +57,7 @@ pub fn bootstrap(conn: &Connection) -> Result<()> {
 /// The schema version recorded in `index_meta`, or `None` when the index
 /// has never been bootstrapped (the `index_meta` table is absent).
 pub fn stored_version(conn: &Connection) -> Result<Option<i64>> {
-    let table_present: Option<i64> = conn
-        .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'index_meta'",
-            [],
-            |row| row.get(0),
-        )
-        .optional()?;
-    if table_present.is_none() {
+    if !meta_table_present(conn)? {
         return Ok(None);
     }
 
@@ -70,6 +69,19 @@ pub fn stored_version(conn: &Connection) -> Result<Option<i64>> {
         )
         .optional()?;
     Ok(raw.and_then(|v| v.parse::<i64>().ok()))
+}
+
+/// Whether the `index_meta` table exists — i.e. the DB has been
+/// bootstrapped at least once (even if its version row is corrupt).
+fn meta_table_present(conn: &Connection) -> Result<bool> {
+    let present: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'index_meta'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(present.is_some())
 }
 
 fn create_all(conn: &Connection) -> Result<()> {

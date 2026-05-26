@@ -22,11 +22,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use rusqlite::{Connection, Transaction, params};
+use rusqlite::{Connection, Statement, Transaction, params};
 use sha2::{Digest, Sha256};
 
 use crate::Result;
-use crate::config::PathMatcher;
+use crate::config::{PathMatcher, ProjectConfig};
 use crate::db::{self, MEMHUB_DIR};
 
 /// Filename of the sibling code-index DB inside `.memhub/`.
@@ -68,8 +68,14 @@ pub struct RefreshSummary {
     pub changed_files: usize,
     /// Files left untouched (metadata or content matched the index).
     pub unchanged_files: usize,
-    /// Index rows dropped because the file is no longer tracked.
+    /// Index rows dropped because the file is no longer tracked (or was
+    /// absent on disk this pass).
     pub deleted_files: usize,
+    /// Tracked files examined but not indexed this pass: absent on disk,
+    /// a symlink, or present-but-unreadable. Together with new/changed/
+    /// unchanged this reconciles against the tracked set:
+    /// `new + changed + unchanged + skipped == tracked.len()`.
+    pub skipped_files: usize,
     /// Subset of new/changed files that were non-UTF-8 (tracked, but
     /// produced no chunks — a line-window chunker can't window binary).
     pub binary_skipped: usize,
@@ -93,12 +99,23 @@ struct ExistingFile {
 /// re-chunked; files no longer tracked have their rows (and, via cascade,
 /// chunks) dropped. The whole pass is one transaction.
 pub fn refresh(start: &Path) -> Result<RefreshSummary> {
-    // open_project gives us the canonical repo root + the deny-list. We
-    // never touch its connection — the code index is a separate DB.
-    let ctx = db::open_project(start)?;
-    let repo_root = ctx.paths.repo_root.clone();
-    let matcher = PathMatcher::from_patterns(&ctx.config.deny_list.patterns)?;
-    drop(ctx);
+    // Resolve the canonical repo root + deny-list WITHOUT opening
+    // project.sqlite: discover_paths + a config read are all we need, and
+    // they skip open_project's heavy side effects (migrations, Claude
+    // transcript scrape, registry upsert). The code index is a separate DB
+    // and stays decoupled from project.sqlite (finding M1).
+    let paths = db::discover_paths(start)?;
+    let repo_root = paths.repo_root.clone();
+    let config = if paths.config_path.exists() {
+        ProjectConfig::load(&paths.config_path)?
+    } else {
+        let repo_name = repo_root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("memhub");
+        ProjectConfig::default_for_repo_name(repo_name)
+    };
+    let matcher = PathMatcher::from_patterns(&config.deny_list.patterns)?;
 
     let tracked = walker::list_tracked_files(&repo_root, &matcher)?;
     let head = walker::current_head(&repo_root);
@@ -113,27 +130,64 @@ pub fn refresh(start: &Path) -> Result<RefreshSummary> {
         ..Default::default()
     };
 
+    // Prepared once and reused across every file instead of re-preparing
+    // per file (finding L2). Dropped before the cleanup writes + commit so
+    // the transaction carries no outstanding borrow when consumed.
+    let mut insert_chunk_stmt = tx.prepare(
+        "INSERT INTO code_chunks(
+            file_id, start_line, end_line, symbol, kind, content_hash, embed_text
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+    )?;
+
     for path in &tracked {
         let abs = repo_root.join(path);
-        let meta = match fs::metadata(&abs) {
+        // symlink_metadata does NOT follow links, so a tracked symlink is
+        // detected here rather than silently read by-target (finding M3),
+        // and an absent file is distinguished from a present one.
+        let meta = match fs::symlink_metadata(&abs) {
             Ok(m) => m,
-            // Tracked but absent in the worktree (e.g. sparse checkout).
-            // Leave any prior row intact; don't index, don't delete.
+            // Tracked but absent on disk: deleted-but-unstaged, or a sparse
+            // checkout. Do NOT remove it from `existing` — leaving it there
+            // lets the cleanup loop drop any stale row, which is the correct
+            // staleness behavior (finding P2). A re-checkout re-indexes it.
             Err(_) => {
-                existing.remove(path);
+                summary.skipped_files += 1;
                 continue;
             }
         };
+        if meta.file_type().is_symlink() {
+            // Never index a symlink — reading it would follow the link,
+            // possibly outside the repo. Leave it in `existing` so a row
+            // for a path that used to be a regular file is cleaned up.
+            summary.skipped_files += 1;
+            continue;
+        }
         let mtime = mtime_millis(&meta);
         let size = meta.len() as i64;
 
         if let Some(prev) = existing.remove(path) {
             // Fast path: identical metadata => assume unchanged, no read.
-            if prev.mtime == mtime && prev.size == size {
+            // Only valid when mtime is actually known; if the platform
+            // can't report it we fall through to the content hash so a
+            // same-size edit is never missed (finding M2).
+            if let Some(mtime) = mtime
+                && prev.mtime == mtime
+                && prev.size == size
+            {
                 summary.unchanged_files += 1;
                 continue;
             }
-            let bytes = fs::read(&abs)?;
+            let bytes = match fs::read(&abs) {
+                Ok(b) => b,
+                // Present but unreadable (permissions / TOCTOU vanish).
+                // Skip and count; `prev` is already out of `existing`, so
+                // the prior row survives the cleanup loop — don't wipe a
+                // good entry over a transient blip (finding H1).
+                Err(_) => {
+                    summary.skipped_files += 1;
+                    continue;
+                }
+            };
             let hash = sha256_hex(&bytes);
             if hash == prev.content_hash {
                 // Content identical (touched / re-checked-out); refresh stat only.
@@ -141,35 +195,50 @@ pub fn refresh(start: &Path) -> Result<RefreshSummary> {
                     "UPDATE indexed_files
                      SET mtime = ?1, size = ?2, last_indexed_at = CURRENT_TIMESTAMP
                      WHERE id = ?3",
-                    params![mtime, size, prev.id],
+                    params![mtime.unwrap_or(0), size, prev.id],
                 )?;
                 summary.unchanged_files += 1;
                 continue;
             }
             // Real content change: re-chunk in place.
-            tx.execute("DELETE FROM code_chunks WHERE file_id = ?1", params![prev.id])?;
-            let is_binary = insert_chunks(&tx, prev.id, path, &bytes)?;
+            tx.execute(
+                "DELETE FROM code_chunks WHERE file_id = ?1",
+                params![prev.id],
+            )?;
+            let is_binary = insert_chunks(&mut insert_chunk_stmt, prev.id, path, &bytes)?;
             tx.execute(
                 "UPDATE indexed_files
                  SET mtime = ?1, size = ?2, content_hash = ?3,
                      language = ?4, last_indexed_at = CURRENT_TIMESTAMP
                  WHERE id = ?5",
-                params![mtime, size, hash, infer_language(path), prev.id],
+                params![
+                    mtime.unwrap_or(0),
+                    size,
+                    hash,
+                    infer_language(path),
+                    prev.id
+                ],
             )?;
             summary.changed_files += 1;
             if is_binary {
                 summary.binary_skipped += 1;
             }
         } else {
-            let bytes = fs::read(&abs)?;
+            let bytes = match fs::read(&abs) {
+                Ok(b) => b,
+                Err(_) => {
+                    summary.skipped_files += 1;
+                    continue;
+                }
+            };
             let hash = sha256_hex(&bytes);
             tx.execute(
                 "INSERT INTO indexed_files(path, mtime, size, content_hash, language)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![path, mtime, size, hash, infer_language(path)],
+                params![path, mtime.unwrap_or(0), size, hash, infer_language(path)],
             )?;
             let file_id = tx.last_insert_rowid();
-            let is_binary = insert_chunks(&tx, file_id, path, &bytes)?;
+            let is_binary = insert_chunks(&mut insert_chunk_stmt, file_id, path, &bytes)?;
             summary.new_files += 1;
             if is_binary {
                 summary.binary_skipped += 1;
@@ -177,8 +246,11 @@ pub fn refresh(start: &Path) -> Result<RefreshSummary> {
         }
     }
 
-    // Anything still in the map is no longer tracked: drop it (the
-    // ON DELETE CASCADE on code_chunks.file_id removes its chunks).
+    drop(insert_chunk_stmt);
+
+    // Anything still in the map is no longer tracked (or absent on disk):
+    // drop it (the ON DELETE CASCADE on code_chunks.file_id removes its
+    // chunks).
     for prev in existing.values() {
         tx.execute("DELETE FROM indexed_files WHERE id = ?1", params![prev.id])?;
         summary.deleted_files += 1;
@@ -192,18 +264,19 @@ pub fn refresh(start: &Path) -> Result<RefreshSummary> {
         )?;
     }
 
-    summary.files_total =
-        tx.query_row("SELECT COUNT(*) FROM indexed_files", [], |r| r.get::<_, i64>(0))? as usize;
-    summary.chunks_total =
-        tx.query_row("SELECT COUNT(*) FROM code_chunks", [], |r| r.get::<_, i64>(0))? as usize;
+    summary.files_total = tx.query_row("SELECT COUNT(*) FROM indexed_files", [], |r| {
+        r.get::<_, i64>(0)
+    })? as usize;
+    summary.chunks_total = tx.query_row("SELECT COUNT(*) FROM code_chunks", [], |r| {
+        r.get::<_, i64>(0)
+    })? as usize;
 
     tx.commit()?;
     Ok(summary)
 }
 
 fn load_existing_files(tx: &Transaction<'_>) -> Result<HashMap<String, ExistingFile>> {
-    let mut stmt =
-        tx.prepare("SELECT id, path, mtime, size, content_hash FROM indexed_files")?;
+    let mut stmt = tx.prepare("SELECT id, path, mtime, size, content_hash FROM indexed_files")?;
     let rows = stmt.query_map([], |row| {
         Ok((
             row.get::<_, String>(1)?,
@@ -223,19 +296,14 @@ fn load_existing_files(tx: &Transaction<'_>) -> Result<HashMap<String, ExistingF
     Ok(map)
 }
 
-/// Chunk `bytes` and insert the chunks for `file_id`. Returns `true` when
-/// the file was non-UTF-8 (tracked, zero chunks) so callers can count it.
-fn insert_chunks(tx: &Transaction<'_>, file_id: i64, path: &str, bytes: &[u8]) -> Result<bool> {
+/// Chunk `bytes` and insert the chunks for `file_id` via the caller's
+/// hoisted statement. Returns `true` when the file was non-UTF-8 (tracked,
+/// zero chunks) so callers can count it.
+fn insert_chunks(stmt: &mut Statement<'_>, file_id: i64, path: &str, bytes: &[u8]) -> Result<bool> {
     let Ok(text) = std::str::from_utf8(bytes) else {
         return Ok(true);
     };
-    let chunks = chunker::chunk_file(path, text);
-    let mut stmt = tx.prepare(
-        "INSERT INTO code_chunks(
-            file_id, start_line, end_line, symbol, kind, content_hash, embed_text
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-    )?;
-    for c in &chunks {
+    for c in &chunker::chunk_file(path, text) {
         stmt.execute(params![
             file_id,
             c.start_line as i64,
@@ -249,12 +317,15 @@ fn insert_chunks(tx: &Transaction<'_>, file_id: i64, path: &str, bytes: &[u8]) -
     Ok(false)
 }
 
-fn mtime_millis(meta: &fs::Metadata) -> i64 {
+/// File mtime in milliseconds since the epoch, or `None` when the platform
+/// can't report a modified time. Callers must treat `None` as "metadata
+/// fast path unavailable" and fall back to the content hash, never as a
+/// concrete `0` (which would make every same-size edit look unchanged).
+fn mtime_millis(meta: &fs::Metadata) -> Option<i64> {
     meta.modified()
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 /// Best-effort language hint from the file extension. Mirrors the set in
@@ -384,5 +455,38 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM indexed_files", [], |r| r.get(0))
             .expect("count files");
         assert_eq!(files, 0, "stale rows should be dropped on rebuild");
+    }
+
+    #[test]
+    fn corrupt_version_value_triggers_drop_and_rebuild() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("code_index.sqlite");
+
+        // Bootstrap, plant a row, then corrupt the version to a non-integer
+        // so it no longer parses (finding L5).
+        {
+            let conn = open_code_index(&path).expect("open");
+            conn.execute(
+                "INSERT INTO indexed_files(path, mtime, size, content_hash)
+                 VALUES ('src/main.rs', 1, 2, 'deadbeef')",
+                [],
+            )
+            .expect("seed file row");
+            conn.execute(
+                "UPDATE index_meta SET value = 'not-a-number' WHERE key = 'schema_version'",
+                [],
+            )
+            .expect("corrupt version");
+        }
+
+        let conn = open_code_index(&path).expect("reopen");
+        assert_eq!(
+            schema::stored_version(&conn).expect("version"),
+            Some(CODE_INDEX_SCHEMA_VERSION)
+        );
+        let files: i64 = conn
+            .query_row("SELECT COUNT(*) FROM indexed_files", [], |r| r.get(0))
+            .expect("count files");
+        assert_eq!(files, 0, "corrupt version should force a rebuild");
     }
 }

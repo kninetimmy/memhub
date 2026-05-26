@@ -37,9 +37,12 @@ pub fn list_tracked_files(repo_root: &Path, matcher: &PathMatcher) -> Result<Vec
         });
     }
 
+    // `-z` delimits each path with a trailing NUL and emits raw bytes, so
+    // splitting on NUL is the whole parse: do NOT trim, or paths whose
+    // names begin or end with whitespace get silently corrupted. The split
+    // yields a trailing empty element after the final NUL, dropped here.
     let mut paths: Vec<String> = String::from_utf8_lossy(&output.stdout)
         .split('\0')
-        .map(str::trim)
         .filter(|p| !p.is_empty())
         .filter(|p| !matcher.is_denied(p))
         .map(str::to_string)
