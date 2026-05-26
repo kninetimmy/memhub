@@ -28,6 +28,14 @@ thiserror = "2.0.17"
 tiktoken-rs = "0.11"
 tokio = { version = "1.48.0", features = ["io-std", "net", "rt-multi-thread", "signal", "time"] }
 toml = "0.8.23"
+# tree-sitter Rust grammar for the M11 code locator's AST chunker
+# (decision 107). tree-sitter-rust depends on `tree-sitter-language`,
+# not on a specific tree-sitter version, so the two resolve
+# independently; the grammar compiles a vendored C parser at build
+# time (no runtime network calls). Rust-only for v1 — new languages add
+# a (grammar, node-kinds) row to src/code_index/grammar.rs.
+tree-sitter = "0.25"
+tree-sitter-rust = "0.24"
 tower-http = { version = "0.6", features = ["trace"], optional = true }
 
 [features]

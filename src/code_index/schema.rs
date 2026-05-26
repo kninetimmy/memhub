@@ -9,9 +9,10 @@
 //! free because the whole index is regenerable from the working tree.
 //! This is what makes `memhub upgrade` a no-op for the code index.
 //!
-//! `code_embeddings` and `code_chunks_fts` are created here but stay
-//! EMPTY in PR1: embedding + FTS population is PR2's job (the tree-sitter
-//! chunker lands there). They exist now only so the schema is stable.
+//! `code_embeddings` is populated by [`super::embed_missing`] in hybrid
+//! mode; `code_chunks_fts` is kept current by the sync triggers created
+//! here (added in v2), so a chunk insert/delete flows into FTS without
+//! the writer touching it.
 
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -20,7 +21,11 @@ use crate::Result;
 /// Schema version stamped into `index_meta`. Bumping this triggers a
 /// DROP+REBUILD on the next open — intentional and cheap, since the index
 /// is rebuilt from tracked files.
-pub const CODE_INDEX_SCHEMA_VERSION: i64 = 1;
+///
+/// v2 (PR2): adds the `code_chunks_fts` sync triggers so chunk writes keep
+/// the contentless FTS index current. A v1 index built by PR1 carried the
+/// FTS table but no triggers; the bump rebuilds it from the working tree.
+pub const CODE_INDEX_SCHEMA_VERSION: i64 = 2;
 
 const META_VERSION_KEY: &str = "schema_version";
 
@@ -126,14 +131,34 @@ fn create_all(conn: &Connection) -> Result<()> {
         );
 
         -- Contentless FTS5 over code_chunks (mirror of the doc_chunks_fts
-        -- shape in migration 0014). Sync triggers + backfill are wired in
-        -- PR2 alongside population; the table is intentionally empty now.
+        -- shape in migration 0014). symbol is indexed alongside embed_text
+        -- so a query naming a function/type matches on the symbol token as
+        -- well as the body.
         CREATE VIRTUAL TABLE IF NOT EXISTS code_chunks_fts USING fts5(
             symbol,
             embed_text,
             content='code_chunks',
             content_rowid='id'
-        );",
+        );
+
+        -- Keep the contentless FTS index in step with code_chunks (mirror
+        -- the 0014 doc_chunks triggers). The delete trigger fires on direct
+        -- chunk deletes AND on the ON DELETE CASCADE from an indexed_files
+        -- row removal, so a dropped file's FTS rows go with it.
+        CREATE TRIGGER IF NOT EXISTS code_chunks_fts_ai AFTER INSERT ON code_chunks BEGIN
+            INSERT INTO code_chunks_fts(rowid, symbol, embed_text)
+                VALUES (new.id, new.symbol, new.embed_text);
+        END;
+        CREATE TRIGGER IF NOT EXISTS code_chunks_fts_ad AFTER DELETE ON code_chunks BEGIN
+            INSERT INTO code_chunks_fts(code_chunks_fts, rowid, symbol, embed_text)
+                VALUES ('delete', old.id, old.symbol, old.embed_text);
+        END;
+        CREATE TRIGGER IF NOT EXISTS code_chunks_fts_au AFTER UPDATE ON code_chunks BEGIN
+            INSERT INTO code_chunks_fts(code_chunks_fts, rowid, symbol, embed_text)
+                VALUES ('delete', old.id, old.symbol, old.embed_text);
+            INSERT INTO code_chunks_fts(rowid, symbol, embed_text)
+                VALUES (new.id, new.symbol, new.embed_text);
+        END;",
     )?;
     Ok(())
 }

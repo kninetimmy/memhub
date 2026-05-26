@@ -7,13 +7,15 @@
 //! eval-regression guarantee structurally (mirrors the M9
 //! registry-is-not-recall split).
 //!
-//! PR1 ships the spine: the sibling-DB schema + bootstrap, plus (in
-//! later commits of this PR) a git-aware walker, the lazy staleness
-//! diff, a line-window placeholder chunker, and the `memhub code
-//! index|status` CLI. The tree-sitter chunker, embedding, and FTS
-//! population arrive in PR2; the `memhub locate` query path in PR3.
+//! PR1 shipped the spine: the sibling-DB schema + bootstrap, a git-aware
+//! walker, and the lazy `(mtime,size)`+hash staleness diff. PR2 (here)
+//! adds the tree-sitter AST chunker ([`chunker`]/[`grammar`]), eager
+//! embedding of chunks into `code_embeddings` (hybrid mode), and FTS
+//! population via the schema's `code_chunks_fts` triggers. The `memhub
+//! code index|status` CLI is PR3; the `memhub locate` query path also PR3.
 
 pub mod chunker;
+pub mod grammar;
 pub mod schema;
 pub mod walker;
 
@@ -26,8 +28,9 @@ use rusqlite::{Connection, Statement, Transaction, params};
 use sha2::{Digest, Sha256};
 
 use crate::Result;
-use crate::config::{PathMatcher, ProjectConfig};
+use crate::config::{PathMatcher, ProjectConfig, RetrievalMode};
 use crate::db::{self, MEMHUB_DIR};
+use crate::retrieval::embeddings::{EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME, embed_batch};
 
 /// Filename of the sibling code-index DB inside `.memhub/`.
 pub const CODE_INDEX_DB_FILENAME: &str = "code_index.sqlite";
@@ -79,6 +82,9 @@ pub struct RefreshSummary {
     /// Subset of new/changed files that were non-UTF-8 (tracked, but
     /// produced no chunks — a line-window chunker can't window binary).
     pub binary_skipped: usize,
+    /// Chunks embedded this pass (hybrid mode only; 0 in fts mode or when
+    /// every chunk already had a current vector).
+    pub embedded_chunks: usize,
     /// Indexed `HEAD`, if resolvable.
     pub head: Option<String>,
 }
@@ -205,7 +211,13 @@ pub fn refresh(start: &Path) -> Result<RefreshSummary> {
                 "DELETE FROM code_chunks WHERE file_id = ?1",
                 params![prev.id],
             )?;
-            let is_binary = insert_chunks(&mut insert_chunk_stmt, prev.id, path, &bytes)?;
+            let is_binary = insert_chunks(
+                &mut insert_chunk_stmt,
+                prev.id,
+                path,
+                infer_language(path),
+                &bytes,
+            )?;
             tx.execute(
                 "UPDATE indexed_files
                  SET mtime = ?1, size = ?2, content_hash = ?3,
@@ -238,7 +250,13 @@ pub fn refresh(start: &Path) -> Result<RefreshSummary> {
                 params![path, mtime.unwrap_or(0), size, hash, infer_language(path)],
             )?;
             let file_id = tx.last_insert_rowid();
-            let is_binary = insert_chunks(&mut insert_chunk_stmt, file_id, path, &bytes)?;
+            let is_binary = insert_chunks(
+                &mut insert_chunk_stmt,
+                file_id,
+                path,
+                infer_language(path),
+                &bytes,
+            )?;
             summary.new_files += 1;
             if is_binary {
                 summary.binary_skipped += 1;
@@ -272,7 +290,119 @@ pub fn refresh(start: &Path) -> Result<RefreshSummary> {
     })? as usize;
 
     tx.commit()?;
+
+    // Phase 2: embed any chunk that lacks a current vector. Hybrid-only —
+    // in fts mode `code_embeddings` stays empty and the locator (PR3) runs
+    // FTS-only, mirroring the project DB's eager-embed gating. This runs
+    // AFTER the chunk transaction commits (not inside it) so the heavy
+    // model inference never holds the index write lock, and a transient
+    // embed failure leaves a complete chunk+FTS index that degrades to FTS
+    // rather than rolling the whole refresh back. Backfill semantics —
+    // embed every missing chunk, not just this pass's new ones — means such
+    // a failure self-heals on the next refresh.
+    if config.retrieval.mode == RetrievalMode::Hybrid {
+        summary.embedded_chunks = embed_missing(&mut conn)?;
+    }
     Ok(summary)
+}
+
+/// Embed every `code_chunks` row that has no `code_embeddings` row yet and
+/// persist the vectors. Reuses the shared BGE model ([`embed_batch`]).
+///
+/// An in-run cache keyed by the `embed_text` hash means a chunk whose text
+/// matches one already embedded — duplicated code, or an unchanged sibling
+/// whose vector survived this refresh — reuses that vector instead of
+/// re-running the model. Cache misses are gathered into a single batched
+/// inference. Returns the number of chunks given an embedding row.
+fn embed_missing(conn: &mut Connection) -> Result<usize> {
+    // Seed the cache from embeddings that survived the chunk diff.
+    let mut cache: HashMap<String, Vec<f32>> = HashMap::new();
+    {
+        let mut stmt = conn.prepare("SELECT content_hash, vector FROM code_embeddings")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+        })?;
+        for row in rows {
+            let (hash, blob) = row?;
+            cache.insert(hash, le_bytes_to_vector(&blob));
+        }
+    }
+
+    // Chunks still missing a vector (new this pass, or a prior embed blip).
+    let missing: Vec<(i64, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT c.id, c.embed_text FROM code_chunks c
+             LEFT JOIN code_embeddings e ON e.chunk_id = c.id
+             WHERE e.chunk_id IS NULL",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()?
+    };
+    if missing.is_empty() {
+        return Ok(0);
+    }
+
+    // Hash each chunk's embed_text; gather the unique cache-miss texts for
+    // one batched model call. `pending` maps a hash to its slot in the batch
+    // so duplicates within this pass embed exactly once.
+    let mut hashes: Vec<String> = Vec::with_capacity(missing.len());
+    let mut pending: HashMap<String, usize> = HashMap::new();
+    let mut batch_texts: Vec<&str> = Vec::new();
+    for (_, text) in &missing {
+        let hash = sha256_hex(text.as_bytes());
+        if !cache.contains_key(&hash) && !pending.contains_key(&hash) {
+            pending.insert(hash.clone(), batch_texts.len());
+            batch_texts.push(text.as_str());
+        }
+        hashes.push(hash);
+    }
+
+    if !batch_texts.is_empty() {
+        let vectors = embed_batch(&batch_texts)?;
+        for (hash, idx) in &pending {
+            cache.insert(hash.clone(), vectors[*idx].clone());
+        }
+    }
+
+    let tx = conn.transaction()?;
+    {
+        let mut insert = tx.prepare(
+            "INSERT INTO code_embeddings(chunk_id, model_name, dimension, vector, content_hash)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
+        for ((chunk_id, _), hash) in missing.iter().zip(&hashes) {
+            let vector = cache
+                .get(hash)
+                .expect("every missing chunk's vector is cached or freshly embedded");
+            insert.execute(params![
+                chunk_id,
+                EMBEDDING_MODEL_NAME,
+                EMBEDDING_DIMENSION as i64,
+                vector_to_le_bytes(vector),
+                hash,
+            ])?;
+        }
+    }
+    tx.commit()?;
+    Ok(missing.len())
+}
+
+/// Pack a vector as little-endian f32 bytes (matches `retrieval::persist`).
+fn vector_to_le_bytes(v: &[f32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(v.len() * 4);
+    for f in v {
+        out.extend_from_slice(&f.to_le_bytes());
+    }
+    out
+}
+
+/// Unpack little-endian f32 bytes back into a vector. A trailing partial
+/// chunk (corrupt blob) is ignored rather than panicking.
+fn le_bytes_to_vector(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .chunks_exact(4)
+        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .collect()
 }
 
 fn load_existing_files(tx: &Transaction<'_>) -> Result<HashMap<String, ExistingFile>> {
@@ -297,13 +427,20 @@ fn load_existing_files(tx: &Transaction<'_>) -> Result<HashMap<String, ExistingF
 }
 
 /// Chunk `bytes` and insert the chunks for `file_id` via the caller's
-/// hoisted statement. Returns `true` when the file was non-UTF-8 (tracked,
-/// zero chunks) so callers can count it.
-fn insert_chunks(stmt: &mut Statement<'_>, file_id: i64, path: &str, bytes: &[u8]) -> Result<bool> {
+/// hoisted statement. The `language` hint (from [`infer_language`]) picks
+/// the AST grammar; an unknown language line-windows. Returns `true` when
+/// the file was non-UTF-8 (tracked, zero chunks) so callers can count it.
+fn insert_chunks(
+    stmt: &mut Statement<'_>,
+    file_id: i64,
+    path: &str,
+    language: Option<&str>,
+    bytes: &[u8],
+) -> Result<bool> {
     let Ok(text) = std::str::from_utf8(bytes) else {
         return Ok(true);
     };
-    for c in &chunker::chunk_file(path, text) {
+    for c in &chunker::chunk_file(path, text, language) {
         stmt.execute(params![
             file_id,
             c.start_line as i64,
@@ -397,7 +534,10 @@ mod tests {
     }
 
     #[test]
-    fn embeddings_and_fts_start_empty_in_pr1() {
+    fn embeddings_and_fts_start_empty_on_fresh_bootstrap() {
+        // A bootstrapped-but-never-refreshed index has no chunks, so the
+        // embedding + FTS tables exist and are empty. Population happens in
+        // refresh() (FTS via triggers, embeddings in hybrid mode).
         let temp = tempdir().expect("tempdir");
         let path = temp.path().join("code_index.sqlite");
         let conn = open_code_index(&path).expect("open");

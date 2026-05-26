@@ -8,6 +8,7 @@ use std::process::Command;
 
 use memhub::code_index::{self, code_index_db_path};
 use memhub::commands::init;
+use memhub::config::{ProjectConfig, RetrievalMode};
 
 /// Run a git subcommand in `repo`, failing the test on a non-zero status.
 fn git(repo: &Path, args: &[&str]) {
@@ -43,6 +44,19 @@ fn file_indexed(db: &Path, rel: &str) -> bool {
         )
         .expect("count file");
     n > 0
+}
+
+fn count(db: &Path, sql: &str) -> i64 {
+    let conn = rusqlite::Connection::open(db).expect("open code_index");
+    conn.query_row(sql, [], |r| r.get(0)).expect("count query")
+}
+
+/// Switch the repo's retrieval mode to hybrid so a refresh embeds chunks.
+fn set_hybrid(root: &Path) {
+    let config_path = root.join(".memhub").join("config.toml");
+    let mut config = ProjectConfig::load(&config_path).expect("load config");
+    config.retrieval.mode = RetrievalMode::Hybrid;
+    config.save(&config_path).expect("save config");
 }
 
 /// A repo with git initialized, memhub initialized, and `files` staged.
@@ -170,6 +184,135 @@ fn unreadable_file_is_skipped_and_prior_row_survives() {
 
     // Restore perms so the tempdir cleans up.
     fs::set_permissions(&a, fs::Permissions::from_mode(0o644)).expect("restore perms");
+}
+
+/// PR2: a Rust file is chunked by symbol (tree-sitter), not line windows —
+/// each top-level item becomes a kind-tagged, symbol-named chunk.
+#[test]
+fn rust_file_is_chunked_by_symbol() {
+    let temp = repo_with_files(&[(
+        "src/widget.rs",
+        "/// Build a widget.\npub fn build_widget() -> u32 { 42 }\nstruct Widget { id: u32 }\n",
+    )]);
+    let root = temp.path();
+    code_index::refresh(root).expect("refresh");
+
+    let conn = rusqlite::Connection::open(code_index_db_path(root)).expect("open");
+    let mut stmt = conn
+        .prepare("SELECT kind, symbol FROM code_chunks ORDER BY symbol")
+        .expect("prepare");
+    let rows: Vec<(String, Option<String>)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .expect("query")
+        .map(|r| r.expect("row"))
+        .collect();
+
+    assert!(
+        rows.contains(&("function".into(), Some("build_widget".into()))),
+        "{rows:?}"
+    );
+    assert!(
+        rows.contains(&("struct".into(), Some("Widget".into()))),
+        "{rows:?}"
+    );
+}
+
+/// PR2: chunk writes keep the contentless code_chunks_fts in step (via the
+/// schema triggers), and a symbol name is keyword-searchable. This holds in
+/// fts mode — FTS does not depend on embedding.
+#[test]
+fn refresh_populates_fts_and_finds_symbol() {
+    let temp = repo_with_files(&[("src/a.rs", "pub fn parse_manifest() -> bool { true }\n")]);
+    let root = temp.path();
+    code_index::refresh(root).expect("refresh");
+    let db = code_index_db_path(root);
+
+    // Every chunk has a matching FTS row.
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM code_chunks_fts"),
+        count(&db, "SELECT COUNT(*) FROM code_chunks"),
+        "FTS row count must track chunk count"
+    );
+
+    let conn = rusqlite::Connection::open(&db).expect("open");
+    let hits: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM code_chunks_fts WHERE code_chunks_fts MATCH ?1",
+            rusqlite::params!["parse_manifest"],
+            |r| r.get(0),
+        )
+        .expect("fts match");
+    assert!(hits >= 1, "symbol name should be FTS-searchable");
+}
+
+/// PR2: a re-chunked file's stale FTS rows are removed (the delete trigger
+/// fires on the cascade), so the FTS index never drifts past the chunks.
+#[test]
+fn fts_rows_track_rechunk_and_delete() {
+    let temp = repo_with_files(&[("src/a.rs", "fn old_name() {}\n")]);
+    let root = temp.path();
+    let db = code_index_db_path(root);
+    code_index::refresh(root).expect("first refresh");
+
+    fs::write(root.join("src/a.rs"), "fn new_name() {}\n").expect("rewrite");
+    code_index::refresh(root).expect("second refresh");
+
+    let conn = rusqlite::Connection::open(&db).expect("open");
+    let old_hits: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM code_chunks_fts WHERE code_chunks_fts MATCH ?1",
+            rusqlite::params!["old_name"],
+            |r| r.get(0),
+        )
+        .expect("fts match old");
+    assert_eq!(old_hits, 0, "stale FTS row for old_name must be gone");
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM code_chunks_fts"),
+        count(&db, "SELECT COUNT(*) FROM code_chunks"),
+    );
+}
+
+/// PR2: in hybrid mode a refresh embeds every chunk into code_embeddings;
+/// a no-op second refresh embeds nothing more. In fts mode the table stays
+/// empty.
+#[test]
+fn hybrid_mode_embeds_every_chunk() {
+    let temp = repo_with_files(&[("src/a.rs", "pub fn alpha() {}\npub fn beta() {}\n")]);
+    let root = temp.path();
+    let db = code_index_db_path(root);
+
+    // Default (fts) mode: no embeddings.
+    code_index::refresh(root).expect("fts refresh");
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM code_embeddings"),
+        0,
+        "fts mode must not populate embeddings"
+    );
+
+    // Hybrid mode: every chunk gets a vector.
+    set_hybrid(root);
+    let summary = code_index::refresh(root).expect("hybrid refresh");
+    let chunks = count(&db, "SELECT COUNT(*) FROM code_chunks");
+    assert!(chunks >= 2, "two functions => at least two chunks");
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM code_embeddings"),
+        chunks,
+        "every chunk should have an embedding"
+    );
+    assert_eq!(summary.embedded_chunks as i64, chunks);
+
+    // Stored vectors are the expected dimension (384 f32 => 1536 bytes).
+    assert_eq!(
+        count(
+            &db,
+            "SELECT COUNT(*) FROM code_embeddings WHERE LENGTH(vector) = 1536"
+        ),
+        chunks,
+    );
+
+    // A second refresh with no changes re-embeds nothing.
+    let again = code_index::refresh(root).expect("third refresh");
+    assert_eq!(again.embedded_chunks, 0, "unchanged tree re-embeds nothing");
 }
 
 /// Finding M3: a tracked symlink must be skipped, never followed/indexed
