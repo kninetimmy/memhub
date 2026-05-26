@@ -97,7 +97,7 @@ Please install memhub for me, then turn on hybrid recall.
    embedding model into the binary.
 3. Run `memhub --version` to verify.
 4. Copy the user-level skills so /wrap-up, /catch-up, /check-init,
-   /init-project, /recall, /reindex, /eval-recall, /doc, /metrics, /viz,
+   /init-project, /recall, /locate, /reindex, /eval-recall, /doc, /metrics, /viz,
    /global, and /upgrade all work as slash commands:
 
        cp ~/src/memhub/templates/skills/claude/*.md ~/.claude/commands/
@@ -174,7 +174,7 @@ Please install memhub for me, then turn on hybrid recall.
        args = ["serve"]
 
 5. Copy the user-level skills so /wrap-up, /catch-up, /check-init,
-   /init-project, /recall, /reindex, /eval-recall, /doc, /metrics, /viz,
+   /init-project, /recall, /locate, /reindex, /eval-recall, /doc, /metrics, /viz,
    /global, and /upgrade all work:
 
        cp -R ~/src/memhub/templates/skills/codex/* ~/.codex/skills/
@@ -260,7 +260,7 @@ Please install memhub for me, then turn on hybrid recall.
 
    If that file already exists, merge only the `mcp.memhub` block.
 5. Copy the user-level skills so /wrap-up, /catch-up, /check-init,
-   /init-project, /recall, /reindex, /eval-recall, /doc, /metrics, /viz,
+   /init-project, /recall, /locate, /reindex, /eval-recall, /doc, /metrics, /viz,
    /global, and /upgrade all work:
 
        mkdir -p ~/.config/opencode/skills ~/.config/opencode/commands
@@ -731,7 +731,7 @@ include_docs_in_default = false  # auto-flips on first `doc add --global`
 **Claude Code**
 
 - Reads `CLAUDE.md` at session start.
-- User-level slash commands at `~/.claude/commands/`: `/wrap-up`, `/catch-up`, `/check-init`, `/init-project`, `/recall`, `/reindex`, `/eval-recall`, `/doc`, `/metrics`, `/viz`, `/global`, `/upgrade`.
+- User-level slash commands at `~/.claude/commands/`: `/wrap-up`, `/catch-up`, `/check-init`, `/init-project`, `/recall`, `/locate`, `/reindex`, `/eval-recall`, `/doc`, `/metrics`, `/viz`, `/global`, `/upgrade`.
 - Skill writes are attributed `actor=claude:wrap-up`, `source=user+agent:claude-code`.
 
 **Codex CLI**
