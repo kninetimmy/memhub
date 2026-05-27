@@ -18,7 +18,7 @@
 
 use tree_sitter::{Node, Parser};
 
-use super::grammar::{self, GrammarSpec};
+use super::grammar::{self, DocFold, FunctionNaming, GrammarSpec, MethodContainer, MethodNaming};
 
 /// Lines per window. A placeholder value — tuned for retrieval in PR5.
 pub const WINDOW_LINES: usize = 50;
@@ -99,8 +99,8 @@ fn chunk_with_grammar(path: &str, content: &str, spec: &GrammarSpec) -> Vec<Chun
 }
 
 /// Recursively collect item chunks from `node`'s named children.
-/// `type_prefix` is set while inside an `impl` block so methods are named
-/// `Type::method`.
+/// `type_prefix` is set while inside a method container ([`impl`]) so
+/// member functions are named `Type::method`.
 fn collect_items(
     node: Node<'_>,
     src: &[u8],
@@ -113,35 +113,84 @@ fn collect_items(
     for child in node.named_children(&mut cursor) {
         let kind = child.kind();
 
-        if kind == spec.function_kind {
-            let name = field_text(&child, "name", src);
-            let symbol = match (type_prefix, name) {
-                (Some(ty), Some(n)) => Some(format!("{ty}::{n}")),
-                (None, Some(n)) => Some(n.to_string()),
-                _ => None,
-            };
+        if spec.function_kinds.contains(&kind) {
+            let symbol = function_symbol(&child, src, spec, type_prefix);
             let label = if type_prefix.is_some() {
                 "method"
             } else {
                 "function"
             };
             push_symbol(out, path, src, spec, child, symbol, label);
-        } else if kind == spec.impl_kind {
-            // Emit the methods, not the whole (possibly huge) impl block.
-            let prefix = field_text(&child, "type", src);
-            if let Some(body) = child.child_by_field_name("body") {
+        } else if let Some(container) = method_container_for(spec, kind) {
+            // Emit the methods, not the whole (possibly huge) container.
+            let prefix = field_text(&child, container.prefix_field, src);
+            if let Some(body) = child.child_by_field_name(spec.body_field) {
                 collect_items(body, src, path, spec, prefix, out);
             }
-        } else if kind == spec.module_kind {
-            // Recurse into an inline `mod foo { … }`; an out-of-line
-            // `mod foo;` has no body here and is indexed via its own file.
-            if let Some(body) = child.child_by_field_name("body") {
+        } else if spec.type_container_kinds.contains(&kind) {
+            // A class/record/interface: emit a header-only chunk (member
+            // and nested-type bodies excised) and recurse into the body so
+            // each member becomes its own `Type::member` chunk.
+            let name = field_text(&child, "name", src);
+            let qualified = qualify(type_prefix, name);
+            push_type_header(out, path, src, spec, child, qualified.clone(), kind_label(kind));
+            if let Some(body) = child.child_by_field_name(spec.body_field) {
+                collect_items(body, src, path, spec, qualified.as_deref(), out);
+            }
+        } else if spec.namespace_kinds.contains(&kind) {
+            // Recurse into an inline namespace / module (`mod foo { … }`);
+            // an out-of-line `mod foo;` has no body here and is indexed
+            // via its own file. Namespaces do not qualify member names.
+            if let Some(body) = child.child_by_field_name(spec.body_field) {
                 collect_items(body, src, path, spec, type_prefix, out);
             }
         } else if spec.item_kinds.contains(&kind) {
             let symbol = field_text(&child, "name", src).map(str::to_string);
             push_symbol(out, path, src, spec, child, symbol, kind_label(kind));
+        } else if type_prefix.is_some() && spec.member_kinds.contains(&kind) {
+            // A method/constructor/property inside a type container.
+            let symbol = qualify(type_prefix, field_text(&child, "name", src));
+            push_symbol(out, path, src, spec, child, symbol, kind_label(kind));
         }
+    }
+}
+
+/// Qualify `name` with a `Type::` prefix when inside a container, using the
+/// canonical `::` separator for every language. `None` name → `None`.
+fn qualify(type_prefix: Option<&str>, name: Option<&str>) -> Option<String> {
+    match (type_prefix, name) {
+        (Some(ty), Some(n)) => Some(format!("{ty}::{n}")),
+        (None, Some(n)) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+/// The [`MethodContainer`] registered for `kind`, if any.
+fn method_container_for<'a>(spec: &'a GrammarSpec, kind: &str) -> Option<&'a MethodContainer> {
+    spec.method_containers.iter().find(|c| c.node == kind)
+}
+
+/// Resolve a function node's symbol, honoring the `function_naming` and
+/// `method_naming` hooks. `type_prefix` is `Some` inside a method
+/// container, in which case the base name is qualified to `Type::method`.
+fn function_symbol(
+    func: &Node<'_>,
+    src: &[u8],
+    spec: &GrammarSpec,
+    type_prefix: Option<&str>,
+) -> Option<String> {
+    let base = match spec.function_naming {
+        FunctionNaming::Direct => field_text(func, "name", src).map(str::to_string),
+        // An arrow/function bound to a `variable_declarator` (T3).
+        FunctionNaming::JsDeclarator => todo!("JsDeclarator function naming (M11 T3)"),
+    };
+    match type_prefix {
+        Some(ty) => base.map(|n| match spec.method_naming {
+            MethodNaming::Standard => format!("{ty}::{n}"),
+            // Prefix derived from the method's receiver, not `ty` (T5).
+            MethodNaming::GoReceiver => todo!("GoReceiver method naming (M11 T5)"),
+        }),
+        None => base,
     }
 }
 
@@ -178,17 +227,95 @@ fn push_symbol(
     });
 }
 
-/// Walk backwards from `item` over contiguous preceding doc comments and
-/// attributes, returning the extended `(start_byte, start_row)`. A blank
-/// line (a row gap > 1) between siblings stops the run, so an unrelated
-/// license header far above is not absorbed.
+/// Push a header-only chunk for a type container: its signature, fields,
+/// and folded doc, with the body of each direct member (method bodies,
+/// nested-type bodies) excised to a `{ ... }` placeholder. The member and
+/// nested-type bodies live in their own chunks, so this gives a class-level
+/// query a home without duplicating them.
+fn push_type_header(
+    out: &mut Vec<Chunk>,
+    path: &str,
+    src: &[u8],
+    spec: &GrammarSpec,
+    container: Node<'_>,
+    symbol: Option<String>,
+    label: &str,
+) {
+    let (start_byte, start_row) = leading_start(container, spec);
+    let end_byte = container.end_byte();
+    let end_row = container.end_position().row;
+
+    let body = slice_header(container, src, start_byte, end_byte, spec);
+    let name = symbol.as_deref().unwrap_or(label);
+    let embed_text = format!("{path}\n{label} {name}\n\n{body}");
+
+    out.push(Chunk {
+        start_line: start_row + 1,
+        end_line: end_row + 1,
+        symbol,
+        kind: label.to_string(),
+        embed_text,
+        body,
+    });
+}
+
+/// Build a type container's header text over `[start_byte, end_byte)`
+/// (which includes any folded leading doc): copy the source verbatim but
+/// replace the `body_field` subtree of each direct member with `{ ... }`.
+/// CRLF is normalized to LF, matching [`push_symbol`].
+fn slice_header(
+    container: Node<'_>,
+    src: &[u8],
+    start_byte: usize,
+    end_byte: usize,
+    spec: &GrammarSpec,
+) -> String {
+    // Offsets are relative to `start_byte` so the leading doc (parsed from
+    // this same buffer) is preserved ahead of the container node.
+    let mut excise: Vec<(usize, usize)> = Vec::new();
+    if let Some(body) = container.child_by_field_name(spec.body_field) {
+        let mut cursor = body.walk();
+        for member in body.named_children(&mut cursor) {
+            if let Some(inner) = member.child_by_field_name(spec.body_field) {
+                excise.push((inner.start_byte() - start_byte, inner.end_byte() - start_byte));
+            }
+        }
+    }
+    excise.sort_unstable();
+
+    let full = std::str::from_utf8(&src[start_byte..end_byte]).unwrap_or("");
+    let mut header = String::with_capacity(full.len());
+    let mut pos = 0usize;
+    for (s, e) in excise {
+        header.push_str(&full[pos..s]);
+        header.push_str("{ ... }");
+        pos = e;
+    }
+    header.push_str(&full[pos..]);
+    header.replace("\r\n", "\n")
+}
+
+/// The `(start_byte, start_row)` an item's chunk begins at, extended over
+/// folded documentation per the grammar's `doc_fold` hook.
 fn leading_start(item: Node<'_>, spec: &GrammarSpec) -> (usize, usize) {
+    match spec.doc_fold {
+        DocFold::PrecedingSiblings => fold_preceding_siblings(item, spec),
+        // Keep the leading body docstring / climb a decorated_definition (T4).
+        DocFold::PythonDocstring => todo!("PythonDocstring doc folding (M11 T4)"),
+        DocFold::None => (item.start_byte(), item.start_position().row),
+    }
+}
+
+/// Walk backwards from `item` over contiguous preceding comment /
+/// attribute siblings, returning the extended `(start_byte, start_row)`.
+/// A blank line (a row gap > 1) between siblings stops the run, so an
+/// unrelated license header far above is not absorbed.
+fn fold_preceding_siblings(item: Node<'_>, spec: &GrammarSpec) -> (usize, usize) {
     let mut earliest = item;
     let mut sib = item.prev_sibling();
     while let Some(s) = sib {
         let k = s.kind();
-        let foldable =
-            k == spec.line_comment_kind || k == spec.block_comment_kind || k == spec.attribute_kind;
+        let foldable = spec.comment_kinds.contains(&k) || spec.attribute_kinds.contains(&k);
         if !foldable {
             break;
         }
@@ -208,11 +335,14 @@ fn field_text<'a>(node: &Node<'_>, field: &str, src: &'a [u8]) -> Option<&'a str
 }
 
 /// Short kind tag for a tree-sitter node kind: trims a trailing `_item` /
-/// `_definition` so `struct_item` → `struct`, `macro_definition` → `macro`.
+/// `_definition` / `_declaration` so `struct_item` → `struct`,
+/// `macro_definition` → `macro`, `method_declaration` → `method`. Rust
+/// uses no `_declaration` kinds, so its output is unaffected.
 fn kind_label(node_kind: &str) -> &str {
     node_kind
         .strip_suffix("_item")
         .or_else(|| node_kind.strip_suffix("_definition"))
+        .or_else(|| node_kind.strip_suffix("_declaration"))
         .unwrap_or(node_kind)
 }
 
@@ -300,11 +430,182 @@ mod tests {
         chunk_file("src/lib.rs", content, Some("rust"))
     }
 
+    /// Representative Rust fixture exercising every chunker path: a
+    /// module doc comment, leaf items (struct/enum/trait/type/const/
+    /// static/macro), a doc+attribute-folded free function, an `impl`
+    /// with documented and bare methods, and an inline module with
+    /// nested items. The freeze test pins this fixture's chunk output.
+    const FREEZE_FIXTURE: &str = r#"//! Module-level doc comment.
+
+use std::fmt;
+
+/// A point in 2D space.
+#[derive(Debug)]
+pub struct Point {
+    x: i32,
+    y: i32,
+}
+
+/// Cardinal directions.
+pub enum Dir {
+    North,
+    South,
+}
+
+/// Greeting behavior.
+pub trait Greet {
+    fn hello(&self);
+}
+
+pub type Coord = (i32, i32);
+
+const MAX: usize = 100;
+
+static NAME: &str = "memhub";
+
+macro_rules! shout {
+    () => {};
+}
+
+/// Adds two numbers.
+#[inline]
+fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+
+impl Point {
+    /// Make a new point.
+    pub fn new(x: i32, y: i32) -> Self {
+        Point { x, y }
+    }
+
+    fn magnitude(&self) -> f64 {
+        ((self.x * self.x + self.y * self.y) as f64).sqrt()
+    }
+}
+
+mod inner {
+    fn helper() {}
+
+    struct Cfg;
+}
+"#;
+
+    /// Freeze the Rust chunker's output (kind, symbol, start_line,
+    /// end_line) for [`FREEZE_FIXTURE`]. The M11 multi-language reshape
+    /// (decision 115) generalizes [`GrammarSpec`] and the walker; this
+    /// snapshot is the regression backbone proving Rust output stays
+    /// byte-identical through that work. If a deliberate Rust change
+    /// moves these values, update the expected list in the same commit.
+    #[test]
+    fn rust_chunk_output_is_frozen() {
+        let chunks = rust(FREEZE_FIXTURE);
+        let got: Vec<(&str, Option<&str>, usize, usize)> = chunks
+            .iter()
+            .map(|c| (c.kind.as_str(), c.symbol.as_deref(), c.start_line, c.end_line))
+            .collect();
+        let expected = vec![
+            ("struct", Some("Point"), 5, 10),
+            ("enum", Some("Dir"), 12, 16),
+            ("trait", Some("Greet"), 18, 21),
+            ("type", Some("Coord"), 23, 23),
+            ("const", Some("MAX"), 25, 25),
+            ("static", Some("NAME"), 27, 27),
+            ("macro", Some("shout"), 29, 31),
+            ("function", Some("add"), 33, 37),
+            ("method", Some("Point::new"), 40, 43),
+            ("method", Some("Point::magnitude"), 45, 47),
+            ("function", Some("helper"), 51, 51),
+            ("struct", Some("Cfg"), 53, 53),
+        ];
+        assert_eq!(got, expected);
+    }
+
     fn symbols(chunks: &[Chunk]) -> Vec<(&str, Option<&str>)> {
         chunks
             .iter()
             .map(|c| (c.kind.as_str(), c.symbol.as_deref()))
             .collect()
+    }
+
+    const CS_FIXTURE: &str = r#"namespace App;
+
+/// <summary>A widget.</summary>
+public class Widget
+{
+    private int _count;
+
+    public Widget(int count) { _count = count; }
+
+    public void Increment() { _count++; }
+
+    private class Nested { public void Deep() {} }
+}
+"#;
+
+    const JAVA_FIXTURE: &str = r#"package app;
+
+/** A widget. */
+public class Widget {
+    private int count;
+
+    public Widget(int count) { this.count = count; }
+
+    public int getCount() { return count; }
+}
+"#;
+
+    #[test]
+    fn csharp_class_emits_header_and_qualified_member_chunks() {
+        let chunks = chunk_file("Widget.cs", CS_FIXTURE, Some("csharp"));
+        assert_eq!(
+            symbols(&chunks),
+            vec![
+                ("class", Some("Widget")),
+                ("constructor", Some("Widget::Widget")),
+                ("method", Some("Widget::Increment")),
+                ("class", Some("Widget::Nested")),
+                ("method", Some("Widget::Nested::Deep")),
+            ]
+        );
+    }
+
+    #[test]
+    fn csharp_class_header_is_signature_only() {
+        let chunks = chunk_file("Widget.cs", CS_FIXTURE, Some("csharp"));
+        let header = chunks.iter().find(|c| c.kind == "class").expect("class chunk");
+        // Folded class doc and non-method members are kept verbatim.
+        assert!(header.body.contains("A widget."), "class doc folded in");
+        assert!(header.body.contains("private int _count;"), "field kept");
+        // Method / constructor / nested-type bodies are excised.
+        assert!(header.body.contains("{ ... }"), "bodies excised");
+        assert!(!header.body.contains("_count++"), "method body excised");
+        assert!(!header.body.contains("_count = count"), "ctor body excised");
+        assert!(!header.body.contains("Deep() {}"), "nested-type body excised");
+    }
+
+    #[test]
+    fn java_class_emits_header_and_qualified_member_chunks() {
+        let chunks = chunk_file("Widget.java", JAVA_FIXTURE, Some("java"));
+        assert_eq!(
+            symbols(&chunks),
+            vec![
+                ("class", Some("Widget")),
+                ("constructor", Some("Widget::Widget")),
+                ("method", Some("Widget::getCount")),
+            ]
+        );
+    }
+
+    #[test]
+    fn java_class_header_folds_javadoc_and_excises_bodies() {
+        let chunks = chunk_file("Widget.java", JAVA_FIXTURE, Some("java"));
+        let header = chunks.iter().find(|c| c.kind == "class").expect("class chunk");
+        assert!(header.body.contains("A widget."), "javadoc folded in");
+        assert!(header.body.contains("private int count;"), "field kept");
+        assert!(header.body.contains("{ ... }"), "bodies excised");
+        assert!(!header.body.contains("return count"), "method body excised");
+        assert!(!header.body.contains("this.count = count"), "ctor body excised");
     }
 
     #[test]

@@ -603,6 +603,8 @@ fn infer_language(path: &str) -> Option<&'static str> {
         "ts" | "tsx" => Some("typescript"),
         "js" | "jsx" => Some("javascript"),
         "py" => Some("python"),
+        "cs" => Some("csharp"),
+        "java" => Some("java"),
         "sql" => Some("sql"),
         _ => None,
     }
