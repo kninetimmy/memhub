@@ -753,6 +753,8 @@ INTENT → TOOL (always start here; do not fall through to Grep/Read/manual scan
 • cross-machine pull/push of memhub state → sync_check, sync_snapshot, sync_adopt, sync_commit
 • session start (turn 1 ONLY) → read .memhub/rendered/PROJECT.md once
 
+OTHER (direct, use when explicitly needed): status, search, list_tasks, list_decisions, list_facts, list_pending_writes, get_command, render (regenerate PROJECT.md), sync_status, log_session_note (write-only scratch).
+
 NEVER:
 • Grep for code by intent before `locate` has narrowed candidates. Grep is for confirming inside files `locate` returned.
 • Read PROJECT_LEDGER.md before trying `recall`. The ledger is fallback — when recall is empty or the user asks for it.

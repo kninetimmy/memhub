@@ -315,6 +315,54 @@ fn hybrid_mode_embeds_every_chunk() {
     assert_eq!(again.embedded_chunks, 0, "unchanged tree re-embeds nothing");
 }
 
+/// M11 review M1: nested enum/delegate inside a class must be emitted as
+/// `ClassName::MemberName`, not just `MemberName`.
+#[test]
+fn csharp_nested_enum_gets_qualified_symbol() {
+    let src = "class Outer { enum Status { Active, Inactive } }\n";
+    let temp = repo_with_files(&[("src/Widget.cs", src)]);
+    let root = temp.path();
+    code_index::refresh(root).expect("refresh");
+
+    let conn = rusqlite::Connection::open(code_index_db_path(root)).expect("open");
+    let mut stmt = conn
+        .prepare("SELECT symbol FROM code_chunks WHERE kind = 'enum'")
+        .expect("prepare");
+    let symbols: Vec<Option<String>> = stmt
+        .query_map([], |r| r.get(0))
+        .expect("query")
+        .map(|r| r.expect("row"))
+        .collect();
+
+    assert!(
+        symbols.contains(&Some("Outer::Status".into())),
+        "nested enum should be qualified as Outer::Status, got: {symbols:?}"
+    );
+}
+
+#[test]
+fn java_nested_enum_gets_qualified_symbol() {
+    let src = "class Outer { enum Status { ACTIVE, INACTIVE } }\n";
+    let temp = repo_with_files(&[("src/Widget.java", src)]);
+    let root = temp.path();
+    code_index::refresh(root).expect("refresh");
+
+    let conn = rusqlite::Connection::open(code_index_db_path(root)).expect("open");
+    let mut stmt = conn
+        .prepare("SELECT symbol FROM code_chunks WHERE kind = 'enum'")
+        .expect("prepare");
+    let symbols: Vec<Option<String>> = stmt
+        .query_map([], |r| r.get(0))
+        .expect("query")
+        .map(|r| r.expect("row"))
+        .collect();
+
+    assert!(
+        symbols.contains(&Some("Outer::Status".into())),
+        "nested enum should be qualified as Outer::Status, got: {symbols:?}"
+    );
+}
+
 /// Finding M3: a tracked symlink must be skipped, never followed/indexed
 /// (it could read outside the repo).
 #[cfg(unix)]

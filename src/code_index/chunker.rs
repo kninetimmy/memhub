@@ -3,12 +3,15 @@
 //! Two strategies behind one [`chunk_file`] entry point:
 //!
 //! * A **tree-sitter AST chunker** ([`chunk_with_grammar`]) for languages
-//!   with a registered grammar ([`super::grammar`]). It emits one chunk
-//!   per top-level item — functions, structs, enums, traits, type/const/
-//!   static items, macros — and one chunk per `impl` method (named
-//!   `Type::method`), each carrying its symbol name and a kind tag. A
-//!   contiguous run of preceding doc comments / attributes is folded into
-//!   the item's chunk so the model sees the documentation with the code.
+//!   with a registered grammar ([`super::grammar`]). For Rust-like languages
+//!   it emits one chunk per top-level item — functions, structs, enums, traits,
+//!   type/const/static items, macros — and one chunk per `impl` method (named
+//!   `Type::method`). For type-container languages (C#, Java) it emits one
+//!   header-only chunk per class/record/interface/struct (named for the type,
+//!   with member bodies excised to `{ ... }`) plus one `Type::member` chunk per
+//!   method, constructor, and property. All paths carry symbol names and kind
+//!   tags; a contiguous run of preceding doc comments / attributes is folded
+//!   into each chunk so the model sees the documentation with the code.
 //!
 //! * A **line-window fallback** ([`chunk_line_windows`]) — fixed-size,
 //!   symbol-unaware windows — used when the language has no grammar, when
@@ -69,18 +72,26 @@ pub fn chunk_file(path: &str, content: &str, language: Option<&str>) -> Vec<Chun
         return Vec::new();
     }
     if let Some(spec) = grammar::grammar_for(language) {
-        let chunks = chunk_with_grammar(path, content, &spec);
-        // A parse that surfaces no items (e.g. a file of only `use`
-        // statements, or one too broken to recover symbols) falls through
-        // to line windows so its bytes stay searchable — never dropped.
-        if !chunks.is_empty() {
-            return chunks;
+        // Skip the AST path for any spec that uses an unimplemented hook
+        // (JsDeclarator, GoReceiver, PythonDocstring). Those specs degrade
+        // to line windows until the implementing task lands.
+        if spec.hooks_implemented() {
+            let chunks = chunk_with_grammar(path, content, &spec);
+            // A parse that surfaces no items (e.g. a file of only `use`
+            // statements, or one too broken to recover symbols) falls through
+            // to line windows so its bytes stay searchable — never dropped.
+            if !chunks.is_empty() {
+                return chunks;
+            }
         }
     }
     chunk_line_windows(path, content)
 }
 
-/// Walk the AST and emit one chunk per top-level item / impl method.
+/// Walk the AST and emit chunks according to the grammar spec.
+/// For Rust-like grammars: one chunk per top-level item or impl method.
+/// For type-container grammars (C#/Java): one header chunk per type (member
+/// bodies excised) plus one `Type::member` chunk per method/constructor/property.
 /// Returns an empty vec when parsing fails or finds no recognized items;
 /// the caller then line-windows the file.
 fn chunk_with_grammar(path: &str, content: &str, spec: &GrammarSpec) -> Vec<Chunk> {
@@ -145,10 +156,17 @@ fn collect_items(
                 collect_items(body, src, path, spec, type_prefix, out);
             }
         } else if spec.item_kinds.contains(&kind) {
-            let symbol = field_text(&child, "name", src).map(str::to_string);
+            let symbol = qualify(type_prefix, field_text(&child, "name", src));
             push_symbol(out, path, src, spec, child, symbol, kind_label(kind));
         } else if type_prefix.is_some() && spec.member_kinds.contains(&kind) {
             // A method/constructor/property inside a type container.
+            // Note: body-less members (interface/abstract methods, C# auto-
+            // properties like `int X { get; set; }`) intentionally appear
+            // BOTH here as their own chunk AND verbatim in the parent type's
+            // header chunk (slice_header only excises nodes that have a
+            // body_field child). The duplication improves recall: the header
+            // chunk gives the member context alongside its siblings, while
+            // the individual chunk makes it directly addressable by symbol.
             let symbol = qualify(type_prefix, field_text(&child, "name", src));
             push_symbol(out, path, src, spec, child, symbol, kind_label(kind));
         }
@@ -277,8 +295,18 @@ fn slice_header(
         let mut cursor = body.walk();
         for member in body.named_children(&mut cursor) {
             if let Some(inner) = member.child_by_field_name(spec.body_field) {
-                excise.push((inner.start_byte() - start_byte, inner.end_byte() - start_byte));
+                let s = inner.start_byte();
+                let e = inner.end_byte();
+                // Only subtract when both offsets are within [start_byte, end_byte].
+                if s >= start_byte && e <= end_byte && s <= e {
+                    excise.push((s - start_byte, e - start_byte));
+                }
             }
+            // Body-less members (interface/abstract methods, C# auto-
+            // properties) have no body_field child and are not excised here,
+            // so they appear verbatim in the header text. collect_items also
+            // emits each such member as its own individual chunk — intentional
+            // duplication; see the member_kinds branch in collect_items.
         }
     }
     excise.sort_unstable();
@@ -287,6 +315,9 @@ fn slice_header(
     let mut header = String::with_capacity(full.len());
     let mut pos = 0usize;
     for (s, e) in excise {
+        // Clamp to `full.len()` and enforce monotonicity before indexing.
+        let s = s.min(full.len()).max(pos);
+        let e = e.min(full.len()).max(s);
         header.push_str(&full[pos..s]);
         header.push_str("{ ... }");
         pos = e;
@@ -606,6 +637,54 @@ public class Widget {
         assert!(header.body.contains("{ ... }"), "bodies excised");
         assert!(!header.body.contains("return count"), "method body excised");
         assert!(!header.body.contains("this.count = count"), "ctor body excised");
+    }
+
+    // M11 review M2: multiple methods in a single class produce multiple
+    // excision ranges; verify each body is replaced and no panic occurs.
+    #[test]
+    fn csharp_class_header_excises_all_member_bodies() {
+        let src = "class Foo {\n  void A() { doA(); }\n  void B() { doB(); }\n  void C() { doC(); }\n}\n";
+        let chunks = chunk_file("Foo.cs", src, Some("csharp"));
+        let header = chunks.iter().find(|c| c.kind == "class").expect("class chunk");
+        // None of the concrete body statements should survive into the header.
+        assert!(!header.body.contains("doA()"), "A body must be excised");
+        assert!(!header.body.contains("doB()"), "B body must be excised");
+        assert!(!header.body.contains("doC()"), "C body must be excised");
+        // Each body is replaced with the placeholder.
+        assert_eq!(
+            header.body.matches("{ ... }").count(),
+            3,
+            "expected three placeholder regions, got: {}",
+            header.body
+        );
+    }
+
+    // M11 review L2: body-less members (interface methods, abstract methods,
+    // C# auto-properties) intentionally appear in BOTH the type header chunk
+    // AND as their own individual member chunk. This test pins that behavior
+    // so it is not accidentally changed.
+    #[test]
+    fn bodyless_members_appear_in_header_and_as_own_chunk() {
+        // C# interface: void Method() has no body block.
+        let src = "interface IFoo { void Method(); }\n";
+        let chunks = chunk_file("IFoo.cs", src, Some("csharp"));
+        // The interface header chunk must contain the method signature verbatim.
+        let header = chunks.iter().find(|c| c.kind == "interface").expect("interface chunk");
+        assert!(
+            header.body.contains("void Method()"),
+            "body-less method must stay verbatim in header; got: {}",
+            header.body
+        );
+        // The method must also be emitted as its own chunk.
+        assert!(
+            chunks.iter().any(|c| c.symbol.as_deref() == Some("IFoo::Method")),
+            "body-less method must still get its own member chunk; chunks: {chunks:?}"
+        );
+        // No placeholder was inserted (there was nothing to excise).
+        assert!(
+            !header.body.contains("{ ... }"),
+            "body-less member must not produce a placeholder"
+        );
     }
 
     #[test]

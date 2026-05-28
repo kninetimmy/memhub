@@ -115,6 +115,20 @@ pub struct GrammarSpec {
     pub doc_fold: DocFold,
 }
 
+impl GrammarSpec {
+    /// Returns `true` when every hook on this spec uses a fully implemented
+    /// variant. A spec with an unimplemented hook (e.g.
+    /// [`FunctionNaming::JsDeclarator`], [`MethodNaming::GoReceiver`],
+    /// [`DocFold::PythonDocstring`]) must return `false` here so `chunk_file`
+    /// falls back to line windows instead of reaching a `todo!()` in the
+    /// walker. Remove a variant from the guards below once its task lands.
+    pub fn hooks_implemented(&self) -> bool {
+        matches!(self.function_naming, FunctionNaming::Direct)
+            && matches!(self.method_naming, MethodNaming::Standard)
+            && matches!(self.doc_fold, DocFold::PrecedingSiblings | DocFold::None)
+    }
+}
+
 /// The grammar for `language` (as keyed by [`super::infer_language`]), or
 /// `None` when no grammar is registered — the caller then line-windows.
 pub fn grammar_for(language: Option<&str>) -> Option<GrammarSpec> {
@@ -259,5 +273,18 @@ mod tests {
         assert!(grammar_for(Some("cobol")).is_none());
         assert!(grammar_for(Some("markdown")).is_none());
         assert!(grammar_for(None).is_none());
+    }
+
+    // M11 review L1: every currently registered grammar must report all
+    // hooks implemented so no live row can reach a `todo!()` in the walker.
+    #[test]
+    fn all_registered_grammars_have_fully_implemented_hooks() {
+        for lang in ["rust", "csharp", "java"] {
+            let spec = grammar_for(Some(lang)).expect(lang);
+            assert!(
+                spec.hooks_implemented(),
+                "{lang} grammar has an unimplemented hook — chunk_file would degrade to line windows"
+            );
+        }
     }
 }
