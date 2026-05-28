@@ -90,6 +90,16 @@ pub struct GrammarSpec {
     ///
     /// [`body_field`]: GrammarSpec::body_field
     pub namespace_kinds: &'static [&'static str],
+    /// Structural wrapper kinds the walker recurses *through* by iterating
+    /// their named children directly — no chunk, no prefix change, no
+    /// `body_field`. Distinct from [`namespace_kinds`], whose children hang
+    /// off a `body_field` subtree. Used for JS/TS `export_statement` (which
+    /// wraps nearly every top-level declaration) and the `expression_
+    /// statement` that wraps a TS `internal_module`. Empty for Rust/C#/Java,
+    /// where declarations are direct statement children.
+    ///
+    /// [`namespace_kinds`]: GrammarSpec::namespace_kinds
+    pub transparent_kinds: &'static [&'static str],
     /// Node kinds emitted as a single self-contained symbol chunk
     /// (Rust structs, enums, traits, type/const/static items, macros).
     pub item_kinds: &'static [&'static str],
@@ -118,13 +128,15 @@ pub struct GrammarSpec {
 impl GrammarSpec {
     /// Returns `true` when every hook on this spec uses a fully implemented
     /// variant. A spec with an unimplemented hook (e.g.
-    /// [`FunctionNaming::JsDeclarator`], [`MethodNaming::GoReceiver`],
-    /// [`DocFold::PythonDocstring`]) must return `false` here so `chunk_file`
-    /// falls back to line windows instead of reaching a `todo!()` in the
-    /// walker. Remove a variant from the guards below once its task lands.
+    /// [`MethodNaming::GoReceiver`], [`DocFold::PythonDocstring`]) must
+    /// return `false` here so `chunk_file` falls back to line windows
+    /// instead of reaching a `todo!()` in the walker. Remove a variant from
+    /// the guards below once its task lands.
     pub fn hooks_implemented(&self) -> bool {
-        matches!(self.function_naming, FunctionNaming::Direct)
-            && matches!(self.method_naming, MethodNaming::Standard)
+        matches!(
+            self.function_naming,
+            FunctionNaming::Direct | FunctionNaming::JsDeclarator
+        ) && matches!(self.method_naming, MethodNaming::Standard)
             && matches!(self.doc_fold, DocFold::PrecedingSiblings | DocFold::None)
     }
 }
@@ -142,6 +154,7 @@ pub fn grammar_for(language: Option<&str>) -> Option<GrammarSpec> {
                 prefix_field: "type",
             }],
             namespace_kinds: &["mod_item"],
+            transparent_kinds: &[],
             item_kinds: &[
                 "struct_item",
                 "enum_item",
@@ -178,6 +191,7 @@ pub fn grammar_for(language: Option<&str>) -> Option<GrammarSpec> {
             // declaration` has no body, so its types are top-level siblings
             // and are walked directly (it matches no role set and is skipped).
             namespace_kinds: &["namespace_declaration"],
+            transparent_kinds: &[],
             item_kinds: &["enum_declaration", "delegate_declaration"],
             member_kinds: &[
                 "method_declaration",
@@ -204,6 +218,7 @@ pub fn grammar_for(language: Option<&str>) -> Option<GrammarSpec> {
             // `package_declaration` has no body; types are top-level
             // siblings, so no namespace recursion is needed.
             namespace_kinds: &[],
+            transparent_kinds: &[],
             item_kinds: &["enum_declaration", "annotation_type_declaration"],
             member_kinds: &["method_declaration", "constructor_declaration"],
             // Javadoc is a `block_comment` sibling, folded as a doc.
@@ -215,6 +230,64 @@ pub fn grammar_for(language: Option<&str>) -> Option<GrammarSpec> {
             body_field: "body",
             method_naming: MethodNaming::Standard,
             function_naming: FunctionNaming::Direct,
+            doc_fold: DocFold::PrecedingSiblings,
+        }),
+        // TypeScript (covers .tsx via the same grammar). Mixes free functions
+        // (`function_declaration`) with arrow/function bindings named via their
+        // declarator (the JsDeclarator hook), and type containers (class,
+        // abstract class, interface). Nearly every top-level declaration is
+        // wrapped in `export_statement`; a `namespace`/`module` parses as an
+        // `expression_statement` wrapping an `internal_module` — both are walked
+        // through via `transparent_kinds`. Node kinds verified against
+        // tree-sitter-typescript 0.23 via an AST-dump probe.
+        "typescript" => Some(GrammarSpec {
+            language: tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            function_kinds: &["function_declaration", "generator_function_declaration"],
+            type_container_kinds: &[
+                "class_declaration",
+                "abstract_class_declaration",
+                "interface_declaration",
+            ],
+            method_containers: &[],
+            namespace_kinds: &["internal_module"],
+            transparent_kinds: &["export_statement", "expression_statement"],
+            item_kinds: &["type_alias_declaration", "enum_declaration"],
+            // method_definition covers methods, constructors, and get/set;
+            // method_signature covers body-less interface methods. Plain fields
+            // and property signatures stay in the type header only. Arrow-valued
+            // fields are routed as members by the JsDeclarator hook in the walker.
+            member_kinds: &["method_definition", "method_signature"],
+            // One `comment` kind for //, /* */, and /** */ JSDoc.
+            comment_kinds: &["comment"],
+            // Class/method decorators are an internal `decorator` field of the
+            // declaration (within its byte range), but a decorator can also be a
+            // preceding sibling; folding it as a leading attribute is harmless in
+            // the internal case and correct in the sibling case.
+            attribute_kinds: &["decorator"],
+            body_field: "body",
+            method_naming: MethodNaming::Standard,
+            function_naming: FunctionNaming::JsDeclarator,
+            doc_fold: DocFold::PrecedingSiblings,
+        }),
+        // JavaScript (covers .jsx). The TypeScript row minus the type-only
+        // constructs (no interface/type-alias/enum/namespace). Class fields use
+        // `field_definition` (vs TS `public_field_definition`); both are routed
+        // by the JsDeclarator hook. Node kinds verified against
+        // tree-sitter-javascript 0.25 via an AST-dump probe.
+        "javascript" => Some(GrammarSpec {
+            language: tree_sitter_javascript::LANGUAGE.into(),
+            function_kinds: &["function_declaration", "generator_function_declaration"],
+            type_container_kinds: &["class_declaration"],
+            method_containers: &[],
+            namespace_kinds: &[],
+            transparent_kinds: &["export_statement"],
+            item_kinds: &[],
+            member_kinds: &["method_definition"],
+            comment_kinds: &["comment"],
+            attribute_kinds: &["decorator"],
+            body_field: "body",
+            method_naming: MethodNaming::Standard,
+            function_naming: FunctionNaming::JsDeclarator,
             doc_fold: DocFold::PrecedingSiblings,
         }),
         _ => None,
@@ -245,6 +318,16 @@ mod tests {
     #[test]
     fn java_grammar_is_registered_and_loadable() {
         assert_loads("java", "class C { void m() {} }", "program");
+    }
+
+    #[test]
+    fn typescript_grammar_is_registered_and_loadable() {
+        assert_loads("typescript", "const f = (): void => {};", "program");
+    }
+
+    #[test]
+    fn javascript_grammar_is_registered_and_loadable() {
+        assert_loads("javascript", "const f = () => {};", "program");
     }
 
     #[test]
@@ -279,7 +362,7 @@ mod tests {
     // hooks implemented so no live row can reach a `todo!()` in the walker.
     #[test]
     fn all_registered_grammars_have_fully_implemented_hooks() {
-        for lang in ["rust", "csharp", "java"] {
+        for lang in ["rust", "csharp", "java", "typescript", "javascript"] {
             let spec = grammar_for(Some(lang)).expect(lang);
             assert!(
                 spec.hooks_implemented(),

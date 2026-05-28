@@ -155,6 +155,13 @@ fn collect_items(
             if let Some(body) = child.child_by_field_name(spec.body_field) {
                 collect_items(body, src, path, spec, type_prefix, out);
             }
+        } else if spec.transparent_kinds.contains(&kind) {
+            // A structural wrapper (JS/TS `export_statement`, or the
+            // `expression_statement` around a TS namespace): emit no chunk of
+            // its own, just walk its named children at the same prefix so the
+            // wrapped declaration is reached. Doc comments preceding the
+            // wrapper still fold in — `leading_start` climbs back through it.
+            collect_items(child, src, path, spec, type_prefix, out);
         } else if spec.item_kinds.contains(&kind) {
             let symbol = qualify(type_prefix, field_text(&child, "name", src));
             push_symbol(out, path, src, spec, child, symbol, kind_label(kind));
@@ -169,7 +176,83 @@ fn collect_items(
             // the individual chunk makes it directly addressable by symbol.
             let symbol = qualify(type_prefix, field_text(&child, "name", src));
             push_symbol(out, path, src, spec, child, symbol, kind_label(kind));
+        } else if uses_js_declarator(spec)
+            && matches!(kind, "lexical_declaration" | "variable_declaration")
+        {
+            // JS/TS: a `const foo = () => {}` / function-expression binding.
+            // The name lives on the parent declarator, not the function node
+            // (the JsDeclarator hook). Non-function bindings (`const x = 5`)
+            // produce no chunk.
+            push_declarator_functions(out, path, src, spec, child, type_prefix);
+        } else if uses_js_declarator(spec)
+            && type_prefix.is_some()
+            && matches!(kind, "public_field_definition" | "field_definition")
+            && is_function_valued(&child)
+        {
+            // JS/TS class-field arrow method: `handle = () => {}`. Named from
+            // the field's name (TS `public_field_definition` exposes it as
+            // `name`, JS `field_definition` as `property`), qualified to
+            // `Type::handle`. Plain (non-function) fields fall through and
+            // stay in the type header only.
+            let name = field_text(&child, "name", src)
+                .or_else(|| field_text(&child, "property", src));
+            let symbol = qualify(type_prefix, name);
+            push_symbol(out, path, src, spec, child, symbol, "method");
         }
+    }
+}
+
+/// `true` when the grammar derives free-function names via their binding
+/// declarator (JS/TS), so the walker unwraps `lexical_declaration` /
+/// `variable_declaration` and arrow-valued class fields.
+fn uses_js_declarator(spec: &GrammarSpec) -> bool {
+    matches!(spec.function_naming, FunctionNaming::JsDeclarator)
+}
+
+/// `true` when `node`'s `value` field is a function/arrow expression, i.e.
+/// the binding is a function definition rather than a data binding.
+fn is_function_valued(node: &Node<'_>) -> bool {
+    node.child_by_field_name("value")
+        .map(|v| {
+            matches!(
+                v.kind(),
+                "arrow_function" | "function" | "function_expression" | "generator_function"
+            )
+        })
+        .unwrap_or(false)
+}
+
+/// Emit a free-function chunk for each function-valued `variable_declarator`
+/// in a JS/TS `lexical_declaration` / `variable_declaration`. A lone
+/// declarator chunks the whole statement (keeping `const`/`let`/`export`);
+/// in a multi-binding statement (`let a = 1, f = () => …`) each function
+/// declarator is chunked on its own so a data sibling is not mislabeled.
+fn push_declarator_functions(
+    out: &mut Vec<Chunk>,
+    path: &str,
+    src: &[u8],
+    spec: &GrammarSpec,
+    decl: Node<'_>,
+    type_prefix: Option<&str>,
+) {
+    let mut cursor = decl.walk();
+    let declarators: Vec<Node<'_>> = decl
+        .named_children(&mut cursor)
+        .filter(|n| n.kind() == "variable_declarator")
+        .collect();
+    let lone = declarators.len() == 1;
+    for d in declarators {
+        if !is_function_valued(&d) {
+            continue;
+        }
+        let symbol = qualify(type_prefix, field_text(&d, "name", src));
+        let label = if type_prefix.is_some() {
+            "method"
+        } else {
+            "function"
+        };
+        let node = if lone { decl } else { d };
+        push_symbol(out, path, src, spec, node, symbol, label);
     }
 }
 
@@ -198,9 +281,14 @@ fn function_symbol(
     type_prefix: Option<&str>,
 ) -> Option<String> {
     let base = match spec.function_naming {
-        FunctionNaming::Direct => field_text(func, "name", src).map(str::to_string),
-        // An arrow/function bound to a `variable_declarator` (T3).
-        FunctionNaming::JsDeclarator => todo!("JsDeclarator function naming (M11 T3)"),
+        // A named `function foo` reads its `name` field directly; this branch
+        // handles both Rust-style `Direct` and the JS/TS `function_declaration`
+        // case. Arrow/function bindings (`const foo = () => {}`) carry their
+        // name on the declarator and are walked separately in
+        // `push_declarator_functions`, never reaching here.
+        FunctionNaming::Direct | FunctionNaming::JsDeclarator => {
+            field_text(func, "name", src).map(str::to_string)
+        }
     };
     match type_prefix {
         Some(ty) => base.map(|n| match spec.method_naming {
@@ -330,11 +418,31 @@ fn slice_header(
 /// folded documentation per the grammar's `doc_fold` hook.
 fn leading_start(item: Node<'_>, spec: &GrammarSpec) -> (usize, usize) {
     match spec.doc_fold {
-        DocFold::PrecedingSiblings => fold_preceding_siblings(item, spec),
+        // Fold from the outermost transparent wrapper (JS/TS
+        // `export_statement`) so a doc comment above `export const foo` is
+        // reached — the comment is a sibling of the wrapper, not of the
+        // wrapped declaration. With no transparent kinds (Rust/C#/Java) the
+        // anchor stays the item itself, so behavior is unchanged.
+        DocFold::PrecedingSiblings => fold_preceding_siblings(fold_anchor(item, spec), spec),
         // Keep the leading body docstring / climb a decorated_definition (T4).
         DocFold::PythonDocstring => todo!("PythonDocstring doc folding (M11 T4)"),
         DocFold::None => (item.start_byte(), item.start_position().row),
     }
+}
+
+/// Climb out of any transparent wrapper(s) so doc-comment folding starts at
+/// the outermost wrapper. Returns `item` unchanged when its parent is not a
+/// transparent kind (always the case for Rust/C#/Java).
+fn fold_anchor<'a>(item: Node<'a>, spec: &GrammarSpec) -> Node<'a> {
+    let mut anchor = item;
+    while let Some(parent) = anchor.parent() {
+        if spec.transparent_kinds.contains(&parent.kind()) {
+            anchor = parent;
+        } else {
+            break;
+        }
+    }
+    anchor
 }
 
 /// Walk backwards from `item` over contiguous preceding comment /
@@ -366,14 +474,16 @@ fn field_text<'a>(node: &Node<'_>, field: &str, src: &'a [u8]) -> Option<&'a str
 }
 
 /// Short kind tag for a tree-sitter node kind: trims a trailing `_item` /
-/// `_definition` / `_declaration` so `struct_item` → `struct`,
-/// `macro_definition` → `macro`, `method_declaration` → `method`. Rust
-/// uses no `_declaration` kinds, so its output is unaffected.
+/// `_definition` / `_declaration` / `_signature` so `struct_item` → `struct`,
+/// `macro_definition` → `macro`, `method_declaration` → `method`, and the TS
+/// interface `method_signature` → `method`. Rust uses none of these `_decl`/
+/// `_signature` kinds, so its output is unaffected.
 fn kind_label(node_kind: &str) -> &str {
     node_kind
         .strip_suffix("_item")
         .or_else(|| node_kind.strip_suffix("_definition"))
         .or_else(|| node_kind.strip_suffix("_declaration"))
+        .or_else(|| node_kind.strip_suffix("_signature"))
         .unwrap_or(node_kind)
 }
 
@@ -685,6 +795,167 @@ public class Widget {
             !header.body.contains("{ ... }"),
             "body-less member must not produce a placeholder"
         );
+    }
+
+    fn js(content: &str) -> Vec<Chunk> {
+        chunk_file("src/app.js", content, Some("javascript"))
+    }
+
+    fn ts(content: &str) -> Vec<Chunk> {
+        chunk_file("src/app.ts", content, Some("typescript"))
+    }
+
+    // The dominant JS/TS case: a top-level `const f = () => {}` takes its
+    // name from the binding declarator (the JsDeclarator hook), and a plain
+    // data binding produces no symbol chunk.
+    #[test]
+    fn js_arrow_binding_is_named_from_its_declarator() {
+        let chunks = js("const add = (a, b) => a + b;\nconst answer = 42;\n");
+        let got = symbols(&chunks);
+        assert!(got.contains(&("function", Some("add"))), "{got:?}");
+        // `const answer = 42` is data, not a function — no symbol chunk.
+        assert!(!got.iter().any(|(_, s)| *s == Some("answer")), "{got:?}");
+    }
+
+    #[test]
+    fn js_function_declaration_and_class_methods_are_chunked() {
+        let src = "\
+function div(a, b) { return a / b; }
+class Counter {
+  inc() { this.n++; }
+  onClick = () => { this.n = 0; };
+}
+";
+        let chunks = js(src);
+        let got = symbols(&chunks);
+        assert!(got.contains(&("function", Some("div"))), "{got:?}");
+        assert!(got.contains(&("class", Some("Counter"))), "{got:?}");
+        assert!(got.contains(&("method", Some("Counter::inc"))), "{got:?}");
+        // A class-field arrow is a qualified method, too.
+        assert!(got.contains(&("method", Some("Counter::onClick"))), "{got:?}");
+    }
+
+    // `export` wraps nearly every top-level declaration; the walker must see
+    // through `export_statement` or it indexes almost nothing in real code.
+    #[test]
+    fn exported_declarations_are_seen_through_the_export_wrapper() {
+        let src = "\
+export function alpha() {}
+export const beta = () => {};
+export class Gamma { m() {} }
+";
+        let chunks = js(src);
+        let got = symbols(&chunks);
+        assert!(got.contains(&("function", Some("alpha"))), "{got:?}");
+        assert!(got.contains(&("function", Some("beta"))), "{got:?}");
+        assert!(got.contains(&("class", Some("Gamma"))), "{got:?}");
+        assert!(got.contains(&("method", Some("Gamma::m"))), "{got:?}");
+    }
+
+    // A JSDoc comment sits above the `export` wrapper, not the wrapped
+    // declaration; folding must climb through the wrapper to reach it.
+    #[test]
+    fn jsdoc_above_an_exported_function_folds_into_the_chunk() {
+        let src = "\
+/** Adds two numbers. */
+export function add(a, b) { return a + b; }
+";
+        let chunks = js(src);
+        let c = chunks
+            .iter()
+            .find(|c| c.symbol.as_deref() == Some("add"))
+            .expect("add chunk");
+        assert_eq!(c.start_line, 1, "chunk should start at the JSDoc line");
+        assert!(c.body.contains("Adds two numbers."), "JSDoc folded in");
+        assert!(c.body.contains("export function add"), "export kept in body");
+    }
+
+    // In a multi-binding statement only the function declarator is chunked,
+    // and on its own so the data sibling is not swept into its body.
+    #[test]
+    fn multi_binding_statement_chunks_only_the_function_declarator() {
+        let chunks = js("let a = 1, sq = (x) => x * x;\n");
+        let got = symbols(&chunks);
+        assert!(got.contains(&("function", Some("sq"))), "{got:?}");
+        assert!(!got.iter().any(|(_, s)| *s == Some("a")), "{got:?}");
+        let sq = chunks
+            .iter()
+            .find(|c| c.symbol.as_deref() == Some("sq"))
+            .expect("sq chunk");
+        assert!(!sq.body.contains("a = 1"), "data sibling must not leak in");
+    }
+
+    #[test]
+    fn ts_interface_type_alias_and_enum_are_chunked() {
+        let src = "\
+export interface Repo {
+  find(id: string): Item;
+  size: number;
+}
+export type Id = string | number;
+export enum Color { Red, Green }
+";
+        let chunks = ts(src);
+        let got = symbols(&chunks);
+        assert!(got.contains(&("interface", Some("Repo"))), "{got:?}");
+        // Interface methods are body-less members, addressable on their own.
+        assert!(got.contains(&("method", Some("Repo::find"))), "{got:?}");
+        assert!(got.contains(&("type_alias", Some("Id"))), "{got:?}");
+        assert!(got.contains(&("enum", Some("Color"))), "{got:?}");
+    }
+
+    #[test]
+    fn ts_abstract_class_and_arrow_field_method_are_chunked() {
+        let src = "\
+export abstract class Widget {
+  private count = 0;
+  constructor(c: number) { this.count = c; }
+  increment(): void { this.count++; }
+  handle = () => { this.count = 0; };
+}
+";
+        let chunks = ts(src);
+        let got = symbols(&chunks);
+        assert!(got.contains(&("abstract_class", Some("Widget"))), "{got:?}");
+        assert!(got.contains(&("method", Some("Widget::constructor"))), "{got:?}");
+        assert!(got.contains(&("method", Some("Widget::increment"))), "{got:?}");
+        assert!(got.contains(&("method", Some("Widget::handle"))), "{got:?}");
+    }
+
+    #[test]
+    fn ts_namespace_members_are_recursed_into() {
+        // A namespace parses as `expression_statement` > `internal_module`;
+        // both wrappers must be walked through to reach the members.
+        let src = "\
+namespace Geo {
+  export const dist = (a: number, b: number) => b - a;
+  export class Point { x(): number { return 0; } }
+}
+";
+        let chunks = ts(src);
+        let got = symbols(&chunks);
+        // Namespaces do not qualify member names (matching C#/Rust modules).
+        assert!(got.contains(&("function", Some("dist"))), "{got:?}");
+        assert!(got.contains(&("class", Some("Point"))), "{got:?}");
+        assert!(got.contains(&("method", Some("Point::x"))), "{got:?}");
+    }
+
+    #[test]
+    fn ts_class_header_excises_method_bodies() {
+        let src = "\
+export class Service {
+  private url = \"/api\";
+  fetch(): void { doFetch(this.url); }
+}
+";
+        let chunks = ts(src);
+        let header = chunks
+            .iter()
+            .find(|c| c.kind == "class")
+            .expect("class chunk");
+        assert!(header.body.contains("private url"), "field kept in header");
+        assert!(header.body.contains("{ ... }"), "method body excised");
+        assert!(!header.body.contains("doFetch"), "method body must be excised");
     }
 
     #[test]
