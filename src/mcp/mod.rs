@@ -742,7 +742,27 @@ impl ServerHandler for MemhubServer {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("memhub", env!("CARGO_PKG_VERSION")))
             .with_instructions(
-                "Local-first per-repo project memory. Read tools are direct (status, search, recall, locate, list_tasks, list_decisions, list_facts, list_pending_writes, get_command, metrics). Prefer `recall` over reading PROJECT_LEDGER.md mid-session — it does SQL+RAG hybrid retrieval across facts, decisions, and tasks. `locate` is the code-finder: SQL+RAG hybrid search over a sibling code index that returns ranked file:line breadcrumbs with clipped snippets (never full code, never edits) — use it to find where code lives before reading it. Tasks write directly (task_add, task_done) since tasks are intent. `doc_add` ingests a user-pointed markdown file as reference material; the first ingest in a repo turns on default-bundle doc recall, after which only strong topical doc matches surface in plain `recall` (scope to docs alone with source_types=[\"doc\"]; recall's `available_docs` counts ingested chunks that did not surface this call). Facts and decisions stage via propose_fact / propose_decision and require human acceptance through `memhub review accept`. Session notes are write-only scratch. `render` regenerates the configured local PROJECT.md from the DB. `metrics` returns token-accounting totals and a pre-rendered dashboard panel for the /metrics skill.",
+                r#"memhub: local-first per-repo project memory. Routing rules below are ABSOLUTE when user intent matches.
+
+INTENT → TOOL (always start here; do not fall through to Grep/Read/manual scan):
+• past decisions, status of work, "is there a fact/task about X" → recall
+• find code by what it does, "where is X", "I want to change Y" → locate
+• token usage, context cost, recall savings → metrics
+• ingest a markdown spec/design doc as searchable reference → doc_add
+• new task / mark task done → task_add / task_done
+• cross-machine pull/push of memhub state → sync_check, sync_snapshot, sync_adopt, sync_commit
+• session start (turn 1 ONLY) → read .memhub/rendered/PROJECT.md once
+
+NEVER:
+• Grep for code by intent before `locate` has narrowed candidates. Grep is for confirming inside files `locate` returned.
+• Read PROJECT_LEDGER.md before trying `recall`. The ledger is fallback — when recall is empty or the user asks for it.
+• Re-read PROJECT.md after turn 1 unless the user asks or after `render`.
+• Write facts/decisions directly. Stage via `propose_fact` / `propose_decision`; durable on `memhub review accept`.
+
+OUT OF SCOPE (use other tools):
+• External library / framework docs → your docs tool (e.g., context7) or web search.
+• World knowledge / general programming concepts.
+"#,
             )
     }
 
