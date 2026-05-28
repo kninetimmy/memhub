@@ -40,6 +40,7 @@ tree-sitter-c-sharp = "0.23"
 tree-sitter-java = "0.23"
 tree-sitter-typescript = "0.23"
 tree-sitter-javascript = "0.25"
+tree-sitter-python = "0.23"
 tower-http = { version = "0.6", features = ["trace"], optional = true }
 # Minimal blocking HTTP+TLS client, used by exactly one code path:
 # `memhub metrics calibrate` (src/metrics/calibrate.rs), the one-time

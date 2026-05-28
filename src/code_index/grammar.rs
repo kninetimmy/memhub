@@ -48,10 +48,11 @@ pub enum DocFold {
     /// Fold a contiguous run of preceding comment / attribute siblings
     /// into the item's chunk. The Rust default.
     PrecedingSiblings,
-    /// Python: ignore preceding `#` comments, keep the leading body
-    /// docstring inside the header chunk, and climb a
-    /// `decorated_definition` to fold decorators. Implemented in the
-    /// Python task (T4).
+    /// Python: ignore preceding `#` comments (they are not docs), keep the
+    /// leading body docstring inside a class's header chunk (it is the
+    /// first body `expression_statement`, which has no `body_field` and so
+    /// is never excised), and climb a `decorated_definition` wrapper so a
+    /// def's decorators are included in its chunk.
     PythonDocstring,
     /// No doc folding; a chunk starts at the item node itself.
     None,
@@ -137,7 +138,10 @@ impl GrammarSpec {
             self.function_naming,
             FunctionNaming::Direct | FunctionNaming::JsDeclarator
         ) && matches!(self.method_naming, MethodNaming::Standard)
-            && matches!(self.doc_fold, DocFold::PrecedingSiblings | DocFold::None)
+            && matches!(
+                self.doc_fold,
+                DocFold::PrecedingSiblings | DocFold::None | DocFold::PythonDocstring
+            )
     }
 }
 
@@ -290,6 +294,36 @@ pub fn grammar_for(language: Option<&str>) -> Option<GrammarSpec> {
             function_naming: FunctionNaming::JsDeclarator,
             doc_fold: DocFold::PrecedingSiblings,
         }),
+        // Python. `function_definition` (covers `async def` too) is a free
+        // function at module level and a method inside a class; `class_
+        // definition` is the one type container. A decorated def/class parses
+        // as `decorated_definition` wrapping the real node, so it is a
+        // `transparent_kind`: the walker recurses through it to reach the def,
+        // and `leading_start` (PythonDocstring) climbs back through it so the
+        // decorators are folded into the chunk. The PythonDocstring hook also
+        // suppresses `#`-comment folding, so `comment_kinds`/`attribute_kinds`
+        // are never consulted for Python (left empty for attributes —
+        // decorators arrive via the transparent climb, not as preceding
+        // siblings). A class's leading docstring is the first body
+        // `expression_statement`; it has no `body` field, so `slice_header`
+        // leaves it verbatim in the header chunk. Node kinds verified against
+        // tree-sitter-python 0.23 via an AST-dump probe.
+        "python" => Some(GrammarSpec {
+            language: tree_sitter_python::LANGUAGE.into(),
+            function_kinds: &["function_definition"],
+            type_container_kinds: &["class_definition"],
+            method_containers: &[],
+            namespace_kinds: &[],
+            transparent_kinds: &["decorated_definition"],
+            item_kinds: &[],
+            member_kinds: &[],
+            comment_kinds: &["comment"],
+            attribute_kinds: &[],
+            body_field: "body",
+            method_naming: MethodNaming::Standard,
+            function_naming: FunctionNaming::Direct,
+            doc_fold: DocFold::PythonDocstring,
+        }),
         _ => None,
     }
 }
@@ -331,6 +365,11 @@ mod tests {
     }
 
     #[test]
+    fn python_grammar_is_registered_and_loadable() {
+        assert_loads("python", "def f():\n    pass\n", "module");
+    }
+
+    #[test]
     fn rust_grammar_is_registered_and_loadable() {
         let spec = grammar_for(Some("rust")).expect("rust grammar present");
         // A parser must accept the language without an ABI-version panic;
@@ -362,7 +401,7 @@ mod tests {
     // hooks implemented so no live row can reach a `todo!()` in the walker.
     #[test]
     fn all_registered_grammars_have_fully_implemented_hooks() {
-        for lang in ["rust", "csharp", "java", "typescript", "javascript"] {
+        for lang in ["rust", "csharp", "java", "typescript", "javascript", "python"] {
             let spec = grammar_for(Some(lang)).expect(lang);
             assert!(
                 spec.hooks_implemented(),

@@ -382,19 +382,7 @@ fn slice_header(
     if let Some(body) = container.child_by_field_name(spec.body_field) {
         let mut cursor = body.walk();
         for member in body.named_children(&mut cursor) {
-            if let Some(inner) = member.child_by_field_name(spec.body_field) {
-                let s = inner.start_byte();
-                let e = inner.end_byte();
-                // Only subtract when both offsets are within [start_byte, end_byte].
-                if s >= start_byte && e <= end_byte && s <= e {
-                    excise.push((s - start_byte, e - start_byte));
-                }
-            }
-            // Body-less members (interface/abstract methods, C# auto-
-            // properties) have no body_field child and are not excised here,
-            // so they appear verbatim in the header text. collect_items also
-            // emits each such member as its own individual chunk — intentional
-            // duplication; see the member_kinds branch in collect_items.
+            collect_member_excisions(member, spec, start_byte, end_byte, &mut excise);
         }
     }
     excise.sort_unstable();
@@ -414,6 +402,40 @@ fn slice_header(
     header.replace("\r\n", "\n")
 }
 
+/// Record the byte range of `member`'s body subtree (relative to
+/// `start_byte`) for excision from a type header, descending through a
+/// transparent wrapper (Python `decorated_definition`) to reach the real
+/// definition's body so a decorated method's body is excised like a plain
+/// one. Body-less members — assignments, a class docstring's
+/// `expression_statement`, interface/abstract methods, C# auto-properties,
+/// and the `decorator` nodes themselves — have no `body_field` child and
+/// contribute nothing, so they stay verbatim in the header. (collect_items
+/// still emits the methods as their own chunks; the duplication of a
+/// body-less member is intentional — see the member_kinds branch.)
+fn collect_member_excisions(
+    member: Node<'_>,
+    spec: &GrammarSpec,
+    start_byte: usize,
+    end_byte: usize,
+    excise: &mut Vec<(usize, usize)>,
+) {
+    if spec.transparent_kinds.contains(&member.kind()) {
+        let mut cursor = member.walk();
+        for inner in member.named_children(&mut cursor) {
+            collect_member_excisions(inner, spec, start_byte, end_byte, excise);
+        }
+        return;
+    }
+    if let Some(inner) = member.child_by_field_name(spec.body_field) {
+        let s = inner.start_byte();
+        let e = inner.end_byte();
+        // Only record when both offsets are within [start_byte, end_byte].
+        if s >= start_byte && e <= end_byte && s <= e {
+            excise.push((s - start_byte, e - start_byte));
+        }
+    }
+}
+
 /// The `(start_byte, start_row)` an item's chunk begins at, extended over
 /// folded documentation per the grammar's `doc_fold` hook.
 fn leading_start(item: Node<'_>, spec: &GrammarSpec) -> (usize, usize) {
@@ -424,8 +446,16 @@ fn leading_start(item: Node<'_>, spec: &GrammarSpec) -> (usize, usize) {
         // wrapped declaration. With no transparent kinds (Rust/C#/Java) the
         // anchor stays the item itself, so behavior is unchanged.
         DocFold::PrecedingSiblings => fold_preceding_siblings(fold_anchor(item, spec), spec),
-        // Keep the leading body docstring / climb a decorated_definition (T4).
-        DocFold::PythonDocstring => todo!("PythonDocstring doc folding (M11 T4)"),
+        // Python: do NOT fold preceding `#` comments (they are not docs).
+        // Climb out of any `decorated_definition` wrapper (a transparent kind)
+        // so the def's decorators are included in its chunk. A class's leading
+        // docstring needs no handling here — it lives inside the body and
+        // `slice_header` keeps it because an `expression_statement` has no
+        // `body_field` to excise.
+        DocFold::PythonDocstring => {
+            let anchor = fold_anchor(item, spec);
+            (anchor.start_byte(), anchor.start_position().row)
+        }
         DocFold::None => (item.start_byte(), item.start_position().row),
     }
 }
@@ -956,6 +986,129 @@ export class Service {
         assert!(header.body.contains("private url"), "field kept in header");
         assert!(header.body.contains("{ ... }"), "method body excised");
         assert!(!header.body.contains("doFetch"), "method body must be excised");
+    }
+
+    fn py(content: &str) -> Vec<Chunk> {
+        chunk_file("src/app.py", content, Some("python"))
+    }
+
+    // Module-level `def` is a function; a `class` emits a header chunk plus a
+    // `Class::method` chunk per method (including `async def`).
+    #[test]
+    fn python_module_function_and_class_methods_are_chunked() {
+        let src = "\
+def top_level(a, b):
+    return a + b
+
+
+class Widget:
+    def __init__(self, n):
+        self.n = n
+
+    async def fetch(self):
+        return await thing()
+";
+        let chunks = py(src);
+        let got = symbols(&chunks);
+        assert!(got.contains(&("function", Some("top_level"))), "{got:?}");
+        assert!(got.contains(&("class", Some("Widget"))), "{got:?}");
+        assert!(got.contains(&("method", Some("Widget::__init__"))), "{got:?}");
+        // `async def` is still a `function_definition`.
+        assert!(got.contains(&("method", Some("Widget::fetch"))), "{got:?}");
+    }
+
+    // The PythonDocstring hook climbs the `decorated_definition` wrapper so a
+    // def's decorators are folded into its chunk (and it is still named from
+    // the def, not skipped).
+    #[test]
+    fn python_decorators_fold_into_the_function_chunk() {
+        let src = "\
+@app.route(\"/x\")
+@cached
+def handler(req):
+    return 200
+";
+        let chunks = py(src);
+        let c = chunks
+            .iter()
+            .find(|c| c.symbol.as_deref() == Some("handler"))
+            .expect("handler chunk");
+        assert_eq!(c.start_line, 1, "chunk should start at the first decorator");
+        assert!(c.body.contains("@app.route"), "decorator folded in: {}", c.body);
+        assert!(c.body.contains("@cached"), "second decorator folded in");
+        assert!(c.body.contains("def handler"), "def kept in body");
+    }
+
+    // Unlike PrecedingSiblings, a `#` comment above a def is NOT folded —
+    // Python hash comments are not documentation.
+    #[test]
+    fn python_hash_comments_are_not_folded_as_docs() {
+        let src = "\
+# a leading hash comment
+def solo():
+    return 1
+";
+        let chunks = py(src);
+        let c = chunks
+            .iter()
+            .find(|c| c.symbol.as_deref() == Some("solo"))
+            .expect("solo chunk");
+        assert_eq!(c.start_line, 2, "chunk starts at the def, not the comment");
+        assert!(!c.body.contains("hash comment"), "comment must not fold in");
+    }
+
+    // A class's leading docstring stays in the header chunk (it is the first
+    // body `expression_statement`, which has no body to excise), while every
+    // method body — plain, decorated, or async — is excised to `{ ... }`.
+    #[test]
+    fn python_class_header_keeps_docstring_and_excises_method_bodies() {
+        let src = "\
+class Widget:
+    \"\"\"A widget.\"\"\"
+
+    count = 0
+
+    def __init__(self, n):
+        self.n = n
+
+    @property
+    def doubled(self):
+        return self.n * 2
+";
+        let chunks = py(src);
+        let header = chunks
+            .iter()
+            .find(|c| c.kind == "class")
+            .expect("class chunk");
+        assert!(header.body.contains("A widget."), "docstring kept in header");
+        assert!(header.body.contains("count = 0"), "class field kept");
+        assert!(header.body.contains("@property"), "decorator kept in header");
+        assert!(!header.body.contains("self.n = n"), "ctor body excised");
+        assert!(!header.body.contains("self.n * 2"), "decorated method body excised");
+        assert!(header.body.contains("{ ... }"), "bodies excised to placeholder");
+        // The decorated method is still addressable as its own chunk.
+        let got = symbols(&chunks);
+        assert!(got.contains(&("method", Some("Widget::doubled"))), "{got:?}");
+    }
+
+    // A decorated class at module level: the walker recurses through the
+    // wrapper to the class, and the class decorators fold into the header.
+    #[test]
+    fn python_decorated_class_is_chunked_with_its_decorator() {
+        let src = "\
+@dataclass
+class Point:
+    x: int
+    y: int
+";
+        let chunks = py(src);
+        let header = chunks
+            .iter()
+            .find(|c| c.symbol.as_deref() == Some("Point"))
+            .expect("Point chunk");
+        assert_eq!(header.kind, "class");
+        assert_eq!(header.start_line, 1, "chunk starts at the @dataclass line");
+        assert!(header.body.contains("@dataclass"), "class decorator folded in");
     }
 
     #[test]
