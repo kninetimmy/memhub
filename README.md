@@ -457,7 +457,7 @@ A few things to know:
 
 Memory answers "what did we decide?" Sometimes the question is "*where is the code that does X?*" — and the honest answer, three months into a project, is usually a few minutes of grepping for the right symbol name you can't quite remember.
 
-memhub builds a local **code index** for that. It walks your repo, splits each source file into symbol-aware chunks (functions, structs, impls — via tree-sitter), embeds them, and lets you search by intent:
+memhub builds a local **code index** for that. It walks your repo, splits each source file into symbol-aware chunks — functions, methods, types, classes — via tree-sitter, embeds them, and lets you search by intent:
 
 ```bash
 memhub code index                 # build / refresh the index
@@ -477,6 +477,7 @@ Then you open those exact lines with your own editor or the agent's file tools. 
 
 A few things that keep it honest and cheap:
 
+- **Symbol-aware in the languages you're likely using.** Rust, Go, Python, TypeScript/JavaScript, Java, and C# get a tree-sitter AST chunker that splits files along real symbol boundaries. Any other text file still indexes — it just falls back to fixed line-window chunks — so nothing in your repo is invisible to `locate`, it's only less precisely sliced.
 - **Separate from your memory.** The index is a sibling database (`.memhub/code_index.sqlite`), not part of project memory. Recall never reads it, and it never pollutes your decisions/facts bundle — `locate` is its own query path.
 - **It's a throwaway cache.** Gitignored, never exported, never synced between machines. Delete it anytime (`memhub code rm`) and rebuild; it's derived entirely from your source.
 - **Freshness is automatic.** Every `locate` first does a lazy staleness check against the working tree — unchanged files are skipped (stat-only), edited ones re-chunk transparently. You don't have to remember to re-index after editing.
