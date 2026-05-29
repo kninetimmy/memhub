@@ -67,6 +67,16 @@ viz = ["dep:axum", "dep:tower-http"]
 [profile.dev]
 debug = "line-tables-only"
 
+# Test runs were the main driver of target/debug/incremental bloat (40+ GiB):
+# each `cargo test` recompiles the memhub crate with its `include_bytes!`'d
+# ONNX models under the `test` profile, and incremental codegen caches a copy
+# per change. `memhub gc` cannot reclaim incremental/ (deleting it only slows
+# the next build), so we disable incremental for test builds outright — full
+# rebuilds here are acceptable and CI never reuses the cache anyway. The `dev`
+# profile keeps incremental on for fast iterative `cargo build`/`cargo run`.
+[profile.test]
+incremental = false
+
 [build-dependencies]
 sha2 = "0.10"
 ureq = { version = "2.10", default-features = false, features = ["tls"] }
