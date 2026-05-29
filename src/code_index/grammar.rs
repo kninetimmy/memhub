@@ -8,10 +8,9 @@
 //! `Direct` / `PrecedingSiblings` defaults reproduce Rust exactly, so a
 //! conventional language is one all-default row.
 //!
-//! v1 of the multi-language rollout (decision 115) lands the spec shape
-//! and the generalized walker while still shipping **Rust only**; the
-//! other five grammars (C#, Java, TypeScript, JavaScript, Python, Go)
-//! arrive in later tasks as additional rows. A language with no row falls
+//! The multi-language rollout (decision 115) landed the spec shape and the
+//! generalized walker, then added the grammars row by row: Rust, C#, Java,
+//! TypeScript, JavaScript, Python, and Go. A language with no row falls
 //! back to the line-window chunker (the same path a parse failure takes),
 //! so an unsupported file is never silently dropped.
 //!
@@ -27,7 +26,10 @@ pub enum MethodNaming {
     /// `Prefix::method`. The Rust default.
     Standard,
     /// Go: the prefix comes from the method's own receiver parameter, not
-    /// an enclosing container. Implemented in the Go task (T5).
+    /// an enclosing container (T5). A `method_declaration` is reached at the
+    /// top level — `type_prefix` is `None` — so the receiver type is read
+    /// from the node itself; a `function_declaration` has no receiver and
+    /// stays a bare-named free function.
     GoReceiver,
 }
 
@@ -137,8 +139,10 @@ impl GrammarSpec {
         matches!(
             self.function_naming,
             FunctionNaming::Direct | FunctionNaming::JsDeclarator
-        ) && matches!(self.method_naming, MethodNaming::Standard)
-            && matches!(
+        ) && matches!(
+            self.method_naming,
+            MethodNaming::Standard | MethodNaming::GoReceiver
+        ) && matches!(
                 self.doc_fold,
                 DocFold::PrecedingSiblings | DocFold::None | DocFold::PythonDocstring
             )
@@ -324,6 +328,38 @@ pub fn grammar_for(language: Option<&str>) -> Option<GrammarSpec> {
             function_naming: FunctionNaming::Direct,
             doc_fold: DocFold::PythonDocstring,
         }),
+        // Go. Free functions are `function_declaration`; methods are
+        // top-level `method_declaration` nodes whose type prefix comes from
+        // the `receiver` parameter, not an enclosing container (the
+        // GoReceiver hook). Go has no method-bearing type container: a
+        // `type_spec` (struct/interface/alias) is a leaf chunk, and the
+        // methods that operate on it live separately as siblings. `type_/
+        // const_/var_declaration` are transparent wrappers around one or more
+        // `*_spec` leaves; grouped `var ( … )` nests its specs under an extra
+        // `var_spec_list`, so that wrapper is transparent too. Godoc `//`
+        // lines fold as preceding-sibling docs. Node kinds verified against
+        // tree-sitter-go 0.23 via an AST-dump probe.
+        "go" => Some(GrammarSpec {
+            language: tree_sitter_go::LANGUAGE.into(),
+            function_kinds: &["function_declaration", "method_declaration"],
+            type_container_kinds: &[],
+            method_containers: &[],
+            namespace_kinds: &[],
+            transparent_kinds: &[
+                "type_declaration",
+                "const_declaration",
+                "var_declaration",
+                "var_spec_list",
+            ],
+            item_kinds: &["type_spec", "const_spec", "var_spec"],
+            member_kinds: &[],
+            comment_kinds: &["comment"],
+            attribute_kinds: &[],
+            body_field: "body",
+            method_naming: MethodNaming::GoReceiver,
+            function_naming: FunctionNaming::Direct,
+            doc_fold: DocFold::PrecedingSiblings,
+        }),
         _ => None,
     }
 }
@@ -370,6 +406,11 @@ mod tests {
     }
 
     #[test]
+    fn go_grammar_is_registered_and_loadable() {
+        assert_loads("go", "package main\nfunc main() {}\n", "source_file");
+    }
+
+    #[test]
     fn rust_grammar_is_registered_and_loadable() {
         let spec = grammar_for(Some("rust")).expect("rust grammar present");
         // A parser must accept the language without an ABI-version panic;
@@ -401,7 +442,7 @@ mod tests {
     // hooks implemented so no live row can reach a `todo!()` in the walker.
     #[test]
     fn all_registered_grammars_have_fully_implemented_hooks() {
-        for lang in ["rust", "csharp", "java", "typescript", "javascript", "python"] {
+        for lang in ["rust", "csharp", "java", "typescript", "javascript", "python", "go"] {
             let spec = grammar_for(Some(lang)).expect(lang);
             assert!(
                 spec.hooks_implemented(),

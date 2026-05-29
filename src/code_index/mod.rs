@@ -605,6 +605,7 @@ fn infer_language(path: &str) -> Option<&'static str> {
         "py" => Some("python"),
         "cs" => Some("csharp"),
         "java" => Some("java"),
+        "go" => Some("go"),
         "sql" => Some("sql"),
         _ => None,
     }

@@ -9,9 +9,12 @@
 //!   `Type::method`). For type-container languages (C#, Java) it emits one
 //!   header-only chunk per class/record/interface/struct (named for the type,
 //!   with member bodies excised to `{ ... }`) plus one `Type::member` chunk per
-//!   method, constructor, and property. All paths carry symbol names and kind
-//!   tags; a contiguous run of preceding doc comments / attributes is folded
-//!   into each chunk so the model sees the documentation with the code.
+//!   method, constructor, and property. Go is neither: free functions and
+//!   receiver-named methods (`Type::method`, prefix from the receiver) are
+//!   top-level, and a struct/interface/alias/const/var is a leaf chunk. All
+//!   paths carry symbol names and kind tags; a contiguous run of preceding doc
+//!   comments / attributes is folded into each chunk so the model sees the
+//!   documentation with the code.
 //!
 //! * A **line-window fallback** ([`chunk_line_windows`]) — fixed-size,
 //!   symbol-unaware windows — used when the language has no grammar, when
@@ -72,9 +75,9 @@ pub fn chunk_file(path: &str, content: &str, language: Option<&str>) -> Vec<Chun
         return Vec::new();
     }
     if let Some(spec) = grammar::grammar_for(language) {
-        // Skip the AST path for any spec that uses an unimplemented hook
-        // (JsDeclarator, GoReceiver, PythonDocstring). Those specs degrade
-        // to line windows until the implementing task lands.
+        // A spec whose hooks aren't all implemented degrades to line windows
+        // rather than reaching a `todo!()` in the walker. Every currently
+        // registered grammar passes; the guard protects a future half-wired row.
         if spec.hooks_implemented() {
             let chunks = chunk_with_grammar(path, content, &spec);
             // A parse that surfaces no items (e.g. a file of only `use`
@@ -125,12 +128,8 @@ fn collect_items(
         let kind = child.kind();
 
         if spec.function_kinds.contains(&kind) {
-            let symbol = function_symbol(&child, src, spec, type_prefix);
-            let label = if type_prefix.is_some() {
-                "method"
-            } else {
-                "function"
-            };
+            let (symbol, is_method) = function_symbol(&child, src, spec, type_prefix);
+            let label = if is_method { "method" } else { "function" };
             push_symbol(out, path, src, spec, child, symbol, label);
         } else if let Some(container) = method_container_for(spec, kind) {
             // Emit the methods, not the whole (possibly huge) container.
@@ -271,15 +270,18 @@ fn method_container_for<'a>(spec: &'a GrammarSpec, kind: &str) -> Option<&'a Met
     spec.method_containers.iter().find(|c| c.node == kind)
 }
 
-/// Resolve a function node's symbol, honoring the `function_naming` and
-/// `method_naming` hooks. `type_prefix` is `Some` inside a method
-/// container, in which case the base name is qualified to `Type::method`.
+/// Resolve a function node's `(symbol, is_method)`, honoring the
+/// `function_naming` and `method_naming` hooks. Returns whether the node is a
+/// method so the caller can label it — for `Standard` that is simply "inside a
+/// container" (`type_prefix.is_some()`), but Go methods are top-level
+/// `method_declaration`s with no enclosing prefix, so `GoReceiver` decides it
+/// from the node's own receiver.
 fn function_symbol(
     func: &Node<'_>,
     src: &[u8],
     spec: &GrammarSpec,
     type_prefix: Option<&str>,
-) -> Option<String> {
+) -> (Option<String>, bool) {
     let base = match spec.function_naming {
         // A named `function foo` reads its `name` field directly; this branch
         // handles both Rust-style `Direct` and the JS/TS `function_declaration`
@@ -290,14 +292,41 @@ fn function_symbol(
             field_text(func, "name", src).map(str::to_string)
         }
     };
-    match type_prefix {
-        Some(ty) => base.map(|n| match spec.method_naming {
-            MethodNaming::Standard => format!("{ty}::{n}"),
-            // Prefix derived from the method's receiver, not `ty` (T5).
-            MethodNaming::GoReceiver => todo!("GoReceiver method naming (M11 T5)"),
-        }),
-        None => base,
+    match spec.method_naming {
+        // Qualified only inside a method container (Rust `impl`, C#/Java class).
+        MethodNaming::Standard => match type_prefix {
+            Some(ty) => (base.map(|n| format!("{ty}::{n}")), true),
+            None => (base, false),
+        },
+        // Go: the prefix is the receiver's type, read from the node. A node
+        // with no receiver is a free function.
+        MethodNaming::GoReceiver => match go_receiver_type(func, src) {
+            Some(ty) => (base.map(|n| format!("{ty}::{n}")), true),
+            None => (base, false),
+        },
     }
+}
+
+/// The receiver type name of a Go `method_declaration`, stripped of a leading
+/// pointer (`*Point` → `Point`) and any generic parameters (`Stack[T]` →
+/// `Stack`). `None` for a `function_declaration` (no `receiver` field) or an
+/// unexpected shape — the caller then treats the node as a free function.
+fn go_receiver_type<'a>(method: &Node<'_>, src: &'a [u8]) -> Option<&'a str> {
+    let receiver = method.child_by_field_name("receiver")?;
+    let mut cursor = receiver.walk();
+    let param = receiver
+        .named_children(&mut cursor)
+        .find(|n| n.kind() == "parameter_declaration")?;
+    let mut ty = param.child_by_field_name("type")?;
+    // `*T` — the pointed-to type is the pointer node's only named child.
+    if ty.kind() == "pointer_type" {
+        ty = ty.named_child(0)?;
+    }
+    // `T[…]` — the base type is the generic node's `type` field.
+    if ty.kind() == "generic_type" {
+        ty = ty.child_by_field_name("type")?;
+    }
+    ty.utf8_text(src).ok()
 }
 
 /// Build and push one symbol chunk for `item`, folding any contiguous
@@ -504,16 +533,18 @@ fn field_text<'a>(node: &Node<'_>, field: &str, src: &'a [u8]) -> Option<&'a str
 }
 
 /// Short kind tag for a tree-sitter node kind: trims a trailing `_item` /
-/// `_definition` / `_declaration` / `_signature` so `struct_item` → `struct`,
-/// `macro_definition` → `macro`, `method_declaration` → `method`, and the TS
-/// interface `method_signature` → `method`. Rust uses none of these `_decl`/
-/// `_signature` kinds, so its output is unaffected.
+/// `_definition` / `_declaration` / `_signature` / `_spec` so `struct_item` →
+/// `struct`, `macro_definition` → `macro`, `method_declaration` → `method`, the
+/// TS interface `method_signature` → `method`, and the Go `type_spec` /
+/// `const_spec` / `var_spec` → `type` / `const` / `var`. Rust uses none of the
+/// `_decl`/`_signature`/`_spec` kinds, so its output is unaffected.
 fn kind_label(node_kind: &str) -> &str {
     node_kind
         .strip_suffix("_item")
         .or_else(|| node_kind.strip_suffix("_definition"))
         .or_else(|| node_kind.strip_suffix("_declaration"))
         .or_else(|| node_kind.strip_suffix("_signature"))
+        .or_else(|| node_kind.strip_suffix("_spec"))
         .unwrap_or(node_kind)
 }
 
@@ -1109,6 +1140,128 @@ class Point:
         assert_eq!(header.kind, "class");
         assert_eq!(header.start_line, 1, "chunk starts at the @dataclass line");
         assert!(header.body.contains("@dataclass"), "class decorator folded in");
+    }
+
+    fn go(content: &str) -> Vec<Chunk> {
+        chunk_file("main.go", content, Some("go"))
+    }
+
+    // Free functions are `function`; a `method_declaration` is `method`,
+    // qualified by its receiver type — pointer (`*Point`) and value (`Point`)
+    // receivers both strip to the bare type name.
+    #[test]
+    fn go_free_function_and_methods_are_chunked() {
+        let src = "\
+package geo
+
+func Dist(a, b int) int { return b - a }
+
+type Point struct{ X, Y int }
+
+func (p *Point) Mag() float64 { return 0.0 }
+
+func (p Point) Name() string { return \"p\" }
+";
+        let chunks = go(src);
+        let got = symbols(&chunks);
+        assert!(got.contains(&("function", Some("Dist"))), "{got:?}");
+        assert!(got.contains(&("method", Some("Point::Mag"))), "{got:?}");
+        assert!(got.contains(&("method", Some("Point::Name"))), "{got:?}");
+    }
+
+    // A generic receiver (`*Stack[T]`) strips both the pointer and the type
+    // parameters down to the base type name.
+    #[test]
+    fn go_generic_receiver_strips_to_base_type() {
+        let src = "\
+package stack
+
+type Stack[T any] struct{ items []T }
+
+func (s *Stack[T]) Push(v T) { s.items = append(s.items, v) }
+";
+        let chunks = go(src);
+        let got = symbols(&chunks);
+        assert!(got.contains(&("method", Some("Stack::Push"))), "{got:?}");
+    }
+
+    // Structs and interfaces are leaf `type` chunks — Go methods live outside
+    // the type, so there is no header/member split. (The `=` alias form is a
+    // distinct `type_alias` node, out of scope: such a file line-windows.)
+    #[test]
+    fn go_struct_and_interface_are_leaf_type_chunks() {
+        let src = "\
+package model
+
+type Widget struct {
+	count int
+}
+
+type Shape interface {
+	Area() float64
+}
+";
+        let chunks = go(src);
+        let got = symbols(&chunks);
+        assert!(got.contains(&("type", Some("Widget"))), "{got:?}");
+        assert!(got.contains(&("type", Some("Shape"))), "{got:?}");
+        // A struct is a single leaf chunk: its field body is kept, not excised.
+        let widget = chunks
+            .iter()
+            .find(|c| c.symbol.as_deref() == Some("Widget"))
+            .expect("Widget chunk");
+        assert!(widget.body.contains("count int"), "struct body kept verbatim");
+        assert!(!widget.body.contains("{ ... }"), "no excision for a leaf type");
+    }
+
+    // Package-level const/var, including grouped `( … )` forms — grouped `var`
+    // nests its specs under a `var_spec_list` the walker must see through.
+    #[test]
+    fn go_grouped_const_and_var_specs_are_chunked() {
+        let src = "\
+package cfg
+
+const Pi = 3.14
+
+const (
+	A = 1
+	B = 2
+)
+
+var lonely int
+
+var (
+	x = 1
+	y = 2
+)
+";
+        let chunks = go(src);
+        let got = symbols(&chunks);
+        assert!(got.contains(&("const", Some("Pi"))), "{got:?}");
+        assert!(got.contains(&("const", Some("A"))), "{got:?}");
+        assert!(got.contains(&("const", Some("B"))), "{got:?}");
+        assert!(got.contains(&("var", Some("lonely"))), "{got:?}");
+        assert!(got.contains(&("var", Some("x"))), "{got:?}");
+        assert!(got.contains(&("var", Some("y"))), "{got:?}");
+    }
+
+    // A godoc `//` comment immediately above a declaration folds into its chunk.
+    #[test]
+    fn go_doc_comment_folds_into_chunk() {
+        let src = "\
+package geo
+
+// Dist returns the distance between a and b.
+func Dist(a, b int) int { return b - a }
+";
+        let chunks = go(src);
+        let c = chunks
+            .iter()
+            .find(|c| c.symbol.as_deref() == Some("Dist"))
+            .expect("Dist chunk");
+        assert_eq!(c.start_line, 3, "chunk should start at the godoc line");
+        assert!(c.body.contains("Dist returns the distance"), "godoc folded in");
+        assert!(c.body.contains("func Dist"), "func kept in body");
     }
 
     #[test]
