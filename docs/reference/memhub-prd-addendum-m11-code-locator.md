@@ -145,7 +145,7 @@ chosen over a query-only + stale-warning model so results always reflect
 the working tree. It still writes nothing to `project.sqlite` and logs no
 `writes_log` entry.
 
-## 5. Retrieval: fusion default, reranker off (D110, D114)
+## 5. Retrieval: fusion default, reranker off (D110, D114, D122)
 
 Recall over the index reuses `embed_one`, `EMBEDDING_MODEL_NAME`, and
 `EMBEDDING_DIMENSION` plus FTS5 against the sibling DB. The default is
@@ -173,6 +173,20 @@ validated default. `--rerank` remains available for a Recall@1-sensitive
 single-best-guess caller, and the harness (`memhub eval locate --rerank
 [--min-rerank-score]`) is retained so the call can be re-measured if the
 index set or reranker model changes.
+
+**Re-measured post-#69 (decision 122, task 75).** The numbers above were
+taken on the pre-#69 index, where non-source prose contaminated the
+candidate pool. After #69 scoped the index to grammar-known source, the A/B
+was re-run on the same golden set: fusion Recall@1 44.4% / Recall@3 88.9%;
+rerank (no floor) Recall@1 77.8% / Recall@3 88.9%. The **Recall@3 regression
+disappears** — the two tie — because the reranker no longer has prose to
+promote; what remains is a Recall@1 gain (44.4%→77.8%) at ~12× the latency.
+Recall@3 still governs and is tied, so the **fusion default is unchanged**;
+the *reason* shifts from "reranker regresses Recall@3" to "reranker is
+Recall@3-neutral and not worth the latency under the top-3 contract." The
+no-safe-floor finding is confirmed: a `min_rerank_score` of 0 rejects both
+nonsense probes but also drops Recall@3 to 83.3% by killing the −5.44-logit
+true match.
 
 ## 6. Surfaces (D107, D110)
 
