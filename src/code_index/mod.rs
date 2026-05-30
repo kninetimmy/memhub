@@ -61,8 +61,13 @@ pub fn open_code_index(db_path: &Path) -> Result<Connection> {
 /// Outcome of a [`refresh`] pass over the working tree.
 #[derive(Debug, Default, Clone)]
 pub struct RefreshSummary {
-    /// Tracked files in the index after this refresh (includes binaries,
-    /// which are tracked with zero chunks).
+    /// Indexable source files in the index after this refresh. Scoped to
+    /// the grammar-known source languages (task 69); non-source files —
+    /// docs, lockfiles, JSON/YAML/TOML, vendored `*.min.*` bundles — are
+    /// excluded (see [`excluded_files`]). A source file that is non-UTF-8
+    /// is still counted here but carries zero chunks.
+    ///
+    /// [`excluded_files`]: RefreshSummary::excluded_files
     pub files_total: usize,
     /// Total code chunks in the index after this refresh.
     pub chunks_total: usize,
@@ -77,9 +82,16 @@ pub struct RefreshSummary {
     pub deleted_files: usize,
     /// Tracked files examined but not indexed this pass: absent on disk,
     /// a symlink, or present-but-unreadable. Together with new/changed/
-    /// unchanged this reconciles against the tracked set:
-    /// `new + changed + unchanged + skipped == tracked.len()`.
+    /// unchanged this reconciles against the indexable set:
+    /// `new + changed + unchanged + skipped == indexable tracked files`.
     pub skipped_files: usize,
+    /// Tracked files excluded from the index because they are not an
+    /// indexable source language, or are a vendored/minified bundle (task
+    /// 69). These never enter the per-file loop; one previously indexed is
+    /// dropped via the cleanup pass. With the four loop counters this
+    /// reconciles against the full tracked set:
+    /// `new + changed + unchanged + skipped + excluded == tracked total`.
+    pub excluded_files: usize,
     /// Subset of new/changed files that were non-UTF-8 (tracked, but
     /// produced no chunks — a line-window chunker can't window binary).
     pub binary_skipped: usize,
@@ -124,7 +136,18 @@ pub fn refresh(start: &Path) -> Result<RefreshSummary> {
     };
     let matcher = PathMatcher::from_patterns(&config.deny_list.patterns)?;
 
-    let tracked = walker::list_tracked_files(&repo_root, &matcher)?;
+    // `list_tracked_files` is the deny-list-filtered git set; scope it
+    // further to indexable source files (task 69). Non-source files —
+    // docs, lockfiles, JSON/YAML/TOML, vendored `*.min.*` bundles — are
+    // dropped here so they can't out-rank real implementation files in
+    // `locate`. Any such file already in the index is left in `existing`
+    // and dropped by the cleanup pass below, so a re-index auto-prunes.
+    let all_tracked = walker::list_tracked_files(&repo_root, &matcher)?;
+    let tracked_total = all_tracked.len();
+    let tracked: Vec<String> = all_tracked
+        .into_iter()
+        .filter(|p| is_indexable_source(p))
+        .collect();
     let head = walker::current_head(&repo_root);
 
     let db_path = code_index_db_path(&repo_root);
@@ -134,6 +157,7 @@ pub fn refresh(start: &Path) -> Result<RefreshSummary> {
     let mut existing = load_existing_files(&tx)?;
     let mut summary = RefreshSummary {
         head: head.clone(),
+        excluded_files: tracked_total - tracked.len(),
         ..Default::default()
     };
 
@@ -553,8 +577,11 @@ fn load_existing_files(tx: &Transaction<'_>) -> Result<HashMap<String, ExistingF
 
 /// Chunk `bytes` and insert the chunks for `file_id` via the caller's
 /// hoisted statement. The `language` hint (from [`infer_language`]) picks
-/// the AST grammar; an unknown language line-windows. Returns `true` when
-/// the file was non-UTF-8 (tracked, zero chunks) so callers can count it.
+/// the AST grammar. Since task 69, only indexable source reaches here, so
+/// the line-window fallback now covers just a grammar-known file that fails
+/// to parse (not unknown extensions, which are filtered upstream). Returns
+/// `true` when the file was non-UTF-8 (tracked, zero chunks) so callers can
+/// count it.
 fn insert_chunks(
     stmt: &mut Statement<'_>,
     file_id: i64,
@@ -590,8 +617,32 @@ fn mtime_millis(meta: &fs::Metadata) -> Option<i64> {
         .map(|d| d.as_millis() as i64)
 }
 
+/// True when a tracked path should enter the code index (task 69): a
+/// source language the grammar registry can chunk, and not a
+/// vendored/minified bundle. This deliberately reverses the pre-task-69
+/// "index every tracked file" behavior — docs, lockfiles, JSON/YAML/TOML,
+/// and `*.min.*` artifacts are excluded so they cannot out-rank real
+/// implementation files in `locate` (the dominant Recall error mode,
+/// decision 114). The grammar registry is the single source of truth for
+/// "indexable source", so a future language row is included automatically.
+fn is_indexable_source(path: &str) -> bool {
+    !is_vendored(path) && grammar::grammar_for(infer_language(path)).is_some()
+}
+
+/// A generated/minified bundle that has a real source extension but is not
+/// hand-written code we want surfacing as a hit (e.g. `uplot.min.js`). The
+/// `.min.` filename infix is the precise marker; matching it rather than a
+/// `vendor/` directory name avoids excluding hand-written code that merely
+/// lives under such a path.
+fn is_vendored(path: &str) -> bool {
+    path.rsplit('/').next().unwrap_or(path).contains(".min.")
+}
+
 /// Best-effort language hint from the file extension. Mirrors the set in
-/// `ingest_git`; PR2's grammar registry keys off this.
+/// `ingest_git`; the grammar registry keys off this. Note the `toml`,
+/// `markdown`, `json`, `yaml`, and `sql` arms have no grammar row, so
+/// [`is_indexable_source`] excludes those files from the index; the hint
+/// remains for parity with `ingest_git`.
 fn infer_language(path: &str) -> Option<&'static str> {
     let extension = path.rsplit('.').next()?;
     match extension.to_ascii_lowercase().as_str() {
@@ -723,6 +774,53 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM indexed_files", [], |r| r.get(0))
             .expect("count files");
         assert_eq!(files, 0, "stale rows should be dropped on rebuild");
+    }
+
+    #[test]
+    fn indexable_source_accepts_grammar_languages_and_rejects_the_rest() {
+        // Every grammar-known source language is indexable.
+        for path in [
+            "src/main.rs",
+            "app/handler.ts",
+            "ui/button.tsx",
+            "lib/util.js",
+            "server.mjs",
+            "scripts/run.py",
+            "cmd/main.go",
+            "Service.cs",
+            "Widget.java",
+        ] {
+            assert!(is_indexable_source(path), "should index: {path}");
+        }
+        // Non-source files have no grammar row and are excluded — these are
+        // the locate pollutants task 69 targets.
+        for path in [
+            "README.md",
+            "AGENTS.md",
+            "Cargo.lock",
+            "Cargo.toml",
+            "data.json",
+            "config.yaml",
+            "deploy.yml",
+            "migrations/0001_init.sql",
+            "tests/code_locate_golden.json",
+            "LICENSE",
+        ] {
+            assert!(!is_indexable_source(path), "should exclude: {path}");
+        }
+    }
+
+    #[test]
+    fn vendored_minified_bundles_are_excluded_despite_source_extension() {
+        // A real .js extension has a grammar, but a minified bundle must
+        // not surface as a code hit (task 69).
+        assert!(is_vendored("src/dashboard/static/vendor/uplot.min.js"));
+        assert!(is_vendored("uplot.min.css"));
+        assert!(is_vendored("dist/app.min.mjs"));
+        assert!(!is_indexable_source("src/dashboard/static/vendor/uplot.min.js"));
+        // Hand-written code is not minified, even under a vendor-ish path.
+        assert!(!is_vendored("src/vendor/adapter.js"));
+        assert!(is_indexable_source("src/vendor/adapter.js"));
     }
 
     #[test]

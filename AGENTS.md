@@ -282,7 +282,8 @@ physical separation is what preserves the recall eval-regression guarantee
 disposable**: no migration framework, just `CREATE TABLE IF NOT EXISTS` +
 a `schema_version` in `index_meta`; a version mismatch drops and rebuilds,
 so `memhub upgrade` is a no-op for it. The index set is `git ls-files`
-filtered through the existing deny-list.
+filtered through the existing deny-list and scoped to grammar-known source
+languages (task 69, below).
 
 **Symbol-aware chunking (decisions 108, 115–120).** A tree-sitter AST
 chunker emits one chunk per top-level item and one `Type::method` chunk per
@@ -291,8 +292,9 @@ real AST chunking — **Rust, Go, Python, TypeScript/JavaScript, Java, C#**
 — via a hybrid `GrammarSpec` + three typed hooks whose defaults reproduce
 Rust byte-for-byte (a frozen snapshot test enforces no Rust regression).
 Grammars are bundled unconditionally and ABI-pinned with a per-language
-load canary; detection is extension-only. Any other file still indexes via
-line-window fallback, so nothing in the repo is invisible to `locate`.
+load canary; detection is extension-only. A grammar-known file that fails
+to parse falls back to line-window chunking; files of any other type are
+excluded from the index entirely (task 69, below) rather than line-windowed.
 
 **Lazy git-aware freshness (decision 109).** Every `locate` first diffs
 `(mtime, size)` per tracked file against the index, confirms changes with a
@@ -316,10 +318,18 @@ Surfaces: `memhub locate` / `memhub code index|status|rm` (CLI) ·
 `memhub.locate` (MCP, read-only — clipped snippets only, never full code) ·
 `/locate` (skill).
 
-**Known limitation (task 69).** The index currently covers *all*
-git-tracked, non-deny-listed paths, so docs, `Cargo.lock`, and vendored
-minified JS can out-rank real implementation files. Scoping the index to
-source languages is open follow-up work.
+**Source-scoped index (task 69).** The index is scoped to grammar-known
+source files only — the deny-list still applies on top, and vendored/
+minified `*.min.*` bundles are excluded (a real `.js` extension that is not
+hand-written code). The grammar registry is the single source of truth for
+"indexable source", so a new language row is auto-included; non-source
+files (docs, `Cargo.lock`, JSON/YAML/TOML, `uplot.min.js`) are dropped and
+auto-pruned from any pre-task-69 index on the next `memhub code index`.
+This deliberately reverses the earlier "index every tracked path" behavior:
+on `tests/code_locate_golden.json` it lifted fusion Recall@1 0%→44% and
+Recall@3 72%→89% by removing non-source files (notably the golden JSON
+itself) that were out-ranking real code. The reranker A/B numbers recorded
+in decision 114 predate this scoping and could be re-measured.
 
 ## Machine-global memory
 

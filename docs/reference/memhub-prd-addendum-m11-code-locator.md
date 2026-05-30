@@ -79,9 +79,14 @@ method body (D116).
   on the next refresh — the index is never left in a half-written state.
 - **FTS stays in sync via schema triggers, not writer code.** Writers
   touch `code_chunks`; the FTS mirror follows automatically.
-- **Files that fail to parse or have no grammar fall back to line-window
-  chunks** — never silently dropped, so nothing in the repo is invisible
-  to `locate`, only less precisely sliced.
+- **A grammar-known file that fails to parse falls back to line-window
+  chunks** — less precisely sliced, but still indexed. Files with no
+  grammar are **excluded from the index** (task 69): the index set is
+  scoped to grammar-known source languages (vendored/minified `*.min.*`
+  bundles also excluded), because line-windowing docs/lockfiles/JSON let
+  non-source files out-rank real code in `locate` (the dominant Recall
+  error mode under decision 114). This reversed the earlier "nothing in
+  the repo is invisible" property by design.
 
 ## 3. Multi-language AST chunking (D115–120)
 

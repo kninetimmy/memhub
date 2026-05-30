@@ -1720,6 +1720,7 @@ pub fn run(cli: Cli) -> Result<()> {
                         "unchanged_files": summary.unchanged_files,
                         "deleted_files": summary.deleted_files,
                         "skipped_files": summary.skipped_files,
+                        "excluded_files": summary.excluded_files,
                         "binary_skipped": summary.binary_skipped,
                         "embedded_chunks": summary.embedded_chunks,
                         "head": summary.head,
@@ -1733,12 +1734,13 @@ pub fn run(cli: Cli) -> Result<()> {
                         summary.chunks_total,
                     );
                     println!(
-                        "  new: {}  changed: {}  unchanged: {}  deleted: {}  skipped: {}",
+                        "  new: {}  changed: {}  unchanged: {}  deleted: {}  skipped: {}  excluded: {}",
                         summary.new_files,
                         summary.changed_files,
                         summary.unchanged_files,
                         summary.deleted_files,
                         summary.skipped_files,
+                        summary.excluded_files,
                     );
                     if summary.embedded_chunks > 0 {
                         println!("  embedded chunks: {}", summary.embedded_chunks);
