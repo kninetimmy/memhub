@@ -94,6 +94,27 @@ When you write via MCP (`memhub serve` registered in `~/.codex/config.toml`), at
 - Do not pretend MCP, markdown sync, git ingestion, routing, or confidence decay are implemented before they exist.
 - Keep `docs/reference/memhub-prd.md` verbatim. PRD changes land as addendum files in `docs/reference/`.
 
+<!-- BEGIN MANAGED: delegation-policy (per-repo; delete this whole block to revert) -->
+## Delegation (this repo)
+
+Scoped exception to the global subagent policy, for memhub only: once an
+implementation plan is approved, the main session MAY delegate implementation
+work to subagents without re-asking for each spawn. This license is limited to
+executing the approved plan — it is not open season.
+
+- **Default to a cheaper execution-tier model.** Delegate implementation and
+  test runs/diagnosis to a fast subagent; reserve the main session for
+  orchestration.
+- **Escalate a subtask to a stronger model** only when it needs cross-file
+  architectural reasoning, subtle concurrency/correctness work, or it already
+  failed once on the cheaper tier. Otherwise stay on the cheaper tier.
+- **Main thread keeps** architecture/design decisions and anything outside the
+  approved plan. Subagents execute; they don't decide scope.
+- Outside an approved plan, ask before spawning for multi-file/architectural
+  work. (Claude Code's specific agent names and model tiers — `implementer`,
+  `cargo-test-runner`, Opus/Sonnet — live in `CLAUDE.md`.)
+<!-- END MANAGED: delegation-policy -->
+
 ## Build / Test / Run
 
 ```bash
@@ -305,14 +326,21 @@ so results always reflect the working tree. A warm index is near-free
 warm-up. `locate` is therefore a read-then-write op, but writes nothing to
 `project.sqlite`.
 
-**Retrieval default: fusion, reranker OFF (decision 114).** Recall is FTS
-BM25 + vector fusion with the cross-encoder reranker off and no score
-floor. This is measured, not assumed: on `tests/code_locate_golden.json`
-the NL-trained reranker promotes prose (`*.md`, tests) over implementation
-files and is a Recall@3 regressor (fusion 88.9 vs ≤77.8), and no nonsense
-floor is safe (true-match logits overlap the gibberish band). `--rerank`
-stays available for a Recall@1-sensitive single-best-guess caller, and
-`memhub eval locate [--rerank]` is the A/B harness.
+**Retrieval default: fusion, reranker OFF (decisions 114, 122).** Recall is
+FTS BM25 + vector fusion with the cross-encoder reranker off and no score
+floor. Re-measured on the post-#69 source-scoped index (decision 122,
+task 75): on `tests/code_locate_golden.json` fusion and rerank now TIE on
+the governing Recall@3 metric (88.9% each), so the reranker is no longer the
+Recall@3 regressor decision 114 recorded — that regression was an artifact
+of the pre-#69 contaminated index, where the NL-trained reranker promoted
+prose (`*.md`, tests) over implementation files. The reranker does nearly
+double Recall@1 (44.4%→77.8%), but the locator contract (decision 107) makes
+Recall@3 the bar, and fusion runs ~12× faster, so fusion stays the default.
+No nonsense floor is free: a `--min-rerank-score` of 0 rejects both gibberish
+probes but also kills a true match (lowest true-match logit −5.44) and drops
+Recall@3 to 83.3%. `--rerank` stays the opt-in and is now clearly the better
+single-best-guess (Recall@1) mode; `memhub eval locate [--rerank]` is the
+A/B harness.
 
 Surfaces: `memhub locate` / `memhub code index|status|rm` (CLI) ·
 `memhub.locate` (MCP, read-only — clipped snippets only, never full code) ·
@@ -329,7 +357,9 @@ This deliberately reverses the earlier "index every tracked path" behavior:
 on `tests/code_locate_golden.json` it lifted fusion Recall@1 0%→44% and
 Recall@3 72%→89% by removing non-source files (notably the golden JSON
 itself) that were out-ranking real code. The reranker A/B numbers recorded
-in decision 114 predate this scoping and could be re-measured.
+in decision 114 predated this scoping and have now been re-measured on the
+clean index (decision 122): the Recall@3 regression disappears — fusion and
+rerank tie at 88.9% — and fusion stays the default for its latency edge.
 
 ## Machine-global memory
 
