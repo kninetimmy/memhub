@@ -145,7 +145,7 @@ chosen over a query-only + stale-warning model so results always reflect
 the working tree. It still writes nothing to `project.sqlite` and logs no
 `writes_log` entry.
 
-## 5. Retrieval: fusion default, reranker off (D110, D114, D122)
+## 5. Retrieval: fusion default, reranker off (D110, D114, D122, D123)
 
 Recall over the index reuses `embed_one`, `EMBEDDING_MODEL_NAME`, and
 `EMBEDDING_DIMENSION` plus FTS5 against the sibling DB. The default is
@@ -188,6 +188,23 @@ no-safe-floor finding is confirmed: a `min_rerank_score` of 0 rejects both
 nonsense probes but also drops Recall@3 to 83.3% by killing the −5.44-logit
 true match.
 
+**Task 85 broke the tie in fusion's favor (decision 123).** The post-#69
+re-measure left two residual Recall@3 misses, both source-vs-source: a
+plain-English query whose target lost to test chunks (`walker.rs` behind
+`tests/deny_list.rs`), and one whose target's only strong description lived
+in its file-level `//!` module doc, which the chunker never indexed
+(`gc.rs`). Task 85 closed both at the source — a 0.90 down-weight on
+`tests/`/`benches/`/`examples/` chunks in fusion scoring, and a Rust
+`ModuleDoc` chunker hook that emits the leading `//!` run as a `module-doc`
+chunk (Rust-on, other-languages-off; the frozen Rust snapshot was
+deliberately re-frozen). On the same golden set fusion rose to **Recall@3
+100% (18/18), Recall@1 61.1%**, while rerank held at 88.9% / 77.8%. So
+fusion no longer merely ties the reranker on the governing metric — it
+**wins outright at ~12× lower latency**, so the fusion default is now
+affirmatively better, not just latency-justified. `--rerank` remains the
+opt-in Recall@1 mode (77.8% vs 61.1%); the no-safe-floor finding and the 2
+nonsense-probe leaks under fusion are unchanged.
+
 ## 6. Surfaces (D107, D110)
 
 - **CLI:** `memhub locate <query> [--limit N] [--rerank] [--json]`;
@@ -210,18 +227,17 @@ true match.
   it cannot pollute recall or cost anything until the first `locate`/`code
   index`, so a toggle would be ceremony for zero safety benefit (D107
   open-question (a), resolved to "no gate").
-- **Index set is not yet scoped to source files (open, task 69).** The
-  walker currently indexes *every* git-tracked, non-deny-listed path. PR5
-  found the dominant Recall@3 error mode is non-source files —
+- **Index set scoped to source files — RESOLVED (task 69, decision 121).**
+  The walker once indexed *every* git-tracked, non-deny-listed path, and
+  PR5 found the dominant Recall@3 error mode was non-source files —
   `AGENTS.md`, `CLAUDE.md`, `docs/*.md`, `Cargo.lock`, vendored minified
-  JS — out-ranking real implementation files (and the reranker amplifies
-  it, part of why it is off by default). Restricting the index set to
-  source languages, or a code-index-specific deny-list, is open follow-up
-  work and is likely a bigger Recall lever than the reranker ever was.
-- **Cross-language eval sweep is open (task 75).** A single
-  `memhub eval locate` Recall@K sweep across all six languages plus a
-  no-Rust-regression check against the frozen snapshot is the final M11
-  validation step.
+  JS — out-ranking real implementation files. Task 69 scoped the index to
+  grammar-known source (vendored `*.min.*` excluded); on the golden set it
+  lifted fusion Recall@1 0%→44% and Recall@3 72%→89%, confirming it was the
+  bigger Recall lever the reranker never was (§5).
+- **Cross-language eval sweep — RESOLVED (task 75).** The `memhub eval
+  locate` Recall@K sweep plus the frozen-snapshot no-Rust-regression check
+  landed as the final M11 validation step; M11 is complete.
 - **Detection is extension-only by design.** A misnamed or
   extension-less source file line-windows rather than AST-chunks. No
   content sniffing is planned.

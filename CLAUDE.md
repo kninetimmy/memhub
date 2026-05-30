@@ -390,10 +390,15 @@ languages (task 69, below).
 
 **Symbol-aware chunking (decisions 108, 115–120).** A tree-sitter AST
 chunker emits one chunk per top-level item and one `Type::method` chunk per
-method, with header-only chunks for container types. Six languages get
-real AST chunking — **Rust, Go, Python, TypeScript/JavaScript, Java, C#**
-— via a hybrid `GrammarSpec` + three typed hooks whose defaults reproduce
-Rust byte-for-byte (a frozen snapshot test enforces no Rust regression).
+method, with header-only chunks for container types. For Rust it also
+emits one file-level `module-doc` chunk capturing the leading `//!` doc
+comment, so a file whose purpose lives in its module prose stays
+retrievable (a `ModuleDoc` grammar hook — Rust-on, other-languages-off;
+task 85). Six languages get real AST chunking — **Rust, Go, Python,
+TypeScript/JavaScript, Java, C#** — via a hybrid `GrammarSpec` + typed
+hooks whose defaults reproduce Rust byte-for-byte; a frozen snapshot test
+guards Rust output (the task-85 module-doc chunk is the one deliberate,
+re-frozen addition).
 Grammars are bundled unconditionally and ABI-pinned with a per-language
 load canary; detection is extension-only. A grammar-known file that fails
 to parse falls back to line-window chunking; files of any other type are
@@ -408,21 +413,22 @@ so results always reflect the working tree. A warm index is near-free
 warm-up. `locate` is therefore a read-then-write op, but writes nothing to
 `project.sqlite`.
 
-**Retrieval default: fusion, reranker OFF (decisions 114, 122).** Recall is
-FTS BM25 + vector fusion with the cross-encoder reranker off and no score
-floor. Re-measured on the post-#69 source-scoped index (decision 122,
-task 75): on `tests/code_locate_golden.json` fusion and rerank now TIE on
-the governing Recall@3 metric (88.9% each), so the reranker is no longer the
-Recall@3 regressor decision 114 recorded — that regression was an artifact
-of the pre-#69 contaminated index, where the NL-trained reranker promoted
-prose (`*.md`, tests) over implementation files. The reranker does nearly
-double Recall@1 (44.4%→77.8%), but the locator contract (decision 107) makes
-Recall@3 the bar, and fusion runs ~12× faster, so fusion stays the default.
-No nonsense floor is free: a `--min-rerank-score` of 0 rejects both gibberish
-probes but also kills a true match (lowest true-match logit −5.44) and drops
-Recall@3 to 83.3%. `--rerank` stays the opt-in and is now clearly the better
-single-best-guess (Recall@1) mode; `memhub eval locate [--rerank]` is the
-A/B harness.
+**Retrieval default: fusion, reranker OFF (decisions 114, 122, 123).**
+Recall is FTS BM25 + vector fusion with the cross-encoder reranker off and
+no score floor. On `tests/code_locate_golden.json` fusion now scores
+**100% Recall@3** (18/18; Recall@1 61.1%) and the reranker holds at 88.9%
+Recall@3 / 77.8% Recall@1. Task 85 (decision 123) lifted fusion past the
+reranker on the governing metric by closing the last two misses at their
+source: a 0.90 test-path down-weight so `tests/` / `benches/` / `examples/`
+chunks stop out-ranking implementation, and capturing the Rust file-level
+`//!` module doc as a chunk so a file described by its module prose is
+retrievable. This supersedes decision 122's fusion≈rerank tie — fusion now
+wins Recall@3 outright and runs ~12× faster, so it stays decisively the
+default. `--rerank` remains the opt-in and still wins single-best-guess
+Recall@1 (77.8% vs 61.1%). No nonsense floor is free: a `--min-rerank-score`
+of 0 rejects both gibberish probes but also kills a true match (lowest
+true-match logit −5.44), so the 2 nonsense-probe leaks under fusion are an
+accepted no-floor cost. `memhub eval locate [--rerank]` is the A/B harness.
 
 Surfaces: `memhub locate` / `memhub code index|status|rm` (CLI) ·
 `memhub.locate` (MCP, read-only — clipped snippets only, never full code) ·
@@ -439,9 +445,10 @@ This deliberately reverses the earlier "index every tracked path" behavior:
 on `tests/code_locate_golden.json` it lifted fusion Recall@1 0%→44% and
 Recall@3 72%→89% by removing non-source files (notably the golden JSON
 itself) that were out-ranking real code. The reranker A/B numbers recorded
-in decision 114 predated this scoping and have now been re-measured on the
-clean index (decision 122): the Recall@3 regression disappears — fusion and
-rerank tie at 88.9% — and fusion stays the default for its latency edge.
+in decision 114 predated this scoping; re-measured on the clean index they
+showed fusion and rerank tied at 88.9% Recall@3 (decision 122), and task 85
+(decision 123) then closed the two residual source-vs-source misses to take
+fusion to 100% Recall@3 (see Retrieval default, above).
 
 ## Machine-global memory
 
