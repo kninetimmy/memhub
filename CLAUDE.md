@@ -348,6 +348,63 @@ same file. Embeddings populate only in `hybrid` mode; `fts` mode
 ingests chunks + FTS and vector recall for docs starts after
 `memhub index rebuild`.
 
+## Code Index
+
+Milestone 11 (design anchor:
+[docs/reference/memhub-prd-addendum-m11-code-locator.md](docs/reference/memhub-prd-addendum-m11-code-locator.md))
+adds a **code locator**: a cheap semantic file/symbol search over the
+repo's own source, separate from project memory. `memhub locate <query>`
+returns ranked `path:line-range` breadcrumbs plus a clipped snippet; the
+agent then `Read`s that exact span. It never returns code into a recall
+bundle and never edits.
+
+**Isolated by construction (decision 107).** The index is a sibling DB at
+`.memhub/code_index.sqlite` — gitignored, per-machine, and **never read by
+`memhub recall`, never in `memhub export`, never in M10 sync**. That
+physical separation is what preserves the recall eval-regression guarantee
+(mirrors M9's registry-is-not-recall rule). It is also **derivable +
+disposable**: no migration framework, just `CREATE TABLE IF NOT EXISTS` +
+a `schema_version` in `index_meta`; a version mismatch drops and rebuilds,
+so `memhub upgrade` is a no-op for it. The index set is `git ls-files`
+filtered through the existing deny-list.
+
+**Symbol-aware chunking (decisions 108, 115–120).** A tree-sitter AST
+chunker emits one chunk per top-level item and one `Type::method` chunk per
+method, with header-only chunks for container types. Six languages get
+real AST chunking — **Rust, Go, Python, TypeScript/JavaScript, Java, C#**
+— via a hybrid `GrammarSpec` + three typed hooks whose defaults reproduce
+Rust byte-for-byte (a frozen snapshot test enforces no Rust regression).
+Grammars are bundled unconditionally and ABI-pinned with a per-language
+load canary; detection is extension-only. Any other file still indexes via
+line-window fallback, so nothing in the repo is invisible to `locate`.
+
+**Lazy git-aware freshness (decision 109).** Every `locate` first diffs
+`(mtime, size)` per tracked file against the index, confirms changes with a
+content hash, re-chunks only what moved, and drops deleted/renamed files —
+so results always reflect the working tree. A warm index is near-free
+(stat-only); the first-ever index is the one expensive pass (~171s cold vs
+~1.4s warm on memhub's tree), so `memhub code index` is the explicit
+warm-up. `locate` is therefore a read-then-write op, but writes nothing to
+`project.sqlite`.
+
+**Retrieval default: fusion, reranker OFF (decision 114).** Recall is FTS
+BM25 + vector fusion with the cross-encoder reranker off and no score
+floor. This is measured, not assumed: on `tests/code_locate_golden.json`
+the NL-trained reranker promotes prose (`*.md`, tests) over implementation
+files and is a Recall@3 regressor (fusion 88.9 vs ≤77.8), and no nonsense
+floor is safe (true-match logits overlap the gibberish band). `--rerank`
+stays available for a Recall@1-sensitive single-best-guess caller, and
+`memhub eval locate [--rerank]` is the A/B harness.
+
+Surfaces: `memhub locate` / `memhub code index|status|rm` (CLI) ·
+`memhub.locate` (MCP, read-only — clipped snippets only, never full code) ·
+`/locate` (skill).
+
+**Known limitation (task 69).** The index currently covers *all*
+git-tracked, non-deny-listed paths, so docs, `Cargo.lock`, and vendored
+minified JS can out-rank real implementation files. Scoping the index to
+source languages is open follow-up work.
+
 ## Machine-global memory
 
 Milestone 9 (design anchor:
