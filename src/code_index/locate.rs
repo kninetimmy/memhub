@@ -229,6 +229,23 @@ struct Candidate {
     vector_score: f64,
     score: f64,
     rerank_score: Option<f32>,
+    /// Repo-relative forward-slashed path of the source file this chunk
+    /// belongs to. Used by `score_candidates` to apply the test-path penalty.
+    path: String,
+}
+
+/// Multiplicative penalty applied to the blended fusion score for chunks
+/// under top-level test / bench / example directories. Down-weights
+/// non-implementation files so they do not out-rank implementation files
+/// in `locate` results (task 85). FTS and vector subscores are left
+/// untouched — they remain the honest per-component signals.
+const TEST_PATH_PENALTY: f64 = 0.90;
+
+/// Returns `true` when `path` is inside a top-level test / bench / example
+/// directory (`tests/`, `benches/`, or `examples/`). Paths in the index
+/// are already forward-slashed repo-relative strings.
+fn is_test_path(path: &str) -> bool {
+    path.starts_with("tests/") || path.starts_with("benches/") || path.starts_with("examples/")
 }
 
 /// Gather the union of FTS and (hybrid only) vector matches keyed by chunk.
@@ -241,19 +258,21 @@ fn gather_candidates(
 
     if let Some(match_expr) = build_fts_match(query) {
         let mut stmt = conn.prepare(
-            "SELECT rowid, bm25(code_chunks_fts) AS score \
+            "SELECT c.id, bm25(code_chunks_fts) AS score, f.path \
              FROM code_chunks_fts \
+             JOIN code_chunks c ON c.id = code_chunks_fts.rowid \
+             JOIN indexed_files f ON f.id = c.file_id \
              WHERE code_chunks_fts MATCH ?1 \
              ORDER BY score ASC \
              LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![match_expr, FTS_CANDIDATE_LIMIT], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?))
+            Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?, row.get::<_, String>(2)?))
         })?;
         for row in rows {
-            let (chunk_id, bm25) = row?;
+            let (chunk_id, bm25, path) = row?;
             map.entry(chunk_id)
-                .or_insert_with(|| new_candidate(chunk_id))
+                .or_insert_with(|| new_candidate(chunk_id, path))
                 .fts_raw = Some(bm25);
         }
     }
@@ -262,21 +281,30 @@ fn gather_candidates(
         let query_vec = embed_one(query)?;
         if query_vec.len() == EMBEDDING_DIMENSION {
             let mut stmt = conn.prepare(
-                "SELECT chunk_id, vector FROM code_embeddings \
-                 WHERE model_name = ?1 AND dimension = ?2",
+                "SELECT e.chunk_id, e.vector, f.path \
+                 FROM code_embeddings e \
+                 JOIN code_chunks c ON c.id = e.chunk_id \
+                 JOIN indexed_files f ON f.id = c.file_id \
+                 WHERE e.model_name = ?1 AND e.dimension = ?2",
             )?;
             let rows = stmt.query_map(
                 params![EMBEDDING_MODEL_NAME, EMBEDDING_DIMENSION as i64],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
             )?;
             for row in rows {
-                let (chunk_id, blob) = row?;
+                let (chunk_id, blob, path) = row?;
                 if blob.len() != EMBEDDING_DIMENSION * 4 {
                     continue;
                 }
                 let cosine = cosine_similarity(&query_vec, &bytes_to_vector(&blob));
                 map.entry(chunk_id)
-                    .or_insert_with(|| new_candidate(chunk_id))
+                    .or_insert_with(|| new_candidate(chunk_id, path))
                     .cosine = Some(cosine);
             }
         }
@@ -285,7 +313,7 @@ fn gather_candidates(
     Ok(map.into_values().collect())
 }
 
-fn new_candidate(chunk_id: i64) -> Candidate {
+fn new_candidate(chunk_id: i64, path: String) -> Candidate {
     Candidate {
         chunk_id,
         fts_raw: None,
@@ -294,6 +322,7 @@ fn new_candidate(chunk_id: i64) -> Candidate {
         vector_score: 0.0,
         score: 0.0,
         rerank_score: None,
+        path,
     }
 }
 
@@ -321,6 +350,9 @@ fn score_candidates(candidates: &mut [Candidate], scoring: &RetrievalScoringConf
         };
         c.vector_score = c.cosine.unwrap_or(0.0).clamp(0.0, 1.0);
         c.score = scoring.fts_weight * c.fts_score + scoring.vector_weight * c.vector_score;
+        if is_test_path(&c.path) {
+            c.score *= TEST_PATH_PENALTY;
+        }
     }
 }
 
@@ -471,6 +503,16 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn is_test_path_classifies_top_level_dirs() {
+        assert!(is_test_path("tests/foo.rs"));
+        assert!(is_test_path("benches/bench.rs"));
+        assert!(is_test_path("examples/ex.rs"));
+        assert!(!is_test_path("src/foo.rs"));
+        assert!(!is_test_path("src/tests/foo.rs"));
+        assert!(!is_test_path(""));
+    }
 
     #[test]
     fn build_fts_match_quotes_and_ands_tokens() {

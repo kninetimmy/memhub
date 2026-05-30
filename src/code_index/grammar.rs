@@ -44,6 +44,19 @@ pub enum FunctionNaming {
     JsDeclarator,
 }
 
+/// How the file-level module doc comment (inner doc, `//!` / `/*!`) is
+/// captured as its own chunk before the first item.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModuleDoc {
+    /// Collect the contiguous leading run of inner-doc comment nodes
+    /// (`line_comment` / `block_comment` whose text begins with `//!` or
+    /// `/*!`) from the root and emit them as a single `module-doc` chunk.
+    /// Rust only — task 85.
+    LeadingInnerComments,
+    /// No module-doc chunk emitted. All other languages.
+    None,
+}
+
 /// How preceding documentation is folded into an item's chunk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DocFold {
@@ -126,6 +139,9 @@ pub struct GrammarSpec {
     pub function_naming: FunctionNaming,
     /// Documentation-folding hook.
     pub doc_fold: DocFold,
+    /// File-level module-doc hook: whether to emit a leading `//!`/`/*!`
+    /// comment run as a `module-doc` chunk before the first item. Rust only.
+    pub module_doc: ModuleDoc,
 }
 
 impl GrammarSpec {
@@ -180,6 +196,7 @@ pub fn grammar_for(language: Option<&str>) -> Option<GrammarSpec> {
             method_naming: MethodNaming::Standard,
             function_naming: FunctionNaming::Direct,
             doc_fold: DocFold::PrecedingSiblings,
+            module_doc: ModuleDoc::LeadingInnerComments,
         }),
         // C# and Java are conventional type-container languages: no free
         // functions, methods/constructors/properties are members of a
@@ -213,6 +230,7 @@ pub fn grammar_for(language: Option<&str>) -> Option<GrammarSpec> {
             method_naming: MethodNaming::Standard,
             function_naming: FunctionNaming::Direct,
             doc_fold: DocFold::PrecedingSiblings,
+            module_doc: ModuleDoc::None,
         }),
         "java" => Some(GrammarSpec {
             language: tree_sitter_java::LANGUAGE.into(),
@@ -239,6 +257,7 @@ pub fn grammar_for(language: Option<&str>) -> Option<GrammarSpec> {
             method_naming: MethodNaming::Standard,
             function_naming: FunctionNaming::Direct,
             doc_fold: DocFold::PrecedingSiblings,
+            module_doc: ModuleDoc::None,
         }),
         // TypeScript (covers .tsx via the same grammar). Mixes free functions
         // (`function_declaration`) with arrow/function bindings named via their
@@ -276,6 +295,7 @@ pub fn grammar_for(language: Option<&str>) -> Option<GrammarSpec> {
             method_naming: MethodNaming::Standard,
             function_naming: FunctionNaming::JsDeclarator,
             doc_fold: DocFold::PrecedingSiblings,
+            module_doc: ModuleDoc::None,
         }),
         // JavaScript (covers .jsx). The TypeScript row minus the type-only
         // constructs (no interface/type-alias/enum/namespace). Class fields use
@@ -297,6 +317,7 @@ pub fn grammar_for(language: Option<&str>) -> Option<GrammarSpec> {
             method_naming: MethodNaming::Standard,
             function_naming: FunctionNaming::JsDeclarator,
             doc_fold: DocFold::PrecedingSiblings,
+            module_doc: ModuleDoc::None,
         }),
         // Python. `function_definition` (covers `async def` too) is a free
         // function at module level and a method inside a class; `class_
@@ -327,6 +348,7 @@ pub fn grammar_for(language: Option<&str>) -> Option<GrammarSpec> {
             method_naming: MethodNaming::Standard,
             function_naming: FunctionNaming::Direct,
             doc_fold: DocFold::PythonDocstring,
+            module_doc: ModuleDoc::None,
         }),
         // Go. Free functions are `function_declaration`; methods are
         // top-level `method_declaration` nodes whose type prefix comes from
@@ -359,6 +381,7 @@ pub fn grammar_for(language: Option<&str>) -> Option<GrammarSpec> {
             method_naming: MethodNaming::GoReceiver,
             function_naming: FunctionNaming::Direct,
             doc_fold: DocFold::PrecedingSiblings,
+            module_doc: ModuleDoc::None,
         }),
         _ => None,
     }

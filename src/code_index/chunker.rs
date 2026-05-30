@@ -24,7 +24,7 @@
 
 use tree_sitter::{Node, Parser};
 
-use super::grammar::{self, DocFold, FunctionNaming, GrammarSpec, MethodContainer, MethodNaming};
+use super::grammar::{self, DocFold, FunctionNaming, GrammarSpec, MethodContainer, MethodNaming, ModuleDoc};
 
 /// Lines per window. A placeholder value — tuned for retrieval in PR5.
 pub const WINDOW_LINES: usize = 50;
@@ -108,8 +108,68 @@ fn chunk_with_grammar(path: &str, content: &str, spec: &GrammarSpec) -> Vec<Chun
 
     let src = content.as_bytes();
     let mut chunks = Vec::new();
+
+    // Task 85: capture the file-level Rust module doc (`//!` / `/*!` inner
+    // doc comments) as a single `module-doc` chunk before all item chunks.
+    // Rust only — other languages use ModuleDoc::None and skip this block.
+    if spec.module_doc == ModuleDoc::LeadingInnerComments {
+        push_module_doc_chunk(&mut chunks, path, src, tree.root_node());
+    }
+
     collect_items(tree.root_node(), src, path, spec, None, &mut chunks);
     chunks
+}
+
+/// Scan `root`'s leading named children for a contiguous run of inner-doc
+/// comment nodes (`line_comment`/`block_comment` whose text begins with
+/// `//!` or `/*!`). A blank-line gap greater than one row between consecutive
+/// nodes stops the run. If the run is non-empty, push one `module-doc` chunk
+/// covering the whole run. FILE-level only — does not recurse into items.
+fn push_module_doc_chunk(out: &mut Vec<Chunk>, path: &str, src: &[u8], root: Node<'_>) {
+    let mut run: Vec<Node<'_>> = Vec::new();
+    let mut prev_end_row: Option<usize> = None;
+    let mut cursor = root.walk();
+    for child in root.named_children(&mut cursor) {
+        let k = child.kind();
+        if k != "line_comment" && k != "block_comment" {
+            break;
+        }
+        let text = child.utf8_text(src).unwrap_or("");
+        if !text.starts_with("//!") && !text.starts_with("/*!") {
+            break;
+        }
+        // A gap > 1 row between consecutive inner-doc nodes stops the run.
+        if let Some(prev_end) = prev_end_row {
+            let gap = child.start_position().row as i64 - prev_end as i64;
+            if gap > 1 {
+                break;
+            }
+        }
+        prev_end_row = Some(child.end_position().row);
+        run.push(child);
+    }
+    if run.is_empty() {
+        return;
+    }
+    let first = run.first().unwrap();
+    let last = run.last().unwrap();
+    let start_byte = first.start_byte();
+    let end_byte = last.end_byte();
+    let start_row = first.start_position().row;
+    let end_row = last.end_position().row;
+
+    let raw = std::str::from_utf8(&src[start_byte..end_byte]).unwrap_or("");
+    let body = raw.replace("\r\n", "\n");
+    let embed_text = format!("{path}\nmodule-doc\n\n{body}");
+
+    out.push(Chunk {
+        start_line: start_row + 1,
+        end_line: end_row + 1,
+        symbol: None,
+        kind: "module-doc".to_string(),
+        embed_text,
+        body,
+    });
 }
 
 /// Recursively collect item chunks from `node`'s named children.
@@ -706,7 +766,12 @@ mod inner {
             .iter()
             .map(|c| (c.kind.as_str(), c.symbol.as_deref(), c.start_line, c.end_line))
             .collect();
+        // Task 85 added module-doc capture: the leading `//!` comment on
+        // line 1 now becomes the first chunk before all item chunks.
+        // end_line is 2 because tree-sitter's line_comment end_position row
+        // includes the trailing newline (row 1, 0-indexed → line 2).
         let expected = vec![
+            ("module-doc", None, 1, 2),
             ("struct", Some("Point"), 5, 10),
             ("enum", Some("Dir"), 12, 16),
             ("trait", Some("Greet"), 18, 21),
