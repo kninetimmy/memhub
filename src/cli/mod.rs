@@ -583,9 +583,27 @@ pub fn run(cli: Cli) -> Result<()> {
                     println!("Created task {id}: {title}");
                 }
             }
-            TaskCommand::List { status } => {
+            TaskCommand::List {
+                status,
+                json: as_json,
+            } => {
                 let tasks = commands::task::list(&cwd, status.as_ref().map(TaskStatus::as_str))?;
-                if tasks.is_empty() {
+                if as_json {
+                    let payload = json!({
+                        "tasks": tasks
+                            .iter()
+                            .map(|task| json!({
+                                "id": task.id,
+                                "title": task.title,
+                                "status": task.status,
+                                "notes": task.notes,
+                                "created_at": task.created_at,
+                                "updated_at": task.updated_at,
+                            }))
+                            .collect::<Vec<_>>(),
+                    });
+                    println!("{payload}");
+                } else if tasks.is_empty() {
                     println!("No tasks recorded.");
                 } else {
                     for task in tasks {

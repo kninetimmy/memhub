@@ -800,6 +800,8 @@ pub enum TaskCommand {
     List {
         #[arg(long, value_enum)]
         status: Option<TaskStatus>,
+        #[arg(long)]
+        json: bool,
     },
     Done {
         id: i64,
