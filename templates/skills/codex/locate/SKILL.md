@@ -1,6 +1,6 @@
 ---
 name: locate
-description: Find where code lives in this repo by intent — SQL+RAG hybrid search over a sibling code index that returns ranked file:line breadcrumbs with clipped snippets. Read-only; never returns full code.
+description: Find where code lives in this repo by intent — SQL+RAG hybrid search over a sibling code index that returns ranked file:line breadcrumbs with clipped snippets. Read-only; never returns full code. Trigger on: "where is X", "where does X live", "find the code that does Y", "which file handles Z", "locate X", "where do I change Y".
 framework: memhub
 framework_version: 1.0.0
 last_updated: 2026-05-26

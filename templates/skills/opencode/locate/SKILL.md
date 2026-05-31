@@ -1,6 +1,6 @@
 ---
 name: locate
-description: Locate code in this repo by intent in OpenCode; use when you need to find where a symbol, function, or behavior lives before reading or editing it.
+description: Locate code in this repo by intent in OpenCode; use when you need to find where a symbol, function, or behavior lives before reading or editing it. Trigger on: "where is X", "where does X live", "find the code that does Y", "which file handles Z", "locate X", "where do I change Y".
 compatibility: opencode
 ---
 

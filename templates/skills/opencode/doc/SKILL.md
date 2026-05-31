@@ -1,6 +1,6 @@
 ---
 name: doc
-description: Ingest markdown reference docs into memhub from OpenCode; use for design specs, API contracts, and guides.
+description: Ingest markdown reference docs into memhub from OpenCode; use for design specs, API contracts, and guides. Trigger on: "ingest this doc", "add this spec to memhub", "make this doc searchable", "remember this reference doc", "/doc".
 compatibility: opencode
 ---
 
