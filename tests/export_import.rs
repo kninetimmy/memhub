@@ -2,8 +2,8 @@ use std::fs;
 
 use memhub::MemhubError;
 use memhub::commands::{
-    decision, export, fact, import, init, narrative, pending_write, review, search, session_note,
-    task,
+    decision, doc, export, fact, import, init, narrative, pending_write, review, search,
+    session_note, task,
 };
 use memhub::export::v1;
 use memhub::models::NarrativeKind;
@@ -573,6 +573,48 @@ fn import_refuses_when_only_session_notes_exist_without_force() {
     let notes = session_note::list(target.path(), 50, None, None).expect("list notes");
     assert_eq!(notes.len(), 1);
     assert!(notes[0].text.contains("I exist already"));
+}
+
+#[test]
+fn import_into_docs_only_target_proceeds_and_surfaces_retained_chunks() {
+    // Ingested docs are deliberately NOT counted as durable rows
+    // (decisions 86/90: they are export-excluded, re-ingestable cache),
+    // so a target whose only content is ingested docs passes the no-force
+    // emptiness guard. The import must proceed AND the summary must
+    // surface the pre-existing chunks so the operator is not misled into
+    // assuming a clean slate. Counterpart to the session-notes guard test.
+    let source = tempdir().expect("source tempdir");
+    seed_project(source.path());
+    let export_path = source.path().join("backup.json");
+    export::run(source.path(), &export_path).expect("export succeeds");
+
+    let target = tempdir().expect("target tempdir");
+    init::run(target.path()).expect("target init");
+
+    let doc_path = target.path().join("design-spec.md");
+    fs::write(
+        &doc_path,
+        "# Design spec\n\nA section that should survive an import.\n",
+    )
+    .expect("write doc");
+    doc::add(target.path(), &doc_path, Some("Design spec"), "cli:user").expect("doc add");
+
+    // Docs-only target → import proceeds WITHOUT --force.
+    let summary = import::run(target.path(), &export_path, false)
+        .expect("import should proceed; docs are not durable rows");
+    assert!(!summary.forced);
+    assert!(
+        summary.retained_doc_chunks > 0,
+        "summary must surface pre-existing doc chunks retained through import"
+    );
+
+    // The pre-existing doc survived (import neither carries nor wipes docs).
+    let docs = doc::list(target.path()).expect("list docs");
+    assert_eq!(docs.len(), 1, "pre-existing doc should survive import");
+
+    // The imported durable rows still landed.
+    let facts = fact::list(target.path()).expect("list facts");
+    assert_eq!(facts.len(), 2);
 }
 
 #[test]

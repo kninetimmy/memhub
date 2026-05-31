@@ -851,6 +851,13 @@ pub fn run(cli: Cli) -> Result<()> {
             println!("  session notes: {}", summary.session_notes);
             println!("  project state entries: {}", summary.project_state);
             println!("  project arch entries: {}", summary.project_arch);
+            if summary.retained_doc_chunks > 0 {
+                println!(
+                    "  retained doc chunks: {} (pre-existing ingested docs; \
+                     import does not carry or wipe docs — re-run `memhub doc add` to refresh)",
+                    summary.retained_doc_chunks
+                );
+            }
             println!();
             println!("Next steps:");
             println!(

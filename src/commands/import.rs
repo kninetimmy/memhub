@@ -22,6 +22,13 @@ pub struct ImportSummary {
     pub session_notes: usize,
     pub project_state: usize,
     pub project_arch: usize,
+    /// Doc chunks that already existed in the target and were left
+    /// untouched. Ingested docs are export-excluded, re-ingestable cache
+    /// (decisions 86/90): import neither carries nor wipes them, and they
+    /// are not counted by `count_durable_rows`, so a docs-only target
+    /// passes the no-`--force` emptiness guard. Surfaced so the operator
+    /// knows pre-existing docs survived rather than assuming a clean slate.
+    pub retained_doc_chunks: usize,
 }
 
 pub fn run(start: &Path, source: &Path, force: bool) -> Result<ImportSummary> {
@@ -36,6 +43,8 @@ pub fn run(start: &Path, source: &Path, force: bool) -> Result<ImportSummary> {
     }
 
     let mut ctx = db::open_project(start)?;
+
+    let retained_doc_chunks = count_doc_chunks(&ctx.conn)?;
 
     if !force {
         let total = count_durable_rows(&ctx.conn)?;
@@ -100,7 +109,17 @@ pub fn run(start: &Path, source: &Path, force: bool) -> Result<ImportSummary> {
         session_notes: summary_counts.6,
         project_state: summary_counts.7,
         project_arch: summary_counts.8,
+        retained_doc_chunks,
     })
+}
+
+fn count_doc_chunks(conn: &rusqlite::Connection) -> Result<usize> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM doc_chunks WHERE project_id = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(count as usize)
 }
 
 fn count_durable_rows(conn: &rusqlite::Connection) -> Result<i64> {
