@@ -393,12 +393,13 @@ chunker emits one chunk per top-level item and one `Type::method` chunk per
 method, with header-only chunks for container types. For Rust it also
 emits one file-level `module-doc` chunk capturing the leading `//!` doc
 comment, so a file whose purpose lives in its module prose stays
-retrievable (a `ModuleDoc` grammar hook — Rust-on, other-languages-off;
-task 85). Six languages get real AST chunking — **Rust, Go, Python,
-TypeScript/JavaScript, Java, C#** — via a hybrid `GrammarSpec` + typed
-hooks whose defaults reproduce Rust byte-for-byte; a frozen snapshot test
-guards Rust output (the task-85 module-doc chunk is the one deliberate,
-re-frozen addition).
+retrievable (a `ModuleDoc` grammar hook — task 85 added Rust inner-doc
+capture; task 87 extended it to all six languages: Python docstring, Go
+package doc, TS/JS file JSDoc, C#/Java file doc comment). Six languages get
+real AST chunking — **Rust, Go, Python, TypeScript/JavaScript, Java, C#**
+— via a hybrid `GrammarSpec` + typed hooks whose defaults reproduce Rust
+byte-for-byte; a frozen snapshot test guards Rust output (the Rust freeze
+is unchanged by task 87).
 Grammars are bundled unconditionally and ABI-pinned with a per-language
 load canary; detection is extension-only. A grammar-known file that fails
 to parse falls back to line-window chunking; files of any other type are

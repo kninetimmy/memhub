@@ -53,6 +53,22 @@ pub enum ModuleDoc {
     /// `/*!`) from the root and emit them as a single `module-doc` chunk.
     /// Rust only — task 85.
     LeadingInnerComments,
+    /// Collect the contiguous leading run of comment nodes whose text starts
+    /// with any of the given prefixes (e.g. `["///"]` for C# XML-doc,
+    /// `["/**"]` for Javadoc / JSDoc). The run stops at the first comment
+    /// that does not match a prefix, at a gap > 1 row, or at the first
+    /// non-comment sibling. C#, Java, TypeScript, JavaScript — task 87.
+    LeadingFileDoc(&'static [&'static str]),
+    /// Emit the Go package-level doc: the contiguous `//` comment block
+    /// that immediately precedes (gap ≤ 1 row) the first top-level
+    /// declaration. The `package` clause itself is a non-comment node and
+    /// stops nothing; the run is the last contiguous block before the first
+    /// declaration, matching Go's godoc convention. Go only — task 87.
+    GoPackageDoc,
+    /// Emit the Python module docstring: the first statement of the module
+    /// when it is an `expression_statement` whose sole child is a string
+    /// literal. Python only — task 87.
+    PythonModuleDocstring,
     /// No module-doc chunk emitted. All other languages.
     None,
 }
@@ -230,7 +246,7 @@ pub fn grammar_for(language: Option<&str>) -> Option<GrammarSpec> {
             method_naming: MethodNaming::Standard,
             function_naming: FunctionNaming::Direct,
             doc_fold: DocFold::PrecedingSiblings,
-            module_doc: ModuleDoc::None,
+            module_doc: ModuleDoc::LeadingFileDoc(&["///"]),
         }),
         "java" => Some(GrammarSpec {
             language: tree_sitter_java::LANGUAGE.into(),
@@ -257,7 +273,7 @@ pub fn grammar_for(language: Option<&str>) -> Option<GrammarSpec> {
             method_naming: MethodNaming::Standard,
             function_naming: FunctionNaming::Direct,
             doc_fold: DocFold::PrecedingSiblings,
-            module_doc: ModuleDoc::None,
+            module_doc: ModuleDoc::LeadingFileDoc(&["/**"]),
         }),
         // TypeScript (covers .tsx via the same grammar). Mixes free functions
         // (`function_declaration`) with arrow/function bindings named via their
@@ -295,7 +311,7 @@ pub fn grammar_for(language: Option<&str>) -> Option<GrammarSpec> {
             method_naming: MethodNaming::Standard,
             function_naming: FunctionNaming::JsDeclarator,
             doc_fold: DocFold::PrecedingSiblings,
-            module_doc: ModuleDoc::None,
+            module_doc: ModuleDoc::LeadingFileDoc(&["/**"]),
         }),
         // JavaScript (covers .jsx). The TypeScript row minus the type-only
         // constructs (no interface/type-alias/enum/namespace). Class fields use
@@ -317,7 +333,7 @@ pub fn grammar_for(language: Option<&str>) -> Option<GrammarSpec> {
             method_naming: MethodNaming::Standard,
             function_naming: FunctionNaming::JsDeclarator,
             doc_fold: DocFold::PrecedingSiblings,
-            module_doc: ModuleDoc::None,
+            module_doc: ModuleDoc::LeadingFileDoc(&["/**"]),
         }),
         // Python. `function_definition` (covers `async def` too) is a free
         // function at module level and a method inside a class; `class_
@@ -348,7 +364,7 @@ pub fn grammar_for(language: Option<&str>) -> Option<GrammarSpec> {
             method_naming: MethodNaming::Standard,
             function_naming: FunctionNaming::Direct,
             doc_fold: DocFold::PythonDocstring,
-            module_doc: ModuleDoc::None,
+            module_doc: ModuleDoc::PythonModuleDocstring,
         }),
         // Go. Free functions are `function_declaration`; methods are
         // top-level `method_declaration` nodes whose type prefix comes from
@@ -381,7 +397,7 @@ pub fn grammar_for(language: Option<&str>) -> Option<GrammarSpec> {
             method_naming: MethodNaming::GoReceiver,
             function_naming: FunctionNaming::Direct,
             doc_fold: DocFold::PrecedingSiblings,
-            module_doc: ModuleDoc::None,
+            module_doc: ModuleDoc::GoPackageDoc,
         }),
         _ => None,
     }

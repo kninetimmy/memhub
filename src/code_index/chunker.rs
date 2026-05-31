@@ -109,11 +109,14 @@ fn chunk_with_grammar(path: &str, content: &str, spec: &GrammarSpec) -> Vec<Chun
     let src = content.as_bytes();
     let mut chunks = Vec::new();
 
-    // Task 85: capture the file-level Rust module doc (`//!` / `/*!` inner
-    // doc comments) as a single `module-doc` chunk before all item chunks.
-    // Rust only — other languages use ModuleDoc::None and skip this block.
-    if spec.module_doc == ModuleDoc::LeadingInnerComments {
-        push_module_doc_chunk(&mut chunks, path, src, tree.root_node());
+    // Task 85/87: capture the file-level module doc as a `module-doc` chunk
+    // before all item chunks. Variant determines the capture strategy.
+    match spec.module_doc {
+        ModuleDoc::LeadingInnerComments => push_module_doc_chunk(&mut chunks, path, src, tree.root_node()),
+        ModuleDoc::LeadingFileDoc(markers) => push_leading_comment_doc(&mut chunks, path, src, tree.root_node(), spec, markers),
+        ModuleDoc::GoPackageDoc => push_go_package_doc(&mut chunks, path, src, tree.root_node(), spec),
+        ModuleDoc::PythonModuleDocstring => push_python_module_docstring(&mut chunks, path, src, tree.root_node()),
+        ModuleDoc::None => {}
     }
 
     collect_items(tree.root_node(), src, path, spec, None, &mut chunks);
@@ -170,6 +173,122 @@ fn push_module_doc_chunk(out: &mut Vec<Chunk>, path: &str, src: &[u8], root: Nod
         embed_text,
         body,
     });
+}
+
+/// Shared helper: push a `module-doc` chunk for the byte range
+/// `[start_byte, end_byte)` with the given `(start_row, end_row)` (0-indexed).
+fn push_doc_chunk(out: &mut Vec<Chunk>, path: &str, src: &[u8], start_byte: usize, end_byte: usize, start_row: usize, end_row: usize) {
+    let raw = std::str::from_utf8(&src[start_byte..end_byte]).unwrap_or("");
+    let body = raw.replace("\r\n", "\n");
+    let embed_text = format!("{path}\nmodule-doc\n\n{body}");
+    out.push(Chunk { start_line: start_row + 1, end_line: end_row + 1, symbol: None, kind: "module-doc".to_string(), embed_text, body });
+}
+
+/// Collect the leading run of comment nodes (from `spec.comment_kinds`) whose
+/// text starts with any of `markers`. A gap > 1 row or a non-matching comment
+/// stops the run. Used for C# XML-doc (`///`) and Java/JS/TS JSDoc (`/**`).
+///
+/// Gap-gated: when the run is immediately adjacent (≤ 1 row) to a following
+/// declaration node, the comment is that declaration's doc — already folded
+/// into its chunk by `fold_preceding_siblings` — so no module-doc chunk is
+/// emitted. Only a blank-line gap, a preamble node (package/using/import), or
+/// EOF marks it as a true file-level doc.
+fn push_leading_comment_doc(out: &mut Vec<Chunk>, path: &str, src: &[u8], root: Node<'_>, spec: &GrammarSpec, markers: &[&str]) {
+    let mut run: Vec<Node<'_>> = Vec::new();
+    let mut prev_end_row: Option<usize> = None;
+    let mut after_run: Option<Node<'_>> = None;
+    let mut cursor = root.walk();
+    for child in root.named_children(&mut cursor) {
+        let k = child.kind();
+        if !spec.comment_kinds.contains(&k) {
+            if !run.is_empty() { after_run = Some(child); }
+            break;
+        }
+        let text = child.utf8_text(src).unwrap_or("");
+        if !markers.iter().any(|m| text.starts_with(m)) {
+            if !run.is_empty() { after_run = Some(child); }
+            break;
+        }
+        if let Some(prev_end) = prev_end_row {
+            if child.start_position().row as i64 - prev_end as i64 > 1 {
+                after_run = Some(child);
+                break;
+            }
+        }
+        prev_end_row = Some(child.end_position().row);
+        run.push(child);
+    }
+    if run.is_empty() { return; }
+    // Gap gate: an adjacent following declaration absorbs this comment as its
+    // own doc, so it is not a standalone module doc.
+    if let Some(next) = after_run {
+        let run_last_end = run.last().unwrap().end_position().row;
+        let gap = next.start_position().row as i64 - run_last_end as i64;
+        if gap <= 1 && is_decl_kind(spec, next.kind()) { return; }
+    }
+    let first = run.first().unwrap();
+    let last = run.last().unwrap();
+    push_doc_chunk(out, path, src, first.start_byte(), last.end_byte(), first.start_position().row, last.end_position().row);
+}
+
+/// `true` when `kind` is in any declaration role set — the kinds whose
+/// preceding doc comment belongs to the declaration, not the file.
+fn is_decl_kind(spec: &GrammarSpec, kind: &str) -> bool {
+    spec.function_kinds.contains(&kind)
+        || spec.type_container_kinds.contains(&kind)
+        || spec.item_kinds.contains(&kind)
+        || spec.member_kinds.contains(&kind)
+        || spec.transparent_kinds.contains(&kind)
+}
+
+/// Emit the Go package-level doc: the contiguous `//` comment block that
+/// immediately precedes (gap ≤ 1 row) the `package_clause` node. The comment
+/// block is the last contiguous run of comment siblings before `package_clause`;
+/// if no such block exists (or only unrelated comments with a gap > 1 row), no
+/// chunk is emitted.
+fn push_go_package_doc(out: &mut Vec<Chunk>, path: &str, src: &[u8], root: Node<'_>, spec: &GrammarSpec) {
+    // Walk named children to locate `package_clause` and collect preceding
+    // comment nodes. We collect ALL named children in order, then scan backward
+    // from `package_clause`.
+    let mut cursor = root.walk();
+    let children: Vec<Node<'_>> = root.named_children(&mut cursor).collect();
+    let pkg_idx = match children.iter().position(|n| n.kind() == "package_clause") {
+        Some(i) => i,
+        None => return,
+    };
+    // Walk backward from package_clause collecting a contiguous comment run.
+    let mut run: Vec<Node<'_>> = Vec::new();
+    let mut next_start_row = children[pkg_idx].start_position().row;
+    for node in children[..pkg_idx].iter().rev() {
+        let k = node.kind();
+        if !spec.comment_kinds.contains(&k) { break; }
+        if (next_start_row as i64 - node.end_position().row as i64) > 1 { break; }
+        next_start_row = node.start_position().row;
+        run.push(*node);
+    }
+    if run.is_empty() { return; }
+    run.reverse();
+    let first = run.first().unwrap();
+    let last = run.last().unwrap();
+    push_doc_chunk(out, path, src, first.start_byte(), last.end_byte(), first.start_position().row, last.end_position().row);
+}
+
+/// Emit the Python module docstring: the first named child of `root` that is
+/// an `expression_statement` whose only child is a `string` node. If present,
+/// emit a single `module-doc` chunk covering the statement.
+fn push_python_module_docstring(out: &mut Vec<Chunk>, path: &str, src: &[u8], root: Node<'_>) {
+    let mut cursor = root.walk();
+    let first = root.named_children(&mut cursor).next();
+    let stmt = match first {
+        Some(n) if n.kind() == "expression_statement" => n,
+        _ => return,
+    };
+    let inner = stmt.named_child(0);
+    match inner {
+        Some(n) if n.kind() == "string" => {}
+        _ => return,
+    }
+    push_doc_chunk(out, path, src, stmt.start_byte(), stmt.end_byte(), stmt.start_position().row, stmt.end_position().row);
 }
 
 /// Recursively collect item chunks from `node`'s named children.
@@ -1481,5 +1600,142 @@ mod inner {
         assert_eq!(chunks[0].end_line, 50);
         assert_eq!(chunks[2].start_line, 101);
         assert_eq!(chunks[2].end_line, 125);
+    }
+
+    // Task 87: per-language module-doc capture. For the comment-marker
+    // languages (C#/Java/TS/JS) the gap gate means a DETACHED doc (preamble or
+    // blank-line gap) is a file doc, while one ADJACENT to a declaration is that
+    // declaration's doc and must NOT be promoted to a standalone module-doc.
+
+    #[test]
+    fn csharp_detached_xml_doc_becomes_module_doc() {
+        // `/// ` followed by a preamble (using directive), not a declaration.
+        let src = "/// <summary>File-level doc.</summary>\nusing System;\npublic class Foo {}\n";
+        let chunks = chunk_file("Foo.cs", src, Some("csharp"));
+        let doc = chunks.iter().find(|c| c.kind == "module-doc");
+        assert!(doc.is_some(), "expected a module-doc chunk; got: {chunks:?}");
+        assert!(doc.unwrap().body.contains("File-level doc."), "module-doc body: {}", doc.unwrap().body);
+        assert_eq!(doc.unwrap().start_line, 1, "module-doc starts at line 1");
+    }
+
+    #[test]
+    fn csharp_xml_doc_adjacent_to_class_is_not_module_doc() {
+        // Adjacent to a class_declaration → that class's doc (gap gate), not a file doc.
+        let src = "/// <summary>Class doc.</summary>\npublic class Foo {}\n";
+        let chunks = chunk_file("Foo.cs", src, Some("csharp"));
+        assert!(!chunks.iter().any(|c| c.kind == "module-doc"), "adjacent /// must fold into the class, not emit module-doc; got: {chunks:?}");
+    }
+
+    #[test]
+    fn csharp_plain_comment_does_not_become_module_doc() {
+        let src = "// plain comment\npublic class Foo {}\n";
+        let chunks = chunk_file("Foo.cs", src, Some("csharp"));
+        assert!(!chunks.iter().any(|c| c.kind == "module-doc"), "plain // comment must not emit module-doc; got: {chunks:?}");
+    }
+
+    #[test]
+    fn java_detached_javadoc_becomes_module_doc() {
+        // `/** */` before the `package` preamble → file doc.
+        let src = "/** File-level Javadoc. */\npackage app;\npublic class Foo {}\n";
+        let chunks = chunk_file("Foo.java", src, Some("java"));
+        let doc = chunks.iter().find(|c| c.kind == "module-doc");
+        assert!(doc.is_some(), "expected a module-doc chunk; got: {chunks:?}");
+        assert!(doc.unwrap().body.contains("File-level Javadoc."), "module-doc body: {}", doc.unwrap().body);
+    }
+
+    #[test]
+    fn java_javadoc_adjacent_to_class_is_not_module_doc() {
+        let src = "/** Class doc. */\npublic class Foo {}\n";
+        let chunks = chunk_file("Foo.java", src, Some("java"));
+        assert!(!chunks.iter().any(|c| c.kind == "module-doc"), "adjacent /** must fold into the class, not emit module-doc; got: {chunks:?}");
+    }
+
+    #[test]
+    fn java_plain_comment_does_not_become_module_doc() {
+        let src = "// plain comment\npackage app;\npublic class Foo {}\n";
+        let chunks = chunk_file("Foo.java", src, Some("java"));
+        assert!(!chunks.iter().any(|c| c.kind == "module-doc"), "plain // comment must not emit module-doc; got: {chunks:?}");
+    }
+
+    #[test]
+    fn ts_detached_jsdoc_becomes_module_doc() {
+        // A blank line separates the file JSDoc from the first export.
+        let src = "/** @module geo - 2D geometry. */\n\nexport function dist(a: number, b: number): number { return b - a; }\n";
+        let chunks = chunk_file("geo.ts", src, Some("typescript"));
+        let doc = chunks.iter().find(|c| c.kind == "module-doc");
+        assert!(doc.is_some(), "expected a module-doc chunk; got: {chunks:?}");
+        assert!(doc.unwrap().body.contains("2D geometry."), "module-doc body: {}", doc.unwrap().body);
+    }
+
+    #[test]
+    fn ts_jsdoc_adjacent_to_function_is_not_module_doc() {
+        // No blank line → it is the function's JSDoc (wrapped in export_statement,
+        // a transparent decl kind), so the gap gate suppresses a module-doc.
+        let src = "/** Returns the distance. */\nexport function dist(a: number, b: number): number { return b - a; }\n";
+        let chunks = chunk_file("geo.ts", src, Some("typescript"));
+        assert!(!chunks.iter().any(|c| c.kind == "module-doc"), "adjacent /** must not be promoted to module-doc; got: {chunks:?}");
+    }
+
+    #[test]
+    fn ts_plain_comment_does_not_become_module_doc() {
+        let src = "// plain comment\nexport function dist(a: number, b: number): number { return b - a; }\n";
+        let chunks = chunk_file("geo.ts", src, Some("typescript"));
+        assert!(!chunks.iter().any(|c| c.kind == "module-doc"), "plain // comment must not emit module-doc; got: {chunks:?}");
+    }
+
+    #[test]
+    fn js_detached_jsdoc_becomes_module_doc() {
+        let src = "/** @module utils - Utility functions. */\n\nexport function add(a, b) { return a + b; }\n";
+        let chunks = chunk_file("utils.js", src, Some("javascript"));
+        let doc = chunks.iter().find(|c| c.kind == "module-doc");
+        assert!(doc.is_some(), "expected a module-doc chunk; got: {chunks:?}");
+        assert!(doc.unwrap().body.contains("Utility functions."), "module-doc body: {}", doc.unwrap().body);
+    }
+
+    #[test]
+    fn js_jsdoc_adjacent_to_function_is_not_module_doc() {
+        let src = "/** Adds two numbers. */\nexport function add(a, b) { return a + b; }\n";
+        let chunks = chunk_file("utils.js", src, Some("javascript"));
+        assert!(!chunks.iter().any(|c| c.kind == "module-doc"), "adjacent /** must not be promoted to module-doc; got: {chunks:?}");
+    }
+
+    #[test]
+    fn js_plain_comment_does_not_become_module_doc() {
+        let src = "// plain comment\nexport function add(a, b) { return a + b; }\n";
+        let chunks = chunk_file("utils.js", src, Some("javascript"));
+        assert!(!chunks.iter().any(|c| c.kind == "module-doc"), "plain // comment must not emit module-doc; got: {chunks:?}");
+    }
+
+    #[test]
+    fn python_module_docstring_becomes_module_doc() {
+        let src = "\"\"\"Module-level docstring.\"\"\"\n\ndef foo():\n    pass\n";
+        let chunks = chunk_file("app.py", src, Some("python"));
+        let doc = chunks.iter().find(|c| c.kind == "module-doc");
+        assert!(doc.is_some(), "expected a module-doc chunk; got: {chunks:?}");
+        assert!(doc.unwrap().body.contains("Module-level docstring."), "module-doc body: {}", doc.unwrap().body);
+    }
+
+    #[test]
+    fn python_hash_comment_does_not_become_module_doc() {
+        let src = "# plain hash comment\n\ndef foo():\n    pass\n";
+        let chunks = chunk_file("app.py", src, Some("python"));
+        assert!(!chunks.iter().any(|c| c.kind == "module-doc"), "hash comment must not emit module-doc; got: {chunks:?}");
+    }
+
+    #[test]
+    fn go_package_doc_comment_becomes_module_doc() {
+        let src = "// Package geo provides 2D geometry.\npackage geo\n\nfunc Dist(a, b int) int { return b - a }\n";
+        let chunks = chunk_file("geo.go", src, Some("go"));
+        let doc = chunks.iter().find(|c| c.kind == "module-doc");
+        assert!(doc.is_some(), "expected a module-doc chunk; got: {chunks:?}");
+        assert!(doc.unwrap().body.contains("2D geometry."), "module-doc body: {}", doc.unwrap().body);
+        assert_eq!(doc.unwrap().start_line, 1, "module-doc starts at line 1");
+    }
+
+    #[test]
+    fn go_no_package_doc_no_module_doc() {
+        let src = "package geo\n\nfunc Dist(a, b int) int { return b - a }\n";
+        let chunks = chunk_file("geo.go", src, Some("go"));
+        assert!(!chunks.iter().any(|c| c.kind == "module-doc"), "no preceding comment means no module-doc; got: {chunks:?}");
     }
 }
