@@ -6,15 +6,11 @@ This file is the Codex/OpenCode counterpart to `CLAUDE.md`. The two exist so Cod
 
 ## Session Continuity
 
-This repo is **memhub-primary** as of M7-002 (2026-05-13). The DB at `.memhub/project.sqlite` is the source of truth; rendered markdown is a local human-readable view under `.memhub/rendered/`.
+This repo is **memhub-primary** as of M7-002 (2026-05-13). The DB at `.memhub/project.sqlite` is the source of truth; rendered markdown is a local human-readable view under `.memhub/rendered/`. At session start, read `.memhub/rendered/PROJECT.md` if present for the "currently building / next up / open questions" state, the architecture narrative, and recent session notes; if it is missing, fall back to `memhub recall` / `memhub status`.
 
-At session start, read `.memhub/rendered/PROJECT.md` if present — it carries the "currently building / next up / open questions" state plus the architecture narrative plus recent session notes, all rendered from the DB. If it is missing, use `memhub recall` / `memhub status` and run `memhub render` when a local view is useful.
-
-**Mid-session, prefer `memhub.recall` (or `/recall`) over reading `.memhub/rendered/PROJECT_LEDGER.md`.** Recall is the SQL+RAG hybrid query surface over facts, decisions, and tasks; it returns a focused evidence bundle for the question you actually have, instead of you re-scanning the full ledger. Read `PROJECT_LEDGER.md` only as a fallback when recall comes up empty for something you suspect is recorded, or when the user explicitly asks for the full ledger.
+The mid-session routing rules — prefer recall over the `PROJECT_LEDGER.md` ledger, the turn-1-only PROJECT.md read, and re-render after changes — live in the memhub MCP server's own instructions (`src/mcp/mod.rs`) and are not duplicated here.
 
 If recall returns a `warnings[].kind == "stale_embeddings"` entry, surface it and ask the user before invoking `/reindex`. Recall results stay usable in the meantime — the warning means hybrid scoring may be undercounting some rows, not that retrieval is broken.
-
-Re-render after wrap-up with `memhub render`.
 
 The four legacy K9 files (`agent_docs/project_state.md`, `project_arch.md`, `project_decisions.md`, `project_backlog.md`) are historical archive — last accurate at commit `366cc1c`. Do not write to them; they are no longer authoritative. K9 integration is disabled in `.memhub/config.toml`.
 
