@@ -317,7 +317,11 @@ package doc, TS/JS file JSDoc, C#/Java file doc comment). Six languages get
 real AST chunking — **Rust, Go, Python, TypeScript/JavaScript, Java, C#**
 — via a hybrid `GrammarSpec` + typed hooks whose defaults reproduce Rust
 byte-for-byte; a frozen snapshot test guards Rust output (the Rust freeze
-is unchanged by task 87).
+is unchanged by task 87). Task 88 added a hermetic polyglot eval —
+`tests/locate_polyglot.rs` writes a six-language fixture repo and runs
+`eval::run_locate` over `tests/code_locate_golden_polyglot.json` — so
+non-Rust module-doc capture is held to the same Recall@K contract as Rust
+(100% Recall@3), not just the chunker unit tests.
 Grammars are bundled unconditionally and ABI-pinned with a per-language
 load canary; detection is extension-only. A grammar-known file that fails
 to parse falls back to line-window chunking; files of any other type are
@@ -347,7 +351,9 @@ default. `--rerank` remains the opt-in and still wins single-best-guess
 Recall@1 (77.8% vs 61.1%). No nonsense floor is free: a `--min-rerank-score`
 of 0 rejects both gibberish probes but also kills a true match (lowest
 true-match logit −5.44), so the 2 nonsense-probe leaks under fusion are an
-accepted no-floor cost. `memhub eval locate [--rerank]` is the A/B harness.
+accepted no-floor cost. `memhub eval locate [--rerank]` is the A/B harness;
+it indexes memhub's own (Rust) tree, so the non-Rust grammars are A/B'd by
+the polyglot fixture eval in `tests/locate_polyglot.rs` (task 88) instead.
 
 Surfaces: `memhub locate` / `memhub code index|status|rm` (CLI) ·
 `memhub.locate` (MCP, read-only — clipped snippets only, never full code) ·

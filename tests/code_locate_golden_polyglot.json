@@ -1,0 +1,148 @@
+{
+  "version": 1,
+  "description": "Polyglot code-locate golden set (task 88). Validates the M11 code locator — including the task-87 module-doc capture — across the six non-Rust AST languages (Python, Go, TypeScript, JavaScript, C#, Java). memhub's own tree is pure Rust, so this golden is NOT run against memhub via the `memhub eval locate` CLI (which indexes the current repo); it is run only by tests/locate_polyglot.rs, which writes these fixtures into a throwaway git repo and calls `eval::run_locate` over it. Matchers run case-insensitive substring checks against each locate hit's repo-relative `path` (and optional `symbol`), exactly as tests/code_locate_golden.json does. `*-moduledoc` queries carry NO `symbol_contains` and phrase the file's PURPOSE the way it appears in the leading module/package/file doc comment, so they exercise the module-doc chunk path rather than a symbol name. `kind: empty` queries are nonsense safety probes; like the Rust golden they only reject under `--rerank --min-rerank-score`, which is the floor signal this set measures.",
+  "queries": [
+    {
+      "id": "py-moduledoc",
+      "query": "where is payment capture and refund handling for the checkout service",
+      "kind": "match",
+      "path_contains": ["services/payments.py"],
+      "notes": "Python module docstring capture; the purpose lives in the leading triple-quoted docstring, not a symbol."
+    },
+    {
+      "id": "py-authorize-charge",
+      "query": "authorize a card charge against the payment gateway",
+      "kind": "match",
+      "path_contains": ["services/payments.py"],
+      "symbol_contains": "authorize_charge",
+      "notes": "PaymentProcessor.authorize_charge method chunk."
+    },
+    {
+      "id": "py-issue-refund",
+      "query": "issue a refund for a settled transaction",
+      "kind": "match",
+      "path_contains": ["services/payments.py"],
+      "symbol_contains": "issue_refund",
+      "notes": "module-level issue_refund function chunk."
+    },
+    {
+      "id": "go-moduledoc",
+      "query": "planar geometry helpers for the mapping subsystem",
+      "kind": "match",
+      "path_contains": ["geo/distance.go"],
+      "notes": "Go package doc capture; the purpose lives in the `// Package geo ...` comment."
+    },
+    {
+      "id": "go-euclidean",
+      "query": "compute the straight line distance between two coordinates",
+      "kind": "match",
+      "path_contains": ["geo/distance.go"],
+      "symbol_contains": "EuclideanDistance",
+      "notes": "top-level Go function chunk."
+    },
+    {
+      "id": "go-point-type",
+      "query": "a two dimensional coordinate in the plane",
+      "kind": "match",
+      "path_contains": ["geo/distance.go"],
+      "symbol_contains": "Point",
+      "notes": "Go struct type chunk."
+    },
+    {
+      "id": "ts-moduledoc",
+      "query": "browser session token lifecycle for the web client",
+      "kind": "match",
+      "path_contains": ["src/auth/session.ts"],
+      "notes": "TS file JSDoc capture; detached `/** @module ... */` before the first export."
+    },
+    {
+      "id": "ts-create-session",
+      "query": "create a new browser session from a token and a time to live",
+      "kind": "match",
+      "path_contains": ["src/auth/session.ts"],
+      "symbol_contains": "createSession",
+      "notes": "exported TS function chunk."
+    },
+    {
+      "id": "ts-session-expired",
+      "query": "check whether a session has expired",
+      "kind": "match",
+      "path_contains": ["src/auth/session.ts"],
+      "symbol_contains": "isSessionExpired",
+      "notes": "exported TS function chunk."
+    },
+    {
+      "id": "js-moduledoc",
+      "query": "exponential backoff retry helper for flaky network calls",
+      "kind": "match",
+      "path_contains": ["lib/retry.js"],
+      "notes": "JS file JSDoc capture; detached `/** @module ... */` before the first export."
+    },
+    {
+      "id": "js-retry-backoff",
+      "query": "retry an asynchronous operation with exponential backoff",
+      "kind": "match",
+      "path_contains": ["lib/retry.js"],
+      "symbol_contains": "retryWithBackoff",
+      "notes": "exported async JS function chunk."
+    },
+    {
+      "id": "js-backoff-delay",
+      "query": "compute the delay before the next retry attempt",
+      "kind": "match",
+      "path_contains": ["lib/retry.js"],
+      "symbol_contains": "backoffDelay",
+      "notes": "exported JS function chunk."
+    },
+    {
+      "id": "cs-moduledoc",
+      "query": "warehouse stock ledger tracking for the fulfillment pipeline",
+      "kind": "match",
+      "path_contains": ["src/Inventory/StockLedger.cs"],
+      "notes": "C# file doc capture; detached `/// <summary>` before the using preamble."
+    },
+    {
+      "id": "cs-reserve-stock",
+      "query": "reserve stock units for a sku",
+      "kind": "match",
+      "path_contains": ["src/Inventory/StockLedger.cs"],
+      "symbol_contains": "ReserveStock",
+      "notes": "C# method chunk (qualified StockLedger::ReserveStock)."
+    },
+    {
+      "id": "cs-available-units",
+      "query": "how many units are available for a product",
+      "kind": "match",
+      "path_contains": ["src/Inventory/StockLedger.cs"],
+      "symbol_contains": "AvailableUnits",
+      "notes": "C# method chunk (qualified StockLedger::AvailableUnits)."
+    },
+    {
+      "id": "java-moduledoc",
+      "query": "token bucket rate limiting for the public api gateway",
+      "kind": "match",
+      "path_contains": ["src/main/java/app/RateLimiter.java"],
+      "notes": "Java file doc capture; detached `/** ... */` before the package preamble."
+    },
+    {
+      "id": "java-try-acquire",
+      "query": "try to acquire tokens from the bucket",
+      "kind": "match",
+      "path_contains": ["src/main/java/app/RateLimiter.java"],
+      "symbol_contains": "tryAcquire",
+      "notes": "Java method chunk (qualified RateLimiter::tryAcquire)."
+    },
+    {
+      "id": "empty-gibberish-1",
+      "query": "zxqv plorptin wqxz frobnicate gzorp",
+      "kind": "empty",
+      "notes": "Pure nonsense — rejects only under a rerank floor; documents that fusion-only locate has no nonsense gate (mirrors the Rust golden)."
+    },
+    {
+      "id": "empty-gibberish-2",
+      "query": "asdfghjkl qwertyuiop mnbvcxz lkjhgfdsa",
+      "kind": "empty",
+      "notes": "Keyboard-mash nonsense safety probe."
+    }
+  ]
+}
