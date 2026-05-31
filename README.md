@@ -890,6 +890,8 @@ memhub eval retrieval --mode fts       # A/B compare modes
 
 Single Rust binary over an embedded-migration SQLite database. The MCP server reuses the same command layer. The embedding model is bundled at build time via `build.rs` (downloads from Hugging Face, SHA256-pinned); no model download at runtime.
 
+> **Offline is a runtime guarantee, not a build-time one.** The shipped binary never touches the network (the lone exception is the explicit, opt-in `memhub metrics calibrate`). *Building from source* does: a clean build downloads ~218 MB of SHA256-pinned model assets from Hugging Face, and `cargo clean` discards the cache so the next build re-fetches. Airgapped source builds are unsupported today.
+
 ```text
 memhub CLI / MCP
    ├── src/commands/    fact / decision / task / command / review / eval / index / ...
