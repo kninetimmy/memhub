@@ -547,7 +547,7 @@ impl MemhubServer {
 
     #[tool(
         name = "propose_fact",
-        description = "Stage a proposed fact write for later review instead of writing directly to durable facts."
+        description = "Stage a proposed fact — a durable, user-confirmable truth about this repo such as a build/test/run command, a toolchain version, or a standing constraint — into pending_writes for human review. Agent-authored facts are NEVER durable until the user runs `memhub review accept`. Reach for this when you have inferred something worth persisting beyond the session, not for a transient observation or a to-do."
     )]
     async fn propose_fact(
         &self,
@@ -561,7 +561,7 @@ impl MemhubServer {
 
     #[tool(
         name = "propose_decision",
-        description = "Stage a proposed decision write for later review instead of writing directly to durable decisions."
+        description = "Stage a proposed decision — a durable record of a choice and the rationale behind it (what was decided and WHY) — into pending_writes for human review. Agent-authored decisions are NEVER durable until the user runs `memhub review accept`. Reach for this to capture an architectural or design decision worth preserving; an optional `summary` paraphrase improves later plain-English recall."
     )]
     async fn propose_decision(
         &self,
@@ -589,7 +589,7 @@ impl MemhubServer {
 
     #[tool(
         name = "task_add",
-        description = "Create a task directly in the durable tasks table. Tasks are intent, not claims; the user prunes."
+        description = "Create a task directly in the durable tasks table — a concrete future to-do or follow-up for this repo. Tasks are intent, not truth claims, so this is a direct write with no review gate; the user prunes. Reach for this to record work to be done later, not to assert that something is already true (that is propose_fact) or to capture why a choice was made (propose_decision)."
     )]
     async fn task_add(
         &self,
