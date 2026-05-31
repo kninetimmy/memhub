@@ -19,6 +19,15 @@
 // pinned value. All hashes were computed locally over the downloaded
 // bytes (or, for BGE-small's model.onnx, match the x-linked-etag
 // returned by Hugging Face for the pinned commit).
+//
+// BUILD-TIME NETWORK CONTRACT (task 52). memhub's offline-first
+// principle is a *runtime* guarantee: the built binary never reaches the
+// network (the lone exception is the explicit, opt-in `memhub metrics
+// calibrate`). Building from source is a different matter — this fetch is
+// the one point where producing the binary touches the network. The
+// OUT_DIR staging cache is the only offline fallback, and `cargo clean`
+// discards it, so the next build re-fetches. Airgapped *source* builds
+// are therefore unsupported; there is no offline asset override today.
 
 use std::env;
 use std::fs;
