@@ -16,6 +16,18 @@ use crate::{MemhubError, Result};
 pub const EMBEDDING_MODEL_NAME: &str = "bge-small-en-v1.5";
 pub const EMBEDDING_DIMENSION: usize = 384;
 
+/// Per-inference batch size handed to fastembed. fastembed's default (256)
+/// pads every chunk in a batch to the longest sequence and allocates the
+/// transformer's activation tensors for the whole batch at once; for long
+/// inputs (code chunks carry whole function/type bodies) that peaks at
+/// several GB and OOM-kills memory-constrained hosts — e.g. backfilling a
+/// ~600-chunk code index hit ~6.8 GB RSS on an 8 GB Raspberry Pi 5. A modest
+/// cap bounds peak memory roughly linearly (16 vs 256 ≈ 16× less) at a
+/// negligible throughput cost, since the model is already resident. Output
+/// vectors are unaffected — batch size only governs how many texts share one
+/// forward pass, and fastembed preserves input order across batches.
+const EMBED_BATCH_SIZE: usize = 16;
+
 const MODEL_ONNX: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/bge-small-en-v1.5/model.onnx"));
 const TOKENIZER_JSON: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
@@ -62,6 +74,10 @@ pub fn embed_one(text: &str) -> Result<Vec<f32>> {
 }
 
 /// Embed a batch of texts. Each output is a 384-dim vector in the same order.
+///
+/// Inference is split into [`EMBED_BATCH_SIZE`]-text passes to bound peak
+/// memory on small hosts; fastembed preserves input order across passes, so
+/// callers can pass an arbitrarily large slice without exhausting RAM.
 pub fn embed_batch<S: AsRef<str> + Send + Sync>(texts: &[S]) -> Result<Vec<Vec<f32>>> {
     if texts.is_empty() {
         return Ok(Vec::new());
@@ -72,7 +88,7 @@ pub fn embed_batch<S: AsRef<str> + Send + Sync>(texts: &[S]) -> Result<Vec<Vec<f
         .map_err(|e| MemhubError::Embedding(format!("model mutex poisoned: {e}")))?;
     let documents: Vec<&str> = texts.iter().map(AsRef::as_ref).collect();
     model
-        .embed(documents, None)
+        .embed(documents, Some(EMBED_BATCH_SIZE))
         .map_err(|e| MemhubError::Embedding(format!("embed failed: {e}")))
 }
 
@@ -104,5 +120,33 @@ mod tests {
         assert!(vecs.iter().all(|v| v.len() == EMBEDDING_DIMENSION));
         // alpha and beta should not be identical vectors.
         assert!(vecs[0] != vecs[1]);
+    }
+
+    #[test]
+    fn embed_batch_spanning_multiple_passes_preserves_order_and_count() {
+        // More texts than EMBED_BATCH_SIZE so fastembed must run several
+        // forward passes; the result must still be one vector per input, in
+        // input order, with no cross-pass shuffling. Guards the batch cap
+        // (memory fix) against silently dropping or reordering rows.
+        let texts: Vec<String> = (0..EMBED_BATCH_SIZE * 2 + 3)
+            .map(|i| format!("distinct embedding probe number {i}"))
+            .collect();
+        let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+        let vecs = embed_batch(&refs).expect("embed_batch");
+        assert_eq!(vecs.len(), refs.len());
+        assert!(vecs.iter().all(|v| v.len() == EMBEDDING_DIMENSION));
+        // A single-text embed of one input must match its slot in the batch,
+        // proving order is preserved across the pass boundary.
+        let probe_idx = EMBED_BATCH_SIZE + 1;
+        let solo = embed_one(refs[probe_idx]).expect("embed_one");
+        let max_delta = solo
+            .iter()
+            .zip(&vecs[probe_idx])
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_delta < 1e-3,
+            "batched vector diverged from solo embed (max delta {max_delta})"
+        );
     }
 }
