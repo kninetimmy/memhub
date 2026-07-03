@@ -1652,7 +1652,7 @@ struct PendingWriteProvenance {
 }
 
 fn current_client_identity(request_context: &RequestContext<RoleServer>) -> ClientIdentity {
-    current_client_identity_from_initialize(request_context.peer.peer_info())
+    current_client_identity_from_initialize(request_context.peer.peer_info().as_deref())
 }
 
 fn current_client_identity_from_initialize(
@@ -1685,7 +1685,7 @@ fn current_pending_write_provenance(request_context: &RequestContext<RoleServer>
     pending_write_provenance_json(
         &request_context.id,
         &request_context.meta,
-        request_context.peer.peer_info(),
+        request_context.peer.peer_info().as_deref(),
     )
 }
 
