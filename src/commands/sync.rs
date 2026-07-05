@@ -496,14 +496,15 @@ pub struct AdoptSummary {
     pub backup_path: PathBuf,
 }
 
-/// Replace the local DB with a downloaded Drive snapshot. Destructive,
-/// so it **requires `force`** (the CLI `--yes`); the courier skill only
-/// reaches here after the operator confirms a `status` verdict.
+/// Replace the local DB with the Drive-synced snapshot. Destructive,
+/// so it **requires `force`** (the CLI `--yes`); the pull skill
+/// (`/catch-up`) only reaches here after the operator confirms a
+/// `status` verdict.
 ///
 /// Three checks are **hard refusals regardless of `force`**: a
 /// project-id mismatch (wrong Drive folder), a snapshot schema newer
 /// than this binary (run `memhub upgrade` first — §6), and a sha256
-/// that disagrees with the manifest (torn/partial download). The
+/// that disagrees with the manifest (torn/partial sync). The
 /// just-replaced DB is copied to `.memhub/backups/sync/` first as a
 /// single most-recent safety net for the swap itself.
 pub fn adopt(start: &Path, remote: &Path, force: bool) -> Result<AdoptSummary> {

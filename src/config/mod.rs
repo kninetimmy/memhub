@@ -322,8 +322,9 @@ impl Default for GlobalConfig {
 
 /// Opt-in cross-machine Drive sync config (M10). Per-repo; off by
 /// default. When `enabled`, the `memhub sync` family operates on local
-/// files (snapshot/status/adopt/commit) so an agent courier can move
-/// the snapshot through a Drive folder. memhub never makes a network
+/// files (snapshot/status/adopt/commit); an OS-level synced folder
+/// (Google Drive for Desktop, or an rclone mount on Linux) moves the
+/// snapshot between machines out of band. memhub never makes a network
 /// call. Disabled → the `sync` subcommands refuse with a hint to run
 /// `memhub sync enable`.
 ///

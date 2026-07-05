@@ -602,7 +602,7 @@ impl MemhubServer {
 
     #[tool(
         name = "doc_add",
-        description = "Ingest (or re-ingest) a local markdown file as an external reference document, chunked and RAG-searchable. Direct write: a doc is a user-pointed artifact, not an agent claim, so no review gate. Docs are OPT-IN to recall — query them with recall(source_types=[\"doc\"]); they never appear in the default bundle. Unchanged content (same hash) is a no-op; changed content replaces every chunk."
+        description = "Ingest (or re-ingest) a local markdown file as an external reference document, chunked and RAG-searchable. Direct write: a doc is a user-pointed artifact, not an agent claim, so no review gate. Docs are OPT-IN to recall — query them with recall(source_types=[\"doc\"]) to scope to docs alone; after a repo's first doc add they also join the default recall bundle when a chunk clears the relevance floor (decision 90). Unchanged content (same hash) is a no-op; changed content replaces every chunk."
     )]
     async fn doc_add(
         &self,
@@ -651,7 +651,7 @@ impl MemhubServer {
 
     #[tool(
         name = "recall",
-        description = "Retrieve relevant facts, decisions, and tasks via SQL+RAG hybrid recall (FTS5 + brute-force cosine when hybrid mode is configured). Read-only; prefer this over reading PROJECT_LEDGER.md mid-session. Ingested reference docs are OPT-IN: pass source_types=[\"doc\"] to search them. The response's `available_docs` counts ingested doc chunks you did NOT search — when it is non-zero and the question is design/spec/architecture-flavored, consider a follow-up recall scoped to docs (use judgment; not every turn)."
+        description = "Retrieve relevant facts, decisions, and tasks via SQL+RAG hybrid recall (FTS5 + brute-force cosine when hybrid mode is configured). Read-only; prefer this over reading PROJECT_LEDGER.md mid-session. Ingested reference docs are opt-in (add one with doc_add); once added they join the default bundle when a chunk clears the relevance floor (decision 90), and source_types=[\"doc\"] scopes a query to docs alone. The response's `available_docs` counts ingested doc chunks that did NOT surface this call — when it is non-zero and the question is design/spec/architecture-flavored, consider a follow-up recall scoped to docs (use judgment; not every turn)."
     )]
     async fn recall(
         &self,
@@ -662,7 +662,7 @@ impl MemhubServer {
 
     #[tool(
         name = "locate",
-        description = "Locate code in this repo by intent (M11). SQL+RAG hybrid search (FTS5 BM25 + cosine when hybrid mode is configured) over a sibling code index at .memhub/code_index.sqlite, lazily refreshed to the working tree on each call. Returns ranked breadcrumbs — {path, start_line, end_line, symbol, kind, score, snippet} — where `snippet` is a CLIPPED excerpt (≤6 lines), never the full chunk. Read-only: never returns whole files and never edits. Use this to find WHERE code lives before reading it with your own file tools. `rerank` runs the bundled cross-encoder over the candidate pool (off by default; its code fit is unproven until M11 PR5 calibrates it)."
+        description = "Locate code in this repo by intent (M11). SQL+RAG hybrid search (FTS5 BM25 + cosine when hybrid mode is configured) over a sibling code index at .memhub/code_index.sqlite, lazily refreshed to the working tree on each call. Returns ranked breadcrumbs — {path, start_line, end_line, symbol, kind, score, snippet} — where `snippet` is a CLIPPED excerpt (≤6 lines), never the full chunk. Read-only: never returns whole files and never edits. Use this to find WHERE code lives before reading it with your own file tools. `rerank` runs the bundled cross-encoder over the candidate pool (off by default. Fusion (reranker off) is the default and wins Recall@3; rerank wins single-best-guess Recall@1 — decisions 122/123)."
     )]
     async fn locate(
         &self,
@@ -1254,8 +1254,8 @@ struct RecallToolResponse {
     /// Ingested doc chunks that exist but were NOT searched because the
     /// call did not scope to `doc`. Non-zero is a cue to consider a
     /// follow-up `recall(..., source_types=["doc"])` when the question is
-    /// design/spec/architecture-flavored. Docs are opt-in and never in
-    /// the default bundle.
+    /// design/spec/architecture-flavored. After a repo's first doc add,
+    /// doc chunks join the default bundle when they clear the floor (decision 90).
     available_docs: i64,
     warnings: Vec<RecallToolWarning>,
     provenance: RecallToolProvenance,

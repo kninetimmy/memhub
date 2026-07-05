@@ -133,8 +133,9 @@ pub enum TopLevelCommand {
         #[arg(long)]
         yes: bool,
         /// Skip resyncing installed agent skill wrappers
-        /// (`~/.claude/commands/`, `~/.codex/skills/`) from
-        /// `templates/skills/`. The binary + DB migrate still run.
+        /// (`~/.claude/commands/`, `~/.codex/skills/`,
+        /// `~/.config/opencode/skills/`, `~/.config/opencode/commands/`)
+        /// from `templates/skills/`. The binary + DB migrate still run.
         #[arg(long)]
         no_skills: bool,
         /// Skip the `target/` build-artifact GC step (see `memhub gc`).
@@ -159,8 +160,9 @@ pub enum TopLevelCommand {
         json: bool,
     },
     /// Cross-machine Drive sync (M10). memhub stays offline; these
-    /// commands operate on local files so an agent courier can move a
-    /// snapshot through a Drive folder. Opt in per repo with
+    /// commands operate on local files inside an OS-level synced folder
+    /// (Google Drive for Desktop, or an rclone mount on Linux), which
+    /// moves the snapshot between your machines. Opt in per repo with
     /// `memhub sync enable`.
     Sync {
         #[command(subcommand)]
@@ -217,8 +219,9 @@ pub enum TopLevelCommand {
         #[arg(long, default_value_t = code_index::locate::DEFAULT_LOCATE_LIMIT)]
         limit: usize,
         /// Apply the bundled cross-encoder re-ranker over the candidate
-        /// pool. Off by default in M11 — the NL-trained reranker's fit on
-        /// code is still being calibrated.
+        /// pool. Off by default: fusion (reranker off) is the default and
+        /// wins Recall@3, while `--rerank` wins single-best-guess Recall@1
+        /// (decisions 122/123).
         #[arg(long)]
         rerank: bool,
         #[arg(long)]
@@ -371,11 +374,13 @@ pub enum GlobalCommand {
 }
 
 /// Cross-machine Drive sync (M10). All subcommands operate on **local
-/// files only** — the agent's Drive access moves the snapshot.
+/// files only** — an OS-level synced folder (Drive for Desktop / rclone
+/// mount) moves the snapshot between machines out of band.
 #[derive(Debug, Subcommand)]
 pub enum SyncCommand {
     /// Write a consistent single-file DB snapshot + manifest.json into
-    /// the given directory (for the courier to upload to Drive).
+    /// the given directory (typically inside the synced folder, which
+    /// carries it to your other machines).
     Snapshot {
         /// Output directory; `project.sqlite` and `manifest.json` are
         /// written inside it. Omit to use the canonical
@@ -400,7 +405,7 @@ pub enum SyncCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Compare the local DB against a downloaded Drive snapshot and
+    /// Compare the local DB against the Drive-synced snapshot and
     /// report the fast-forward verdict (up-to-date / local-ahead /
     /// drive-ahead / diverged). Reads only the manifest.
     Check {
@@ -411,7 +416,7 @@ pub enum SyncCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Replace the local DB with a downloaded Drive snapshot. Requires
+    /// Replace the local DB with the Drive-synced snapshot. Requires
     /// `--yes`; refuses on project-id mismatch, a newer snapshot
     /// schema, or a checksum that disagrees with the manifest.
     Adopt {
@@ -427,7 +432,7 @@ pub enum SyncCommand {
     },
     /// Record that the local DB now equals a just-pushed snapshot, so
     /// the next `status` reads up-to-date. Call after a successful
-    /// upload.
+    /// push (snapshot written into the synced folder).
     Commit {
         /// Directory holding the pushed `project.sqlite` +
         /// `manifest.json` (or a path to `manifest.json`). Omit to use
