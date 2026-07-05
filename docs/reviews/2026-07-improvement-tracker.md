@@ -19,7 +19,7 @@ numbers. Default-off config additions must keep an untouched install byte-identi
 
 | Wave | Theme | Done / Total | Gating decisions |
 |---|---|---|---|
-| 0 | Fix-now defects | 15 / 17 | Q29 (F1), Q39 (F11) |
+| 0 | Fix-now defects | 16 / 17 | Q29 (F1) |
 | 1 | Loud states (doctor/status/integrity) | 0 / 5 | Q35 |
 | 2 | Session-start token diet | 0 / 7 | Q21–Q25, **Q41 (spike gates trim)** |
 | 3 | Staleness / lifecycle | 0 / 7 | Q1–Q6 |
@@ -36,8 +36,8 @@ Decisions resolved: 1 / 56 (Q32).
 
 ## Wave 0 — Fix-now (broken today; all small)
 
-Two PRs: **PR-A text/docs** (no decisions) and **PR-B safe code** (no decisions), plus
-two gated items (F1, F11).
+Three PRs: **PR-A text/docs** (no decisions), **PR-B safe code** (no decisions), and
+**PR #17** (F11, gated on Q39) — leaving one gated item (F1).
 
 ### PR-A — text/docs (zero decisions)
 - [x] **F13/P3** — fixed invalid YAML frontmatter: folded `description:` to block
@@ -107,8 +107,12 @@ two gated items (F1, F11).
 ### Gated (later in Wave 0)
 - [ ] **F1** — add `--json` to `status`, `init` (+ `fact/decision/command list`).
   **Gated on Q29** (JSON shape convention).
-- [ ] **F11** — MCP `doc_add` path confinement (canonicalize, require repo-root/allowlist,
-  apply deny-list). **Gated on Q39.**
+- [x] **F11** — MCP `doc_add` path confinement: canonicalize the agent-supplied path,
+  require repo-root **or** a new `[doc] allowed_dirs` entry, apply the existing
+  `PathMatcher` deny-list on top (a deny-listed path inside repo-root still refuses).
+  Gate lives on the MCP path only (`doc_add_impl`); CLI `doc add` / `prepare_doc` is
+  unchanged and stays unrestricted. **Gated on Q39** (resolved: repo-root + allowlist,
+  not repo-root-only). — 2026-07-05, PR #17.
 
 ### Immediate / no-PR
 - [x] **F17/N20** — committed `docs/reviews/` (review + tracker), reachable from the Mac
