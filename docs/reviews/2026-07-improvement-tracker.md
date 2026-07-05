@@ -19,7 +19,7 @@ numbers. Default-off config additions must keep an untouched install byte-identi
 
 | Wave | Theme | Done / Total | Gating decisions |
 |---|---|---|---|
-| 0 | Fix-now defects | 15 / 17 | Q29 (F1), Q39 (F11) |
+| 0 | Fix-now defects | 16 / 17 | Q29 (F1), Q39 (F11) |
 | 1 | Loud states (doctor/status/integrity) | 0 / 5 | Q35 |
 | 2 | Session-start token diet | 0 / 7 | Q21–Q25, **Q41 (spike gates trim)** |
 | 3 | Staleness / lifecycle | 0 / 7 | Q1–Q6 |
@@ -105,8 +105,11 @@ two gated items (F1, F11).
   — 2026-07-05, PR-B (wave0/pr-b-safe-code).
 
 ### Gated (later in Wave 0)
-- [ ] **F1** — add `--json` to `status`, `init` (+ `fact/decision/command list`).
-  **Gated on Q29** (JSON shape convention).
+- [x] **F1** — added `--json` to `status`, `init`, `fact list`, `decision list`, `command
+  list`; adopted the noun-keyed wrapped-object JSON convention (`{"status":{...}}`,
+  `{"facts":[...]}`, etc.) per **Q29**, and migrated `doc ls --json` from a bare array to
+  `{"docs":[...]}` to match. `tests/cli_args.rs` adds the clap-surface smoke test (N24).
+  — 2026-07-05, PR #18 (feat/15-json-cli-flags).
 - [ ] **F11** — MCP `doc_add` path confinement (canonicalize, require repo-root/allowlist,
   apply deny-list). **Gated on Q39.**
 
