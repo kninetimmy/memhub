@@ -19,7 +19,7 @@ numbers. Default-off config additions must keep an untouched install byte-identi
 
 | Wave | Theme | Done / Total | Gating decisions |
 |---|---|---|---|
-| 0 | Fix-now defects | 5 / 17 | Q29 (F1), Q39 (F11) |
+| 0 | Fix-now defects | 7 / 17 | Q29 (F1), Q39 (F11) |
 | 1 | Loud states (doctor/status/integrity) | 0 / 5 | Q35 |
 | 2 | Session-start token diet | 0 / 7 | Q21–Q25, **Q41 (spike gates trim)** |
 | 3 | Staleness / lifecycle | 0 / 7 | Q1–Q6 |
@@ -45,11 +45,13 @@ two gated items (F1, F11).
   regression guard `skill_frontmatter_descriptions_are_valid_yaml_scalars` in
   `tests/skill_parity.rs`. — 2026-07-05, PR-A (wave0/pr-a-text).
   *Installed-copy resync via `memhub upgrade` is a post-merge machine step (still pending).*
-- [ ] **F5** — remove skill/MCP description falsehoods (docs-in-default flipped by
+- [x] **F5** — removed skill/MCP description falsehoods (docs-in-default flipped by
   decision 90; `sync-md` "managed block" that doesn't exist; "unproven until M11 PR5"
-  remnant). Files: `templates/skills/**`, `src/mcp/mod.rs`.
-- [ ] **F4** — README: `[retrieval]` duplicate-table instruction + add the Claude MCP
-  registration step; fix self-contradictory `propose_fact` global bullet.
+  remnant). Files: `templates/skills/**`, `src/mcp/mod.rs`, `src/cli/args.rs`.
+  — 2026-07-05, PR #13 (wave0/pr-a-falsehoods).
+- [x] **F4** — README: fixed the `[retrieval]` duplicate-table instruction (×4 install
+  paths), added the Claude MCP registration step, fixed the self-contradictory
+  `propose_fact` global bullet. — 2026-07-05, PR #13 (wave0/pr-a-falsehoods).
 - [x] **F8** — added root `LICENSE` (MIT, © 2026 kninetimmy) + `THIRD-PARTY-NOTICES.md`
   covering both models (BGE-small MIT, ms-marco reranker Apache-2.0 — verified on the
   upstream cross-encoder HF card), the 7 tree-sitter grammar crates (MIT), uPlot (MIT),
@@ -58,12 +60,15 @@ two gated items (F1, F11).
 - [x] **F14/P9** — removed the non-existent `--json` from `integrations enable-k9` in
   both init-project variants (bootstrap-k9 `--json` verified valid, left intact).
   — 2026-07-05, PR-A (wave0/pr-a-text).
-- [ ] **F16/N13** text half — `doc rm`/`doc show` messaging (exit-code fix is code, see PR-B).
-- [ ] text-pass riders: **P8** (`/check-init-k9`, `/init-project-k9`, wrap-up
+- [ ] **F16/N13** — moved wholesale to **PR-B**: the message wording shares the exact
+  `cli/mod.rs` lines as the exit-code fix, so splitting it across branches would conflict.
+- [x] text-pass riders: **P8** (`/check-init-k9`, `/init-project-k9`, wrap-up
   "project-scoped" falsehood), **P10** (stale locate-reranker rationale in skills +
   `--help`), **P11** (AGENTS.md Codex-accounting note, every clause false), **P12**
   (root files cite a non-existent "re-render" MCP rule), **P17** (upgrade-resync omits
-  OpenCode), **P18** (OpenCode recall stub `available_docs`), **N11** (sync courier prose).
+  OpenCode), **P18** (OpenCode recall stub `available_docs`), **N11** (sync courier prose —
+  also corrected the same wording in `src/config/mod.rs` and `src/commands/sync.rs`).
+  — 2026-07-05, PR #13 (wave0/pr-a-falsehoods).
 
 ### PR-B — safe code (zero decisions)
 - [x] **F2a** — machine workaround: set `claude_transcripts_dir`, run `metrics rescan`;
