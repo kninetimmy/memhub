@@ -13,9 +13,10 @@ architecture narrative, and recent session notes; if it is missing,
 fall back to `memhub recall` / `memhub status`.
 
 The mid-session routing rules — prefer recall over the
-`PROJECT_LEDGER.md` ledger, the turn-1-only PROJECT.md read, and
-re-render after changes — live in the memhub MCP server's own
-instructions (`src/mcp/mod.rs`) and are not duplicated here.
+`PROJECT_LEDGER.md` ledger, and the turn-1-only PROJECT.md read —
+live in the memhub MCP server's own instructions (`src/mcp/mod.rs`)
+and are not duplicated here. (Re-rendering after mid-session DB writes
+is a `/wrap-up` step, not an MCP-instructions rule.)
 
 If recall returns a `warnings[].kind == "stale_embeddings"` entry,
 surface it and ask the user before invoking `/reindex`. Recall
