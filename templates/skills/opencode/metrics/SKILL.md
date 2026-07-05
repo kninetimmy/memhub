@@ -1,6 +1,7 @@
 ---
 name: metrics
-description: Show memhub token metrics in OpenCode; use when the user asks about recall/session token accounting. Trigger on: "token usage", "context cost", "how many tokens", "recall savings", "show memhub metrics", "token accounting".
+description: >
+  Show memhub token metrics in OpenCode; use when the user asks about recall/session token accounting. Trigger on: "token usage", "context cost", "how many tokens", "recall savings", "show memhub metrics", "token accounting".
 compatibility: opencode
 ---
 

@@ -19,7 +19,7 @@ numbers. Default-off config additions must keep an untouched install byte-identi
 
 | Wave | Theme | Done / Total | Gating decisions |
 |---|---|---|---|
-| 0 | Fix-now defects | 1 / 17 | Q29 (F1), Q39 (F11) |
+| 0 | Fix-now defects | 5 / 17 | Q29 (F1), Q39 (F11) |
 | 1 | Loud states (doctor/status/integrity) | 0 / 5 | Q35 |
 | 2 | Session-start token diet | 0 / 7 | Q21–Q25, **Q41 (spike gates trim)** |
 | 3 | Staleness / lifecycle | 0 / 7 | Q1–Q6 |
@@ -40,18 +40,24 @@ Two PRs: **PR-A text/docs** (no decisions) and **PR-B safe code** (no decisions)
 two gated items (F1, F11).
 
 ### PR-A — text/docs (zero decisions)
-- [ ] **F13/P3** — fix invalid YAML frontmatter (`Trigger on: "..."` unquoted) in
-  recall/locate/doc/metrics templates ×3 agents + installed copies; then `memhub
-  upgrade` to resync. *Highest urgency: these four skills are silently dead today.*
+- [x] **F13/P3** — fixed invalid YAML frontmatter: folded `description:` to block
+  scalar (`>`) in recall/locate/doc/metrics templates ×3 agents + added dependency-free
+  regression guard `skill_frontmatter_descriptions_are_valid_yaml_scalars` in
+  `tests/skill_parity.rs`. — 2026-07-05, PR-A (wave0/pr-a-text).
+  *Installed-copy resync via `memhub upgrade` is a post-merge machine step (still pending).*
 - [ ] **F5** — remove skill/MCP description falsehoods (docs-in-default flipped by
   decision 90; `sync-md` "managed block" that doesn't exist; "unproven until M11 PR5"
   remnant). Files: `templates/skills/**`, `src/mcp/mod.rs`.
 - [ ] **F4** — README: `[retrieval]` duplicate-table instruction + add the Claude MCP
   registration step; fix self-contradictory `propose_fact` global bullet.
-- [ ] **F8** — add root `LICENSE` (MIT) + `THIRD-PARTY-NOTICES.md` (two ONNX models,
-  six grammars, uPlot); verify the Xenova MiniLM export license.
-- [ ] **F14/P9** — `init-project` `integrations enable-k9 --json`: flag doesn't exist;
-  remove `--json` (both variants).
+- [x] **F8** — added root `LICENSE` (MIT, © 2026 kninetimmy) + `THIRD-PARTY-NOTICES.md`
+  covering both models (BGE-small MIT, ms-marco reranker Apache-2.0 — verified on the
+  upstream cross-encoder HF card), the 7 tree-sitter grammar crates (MIT), uPlot (MIT),
+  and the vendored tiktoken vocab (MIT); full MIT + Apache-2.0 texts reproduced.
+  — 2026-07-05, PR-A (wave0/pr-a-text).
+- [x] **F14/P9** — removed the non-existent `--json` from `integrations enable-k9` in
+  both init-project variants (bootstrap-k9 `--json` verified valid, left intact).
+  — 2026-07-05, PR-A (wave0/pr-a-text).
 - [ ] **F16/N13** text half — `doc rm`/`doc show` messaging (exit-code fix is code, see PR-B).
 - [ ] text-pass riders: **P8** (`/check-init-k9`, `/init-project-k9`, wrap-up
   "project-scoped" falsehood), **P10** (stale locate-reranker rationale in skills +
@@ -89,8 +95,9 @@ two gated items (F1, F11).
   apply deny-list). **Gated on Q39.**
 
 ### Immediate / no-PR
-- [~] **F17/N20** — commit `docs/reviews/` so the plan is reachable from the Mac.
-  — in progress (this PR, branch `docs/improvement-review-tracking`)
+- [x] **F17/N20** — committed `docs/reviews/` (review + tracker), reachable from the Mac
+  once PR #11 merges to main. — 2026-07-05, PR #11.
+  *(N20's wrap-up untracked-path guard is a separate later enhancement, not this fix-now.)*
 
 ---
 

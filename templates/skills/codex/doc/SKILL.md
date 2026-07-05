@@ -1,6 +1,7 @@
 ---
 name: doc
-description: Ingest an external markdown reference doc into memhub so it is RAG-searchable in chunks. Opt-in to recall — never pollutes the default bundle. Trigger on: "ingest this doc", "add this spec to memhub", "make this doc searchable", "remember this reference doc", "/doc".
+description: >
+  Ingest an external markdown reference doc into memhub so it is RAG-searchable in chunks. Opt-in to recall — never pollutes the default bundle. Trigger on: "ingest this doc", "add this spec to memhub", "make this doc searchable", "remember this reference doc", "/doc".
 framework: memhub
 framework_version: 1.0.0
 last_updated: 2026-05-18

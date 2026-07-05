@@ -304,3 +304,139 @@ fn claude_md_and_agents_md_sections_stay_in_parity() {
          with a reason)"
     );
 }
+
+/// Every skill template file across all three agents, as absolute paths:
+/// `templates/skills/claude/*.md`, `templates/skills/codex/*/SKILL.md`,
+/// `templates/skills/opencode/*/SKILL.md`.
+fn all_skill_template_files() -> Vec<PathBuf> {
+    let mut files = Vec::new();
+
+    let claude_dir = repo_root().join("templates/skills/claude");
+    for entry in fs::read_dir(&claude_dir).expect("read templates/skills/claude") {
+        let path = entry.expect("read dir entry").path();
+        if path.extension().and_then(|x| x.to_str()) == Some("md") {
+            files.push(path);
+        }
+    }
+
+    for relative in ["templates/skills/codex", "templates/skills/opencode"] {
+        let dir = repo_root().join(relative);
+        for entry in fs::read_dir(&dir).unwrap_or_else(|_| panic!("read {relative}")) {
+            let path = entry.expect("read dir entry").path();
+            if !path.is_dir() {
+                continue;
+            }
+            let skill_md = path.join("SKILL.md");
+            if skill_md.is_file() {
+                files.push(skill_md);
+            }
+        }
+    }
+
+    files
+}
+
+/// True when `s` is a YAML block-scalar indicator on its own: `>` or `|`,
+/// optionally followed by chomping (`-`/`+`) and/or an explicit indentation
+/// digit, and nothing else. Anything past that is the block's own
+/// (indented, continuation-line) content, not part of the indicator.
+fn is_block_scalar_indicator(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some('>') | Some('|') => {}
+        _ => return false,
+    }
+    chars.all(|c| c == '-' || c == '+' || c.is_ascii_digit())
+}
+
+/// True when `s` is entirely wrapped in matching single or double quotes,
+/// i.e. a quoted YAML scalar rather than a bare plain scalar.
+fn is_safely_quoted(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.len() < 2 {
+        return false;
+    }
+    let first = bytes[0];
+    let last = bytes[bytes.len() - 1];
+    (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'')
+}
+
+/// Guards the F13 regression class: task 77 appended `Trigger on:
+/// "..."` phrase lists into skill frontmatter `description:` fields as
+/// plain, unquoted YAML scalars. A plain scalar containing `": "`
+/// (colon-space) is invalid YAML — most parsers respond by silently
+/// dropping the whole `description` field rather than raising an error,
+/// so four high-traffic skills (recall/locate/metrics/doc) lost their
+/// routing description on all three agents with nothing failing a
+/// build. This test intentionally does not depend on a YAML parser
+/// (memhub does not pull in serde_yaml or any other yaml crate); it
+/// only checks the one shape that broke: a plain or quoted
+/// `description:` scalar must not contain a bare `": "` unless it is
+/// switched to a block-scalar form (`description: >` / `description:
+/// |`) or the whole value is wrapped in matching quotes.
+#[test]
+fn skill_frontmatter_descriptions_are_valid_yaml_scalars() {
+    let mut failures = Vec::new();
+
+    for path in all_skill_template_files() {
+        let content =
+            fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+
+        let mut lines = content.lines();
+        if lines.next() != Some("---") {
+            failures.push(format!(
+                "{}: does not start with a `---` frontmatter delimiter",
+                path.display()
+            ));
+            continue;
+        }
+
+        let mut frontmatter: Vec<&str> = Vec::new();
+        let mut closed = false;
+        for line in lines {
+            if line.trim() == "---" {
+                closed = true;
+                break;
+            }
+            frontmatter.push(line);
+        }
+        if !closed {
+            failures.push(format!(
+                "{}: frontmatter has no closing `---`",
+                path.display()
+            ));
+            continue;
+        }
+
+        let Some(description_line) = frontmatter.iter().find(|l| l.starts_with("description:"))
+        else {
+            failures.push(format!(
+                "{}: frontmatter has no `description:` key",
+                path.display()
+            ));
+            continue;
+        };
+
+        let inline = description_line["description:".len()..].trim();
+
+        if is_block_scalar_indicator(inline) || is_safely_quoted(inline) {
+            continue;
+        }
+
+        if inline.contains(": ") {
+            failures.push(format!(
+                "{}: `description:` is a plain scalar containing `\": \"`, \
+                 which is invalid YAML (the parser drops the whole field) — \
+                 wrap it in a block scalar (`description: >`) or quote the \
+                 whole value. Offending value: {inline:?}",
+                path.display()
+            ));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "skill frontmatter `description:` scalars are invalid YAML:\n{}",
+        failures.join("\n")
+    );
+}

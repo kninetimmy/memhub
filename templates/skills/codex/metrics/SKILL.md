@@ -1,6 +1,7 @@
 ---
 name: metrics
-description: Show the token-accounting dashboard panel for the current memhub project — 7-day and 30-day recall/session token totals, context offset vs full-ledger baseline, and a recent-sessions table. Trigger on: "token usage", "context cost", "how many tokens", "recall savings", "show memhub metrics", "token accounting".
+description: >
+  Show the token-accounting dashboard panel for the current memhub project — 7-day and 30-day recall/session token totals, context offset vs full-ledger baseline, and a recent-sessions table. Trigger on: "token usage", "context cost", "how many tokens", "recall savings", "show memhub metrics", "token accounting".
 framework: memhub
 framework_version: 1.0.0
 last_updated: 2026-05-16
