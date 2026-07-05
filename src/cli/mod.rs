@@ -757,6 +757,13 @@ pub fn run(cli: Cli) -> Result<()> {
                 } else {
                     println!("No {scope} document matched {ident}.");
                 }
+                if !removed {
+                    // A miss is a failed operation: exit nonzero so a
+                    // script's `memhub doc rm x && ...` doesn't proceed as
+                    // though it removed something. The JSON/text body above
+                    // is still printed (F16).
+                    process::exit(1);
+                }
             }
             DocCommand::Show {
                 ident,
@@ -779,6 +786,10 @@ pub fn run(cli: Cli) -> Result<()> {
                         } else {
                             println!("No {scope} document matched {ident}.");
                         }
+                        // A miss is a failed lookup: exit nonzero (the
+                        // `{"found": false}` body is still printed) so it
+                        // is not mistaken for a successful show (F16).
+                        process::exit(1);
                     }
                     Some((meta, chunks)) => {
                         if as_json {
@@ -1336,6 +1347,7 @@ pub fn run(cli: Cli) -> Result<()> {
             finish,
             staged,
             allow_self_stage,
+            verify_last,
             json: as_json,
         } => {
             commands::upgrade::run(
@@ -1350,19 +1362,21 @@ pub fn run(cli: Cli) -> Result<()> {
                     yes,
                     no_skills,
                     no_gc,
+                    verify_last,
                 },
             )?;
         }
         TopLevelCommand::Sync { command } => match command {
             SyncCommand::Snapshot {
                 out_dir,
+                force,
                 json: as_json,
             } => {
                 let out_dir = match out_dir {
                     Some(p) => p,
                     None => commands::sync::default_remote_dir(&cwd)?,
                 };
-                let summary = commands::sync::snapshot(&cwd, &out_dir)?;
+                let summary = commands::sync::snapshot(&cwd, &out_dir, force)?;
                 if as_json {
                     println!(
                         "{}",

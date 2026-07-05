@@ -52,7 +52,8 @@ pub fn open_code_index(db_path: &Path) -> Result<Connection> {
     conn.execute_batch(
         "PRAGMA foreign_keys = ON;
          PRAGMA journal_mode = WAL;
-         PRAGMA busy_timeout = 5000;",
+         PRAGMA busy_timeout = 5000;
+         PRAGMA recursive_triggers = OFF;",
     )?;
     schema::bootstrap(&conn)?;
     Ok(conn)
@@ -464,20 +465,9 @@ pub fn remove_index(start: &Path) -> Result<RemoveOutcome> {
 /// re-running the model. Cache misses are gathered into a single batched
 /// inference. Returns the number of chunks given an embedding row.
 fn embed_missing(conn: &mut Connection) -> Result<usize> {
-    // Seed the cache from embeddings that survived the chunk diff.
-    let mut cache: HashMap<String, Vec<f32>> = HashMap::new();
-    {
-        let mut stmt = conn.prepare("SELECT content_hash, vector FROM code_embeddings")?;
-        let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
-        })?;
-        for row in rows {
-            let (hash, blob) = row?;
-            cache.insert(hash, le_bytes_to_vector(&blob));
-        }
-    }
-
     // Chunks still missing a vector (new this pass, or a prior embed blip).
+    // Queried FIRST so a warm `locate` — where nothing is missing — returns
+    // before decoding the entire `code_embeddings` table into the cache.
     let missing: Vec<(i64, String)> = {
         let mut stmt = conn.prepare(
             "SELECT c.id, c.embed_text FROM code_chunks c
@@ -489,6 +479,19 @@ fn embed_missing(conn: &mut Connection) -> Result<usize> {
     };
     if missing.is_empty() {
         return Ok(0);
+    }
+
+    // Seed the cache from embeddings that survived the chunk diff.
+    let mut cache: HashMap<String, Vec<f32>> = HashMap::new();
+    {
+        let mut stmt = conn.prepare("SELECT content_hash, vector FROM code_embeddings")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+        })?;
+        for row in rows {
+            let (hash, blob) = row?;
+            cache.insert(hash, le_bytes_to_vector(&blob));
+        }
     }
 
     // Hash each chunk's embed_text; gather the unique cache-miss texts for

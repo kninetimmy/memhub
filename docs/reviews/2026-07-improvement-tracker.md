@@ -19,7 +19,7 @@ numbers. Default-off config additions must keep an untouched install byte-identi
 
 | Wave | Theme | Done / Total | Gating decisions |
 |---|---|---|---|
-| 0 | Fix-now defects | 7 / 17 | Q29 (F1), Q39 (F11) |
+| 0 | Fix-now defects | 15 / 17 | Q29 (F1), Q39 (F11) |
 | 1 | Loud states (doctor/status/integrity) | 0 / 5 | Q35 |
 | 2 | Session-start token diet | 0 / 7 | Q21–Q25, **Q41 (spike gates trim)** |
 | 3 | Staleness / lifecycle | 0 / 7 | Q1–Q6 |
@@ -60,8 +60,8 @@ two gated items (F1, F11).
 - [x] **F14/P9** — removed the non-existent `--json` from `integrations enable-k9` in
   both init-project variants (bootstrap-k9 `--json` verified valid, left intact).
   — 2026-07-05, PR-A (wave0/pr-a-text).
-- [ ] **F16/N13** — moved wholesale to **PR-B**: the message wording shares the exact
-  `cli/mod.rs` lines as the exit-code fix, so splitting it across branches would conflict.
+- [x] **F16/N13** — done in **PR-B** (message wording + exit-code fix share the same
+  `cli/mod.rs` lines). — 2026-07-05, PR-B (wave0/pr-b-safe-code).
 - [x] text-pass riders: **P8** (`/check-init-k9`, `/init-project-k9`, wrap-up
   "project-scoped" falsehood), **P10** (stale locate-reranker rationale in skills +
   `--help`), **P11** (AGENTS.md Codex-accounting note, every clause false), **P12**
@@ -73,25 +73,36 @@ two gated items (F1, F11).
 ### PR-B — safe code (zero decisions)
 - [x] **F2a** — machine workaround: set `claude_transcripts_dir`, run `metrics rescan`;
   accounting restored (120→129 sessions). — 2026-07-05, local config (not committed; per-machine)
-- [ ] **F2b** — code fix: `detect_claude_transcripts_dir` uses `db::home_dir()`, strips
-  `\\?\`, encodes `:`/`\`→`-`, no leading dash; same HOME fix for Codex detector +
-  Windows-shape test.
-- [ ] **F3** — reconciler guard against attributing to open sessions older than N hours;
-  post-adopt hygiene closing foreign `session_metrics` rows.
-- [ ] **F6** — upgrade exit code 3 = "handed off, pending"; `unwrap_or(0)`→`unwrap_or(1)`;
-  add `memhub upgrade --verify-last`.
-- [ ] **F7** — `apply_all` refuses/warns on schema versions newer than the compiled list;
-  stop the downgrade in `upsert_project`.
-- [ ] **F9** — pin `PRAGMA recursive_triggers = OFF` in both `open_connection`s; fix the
-  inverted migration 0014 comment.
-- [ ] **F10** — reorder `embed_missing`: query `missing` first, early-return (skips a
-  full-table vector decode per warm `locate`).
-- [ ] **F12/P16** — `snapshot()` runs `check` first, refuses on `drive-ahead`/`diverged`
-  without `--force`; touch all three wrap-up variants + one skill step.
-- [ ] **F15/P7** — map `codex-mcp-client` in `normalize_client_name`; warn on unmapped
-  client names.
-- [ ] **F16/N13** code half — `doc rm`/`doc show` exit nonzero on ident miss (keep
-  `{"found": false}` for `--json`).
+- [x] **F2b** — code fix: `detect_claude_transcripts_dir`/`detect_codex_sessions_dir` use
+  `db::home_dir()`; new `encode_claude_project_dir` strips `\\?\` and maps `/`,`\`,`:`→`-`
+  (no leading dash on Windows), preserving the Unix leading-dash shape byte-for-byte.
+  Pure-fn Windows+Unix shape test. — 2026-07-05, PR-B (wave0/pr-b-safe-code).
+- [x] **F3** — reconciler caps an open session's window at `started_at +
+  OPEN_SESSION_MAX_HOURS` (12h) instead of `now`, so a sync-adopted zombie can't swallow
+  local recalls; `sync adopt` also closes foreign open `session_metrics` rows post-swap.
+  Lib + integration tests both directions. — 2026-07-05, PR-B (wave0/pr-b-safe-code).
+- [x] **F6** — Windows staged handoff exits `3` (handed off, pending) not `0`; finish-child
+  `unwrap_or(0)`→`unwrap_or(1)`; `last_upgrade.json` gains a `state` field; new `memhub
+  upgrade --verify-last` (exits 0/1/3). — 2026-07-05, PR-B (wave0/pr-b-safe-code).
+- [x] **F7** — `apply_all` refuses a DB whose `schema_migrations` holds a version newer
+  than the compiled list (points at `memhub upgrade`); `upsert_project` ratchets
+  `schema_version` with `MAX(...)` so an older binary can't downgrade it. Tests.
+  — 2026-07-05, PR-B (wave0/pr-b-safe-code).
+- [x] **F9** — pinned `PRAGMA recursive_triggers = OFF` in both `open_connection` and
+  `open_code_index`; corrected the inverted migration 0014 comment (trigger fires on
+  direct chunk deletes only, not the FK cascade). — 2026-07-05, PR-B (wave0/pr-b-safe-code).
+- [x] **F10** — reordered `embed_missing`: query `missing` first and early-return before
+  the full-table embedding-cache decode (skips it per warm `locate`).
+  — 2026-07-05, PR-B (wave0/pr-b-safe-code).
+- [x] **F12/P16** — `snapshot()` runs `check` first and refuses on `drive-ahead`/`diverged`
+  without `--force`/`force=true` (CLI `--force`, MCP `sync_snapshot force`); all three
+  wrap-up variants gain a `sync check` step. Test both branches.
+  — 2026-07-05, PR-B (wave0/pr-b-safe-code).
+- [x] **F15/P7** — mapped `codex-mcp-client`→`codex` in `normalize_client_name`; warn on
+  unmapped client names. Test. — 2026-07-05, PR-B (wave0/pr-b-safe-code).
+- [x] **F16/N13** code half — `doc rm`/`doc show` `process::exit(1)` on an ident miss
+  (JSON `{"removed"/"found": false}` body still printed).
+  — 2026-07-05, PR-B (wave0/pr-b-safe-code).
 
 ### Gated (later in Wave 0)
 - [ ] **F1** — add `--json` to `status`, `init` (+ `fact/decision/command list`).

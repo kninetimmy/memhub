@@ -19,8 +19,11 @@
 //! `recall_metrics` rows are written with `session_id = NULL` (the
 //! recall path has no session identity). We attribute them after the
 //! fact by timestamp window: a recall is assigned to the session whose
-//! `[started_at, COALESCE(ended_at, now)]` interval contains the recall
-//! `ts`. When two sessions' windows overlap (concurrent Claude Code +
+//! `[started_at, COALESCE(ended_at, started_at + N h)]` interval contains
+//! the recall `ts`. An open session (`ended_at IS NULL`) is capped at
+//! `started_at + OPEN_SESSION_MAX_HOURS` rather than reaching to `now`, so
+//! a sync-adopted zombie from another machine can't swallow local recalls
+//! (F3). When two sessions' windows overlap (concurrent Claude Code +
 //! Codex, or two Claude Code windows on the same machine) a recall in
 //! the overlap is assigned to the **most recently started** containing
 //! session and the other loses it. This is a deliberate, documented
@@ -53,6 +56,17 @@ use crate::db::log_write;
 
 const RECONCILER_ACTOR: &str = "metrics:reconciler";
 const PRUNER_ACTOR: &str = "metrics:pruner";
+
+/// How long a still-open (`ended_at IS NULL`) session's attribution
+/// window may extend past its `started_at`. A whole-DB sync adopt (M10)
+/// can import another machine's open session row; `COALESCE(ended_at,
+/// 'now')` would give it a window reaching to *this* machine's clock and
+/// swallow every local recall (F3 — a Mac zombie captured all 20 Windows
+/// recalls). Capping at `started_at + N h` keeps a real live session's
+/// own recalls attributable while a days-old zombie's window has long
+/// since closed. A local session is re-stamped with a fresh `ended_at`
+/// on every scrape, so this only ever bites imported/abandoned rows.
+const OPEN_SESSION_MAX_HOURS: i64 = 12;
 
 /// Opportunistic entry point, gated by the `metrics.enabled` master
 /// switch only — both maintenance jobs touch `recall_metrics`, which
@@ -117,14 +131,17 @@ pub fn run_if_enabled(conn: &Connection, cfg: &MetricsConfig) {
 /// an acceptable staleness for an advisory rollup.
 pub fn reconcile(conn: &Connection) -> Result<usize> {
     // "Most recently started containing session wins" — see the
-    // lossy-attribution note in the module docs.
+    // lossy-attribution note in the module docs. An open session's window
+    // is capped at `started_at + OPEN_SESSION_MAX_HOURS` (not 'now') so an
+    // imported zombie can't swallow this machine's recalls (F3).
+    let window_cap = format!("+{OPEN_SESSION_MAX_HOURS} hours");
     let attributed = conn.execute(
         "UPDATE recall_metrics \
          SET session_id = ( \
              SELECT s.session_id FROM session_metrics s \
              WHERE datetime(recall_metrics.ts) >= datetime(s.started_at) \
                AND datetime(recall_metrics.ts) <= \
-                   datetime(COALESCE(s.ended_at, 'now')) \
+                   datetime(COALESCE(s.ended_at, datetime(s.started_at, ?1))) \
              ORDER BY s.started_at DESC \
              LIMIT 1 \
          ) \
@@ -133,9 +150,9 @@ pub fn reconcile(conn: &Connection) -> Result<usize> {
              SELECT 1 FROM session_metrics s \
              WHERE datetime(recall_metrics.ts) >= datetime(s.started_at) \
                AND datetime(recall_metrics.ts) <= \
-                   datetime(COALESCE(s.ended_at, 'now')) \
+                   datetime(COALESCE(s.ended_at, datetime(s.started_at, ?1))) \
            )",
-        [],
+        params![window_cap],
     )?;
 
     conn.execute(
@@ -252,6 +269,75 @@ mod tests {
             )
             .expect("count orphans");
         assert_eq!(orphans, 0);
+    }
+
+    #[test]
+    fn reconciler_ignores_a_stale_open_session_zombie() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::commands::init::run(temp.path()).expect("init");
+        let ctx = crate::db::open_project(temp.path()).expect("open");
+        let conn = &ctx.conn;
+
+        // A zombie: open (ended_at NULL), started 30 days ago — the shape a
+        // whole-DB sync adopt imports from another machine. Its capped
+        // window (started_at + 12h) closed weeks ago, so a recall *now*
+        // must NOT be attributed to it (the F3 bug attributed all of them).
+        conn.execute(
+            "INSERT INTO session_metrics (session_id, agent, started_at, ended_at) \
+             VALUES ('mac-zombie', 'claude-code', datetime('now','-30 days'), NULL)",
+            [],
+        )
+        .expect("seed zombie");
+        conn.execute(
+            "INSERT INTO recall_metrics \
+                (ts, session_id, query_hash, bundle_tokens, ledger_tokens, \
+                 rerank_used, result_count) \
+             VALUES (datetime('now'), NULL, 'q', 10, 100, 0, 3)",
+            [],
+        )
+        .expect("seed recall");
+
+        reconcile(conn).expect("reconcile");
+
+        let attributed: Option<String> = conn
+            .query_row("SELECT session_id FROM recall_metrics", [], |r| r.get(0))
+            .expect("read");
+        assert_eq!(
+            attributed, None,
+            "a days-old open zombie must not capture the recall"
+        );
+    }
+
+    #[test]
+    fn reconciler_attributes_to_a_live_open_session() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::commands::init::run(temp.path()).expect("init");
+        let ctx = crate::db::open_project(temp.path()).expect("open");
+        let conn = &ctx.conn;
+
+        // A genuinely live session: open, started an hour ago. Its recall
+        // is inside the capped window and must attribute normally.
+        conn.execute(
+            "INSERT INTO session_metrics (session_id, agent, started_at, ended_at) \
+             VALUES ('live', 'claude-code', datetime('now','-1 hour'), NULL)",
+            [],
+        )
+        .expect("seed live");
+        conn.execute(
+            "INSERT INTO recall_metrics \
+                (ts, session_id, query_hash, bundle_tokens, ledger_tokens, \
+                 rerank_used, result_count) \
+             VALUES (datetime('now'), NULL, 'q', 10, 100, 0, 3)",
+            [],
+        )
+        .expect("seed recall");
+
+        let n = reconcile(conn).expect("reconcile");
+        assert_eq!(n, 1, "the live session's recall attributes");
+        let attributed: Option<String> = conn
+            .query_row("SELECT session_id FROM recall_metrics", [], |r| r.get(0))
+            .expect("read");
+        assert_eq!(attributed.as_deref(), Some("live"));
     }
 
     #[test]

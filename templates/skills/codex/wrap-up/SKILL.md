@@ -189,16 +189,22 @@ app uploads it.
    `drive_subpath`), ask the user once for the absolute path of the
    synced folder and tell them to set `[sync] drive_subpath`. Otherwise
    the resolved `remote_dir` is the target.
-2. Snapshot **directly into the synced folder**: `memhub sync snapshot`
+2. **Check the remote first so you never clobber a newer push:** `memhub
+   sync check`. If the verdict is `drive-ahead` or `diverged`, **stop and
+   `/catch-up` first** — do not push. `up-to-date`, `local-ahead`, and
+   `no-remote` are safe.
+3. Snapshot **directly into the synced folder**: `memhub sync snapshot`
    — omit the path; it defaults to the canonical
    `<drive_subpath>/memhub/<project_id>` (emits `project.sqlite` +
    `manifest.json`; `VACUUM INTO` writes a complete file, so no
-   half-written upload).
-3. Record the baseline so the next `/catch-up` reads `up-to-date`:
+   half-written upload). It **refuses** on a drive-ahead/diverged remote;
+   if that happens, `/catch-up` first rather than passing `--force`.
+4. Record the baseline so the next `/catch-up` reads `up-to-date`:
    `memhub sync commit` (same path-less default).
 
-If `sync snapshot` fails (e.g. the synced folder doesn't exist yet),
-say so and **do not** run `commit`. The local DB is unaffected.
+If `sync snapshot` fails or refuses (remote ahead/diverged, or the
+synced folder doesn't exist yet), say so and **do not** run `commit`.
+The local DB is unaffected.
 
 ## Reminder, not a commit
 

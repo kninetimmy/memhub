@@ -152,10 +152,16 @@ pub enum TopLevelCommand {
         staged: bool,
         /// Windows only: permit the staged self-relaunch when no TTY is
         /// attached (CI/scripts). The invoking shell will receive exit
-        /// code 0 regardless of outcome — read `~/.memhub/last_upgrade.json`
-        /// or the final `memhub upgrade:` line for the real result.
+        /// code 3 (handed off; result pending) — poll `memhub upgrade
+        /// --verify-last`, or read the final `memhub upgrade:` line.
         #[arg(long)]
         allow_self_stage: bool,
+        /// Report the outcome of the most recent `memhub upgrade` from
+        /// ~/.memhub/last_upgrade.json and exit 0 (ok) / 1 (failed or no
+        /// record) / 3 (handed off, still pending). Does not rebuild;
+        /// useful after a staged Windows run whose shell only saw exit 3.
+        #[arg(long)]
+        verify_last: bool,
         #[arg(long)]
         json: bool,
     },
@@ -386,6 +392,11 @@ pub enum SyncCommand {
         /// written inside it. Omit to use the canonical
         /// `<drive_subpath>/memhub/<project_id>` from config.
         out_dir: Option<PathBuf>,
+        /// Overwrite the remote even when it is drive-ahead of or
+        /// diverged from local (last-writer-wins). Without it a push
+        /// refuses rather than clobber newer remote state.
+        #[arg(long)]
+        force: bool,
         #[arg(long)]
         json: bool,
     },

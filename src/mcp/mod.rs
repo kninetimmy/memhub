@@ -405,10 +405,13 @@ impl MemhubServer {
 
     async fn sync_snapshot_impl(
         &self,
-        Parameters(params): Parameters<SyncRemoteParams>,
+        Parameters(params): Parameters<SyncSnapshotParams>,
     ) -> std::result::Result<Json<SyncSnapshotToolResponse>, McpError> {
         let out_dir = self.resolve_sync_remote(params.remote.as_deref())?;
-        let summary = commands::sync::snapshot(&self.start, &out_dir).map_err(map_tool_error)?;
+        // Push-side clobber gate (F12): without `force` the snapshot refuses
+        // to overwrite a remote that is drive-ahead of or diverged from local.
+        let summary = commands::sync::snapshot(&self.start, &out_dir, params.force.unwrap_or(false))
+            .map_err(map_tool_error)?;
         Ok(Json(SyncSnapshotToolResponse::from(summary)))
     }
 
@@ -693,11 +696,11 @@ impl MemhubServer {
 
     #[tool(
         name = "sync_snapshot",
-        description = "Cross-machine Drive sync (M10): write a consistent single-file DB snapshot + manifest into the synced Drive folder. With the OS-synced-folder transport this IS the push — follow with sync_commit to record the baseline. Defaults the target to <drive_subpath>/memhub/<project_id>; pass `remote` to override. Requires `memhub sync enable` for this repo."
+        description = "Cross-machine Drive sync (M10): write a consistent single-file DB snapshot + manifest into the synced Drive folder. With the OS-synced-folder transport this IS the push — follow with sync_commit to record the baseline. Refuses when the remote is drive-ahead of or diverged from local (it would clobber newer state) — pull first, or pass `force=true` for last-writer-wins. Defaults the target to <drive_subpath>/memhub/<project_id>; pass `remote` to override. Requires `memhub sync enable` for this repo."
     )]
     async fn sync_snapshot(
         &self,
-        params: Parameters<SyncRemoteParams>,
+        params: Parameters<SyncSnapshotParams>,
     ) -> std::result::Result<Json<SyncSnapshotToolResponse>, McpError> {
         self.sync_snapshot_impl(params).await
     }
@@ -1473,6 +1476,15 @@ struct SyncRemoteParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
+struct SyncSnapshotParams {
+    remote: Option<String>,
+    /// Overwrite the remote even when it is drive-ahead of or diverged
+    /// from local (last-writer-wins). Without it the push refuses rather
+    /// than clobber newer remote state — surface the refusal to the user.
+    force: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
 struct SyncAdoptParams {
     remote: Option<String>,
     /// Must be `true` to perform the destructive overwrite. Without it
@@ -1726,9 +1738,18 @@ fn optional_meta_value(meta: Option<&Meta>) -> Option<Value> {
 fn normalize_client_name(name: &str) -> String {
     match name.trim().to_ascii_lowercase().as_str() {
         "claude-ai" | "claude code" | "claude-code" => "claude-code".to_string(),
-        "codex" | "codex-cli" | "openai-codex" => "codex".to_string(),
+        // `codex-mcp-client` is Codex's actual MCP client name — without it,
+        // Codex writes were bucketed under the raw string, escaping the
+        // agent rollups (F15).
+        "codex" | "codex-cli" | "openai-codex" | "codex-mcp-client" => "codex".to_string(),
         "opencode" | "open-code" | "opencode-cli" => "opencode".to_string(),
-        other => other.to_string(),
+        other => {
+            // An unmapped client still works (it buckets under its own
+            // name); the warning surfaces the missing alias so it can be
+            // added rather than silently fragmenting the metrics.
+            log::warn!("mcp: unmapped client name '{}' — bucketing verbatim", sanitize_for_log(other));
+            other.to_string()
+        }
     }
 }
 
@@ -2028,6 +2049,8 @@ mod tests {
         assert_eq!(normalize_client_name("claude-ai"), "claude-code");
         assert_eq!(normalize_client_name("Claude Code"), "claude-code");
         assert_eq!(normalize_client_name("openai-codex"), "codex");
+        assert_eq!(normalize_client_name("codex-mcp-client"), "codex");
+        assert_eq!(normalize_client_name("Codex-MCP-Client"), "codex");
         assert_eq!(normalize_client_name("OpenCode"), "opencode");
         assert_eq!(normalize_client_name("opencode-cli"), "opencode");
         assert_eq!(normalize_client_name("CustomClient"), "customclient");

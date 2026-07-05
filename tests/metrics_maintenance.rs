@@ -132,22 +132,23 @@ fn recall_outside_any_window_is_left_unattributed() {
     );
 }
 
-/// An open session (NULL `ended_at`) extends its window to "now", so a
-/// recall after `started_at` still attributes.
+/// A *live* open session (NULL `ended_at`, started within the cap) still
+/// attributes a recall inside its window — the common case must keep
+/// working.
 #[test]
-fn open_session_window_extends_to_now() {
+fn live_open_session_attributes_within_cap() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
     let ctx = open(temp.path());
 
-    insert_session(
-        &ctx.conn,
-        "sess-open",
-        "claude-code",
-        "2020-01-01T00:00:00.000Z",
-        None,
-    );
-    // CURRENT_TIMESTAMP-form "now-ish" value, comfortably <= now.
+    ctx.conn
+        .execute(
+            "INSERT INTO session_metrics (session_id, agent, started_at, ended_at) \
+             VALUES ('sess-live', 'claude-code', datetime('now','-1 hour'), NULL)",
+            [],
+        )
+        .expect("insert session");
+    // CURRENT_TIMESTAMP-form "now-ish" value, comfortably inside the cap.
     ctx.conn
         .execute(
             "INSERT INTO recall_metrics \
@@ -160,7 +161,39 @@ fn open_session_window_extends_to_now() {
 
     let n = maintenance::reconcile(&ctx.conn).expect("reconcile");
     assert_eq!(n, 1);
-    assert_eq!(recall_calls(&ctx.conn, "sess-open"), 1);
+    assert_eq!(recall_calls(&ctx.conn, "sess-live"), 1);
+}
+
+/// A *stale* open session (NULL `ended_at`, started long ago) must NOT
+/// swallow a much-later recall: its window is capped at `started_at + N h`
+/// rather than extending to "now". This is the shape a whole-DB sync
+/// adopt imports from another machine — the F3 zombie.
+#[test]
+fn stale_open_session_window_is_capped_not_unbounded() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+    let ctx = open(temp.path());
+
+    insert_session(
+        &ctx.conn,
+        "sess-zombie",
+        "claude-code",
+        "2020-01-01T00:00:00.000Z",
+        None,
+    );
+    ctx.conn
+        .execute(
+            "INSERT INTO recall_metrics \
+                (ts, session_id, query_hash, bundle_tokens, ledger_tokens, \
+                 rerank_used, result_count) \
+             VALUES (datetime('now', '-1 minute'), NULL, 'h', 1, 2, 0, 1)",
+            [],
+        )
+        .expect("insert recall");
+
+    let n = maintenance::reconcile(&ctx.conn).expect("reconcile");
+    assert_eq!(n, 0, "a years-old open zombie must not capture the recall");
+    assert_eq!(recall_calls(&ctx.conn, "sess-zombie"), 0);
 }
 
 /// Overlapping windows: the recall lands in the overlap and must go to

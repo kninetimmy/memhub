@@ -121,9 +121,12 @@ CREATE TRIGGER IF NOT EXISTS doc_chunks_fts_au AFTER UPDATE ON doc_chunks BEGIN
 END;
 
 -- Cascade chunk deletes into the polymorphic embeddings table (mirror
--- 0010). This fires on direct chunk deletes AND on the FK cascade from a
--- `documents` delete (the writer also deletes chunks explicitly on
--- re-ingest; both paths converge here).
+-- 0010). recursive_triggers is pinned OFF (see `open_connection`), so
+-- this fires ONLY on direct `doc_chunks` deletes — NOT on chunks removed
+-- by the FK cascade when a `documents` row is deleted. The writer
+-- therefore deletes chunks explicitly (on re-ingest and on `doc rm`)
+-- before the parent row, so every removal routes through this
+-- direct-delete trigger and no embedding is orphaned.
 CREATE TRIGGER IF NOT EXISTS doc_chunks_delete_embeddings
     AFTER DELETE ON doc_chunks BEGIN
     DELETE FROM embeddings WHERE source_type = 'doc_chunk' AND source_id = old.id;
