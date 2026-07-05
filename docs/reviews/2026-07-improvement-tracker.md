@@ -19,7 +19,7 @@ numbers. Default-off config additions must keep an untouched install byte-identi
 
 | Wave | Theme | Done / Total | Gating decisions |
 |---|---|---|---|
-| 0 | Fix-now defects | 1 / 17 | Q29 (F1), Q39 (F11) |
+| 0 | Fix-now defects | 2 / 17 | Q29 (F1), Q39 (F11) |
 | 1 | Loud states (doctor/status/integrity) | 0 / 5 | Q35 |
 | 2 | Session-start token diet | 0 / 7 | Q21–Q25, **Q41 (spike gates trim)** |
 | 3 | Staleness / lifecycle | 0 / 7 | Q1–Q6 |
@@ -40,9 +40,11 @@ Two PRs: **PR-A text/docs** (no decisions) and **PR-B safe code** (no decisions)
 two gated items (F1, F11).
 
 ### PR-A — text/docs (zero decisions)
-- [ ] **F13/P3** — fix invalid YAML frontmatter (`Trigger on: "..."` unquoted) in
-  recall/locate/doc/metrics templates ×3 agents + installed copies; then `memhub
-  upgrade` to resync. *Highest urgency: these four skills are silently dead today.*
+- [x] **F13/P3** — fixed invalid YAML frontmatter: folded `description:` to block
+  scalar (`>`) in recall/locate/doc/metrics templates ×3 agents + added dependency-free
+  regression guard `skill_frontmatter_descriptions_are_valid_yaml_scalars` in
+  `tests/skill_parity.rs`. — 2026-07-05, PR-A (wave0/pr-a-text).
+  *Installed-copy resync via `memhub upgrade` is a post-merge machine step (still pending).*
 - [ ] **F5** — remove skill/MCP description falsehoods (docs-in-default flipped by
   decision 90; `sync-md` "managed block" that doesn't exist; "unproven until M11 PR5"
   remnant). Files: `templates/skills/**`, `src/mcp/mod.rs`.

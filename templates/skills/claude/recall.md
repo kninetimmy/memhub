@@ -1,6 +1,7 @@
 ---
 name: recall
-description: Look up relevant facts, decisions, and tasks for the current conversation via memhub recall (SQL+RAG hybrid). Prefer this over reading PROJECT_LEDGER.md mid-session. Trigger on: "what did we decide about X", "is there a fact/decision/task about Y", "recall X", "what do we know about Z", "look this up in memhub".
+description: >
+  Look up relevant facts, decisions, and tasks for the current conversation via memhub recall (SQL+RAG hybrid). Prefer this over reading PROJECT_LEDGER.md mid-session. Trigger on: "what did we decide about X", "is there a fact/decision/task about Y", "recall X", "what do we know about Z", "look this up in memhub".
 framework: memhub
 framework_version: 1.0.0
 last_updated: 2026-05-13
