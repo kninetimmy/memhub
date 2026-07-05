@@ -204,10 +204,10 @@ check whether one exists at repo root:
 
   Approval gate before writing.
 
-- **One exists already.** Leave it alone. Offer to run
-  `memhub sync-md` so memhub populates its managed block inside the
-  existing file (the block is a short "current state" pointer the
-  agent reads at session start). Approval gate.
+- **One exists already.** Leave it alone. `memhub sync-md` does not
+  edit it — it only writes the rendered twins at
+  `.memhub/rendered/CLAUDE.md` and `.memhub/rendered/AGENTS.md`, the
+  same local generated output as `PROJECT.md`.
 
 ## Summary
 

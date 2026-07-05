@@ -13,9 +13,9 @@ database is the source of truth; the rendered markdown files
 `memhub render`, not a parallel narrative. Your job is to
 draft updates, get approval per item, write to the DB, then re-render.
 
-This is the project-level memhub-native wrap-up. It overrides the
-user-level K9 `/wrap-up` when invoked inside the memhub repo. Other
-repos still using K9 are unaffected.
+This is the memhub-native wrap-up, installed as a user-level skill
+(decision 97) — it fires in any repo with `.memhub/`, not just this
+one.
 
 ## Detection
 
@@ -221,6 +221,5 @@ boundary is intentional.
 - The PRD principle "agents are untrusted writers" still applies even
   inside wrap-up: every approved item flows through a write that
   records the actor.
-- This skill is project-scoped to the memhub repo. The user-level K9
-  `/wrap-up` continues to fire in any repo without `.memhub/` and
-  without this skill.
+- This skill is user-level; it fires in any repo that has `.memhub/`.
+  In a repo without `.memhub/`, the Detection step stops here.

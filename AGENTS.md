@@ -8,7 +8,7 @@ This file is the Codex/OpenCode counterpart to `CLAUDE.md`. The two exist so Cod
 
 This repo is **memhub-primary** as of M7-002 (2026-05-13). The DB at `.memhub/project.sqlite` is the source of truth; rendered markdown is a local human-readable view under `.memhub/rendered/`. At session start, read `.memhub/rendered/PROJECT.md` if present for the "currently building / next up / open questions" state, the architecture narrative, and recent session notes; if it is missing, fall back to `memhub recall` / `memhub status`.
 
-The mid-session routing rules — prefer recall over the `PROJECT_LEDGER.md` ledger, the turn-1-only PROJECT.md read, and re-render after changes — live in the memhub MCP server's own instructions (`src/mcp/mod.rs`) and are not duplicated here.
+The mid-session routing rules — prefer recall over the `PROJECT_LEDGER.md` ledger, and the turn-1-only PROJECT.md read — live in the memhub MCP server's own instructions (`src/mcp/mod.rs`) and are not duplicated here. (Re-rendering after mid-session DB writes is a `/wrap-up` step, not an MCP-instructions rule.)
 
 If recall returns a `warnings[].kind == "stale_embeddings"` entry, surface it and ask the user before invoking `/reindex`. Recall results stay usable in the meantime — the warning means hybrid scoring may be undercounting some rows, not that retrieval is broken.
 
@@ -168,11 +168,12 @@ Two independent sub-switches under `[metrics]`:
   token totals. Scraping is incremental and never fatal; bad lines are
   skipped.
 
-**Codex note:** component B currently scrapes Claude Code transcripts
-only. `codex_transcripts_dir` in `[metrics]` is a stub until the Codex
-transcript format is confirmed; until then a Codex session contributes
-component-A proxy rows (every `memhub recall` is logged regardless of
-host) but no real input/output token totals.
+**Codex note:** component B scrapes Codex session transcripts too
+(decision 84): it walks `~/.codex/sessions/YYYY/MM/DD`, filters by
+session cwd, and maps per-turn `last_token_usage` into
+`session_metrics`; `memhub metrics enable` auto-detects the dir. A
+Codex session contributes both component-A proxy rows and real
+input/output token totals.
 
 **Proxy contract:** `bundle_tokens` is the token count of the recall bundle
 actually returned. `ledger_tokens` (per row in `recall_metrics`) is the size

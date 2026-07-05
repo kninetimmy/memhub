@@ -100,23 +100,28 @@ Please install memhub for me, then turn on hybrid recall.
    takes a couple of minutes — it downloads and bundles a ~130 MB
    embedding model into the binary.
 3. Run `memhub --version` to verify.
-4. Copy the user-level skills so /wrap-up, /catch-up, /check-init,
+4. Register memhub as an MCP server so Claude Code can call it as a
+   structured tool (this is also how its routing instructions load):
+   run `claude mcp add memhub -- memhub serve` (add `--scope user` to
+   make it available across your sessions).
+5. Copy the user-level skills so /wrap-up, /catch-up, /check-init,
    /init-project, /recall, /locate, /reindex, /eval-recall, /doc, /metrics, /viz,
    /global, and /upgrade all work as slash commands:
 
        cp ~/src/memhub/templates/skills/claude/*.md ~/.claude/commands/
 
-5. cd back to this repo and run `memhub init`, then `memhub status`.
+6. cd back to this repo and run `memhub init`, then `memhub status`.
    Tell me what status reports.
-6. Ask me: hybrid recall (recommended — semantic + keyword) or FTS-only
+7. Ask me: hybrid recall (recommended — semantic + keyword) or FTS-only
    (lighter, keyword search only)?
-     - If I say hybrid: append `[retrieval]\nmode = "hybrid"` to
-       .memhub/config.toml, then run `memhub index rebuild --actor
+     - If I say hybrid: set `mode = "hybrid"` under the existing
+       `[retrieval]` table in .memhub/config.toml (memhub init already
+       wrote that table), then run `memhub index rebuild --actor
        claude-code:reindex`. Report how many rows were embedded.
      - If I say FTS: nothing to do; the default is already FTS.
-7. Run `memhub recall "<some keyword from my project>" --max-results 3`
+8. Run `memhub recall "<some keyword from my project>" --max-results 3`
    so I can see the recall surface working end-to-end.
-8. Tell me about the optional machine-global store: a second SQLite at
+9. Tell me about the optional machine-global store: a second SQLite at
    ~/.memhub/global.sqlite, shared by every repo on this machine, for
    machine/toolchain facts and standing engineering policy — it's the
    global-vs-repo CLAUDE.md idea, made retrievable. Off by default and
@@ -127,14 +132,14 @@ Please install memhub for me, then turn on hybrid recall.
        default.
      - If I say no: just note `/global` and `memhub global enable` are
        available anytime.
-9. Tell me memhub can also ingest long reference docs (design specs,
+10. Tell me memhub can also ingest long reference docs (design specs,
    API contracts) as RAG-searchable material. After the first doc add,
    relevant doc chunks automatically surface in plain recall — gated by
    a relevance threshold so off-topic docs stay silent. Ask whether I
    want to ingest one now — if I give you a path, run
    `memhub doc add "<path>" --json` and report the chunk count;
    if not, just note `/doc` is available anytime.
-10. Tell me memhub can sync this repo's memory between my own machines
+11. Tell me memhub can sync this repo's memory between my own machines
     through a folder that already syncs (Google Drive for Desktop, or an
     rclone mount on Linux) — memhub stays offline and only reads/writes a
     local path. It's off by default and opt-in per repo. Ask whether I
@@ -150,8 +155,8 @@ Please install memhub for me, then turn on hybrid recall.
 
 Don't touch any files in this repo other than what `memhub init` writes
 (.memhub/ and the generated-output .gitignore entries), the
-.memhub/config.toml edits in steps 6, 8, and 10, and — only if I opt in
-at step 8 — the machine-global store at ~/.memhub/global.sqlite (outside
+.memhub/config.toml edits in steps 7, 9, and 11, and — only if I opt in
+at step 9 — the machine-global store at ~/.memhub/global.sqlite (outside
 this repo, in my home directory; that is expected).
 ```
 
@@ -190,8 +195,9 @@ Please install memhub for me, then turn on hybrid recall.
    Tell me what status reports.
 7. Ask me: hybrid recall (recommended — semantic + keyword) or FTS-only
    (lighter, keyword search only)?
-     - If I say hybrid: append `[retrieval]\nmode = "hybrid"` to
-       .memhub/config.toml, then run `memhub index rebuild --actor
+     - If I say hybrid: set `mode = "hybrid"` under the existing
+       `[retrieval]` table in .memhub/config.toml (memhub init already
+       wrote that table), then run `memhub index rebuild --actor
        codex:reindex`. Report how many rows were embedded.
      - If I say FTS: nothing to do; the default is already FTS.
 8. Run `memhub recall "<some keyword from my project>" --max-results 3`
@@ -282,8 +288,9 @@ Please install memhub for me, then turn on hybrid recall.
    Tell me what status reports.
 8. Ask me: hybrid recall (recommended — semantic + keyword) or FTS-only
    (lighter, keyword search only)?
-     - If I say hybrid: append `[retrieval]\nmode = "hybrid"` to
-       .memhub/config.toml, then run `memhub index rebuild --actor
+     - If I say hybrid: set `mode = "hybrid"` under the existing
+       `[retrieval]` table in .memhub/config.toml (memhub init already
+       wrote that table), then run `memhub index rebuild --actor
        opencode:reindex`. Report how many rows were embedded.
      - If I say FTS: nothing to do; the default is already FTS.
 9. Run `memhub recall "<some keyword from my project>" --max-results 3`
@@ -362,8 +369,8 @@ cp ~/src/memhub/templates/commands/opencode/*.md ~/.config/opencode/commands/
 #   { "mcp": { "memhub": { "type": "local", "command": ["memhub", "serve"], "enabled": true } } }
 
 # 6. (Recommended) Turn on hybrid recall
-#    Add to .memhub/config.toml:
-#       [retrieval]
+#    In .memhub/config.toml, set mode under the existing [retrieval]
+#    table (memhub init already writes it):
 #       mode = "hybrid"
 #    Then backfill embeddings for existing rows:
 memhub index rebuild --actor cli:user
@@ -835,7 +842,7 @@ When you accept a pending MCP proposal via `memhub review accept`, the durable r
 
 - **Read:** `status`, `search`, `recall`, `locate`, `list_tasks`, `list_decisions`, `list_facts`, `list_pending_writes`, `get_command`
 - **Write (direct):** `task_add`, `task_done`, `record_command`, `log_session_note`, `render`
-- **Write (staged for review):** `propose_fact`, `propose_decision` — both take an optional `global` flag; a `global=true` proposal stages in the repo's `pending_writes` and only becomes durable in `~/.memhub/global.sqlite` on human `memhub review accept`. There is no `global` parameter on any MCP write — the global path is never agent-automatic.
+- **Write (staged for review):** `propose_fact`, `propose_decision` — both take an optional `global` flag; a `global=true` proposal stages in the repo's `pending_writes` and only becomes durable in `~/.memhub/global.sqlite` on human `memhub review accept`. (`doc_add` has no `global` parameter.) The global path is never agent-automatic.
 - **Cross-machine sync (M10):** `sync_status`, `sync_snapshot`, `sync_check`, `sync_commit`, `sync_adopt` — all default the target to the canonical `<drive_subpath>/memhub/<project_id>` folder. `sync_adopt` is gated: without `confirm=true` it returns the would-change verdict and changes nothing (the one destructive op). See [Sync across your machines](#sync-across-your-machines-google-drive).
 
 ### Token accounting

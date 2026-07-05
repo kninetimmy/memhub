@@ -14,3 +14,4 @@ Workflow:
 - Use source-type filters only when the user asks for docs/facts/decisions/tasks specifically.
 - If recall returns stale-embedding warnings, surface the warning and ask before running `/reindex`.
 - If recall is empty, say that clearly and only fall back to rendered files when there is a concrete reason.
+- The response includes `available_docs` — ingested doc chunks that did not surface this call. If it's non-zero and the question is design/spec/architecture-flavored, consider a doc-scoped follow-up: `memhub recall "<query>" --source-type doc`.

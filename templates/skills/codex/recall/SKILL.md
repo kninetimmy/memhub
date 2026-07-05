@@ -54,9 +54,10 @@ Pick a filter only when the question narrows naturally; otherwise let
 the default behavior surface across all three source types.
 
 - `source_types=["fact"]` / `--source-type fact` (repeatable):
-  restrict to one or more of `fact`, `decision`, `task`, `doc`.
-  `doc` is opt-in — never in the default bundle (see "Reaching for
-  ingested docs" below).
+  restrict to one or more of `fact`, `decision`, `task`, `doc`. Plain
+  recall already surfaces doc chunks once the repo has ingested at
+  least one doc (see "Reaching for ingested docs" below); scope to
+  `doc` explicitly for docs only.
 - `max_results=N` / `--max-results N`: cap the bundle. Default comes
   from `.memhub/config.toml` (`[retrieval] default_max_results`,
   usually 6).
@@ -112,17 +113,20 @@ The bundle has the shape:
 - `source` is the row's provenance string (`user`, `user+agent:X`,
   `agent:X`, `git`, `observed`). Cite it when the user asks where a
   claim came from.
-- `available_docs` (integer) counts ingested reference-doc chunks not
-  searched because the call did not scope to docs — see below.
+- `available_docs` (integer) counts ingested reference-doc chunks that
+  did not surface this call — see below.
 - Empty `results` is a real answer, not a failure — see below.
 
 ## Reaching for ingested docs
 
-Reference docs (ingested via `/doc` or `memhub doc add`) are opt-in:
-they never appear in the default fact/decision/task bundle. The
-`available_docs` count is the cue. When it is **> 0** and the
-question is design/spec/architecture/style-flavored, run **one**
-follow-up recall scoped to docs before answering:
+After the first `memhub doc add` in a repo, `[retrieval]
+include_docs_in_default` auto-enables (decision 90): plain recall
+already surfaces a relevant doc chunk whenever it clears the
+`[retrieval.scoring] doc_min_rerank_score` relevance floor — no
+scoping needed. The `available_docs` count is chunks that did **not**
+surface this call. When it is **> 0** and the question is
+design/spec/architecture/style-flavored, a doc-scoped follow-up can
+still be worth running:
 
 ```
 memhub.recall(query="<same or refined question>", source_types=["doc"])

@@ -80,13 +80,12 @@ If `memhub status` indicates K9 is enabled:
 - Read `[integrations.k9].agent_docs_path` from
   `.memhub/config.toml` (or whatever the status JSON exposes).
 - Confirm that directory exists. If not → **Yellow**: K9 enabled
-  but pointed at a missing path. Suggested fix: either re-create
-  the directory + `/init-project`, or
-  `memhub integrations disable-k9`.
+  but pointed at a missing path. Suggested fix:
+  `memhub integrations disable-k9` (K9 is disabled/legacy in this
+  repo).
 - Confirm the four K9 files (`project_state.md`, `project_arch.md`,
   `project_decisions.md`, `project_backlog.md`) are present in
-  that directory. Missing → **Yellow** with the same two
-  suggested fixes.
+  that directory. Missing → **Yellow** with the same suggested fix.
 - All four present → coexistence is intact. Informational only.
 
 If K9 is disabled (`integrations.k9.enabled == false`) but the four
