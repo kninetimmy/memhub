@@ -68,6 +68,9 @@ pub struct UpgradeArgs {
     pub no_skills: bool,
     /// Skip the `target/` build-artifact GC step (`memhub gc`).
     pub no_gc: bool,
+    /// Report the outcome of the most recent upgrade from
+    /// `~/.memhub/last_upgrade.json` and exit 0/1/3. Does not rebuild.
+    pub verify_last: bool,
 }
 
 /// Internal parent->child handoff for the skill-resync result. The skill
@@ -79,7 +82,37 @@ pub struct UpgradeArgs {
 /// env var (same spirit as the test seams).
 const SKILLS_ENV: &str = "MEMHUB_UPGRADE_SKILLS_JSON";
 
+/// Exit code from a Windows staged handoff: the real upgrade continues in
+/// a detached staged copy, so the invoking shell can't yet know the
+/// outcome. It gets this "handed off, pending" code instead of a
+/// success/failure it cannot vouch for; `--verify-last` resolves it (F6).
+const EXIT_HANDED_OFF: i32 = 3;
+
+/// Terminal state of an upgrade, recorded in `~/.memhub/last_upgrade.json`
+/// so `--verify-last` can report 0 (ok) / 1 (failed) / 3 (pending) even
+/// when the invoking shell only ever saw the staged relaunch's exit code.
+#[derive(Debug, Clone, Copy)]
+enum UpgradeReportState {
+    /// Handed off / started, no terminal result recorded yet.
+    Pending,
+    Ok,
+    Failed,
+}
+
+impl UpgradeReportState {
+    fn as_str(self) -> &'static str {
+        match self {
+            UpgradeReportState::Pending => "pending",
+            UpgradeReportState::Ok => "ok",
+            UpgradeReportState::Failed => "failed",
+        }
+    }
+}
+
 pub fn run(cwd: &Path, args: UpgradeArgs) -> Result<()> {
+    if args.verify_last {
+        return verify_last();
+    }
     if args.finish {
         return finish_phase(cwd, &args);
     }
@@ -109,12 +142,15 @@ pub fn run(cwd: &Path, args: UpgradeArgs) -> Result<()> {
             // a recorded ok:false. The success and finish-phase-failure
             // states are already recorded by finish_phase in the
             // re-exec'd grandchild before this process exits.
-            write_last_upgrade(false, "upgrade started; completion not yet recorded");
+            write_last_upgrade(
+                UpgradeReportState::Pending,
+                "upgrade started; completion not yet recorded",
+            );
             match orchestrate_phase(cwd, &args) {
                 Ok(()) => Ok(()),
                 Err(e) => {
                     let msg = format!("upgrade failed before the migrate phase: {e}");
-                    write_last_upgrade(false, &msg);
+                    write_last_upgrade(UpgradeReportState::Failed, &msg);
                     println!("memhub upgrade: FAILED — {msg}");
                     Err(e)
                 }
@@ -127,9 +163,9 @@ pub fn run(cwd: &Path, args: UpgradeArgs) -> Result<()> {
              Windows forbids while it is executing. No TTY was detected \
              (CI/script context), so the staged relaunch is not started \
              automatically. Re-run with --allow-self-stage to permit it; \
-             note the invoking shell will then receive exit code 0 \
-             regardless of outcome — read ~/.memhub/last_upgrade.json or \
-             the final 'memhub upgrade:' line for the real result."
+             note the invoking shell will then receive exit code 3 \
+             (handed off; result pending) — poll `memhub upgrade \
+             --verify-last`, or read the final 'memhub upgrade:' line."
                 .to_string(),
         )),
     }
@@ -248,14 +284,16 @@ fn stage_and_relaunch(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
 
     println!(
         "==> Windows: relaunched a staged copy ({}) so cargo can replace \
-         this binary. This shell returns now; watch the staged run's \
-         output and its final 'memhub upgrade:' line, or read \
-         ~/.memhub/last_upgrade.json.",
+         this binary. This shell returns now with exit code {EXIT_HANDED_OFF} \
+         (handed off; result pending). Watch the staged run's final \
+         'memhub upgrade:' line, or poll with `memhub upgrade --verify-last`.",
         shim.display()
     );
-    // Do NOT wait: staying alive keeps our image locked and re-creates
-    // the very bug we are fixing. Exit 0 so the lock releases.
-    std::process::exit(0);
+    // Do NOT wait: staying alive keeps our image locked and re-creates the
+    // very bug we are fixing. The exit *code* doesn't gate the lock release
+    // (process death does), so report the honest "handed off, pending"
+    // state instead of a success this process cannot vouch for (F6).
+    std::process::exit(EXIT_HANDED_OFF);
 }
 
 /// Single source of truth for the staged-relaunch argv.
@@ -460,7 +498,10 @@ fn orchestrate_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
             stderr: format!("could not re-exec freshly installed binary ({e})"),
         })?
         .code()
-        .unwrap_or(0);
+        // A signal-killed child (`.code()` is None on Unix when it died to
+        // a signal) must NOT read as success — map the unknown to failure
+        // rather than 0 (F6).
+        .unwrap_or(1);
     std::process::exit(code);
 }
 
@@ -580,7 +621,14 @@ fn finish_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
     // (Windows staged relaunch can't propagate a real code), so the
     // outcome must be legible without the exit status: a durable status
     // file plus an unambiguous final line. Best-effort, never fatal.
-    write_last_upgrade(ok, &summary);
+    write_last_upgrade(
+        if ok {
+            UpgradeReportState::Ok
+        } else {
+            UpgradeReportState::Failed
+        },
+        &summary,
+    );
     if ok {
         println!("memhub upgrade: SUCCESS — {summary}");
     } else {
@@ -592,20 +640,70 @@ fn finish_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
 
 /// Record the upgrade outcome to `~/.memhub/last_upgrade.json` so a
 /// non-interactive caller (whose shell got the staged relaunch's
-/// exit 0) can still poll the real result. Best-effort: a write failure
-/// must not turn a good upgrade into a reported failure.
-fn write_last_upgrade(ok: bool, summary: &str) {
+/// exit 3) can still poll the real result via `--verify-last`.
+/// Best-effort: a write failure must not turn a good upgrade into a
+/// reported failure.
+fn write_last_upgrade(state: UpgradeReportState, summary: &str) {
     let Ok(home) = db::home_dir() else { return };
     let dir = home.join(".memhub");
     if std::fs::create_dir_all(&dir).is_err() {
         return;
     }
     let payload = json!({
-        "ok": ok,
+        // `ok` retained for older readers; `state` is authoritative and
+        // distinguishes "pending" from "failed" (both were `ok:false`).
+        "ok": matches!(state, UpgradeReportState::Ok),
+        "state": state.as_str(),
         "summary": summary,
         "unix_ms": now_stamp(),
     });
     let _ = std::fs::write(dir.join("last_upgrade.json"), payload.to_string());
+}
+
+/// `memhub upgrade --verify-last`: report the most recent upgrade's
+/// outcome from `~/.memhub/last_upgrade.json` and exit 0 (ok) / 1
+/// (failed or no record) / 3 (handed off, still pending). This is how a
+/// caller resolves a staged Windows run whose shell only saw exit 3.
+fn verify_last() -> Result<()> {
+    let path = db::home_dir()?.join(".memhub").join("last_upgrade.json");
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(r) => r,
+        Err(_) => {
+            println!(
+                "memhub upgrade --verify-last: no upgrade recorded at {}",
+                path.display()
+            );
+            std::process::exit(1);
+        }
+    };
+    let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap_or_else(|_| json!({}));
+    let summary = parsed
+        .get("summary")
+        .and_then(|v| v.as_str())
+        .unwrap_or("(no summary)");
+    // Prefer the explicit `state`; fall back to the legacy `ok` bool for a
+    // file written by an older binary (it never carried "pending").
+    let state = parsed
+        .get("state")
+        .and_then(|v| v.as_str())
+        .unwrap_or(match parsed.get("ok").and_then(|v| v.as_bool()) {
+            Some(true) => "ok",
+            _ => "failed",
+        });
+    match state {
+        "ok" => {
+            println!("memhub upgrade: SUCCESS — {summary}");
+            std::process::exit(0);
+        }
+        "pending" => {
+            println!("memhub upgrade: PENDING — {summary}");
+            std::process::exit(EXIT_HANDED_OFF);
+        }
+        _ => {
+            println!("memhub upgrade: FAILED — {summary}");
+            std::process::exit(1);
+        }
+    }
 }
 
 fn verify_repo(root: &Path) -> InstanceReport {
@@ -1494,6 +1592,7 @@ mod tests {
             yes,
             no_skills,
             no_gc,
+            verify_last: false,
         }
     }
 

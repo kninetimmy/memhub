@@ -211,19 +211,26 @@ fn open_connection(path: &Path) -> Result<Connection> {
     conn.execute_batch(
         "PRAGMA foreign_keys = ON;
          PRAGMA journal_mode = WAL;
-         PRAGMA busy_timeout = 5000;",
+         PRAGMA busy_timeout = 5000;
+         PRAGMA recursive_triggers = OFF;",
     )?;
     Ok(conn)
 }
 
 fn upsert_project(conn: &Connection, repo_root: &Path) -> Result<()> {
     debug!("upserting project metadata for {}", repo_root.display());
+    // `schema_version` is only ever ratcheted upward: an older binary
+    // opening a newer DB must not stomp the recorded version down to its
+    // own (it would then be writing into a schema it doesn't understand).
+    // Migration ids are zero-padded `NNNN_name`, so a byte-wise `MAX`
+    // matches version order. `apply_all` refuses outright before we get
+    // here when the DB is genuinely newer; this is the belt-and-braces.
     conn.execute(
         "INSERT INTO projects(id, root_path, schema_version)
          VALUES (1, ?1, ?2)
          ON CONFLICT(id) DO UPDATE SET
              root_path = excluded.root_path,
-             schema_version = excluded.schema_version",
+             schema_version = MAX(projects.schema_version, excluded.schema_version)",
         params![
             repo_root.to_string_lossy().to_string(),
             migrations::latest_version()

@@ -226,7 +226,28 @@ pub struct SnapshotSummary {
 /// Produce a consistent single-file snapshot of the repo DB plus its
 /// `manifest.json` under `out_dir`. Uses SQLite `VACUUM INTO` so a
 /// live WAL'd DB is captured cleanly (never a raw byte copy — §7).
-pub fn snapshot(start: &Path, out_dir: &Path) -> Result<SnapshotSummary> {
+pub fn snapshot(start: &Path, out_dir: &Path, force: bool) -> Result<SnapshotSummary> {
+    // Push-side clobber gate (F12). Writing the snapshot into the synced
+    // folder *is* the push and overwrites whatever is already there. Refuse
+    // to stomp a remote that is ahead of or diverged from local unless
+    // explicitly forced — the "lossy case is operator-gated" guarantee has
+    // to hold on push, not only on pull (adopt). A first push (no remote
+    // yet) reports `no-remote` and proceeds.
+    if !force {
+        let report = check(start, out_dir)?;
+        if matches!(
+            report.verdict,
+            SyncVerdict::DriveAhead | SyncVerdict::Diverged
+        ) {
+            return Err(MemhubError::InvalidInput(format!(
+                "refusing to overwrite the remote: it is {} relative to local. \
+                 Pull first (`memhub sync check`, then `sync adopt`), or pass \
+                 --force to overwrite the remote with this machine's state.",
+                report.verdict.as_str()
+            )));
+        }
+    }
+
     let ctx = db::open_project(start)?;
     require_enabled(&ctx.config.sync)?;
 
@@ -589,6 +610,17 @@ pub fn adopt(start: &Path, remote: &Path, force: bool) -> Result<AdoptSummary> {
         [],
         |row| row.get(0),
     )?;
+
+    // F3 hygiene: a whole-DB snapshot carries the source machine's
+    // `session_metrics`, including any that were open (`ended_at IS NULL`)
+    // when it was taken. On this machine those are foreign zombies — close
+    // them to their own start so they can neither capture local recalls
+    // (belt to the reconciler's window cap) nor linger un-prunable (the
+    // pruner only deletes ended sessions). Best-effort, never fatal.
+    let _ = ctx.conn.execute(
+        "UPDATE session_metrics SET ended_at = started_at WHERE ended_at IS NULL",
+        [],
+    );
     let synced_at: String = ctx
         .conn
         .query_row("SELECT CURRENT_TIMESTAMP", [], |row| row.get(0))?;
@@ -1118,7 +1150,7 @@ mod tests {
         let temp = tempdir().expect("tempdir");
         init::run(temp.path()).expect("init");
         let out = temp.path().join("out");
-        let err = snapshot(temp.path(), &out).expect_err("must refuse when disabled");
+        let err = snapshot(temp.path(), &out, false).expect_err("must refuse when disabled");
         assert!(matches!(err, MemhubError::InvalidInput(_)));
         assert!(!out.exists(), "no files written when disabled");
     }
@@ -1133,7 +1165,7 @@ mod tests {
         fact::add(temp.path(), "build-cmd", "cargo build", "user", "cli:user").expect("fact");
 
         let out = temp.path().join("drive").join("proj");
-        let summary = snapshot(temp.path(), &out).expect("snapshot");
+        let summary = snapshot(temp.path(), &out, false).expect("snapshot");
 
         assert!(summary.snapshot_path.exists(), "snapshot db written");
         assert!(summary.manifest_path.exists(), "manifest written");
@@ -1161,6 +1193,43 @@ mod tests {
             header.starts_with(b"SQLite format 3\0"),
             "valid sqlite file"
         );
+    }
+
+    #[test]
+    fn snapshot_refuses_to_clobber_a_diverged_remote_without_force() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        enable_sync(temp.path());
+        fact::add(temp.path(), "k", "v", "user", "cli:user").expect("fact");
+        let (local, schema) = local_state(temp.path());
+
+        // A remote whose logical version differs from local, with no shared
+        // baseline marker → `check` reports Diverged.
+        let out = temp.path().join("drive").join("proj");
+        write_remote_manifest(
+            &out,
+            "test-proj-abcd1234",
+            LogicalVersion {
+                writes_log_max_id: local.writes_log_max_id + 5,
+                writes_log_count: local.writes_log_count + 5,
+                digest: "a-different-remote".into(),
+            },
+            &schema,
+        );
+
+        // Without --force the push must refuse and leave the remote's
+        // manifest untouched.
+        let err = snapshot(temp.path(), &out, false)
+            .expect_err("must refuse to clobber a diverged remote");
+        assert!(matches!(err, MemhubError::InvalidInput(_)));
+        let before = Manifest::load(&out.join(MANIFEST_FILENAME)).expect("load");
+        assert_eq!(before.machine_id, "other-machine", "remote left intact");
+
+        // With --force it overwrites the remote with this machine's state.
+        let summary = snapshot(temp.path(), &out, true).expect("forced snapshot");
+        assert!(summary.snapshot_path.exists());
+        let after = Manifest::load(&summary.manifest_path).expect("load");
+        assert_ne!(after.machine_id, "other-machine", "remote replaced");
     }
 
     /// Write a manifest with a chosen logical/schema version into `dir`,
@@ -1349,7 +1418,7 @@ mod tests {
         let a = new_synced_repo();
         fact::add(a.path(), "alpha", "1", "user", "cli:user").expect("fact");
         let drive = a.path().join("drive");
-        snapshot(a.path(), &drive).expect("snapshot");
+        snapshot(a.path(), &drive, false).expect("snapshot");
 
         let b = new_synced_repo();
         fact::add(b.path(), "beta", "2", "user", "cli:user").expect("fact");
@@ -1364,7 +1433,7 @@ mod tests {
         let a = new_synced_repo();
         fact::add(a.path(), "alpha", "1", "user", "cli:user").expect("fact");
         let drive = a.path().join("drive");
-        snapshot(a.path(), &drive).expect("snapshot");
+        snapshot(a.path(), &drive, false).expect("snapshot");
 
         let b = new_synced_repo();
         fact::add(b.path(), "beta", "2", "user", "cli:user").expect("fact");
@@ -1395,7 +1464,7 @@ mod tests {
 
         // Wrong project id.
         let mismatched = a.path().join("mismatch");
-        snapshot(a.path(), &mismatched).expect("snapshot");
+        snapshot(a.path(), &mismatched, false).expect("snapshot");
         rewrite_manifest(&mismatched, |m| m.project_id = "other".into());
         assert!(
             adopt(b.path(), &mismatched, true).is_err(),
@@ -1404,7 +1473,7 @@ mod tests {
 
         // Newer schema than this binary.
         let newer = a.path().join("newer");
-        snapshot(a.path(), &newer).expect("snapshot");
+        snapshot(a.path(), &newer, false).expect("snapshot");
         rewrite_manifest(&newer, |m| m.schema_version = "9999_future".into());
         assert!(
             adopt(b.path(), &newer, true).is_err(),
@@ -1413,7 +1482,7 @@ mod tests {
 
         // Checksum disagreement (tampered snapshot).
         let tampered = a.path().join("tampered");
-        snapshot(a.path(), &tampered).expect("snapshot");
+        snapshot(a.path(), &tampered, false).expect("snapshot");
         {
             use std::io::Write;
             let mut f = fs::OpenOptions::new()
@@ -1436,7 +1505,7 @@ mod tests {
         let a = new_synced_repo();
         fact::add(a.path(), "alpha", "1", "user", "cli:user").expect("fact");
         let drive = a.path().join("drive");
-        snapshot(a.path(), &drive).expect("snapshot");
+        snapshot(a.path(), &drive, false).expect("snapshot");
 
         // Before commit there is no baseline; equal logical → up-to-date,
         // but commit is what records the agreement after a push.

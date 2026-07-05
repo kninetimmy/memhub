@@ -184,18 +184,26 @@ app uploads it in the background.
    path of the synced Drive folder on this machine and tell me to set
    `[sync] drive_subpath` in `.memhub/config.toml`. Otherwise carry on —
    the resolved `remote_dir` is the snapshot target.
-2. Write the snapshot **directly into the synced folder**: `memhub sync
+2. **Check the remote first so you never clobber a newer push from
+   another machine:** `memhub sync check`. If the verdict is
+   `drive-ahead` or `diverged`, **stop and `/catch-up` first** — do not
+   push. `up-to-date`, `local-ahead`, and `no-remote` are all safe to
+   push.
+3. Write the snapshot **directly into the synced folder**: `memhub sync
    snapshot`. Omit the path — it defaults to the canonical
    `<drive_subpath>/memhub/<project_id>`, so you never hand-build it. This
    emits `project.sqlite` + `manifest.json`, which Google's app then
    syncs up. (`VACUUM INTO` writes a complete file, so there's no
-   half-written upload.)
-3. Record the baseline so the next `/catch-up` here reads `up-to-date`:
+   half-written upload.) It **refuses** if the remote is
+   drive-ahead/diverged; if that happens, `/catch-up` first rather than
+   reaching for `--force`.
+4. Record the baseline so the next `/catch-up` here reads `up-to-date`:
    `memhub sync commit` (same path-less default).
 
-If `sync snapshot` fails (e.g. the synced folder doesn't exist yet —
-Drive app not installed/signed in), say so and stop; do **not** run
-`commit`. The local DB is unaffected either way.
+If `sync snapshot` fails or refuses (the remote is ahead/diverged, or
+the synced folder doesn't exist yet — Drive app not installed/signed
+in), say so and stop; do **not** run `commit`. The local DB is
+unaffected either way.
 
 ## Reminder, not a commit
 
