@@ -19,7 +19,7 @@ numbers. Default-off config additions must keep an untouched install byte-identi
 
 | Wave | Theme | Done / Total | Gating decisions |
 |---|---|---|---|
-| 0 | Fix-now defects | 3 / 17 | Q29 (F1), Q39 (F11) |
+| 0 | Fix-now defects | 4 / 17 | Q29 (F1), Q39 (F11) |
 | 1 | Loud states (doctor/status/integrity) | 0 / 5 | Q35 |
 | 2 | Session-start token diet | 0 / 7 | Q21–Q25, **Q41 (spike gates trim)** |
 | 3 | Staleness / lifecycle | 0 / 7 | Q1–Q6 |
@@ -50,8 +50,11 @@ two gated items (F1, F11).
   remnant). Files: `templates/skills/**`, `src/mcp/mod.rs`.
 - [ ] **F4** — README: `[retrieval]` duplicate-table instruction + add the Claude MCP
   registration step; fix self-contradictory `propose_fact` global bullet.
-- [ ] **F8** — add root `LICENSE` (MIT) + `THIRD-PARTY-NOTICES.md` (two ONNX models,
-  six grammars, uPlot); verify the Xenova MiniLM export license.
+- [x] **F8** — added root `LICENSE` (MIT, © 2026 kninetimmy) + `THIRD-PARTY-NOTICES.md`
+  covering both models (BGE-small MIT, ms-marco reranker Apache-2.0 — verified on the
+  upstream cross-encoder HF card), the 7 tree-sitter grammar crates (MIT), uPlot (MIT),
+  and the vendored tiktoken vocab (MIT); full MIT + Apache-2.0 texts reproduced.
+  — 2026-07-05, PR-A (wave0/pr-a-text).
 - [x] **F14/P9** — removed the non-existent `--json` from `integrations enable-k9` in
   both init-project variants (bootstrap-k9 `--json` verified valid, left intact).
   — 2026-07-05, PR-A (wave0/pr-a-text).
