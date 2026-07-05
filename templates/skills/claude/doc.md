@@ -1,7 +1,7 @@
 ---
 name: doc
 description: >
-  Ingest an external markdown reference doc (design spec, API contract) into memhub so it is RAG-searchable in chunks. Opt-in to recall — never pollutes the default bundle. Trigger on: "ingest this doc", "add this spec to memhub", "make this doc searchable", "remember this reference doc", "/doc".
+  Ingest an external markdown reference doc (design spec, API contract) into memhub so it is RAG-searchable in chunks. The first ingest in a repo auto-enables doc chunks in default recall (decision 90). Trigger on: "ingest this doc", "add this spec to memhub", "make this doc searchable", "remember this reference doc", "/doc".
 framework: memhub
 framework_version: 1.0.0
 last_updated: 2026-05-18
@@ -11,8 +11,11 @@ Ingest a local markdown file into this repo's `.memhub/project.sqlite`
 as an external reference document. The file is chunked by heading
 (fenced code blocks kept intact) and each chunk is embedded, so it is
 retrievable through the same SQL+RAG hybrid recall as facts, decisions,
-and tasks — but **opt-in only**: doc chunks never appear in the default
-recall bundle, so normal project recall stays clean.
+and tasks. The first successful ingest in a repo auto-enables
+`[retrieval] include_docs_in_default` (decision 90), so afterward a
+plain recall call can surface a doc chunk directly — gated by the
+`[retrieval.scoring] doc_min_rerank_score` relevance floor, so
+off-topic docs stay silent.
 
 Use this when the user wants to "pull bits and pieces" of a long doc
 across a working session instead of pasting the whole thing into
@@ -77,17 +80,20 @@ just run it again.
 
 ## Retrieving from the doc
 
-Docs are **opt-in**. To pull from an ingested doc, scope recall to
-docs explicitly:
+Plain recall already surfaces ingested doc chunks once this repo's
+first `doc add` has run (decision 90) — a chunk surfaces when it
+clears the `[retrieval.scoring] doc_min_rerank_score` relevance floor.
+To restrict a query to docs alone, scope explicitly:
 
 ```
 memhub.recall(query="<question>", source_types=["doc"])
 ```
 
-In normal recall (no `source_types`), the response carries an
-`available_docs` count. When it is non-zero and the question is
+In normal recall (no `source_types`), the response also carries an
+`available_docs` count — ingested doc chunks that did NOT surface this
+call. When it is non-zero and the question is
 design/spec/architecture-flavored, the `/recall` skill's guidance
-applies: run one follow-up doc-scoped recall before answering. Use
+applies: a doc-scoped follow-up can still be worth running. Use
 judgment — not every turn.
 
 Doc hits return with `source_type: "doc_chunk"` and a `title` of
@@ -97,9 +103,8 @@ section when you use one.
 ## Scope boundary
 
 memhub is not a general knowledge base. Ingested docs are per-repo,
-user-pointed reference material scoped to this repo's work — that is
-why they are opt-in and excluded from the default bundle. Don't ingest
-arbitrary files speculatively; ingest what the user asks you to.
+user-pointed reference material scoped to this repo's work. Don't
+ingest arbitrary files speculatively; ingest what the user asks you to.
 
 ## Notes
 

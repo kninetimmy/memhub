@@ -62,9 +62,10 @@ rebuild.
 
 - `limit=N` / `--limit N`: max results. Default 10.
 - `rerank=true` / `--rerank`: run the bundled cross-encoder over the
-  candidate pool. **Off by default** — the reranker is NL-trained and
-  its fit on code is unproven until M11 PR5 calibrates it. Only pass
-  it when explicitly asked to A/B the reranker. Ignored in `fts` mode.
+  candidate pool. **Off by default** — fusion (FTS + vector, no
+  reranker) is the calibrated default and wins Recall@3 on memhub's
+  own golden set (decisions 122/123); `--rerank` is the opt-in that
+  instead wins single-best-guess Recall@1. Ignored in `fts` mode.
 
 ## Interpreting the response
 

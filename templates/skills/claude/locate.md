@@ -58,10 +58,13 @@ explicit up-front warm-up / rebuild.
 
 - `limit=N` / `--limit N`: max results. Default 10.
 - `rerank=true` / `--rerank`: run the bundled cross-encoder over the
-  candidate pool before truncating. **Off by default** — the reranker
-  is NL-trained and its fit on code is unproven until M11 PR5
-  calibrates it. Only pass it when the user explicitly asks to A/B the
-  reranker. Ignored in `fts` mode (no embedding pool to reorder).
+  candidate pool before truncating. **Off by default** — fusion
+  (FTS + vector, no reranker) is the calibrated default and wins
+  Recall@3 on memhub's own golden set (decisions 122/123); `--rerank`
+  is a legitimate opt-in that instead wins single-best-guess Recall@1.
+  Pass it when the user wants the single best guess rather than a
+  fuller candidate set. Ignored in `fts` mode (no embedding pool to
+  reorder).
 
 ## Interpreting the response
 

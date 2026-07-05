@@ -9,17 +9,14 @@ last_updated: 2026-05-13
 Verify this repo's memhub setup is healthy. Read-only — no writes, no
 fixes applied without explicit approval.
 
-This skill replaces the K9 user-level `/check-init`. The K9 version is
-still available as `/check-init-k9` for repos using the K9 markdown
-four-file framework directly.
+This skill replaces the K9 user-level `/check-init`.
 
 ## Detection
 
 **Check 1 — `.memhub/` exists.**
 Run: `test -d .memhub && echo "present" || echo "absent"`
 - `absent` → report **Red**. Suggest `/init-project` if the user
-  wants to bootstrap memhub here, or `/check-init-k9` if this is a
-  K9 markdown repo. Stop here.
+  wants to bootstrap memhub here. Stop here.
 
 **Check 2 — memhub binary on PATH.**
 Run: `command -v memhub >/dev/null 2>&1 && echo "present" || echo "absent"`
@@ -80,13 +77,12 @@ If `memhub status` indicates K9 is enabled:
 - Read `[integrations.k9].agent_docs_path` from
   `.memhub/config.toml` (or whatever the status JSON exposes).
 - Confirm that directory exists. If not → **Yellow**: K9 enabled
-  but pointed at a missing path. Suggested fix: either re-create
-  the directory + `/init-project-k9`, or
-  `memhub integrations disable-k9`.
+  but pointed at a missing path. Suggested fix:
+  `memhub integrations disable-k9` (K9 is disabled/legacy in this
+  repo).
 - Confirm the four K9 files (`project_state.md`, `project_arch.md`,
   `project_decisions.md`, `project_backlog.md`) are present in
-  that directory. Missing → **Yellow** with the same two
-  suggested fixes.
+  that directory. Missing → **Yellow** with the same suggested fix.
 - All four present → coexistence is intact. Informational only.
 
 If K9 is disabled (`integrations.k9.enabled == false`) but the four
@@ -165,8 +161,6 @@ End the report with:
   skill. The user makes that call.
 - This skill is user-level; it fires in any repo. In a repo without
   `.memhub/`, it reports Red and points at `/init-project`.
-- For K9 markdown framework health (the four `agent_docs/project_*.md`
-  files), invoke `/check-init-k9` instead.
 - Backups are informational. Pruning policy is the user's call;
   this skill doesn't surface them as findings.
 - Memhub's PRD principle "intentionally boring" applies here too:

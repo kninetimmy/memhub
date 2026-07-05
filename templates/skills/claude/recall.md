@@ -48,9 +48,10 @@ Pick a filter only when the question narrows naturally; otherwise let
 the default behavior surface across all three source types.
 
 - `source_types=["fact"]` / `--source-type fact` (repeatable):
-  restrict to one or more of `fact`, `decision`, `task`, `doc`.
-  `doc` is **opt-in** — it is never in the default bundle (see
-  "Reaching for ingested docs" below).
+  restrict to one or more of `fact`, `decision`, `task`, `doc`. Plain
+  recall (no filter) already surfaces doc chunks once the repo has
+  ingested at least one doc (see "Reaching for ingested docs" below);
+  scope to `doc` explicitly when you want docs only.
 - `max_results=N` / `--max-results N`: cap the bundle. Default comes
   from `.memhub/config.toml` (`[retrieval] default_max_results`,
   usually 6).
@@ -107,20 +108,22 @@ The bundle has the shape:
   `agent:X`, `git`, `observed`). Cite it when the user asks where a
   claim came from.
 - `available_docs` (integer) counts ingested reference-doc chunks that
-  exist in this repo but were NOT searched because the call did not
-  scope to docs — see "Reaching for ingested docs".
+  did NOT surface this call — see "Reaching for ingested docs".
 - Empty `results` is a real answer, not a failure — see below.
 
 ## Reaching for ingested docs
 
-Reference docs (ingested with `/doc` or `memhub doc add`) are
-deliberately **opt-in**: they never appear in the default
-fact/decision/task bundle, so normal project recall stays clean.
+After the first `memhub doc add` in a repo, `[retrieval]
+include_docs_in_default` auto-enables (decision 90): a plain recall
+call already surfaces a relevant doc chunk whenever it clears the
+`[retrieval.scoring] doc_min_rerank_score` relevance floor, so an
+off-topic doc stays silent while an on-topic one surfaces alongside
+facts/decisions/tasks — no scoping needed.
 
-The `available_docs` count is your cue. When it is **> 0** and the
-user's question is design/spec/architecture/style-flavored — the kind
-of thing a reference doc would answer — run **one** follow-up recall
-scoped to docs before you answer:
+The `available_docs` count is chunks that did **not** surface this
+call — the long tail. When it is **> 0** and the user's question is
+design/spec/architecture/style-flavored, a doc-scoped follow-up can
+still be worth running:
 
 ```
 memhub.recall(query="<same or refined question>", source_types=["doc"])
@@ -130,7 +133,7 @@ Use judgment, not reflex: this is a per-question decision, not an
 every-turn one. A question clearly answerable from facts/decisions, or
 one already well-covered by the first bundle, does not need the
 doc pass. When `available_docs` is 0 there are either no ingested docs
-or you already searched them — do nothing extra.
+or none clear the floor for this query — do nothing extra.
 
 Doc hits come back with `source_type: "doc_chunk"` and a `title` of
 `<document title> — <section breadcrumb>`; cite the document and

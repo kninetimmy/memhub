@@ -11,9 +11,7 @@ seed `project_state` and `project_arch` with starter narratives, render
 the two agent_docs files, and (optionally) bootstrap from existing K9
 markdown.
 
-This skill replaces the K9 user-level `/init-project`. The K9 version
-is still available as `/init-project-k9` for repos that want the K9
-markdown four-file framework directly.
+This skill replaces the K9 user-level `/init-project`.
 
 ## Detection
 
@@ -193,10 +191,10 @@ check whether one exists at repo root:
   Approval gate before writing. If the user is on Codex, offer
   `AGENTS.md` with identical body.
 
-- **One exists already.** Leave it alone. Offer to run
-  `memhub sync-md` so memhub populates its managed block inside the
-  existing file (the block is a short "current state" pointer the
-  agent reads at session start). Approval gate.
+- **One exists already.** Leave it alone. `memhub sync-md` does not
+  edit it — it only writes the rendered twins at
+  `.memhub/rendered/CLAUDE.md` and `.memhub/rendered/AGENTS.md`, the
+  same local generated output as `PROJECT.md`.
 
 ## Summary
 
@@ -227,5 +225,3 @@ that gesture. The local-vs-shared boundary is intentional.
   `memhub init --from-backup <path>` directly, not this skill.
 - This skill is user-level; it fires in any repo without a
   conflicting project-level `/init-project`.
-- For projects that want the K9 markdown four-file framework
-  instead of memhub, invoke `/init-project-k9`.
