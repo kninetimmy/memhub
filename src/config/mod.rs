@@ -2,7 +2,7 @@ pub mod deny;
 pub mod integrations;
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -371,6 +371,20 @@ fn default_render_output_dir() -> String {
     DEFAULT_RENDER_OUTPUT_DIR.to_string()
 }
 
+/// MCP-only path confinement for the agent-facing `doc_add` tool
+/// (Wave-0 F11, decision Q39). `mcp::doc_add_impl` canonicalizes the
+/// agent-supplied path and accepts it only when it resolves under the
+/// repo root or one of these entries, with the repo's `deny_list`
+/// still applied on top. The CLI `memhub doc add` path is user-typed
+/// and is NOT gated by this list — it stays unrestricted. Default
+/// empty: an untouched install is pure repo-root confinement, byte-
+/// identical to a config with no `[doc]` section at all.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DocConfig {
+    #[serde(default)]
+    pub allowed_dirs: Vec<PathBuf>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectConfig {
     pub project_name: String,
@@ -390,6 +404,8 @@ pub struct ProjectConfig {
     pub global: GlobalConfig,
     #[serde(default)]
     pub sync: SyncConfig,
+    #[serde(default)]
+    pub doc: DocConfig,
 }
 
 impl ProjectConfig {
@@ -405,6 +421,7 @@ impl ProjectConfig {
             metrics: MetricsConfig::default(),
             global: GlobalConfig::default(),
             sync: SyncConfig::default(),
+            doc: DocConfig::default(),
         }
     }
 

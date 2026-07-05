@@ -20,7 +20,7 @@ use crate::MemhubError;
 use crate::code_index;
 use crate::code_index::locate::{LocateHit, LocateOptions, LocateResponse};
 use crate::commands;
-use crate::config::RetrievalMode;
+use crate::config::{PathMatcher, RetrievalMode};
 use crate::models::{
     CommandRecord, Decision, Fact, PendingWriteRecord, RenderResult, SearchResult, StatusSummary,
     Task,
@@ -268,9 +268,27 @@ impl MemhubServer {
         Parameters(params): Parameters<DocAddParams>,
         actor: ClientIdentity,
     ) -> std::result::Result<Json<DocAddToolResponse>, McpError> {
+        // MCP-only confinement gate (Wave-0 F11, decision Q39): doc_add is
+        // the one write surface that hands memhub an entirely
+        // agent-supplied filesystem path, so it is canonicalized and
+        // checked against the repo root / [doc] allowed_dirs / deny_list
+        // independently, BEFORE calling into the CLI-shared
+        // `commands::doc::add` — which stays deliberately unrestricted for
+        // the user-typed CLI path (see `commands::doc::prepare_doc`).
+        let confined_path = {
+            let ctx = crate::db::open_project(&self.start).map_err(map_tool_error)?;
+            confine_doc_add_path(
+                &ctx.paths.repo_root,
+                &ctx.config.doc.allowed_dirs,
+                &ctx.config.deny_list.patterns,
+                std::path::Path::new(&params.file),
+            )
+            .map_err(map_tool_error)?
+        };
+
         let outcome = commands::doc::add(
             &self.start,
-            std::path::Path::new(&params.file),
+            &confined_path,
             params.title.as_deref(),
             &actor.normalized,
         )
@@ -605,7 +623,7 @@ impl MemhubServer {
 
     #[tool(
         name = "doc_add",
-        description = "Ingest (or re-ingest) a local markdown file as an external reference document, chunked and RAG-searchable. Direct write: a doc is a user-pointed artifact, not an agent claim, so no review gate. Docs are OPT-IN to recall — query them with recall(source_types=[\"doc\"]) to scope to docs alone; after a repo's first doc add they also join the default recall bundle when a chunk clears the relevance floor (decision 90). Unchanged content (same hash) is a no-op; changed content replaces every chunk."
+        description = "Ingest (or re-ingest) a local markdown file as an external reference document, chunked and RAG-searchable. Direct write: a doc is a user-pointed artifact, not an agent claim, so no review gate. Docs are OPT-IN to recall — query them with recall(source_types=[\"doc\"]) to scope to docs alone; after a repo's first doc add they also join the default recall bundle when a chunk clears the relevance floor (decision 90). Unchanged content (same hash) is a no-op; changed content replaces every chunk. The path must canonicalize under the repo root or a configured [doc] allowed_dirs entry and must not match the deny-list; otherwise this refuses with a clear error (Wave-0 F11)."
     )]
     async fn doc_add(
         &self,
@@ -1137,7 +1155,10 @@ struct TaskAddToolResponse {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct DocAddParams {
-    /// Path to the local markdown file to ingest.
+    /// Path to the local markdown file to ingest. Must canonicalize to
+    /// somewhere under the repo root or a configured `[doc] allowed_dirs`
+    /// entry, and must not match the deny-list — otherwise this call
+    /// refuses.
     file: String,
     /// Optional title override (defaults to first heading or file name).
     title: Option<String>,
@@ -1886,6 +1907,83 @@ impl From<commands::metrics::MetricsToolData> for MetricsToolResponse {
             rendered_panel: Some(d.rendered_panel),
         }
     }
+}
+
+// ── doc_add path confinement (Wave-0 F11, decision Q39) ─────────────────────
+
+/// MCP-only confinement gate for `doc_add`.
+///
+/// `doc_add` is the one MCP write surface that hands memhub an entirely
+/// agent-supplied filesystem path with no user keystroke behind it — a
+/// prompt-injected tool call could otherwise point it at
+/// `~/.aws/credentials` (or any other file) and have it durably
+/// ingested into recall. This canonicalizes `candidate` (resolving
+/// symlinks) and requires the result to land under `repo_root` or one
+/// of `allowed_dirs`, then re-applies the repo's own deny-list — a
+/// deny-listed path inside the repo root still refuses. Every failure
+/// returns a plain `MemhubError::InvalidInput` naming the reason
+/// (mapped to a clean `McpError::invalid_params` by `map_tool_error`);
+/// nothing here panics.
+///
+/// Fails closed: an unresolvable `candidate` or `repo_root` is a
+/// refusal, never a silent fallback to the raw, uncanonicalized path.
+/// An `allowed_dirs` entry that itself fails to canonicalize (e.g. a
+/// configured directory that does not exist on this machine) simply
+/// cannot match anything — also fail closed, not a hard error, since a
+/// bad allowlist entry is a config data issue, not grounds to refuse
+/// every other call.
+///
+/// Deliberately NOT reused by `commands::doc::prepare_doc`, which stays
+/// unrestricted for the user-typed CLI `doc add` path.
+fn confine_doc_add_path(
+    repo_root: &Path,
+    allowed_dirs: &[PathBuf],
+    deny_patterns: &[String],
+    candidate: &Path,
+) -> std::result::Result<PathBuf, MemhubError> {
+    let canonical = candidate.canonicalize().map_err(|err| {
+        MemhubError::InvalidInput(format!(
+            "doc_add: cannot resolve '{}': {err}",
+            candidate.display()
+        ))
+    })?;
+
+    let repo_canonical = repo_root.canonicalize().map_err(|err| {
+        MemhubError::InvalidInput(format!(
+            "doc_add: cannot resolve repo root '{}': {err}",
+            repo_root.display()
+        ))
+    })?;
+
+    let matched_root = if canonical.starts_with(&repo_canonical) {
+        Some(repo_canonical)
+    } else {
+        allowed_dirs.iter().find_map(|dir| {
+            let dir_canonical = dir.canonicalize().ok()?;
+            canonical
+                .starts_with(&dir_canonical)
+                .then_some(dir_canonical)
+        })
+    };
+
+    let Some(root) = matched_root else {
+        return Err(MemhubError::InvalidInput(format!(
+            "doc_add: '{}' is outside the repo root and not listed in [doc] allowed_dirs",
+            candidate.display()
+        )));
+    };
+
+    let matcher = PathMatcher::from_patterns(deny_patterns)?;
+    let relative = canonical.strip_prefix(&root).unwrap_or(&canonical);
+    let relative_str = relative.to_string_lossy().replace('\\', "/");
+    if matcher.is_denied(&relative_str) {
+        return Err(MemhubError::InvalidInput(format!(
+            "doc_add: '{}' matches the deny-list",
+            candidate.display()
+        )));
+    }
+
+    Ok(canonical)
 }
 
 fn map_tool_error(err: MemhubError) -> McpError {
@@ -2852,5 +2950,126 @@ mod tests {
         assert!(resp.0.reason.is_some(), "refusal carries a reason");
         // No snapshot in the drive folder yet → verdict is no-remote.
         assert_eq!(resp.0.verdict.as_deref(), Some("no-remote"));
+    }
+
+    fn doc_add_actor() -> ClientIdentity {
+        ClientIdentity {
+            normalized: "claude-code".to_string(),
+            raw: "claude-code".to_string(),
+        }
+    }
+
+    #[test]
+    fn mcp_doc_add_accepts_path_inside_repo_root() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let doc = temp.path().join("spec.md");
+        std::fs::write(&doc, "# Spec\n\nbody\n").expect("write doc");
+
+        let server = MemhubServer::new(temp.path().to_path_buf());
+        let result = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(server.doc_add_impl(
+                Parameters(DocAddParams {
+                    file: doc.to_string_lossy().into_owned(),
+                    title: None,
+                }),
+                doc_add_actor(),
+            ))
+            .expect("in-repo doc_add should succeed");
+
+        assert_eq!(result.0.status, "created");
+    }
+
+    #[test]
+    fn mcp_doc_add_refuses_path_outside_repo_root() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let outside = tempdir().expect("outside tempdir");
+        let doc = outside.path().join("spec.md");
+        std::fs::write(&doc, "# Spec\n\nbody\n").expect("write doc");
+
+        let server = MemhubServer::new(temp.path().to_path_buf());
+        let result = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(server.doc_add_impl(
+                Parameters(DocAddParams {
+                    file: doc.to_string_lossy().into_owned(),
+                    title: None,
+                }),
+                doc_add_actor(),
+            ));
+
+        let err = match result {
+            Ok(_) => panic!("path outside repo root and outside allowed_dirs must refuse"),
+            Err(e) => e,
+        };
+        let message = err.message.to_string();
+        assert!(
+            message.contains("outside the repo root"),
+            "unexpected error: {message}"
+        );
+    }
+
+    #[test]
+    fn mcp_doc_add_accepts_allowlisted_dir() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let outside = tempdir().expect("outside tempdir");
+        let doc = outside.path().join("ext-spec.md");
+        std::fs::write(&doc, "# External Spec\n\nbody\n").expect("write doc");
+
+        let ctx = db::open_project(temp.path()).expect("open");
+        let mut cfg = ctx.config.clone();
+        cfg.doc.allowed_dirs = vec![outside.path().to_path_buf()];
+        cfg.save(&ctx.paths.config_path).expect("save config");
+
+        let server = MemhubServer::new(temp.path().to_path_buf());
+        let result = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(server.doc_add_impl(
+                Parameters(DocAddParams {
+                    file: doc.to_string_lossy().into_owned(),
+                    title: None,
+                }),
+                doc_add_actor(),
+            ))
+            .expect("allowlisted external path should succeed");
+
+        assert_eq!(result.0.status, "created");
+    }
+
+    #[test]
+    fn mcp_doc_add_refuses_deny_listed_path_inside_repo() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let doc = temp.path().join(".env");
+        std::fs::write(&doc, "SECRET=1\n").expect("write doc");
+
+        let server = MemhubServer::new(temp.path().to_path_buf());
+        let result = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(server.doc_add_impl(
+                Parameters(DocAddParams {
+                    file: doc.to_string_lossy().into_owned(),
+                    title: None,
+                }),
+                doc_add_actor(),
+            ));
+
+        let err = match result {
+            Ok(_) => panic!("deny-listed path inside repo root must refuse"),
+            Err(e) => e,
+        };
+        let message = err.message.to_string();
+        assert!(message.contains("deny-list"), "unexpected error: {message}");
     }
 }

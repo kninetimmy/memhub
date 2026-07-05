@@ -16,6 +16,13 @@
 #   - render.output_dir                (project property)
 #   - metrics.enabled = false          (off by default; changes here set
 #                                       the canonical install default)
+#   - doc.allowed_dirs                 (MCP doc_add path-confinement
+#                                       allowlist; security boundary,
+#                                       canonical baseline is EMPTY. An
+#                                       operator widening it for their own
+#                                       machine's external spec dirs sets
+#                                       it in the local config.toml, not
+#                                       committed back here as a real path)
 #
 # Fields that are per-machine preferences (override locally without
 # committing back to the example):
@@ -185,3 +192,16 @@ include_docs_in_default = false
 enabled = false
 project_id = ""
 drive_subpath = ""
+
+# MCP-only path confinement for the agent-facing `doc_add` tool (Wave-0
+# F11, decision Q39). The MCP handler canonicalizes the agent-supplied
+# path and accepts it only when it resolves under the repo root or one
+# of these allowed_dirs entries, with the deny_list patterns above still
+# applied on top — a deny-listed path inside the repo root still
+# refuses. The CLI `memhub doc add` command is user-typed and stays
+# unrestricted; this list has no effect on it. Canonical baseline is
+# empty (pure repo-root confinement). If you legitimately point doc_add
+# at an external spec directory on this machine, add it to the LOCAL
+# config.toml rather than committing a real path back here.
+[doc]
+allowed_dirs = []
