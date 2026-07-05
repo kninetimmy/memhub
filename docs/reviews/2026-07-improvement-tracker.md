@@ -19,7 +19,7 @@ numbers. Default-off config additions must keep an untouched install byte-identi
 
 | Wave | Theme | Done / Total | Gating decisions |
 |---|---|---|---|
-| 0 | Fix-now defects | 4 / 17 | Q29 (F1), Q39 (F11) |
+| 0 | Fix-now defects | 5 / 17 | Q29 (F1), Q39 (F11) |
 | 1 | Loud states (doctor/status/integrity) | 0 / 5 | Q35 |
 | 2 | Session-start token diet | 0 / 7 | Q21–Q25, **Q41 (spike gates trim)** |
 | 3 | Staleness / lifecycle | 0 / 7 | Q1–Q6 |
@@ -95,8 +95,9 @@ two gated items (F1, F11).
   apply deny-list). **Gated on Q39.**
 
 ### Immediate / no-PR
-- [~] **F17/N20** — commit `docs/reviews/` so the plan is reachable from the Mac.
-  — in progress (this PR, branch `docs/improvement-review-tracking`)
+- [x] **F17/N20** — committed `docs/reviews/` (review + tracker), reachable from the Mac
+  once PR #11 merges to main. — 2026-07-05, PR #11.
+  *(N20's wrap-up untracked-path guard is a separate later enhancement, not this fix-now.)*
 
 ---
 
