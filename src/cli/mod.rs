@@ -12,11 +12,12 @@ pub use args::{
     ReviewCommand, StatsWindowArg, SyncCommand, TaskCommand, TaskStatus, TopLevelCommand,
 };
 use output::{
-    code_status_to_json, eval_summary_to_json, index_status_to_json, locate_eval_summary_to_json,
-    locate_response_to_json, metrics_status_to_json, narrative_entry_to_json,
-    pending_write_record_to_json, print_code_status, print_eval_summary, print_index_status,
-    print_init_result, print_locate, print_locate_eval_summary, print_metrics_status_human,
-    print_recall_human, print_stats_human, print_stats_json, recall_response_to_json,
+    code_status_to_json, eval_summary_to_json, import_summary_to_json, index_status_to_json,
+    init_result_to_json, locate_eval_summary_to_json, locate_response_to_json,
+    metrics_status_to_json, narrative_entry_to_json, pending_write_record_to_json,
+    print_code_status, print_eval_summary, print_index_status, print_init_result, print_locate,
+    print_locate_eval_summary, print_metrics_status_human, print_recall_human, print_stats_human,
+    print_stats_json, recall_response_to_json, status_summary_to_json,
 };
 use serde_json::json;
 
@@ -173,58 +174,75 @@ pub fn run(cli: Cli) -> Result<()> {
     let cwd = std::env::current_dir()?;
 
     match cli.command {
-        TopLevelCommand::Init { from_backup } => match from_backup {
+        TopLevelCommand::Init {
+            from_backup,
+            json: as_json,
+        } => match from_backup {
             None => {
                 let result = commands::init::run(&cwd)?;
-                print_init_result(&result);
+                if as_json {
+                    println!("{}", json!({ "init": init_result_to_json(&result) }));
+                } else {
+                    print_init_result(&result);
+                }
             }
             Some(backup_path) => {
                 let (result, import_summary) = commands::init::run_with_backup(&cwd, &backup_path)?;
-                print_init_result(&result);
-                println!("Restored from {}", import_summary.source.display());
-                println!("  facts: {}", import_summary.facts);
-                println!("  decisions: {}", import_summary.decisions);
-                println!("  tasks: {}", import_summary.tasks);
-                println!("  commands: {}", import_summary.commands);
-                println!("  pending writes: {}", import_summary.pending_writes);
-                println!("  writes log entries: {}", import_summary.writes_log);
+                if as_json {
+                    let mut init_json = init_result_to_json(&result);
+                    init_json["restored_from"] = import_summary_to_json(&import_summary);
+                    println!("{}", json!({ "init": init_json }));
+                } else {
+                    print_init_result(&result);
+                    println!("Restored from {}", import_summary.source.display());
+                    println!("  facts: {}", import_summary.facts);
+                    println!("  decisions: {}", import_summary.decisions);
+                    println!("  tasks: {}", import_summary.tasks);
+                    println!("  commands: {}", import_summary.commands);
+                    println!("  pending writes: {}", import_summary.pending_writes);
+                    println!("  writes log entries: {}", import_summary.writes_log);
+                }
             }
         },
-        TopLevelCommand::Status => {
+        TopLevelCommand::Status { json: as_json } => {
             let summary = commands::status::run(&cwd)?;
-            println!("Project: {}", summary.project_name);
-            println!("Repo root: {}", summary.repo_root.display());
-            println!("Database: {}", summary.db_path.display());
-            println!("Config: {}", summary.config_path.display());
-            println!("Schema version: {}", summary.schema_version);
-            println!("Facts: {} ({} stale)", summary.facts, summary.stale_facts);
-            println!("Decisions: {}", summary.decisions);
-            println!(
-                "Tasks: {} total / {} open",
-                summary.tasks_total, summary.tasks_open
-            );
-            println!("Commands: {}", summary.commands);
-            println!("Commits: {}", summary.commits);
-            println!("Files: {}", summary.files);
-            println!("Search chunks: {}", summary.chunks);
-            println!("Pending writes: {}", summary.pending_writes);
-            println!("Writes logged: {}", summary.writes_logged);
-            println!("Deny patterns: {}", summary.deny_patterns);
-            println!(
-                "K9 detected: {}",
-                if summary.k9_detected { "yes" } else { "no" }
-            );
-            println!(
-                "K9 integration: {} (agent_docs_path: {})",
-                if summary.k9_enabled {
-                    "enabled"
-                } else {
-                    "disabled"
-                },
-                summary.k9_agent_docs_path
-            );
-            if let Some(drift) = &summary.k9_drift {
-                println!("  note: {drift}");
+            if as_json {
+                println!("{}", json!({ "status": status_summary_to_json(&summary) }));
+            } else {
+                println!("Project: {}", summary.project_name);
+                println!("Repo root: {}", summary.repo_root.display());
+                println!("Database: {}", summary.db_path.display());
+                println!("Config: {}", summary.config_path.display());
+                println!("Schema version: {}", summary.schema_version);
+                println!("Facts: {} ({} stale)", summary.facts, summary.stale_facts);
+                println!("Decisions: {}", summary.decisions);
+                println!(
+                    "Tasks: {} total / {} open",
+                    summary.tasks_total, summary.tasks_open
+                );
+                println!("Commands: {}", summary.commands);
+                println!("Commits: {}", summary.commits);
+                println!("Files: {}", summary.files);
+                println!("Search chunks: {}", summary.chunks);
+                println!("Pending writes: {}", summary.pending_writes);
+                println!("Writes logged: {}", summary.writes_logged);
+                println!("Deny patterns: {}", summary.deny_patterns);
+                println!(
+                    "K9 detected: {}",
+                    if summary.k9_detected { "yes" } else { "no" }
+                );
+                println!(
+                    "K9 integration: {} (agent_docs_path: {})",
+                    if summary.k9_enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    },
+                    summary.k9_agent_docs_path
+                );
+                if let Some(drift) = &summary.k9_drift {
+                    println!("  note: {drift}");
+                }
             }
         }
         TopLevelCommand::Stats {
@@ -403,9 +421,26 @@ pub fn run(cli: Cli) -> Result<()> {
                     );
                 }
             }
-            FactCommand::List => {
+            FactCommand::List { json: as_json } => {
                 let facts = commands::fact::list(&cwd)?;
-                if facts.is_empty() {
+                if as_json {
+                    let payload = json!({
+                        "facts": facts
+                            .iter()
+                            .map(|fact| json!({
+                                "id": fact.id,
+                                "key": fact.key,
+                                "value": fact.value,
+                                "confidence": fact.confidence,
+                                "source": fact.source,
+                                "verified_at": fact.verified_at,
+                                "created_at": fact.created_at,
+                                "is_stale": fact.is_stale,
+                            }))
+                            .collect::<Vec<_>>(),
+                    });
+                    println!("{payload}");
+                } else if facts.is_empty() {
                     println!("No facts recorded.");
                 } else {
                     for fact in facts {
@@ -545,9 +580,25 @@ pub fn run(cli: Cli) -> Result<()> {
                     println!("Cleared summary on decision {id}");
                 }
             }
-            DecisionCommand::List => {
+            DecisionCommand::List { json: as_json } => {
                 let decisions = commands::decision::list(&cwd)?;
-                if decisions.is_empty() {
+                if as_json {
+                    let payload = json!({
+                        "decisions": decisions
+                            .iter()
+                            .map(|decision| json!({
+                                "id": decision.id,
+                                "title": decision.title,
+                                "rationale": decision.rationale,
+                                "status": decision.status,
+                                "decided_at": decision.decided_at,
+                                "source": decision.source,
+                                "summary": decision.summary,
+                            }))
+                            .collect::<Vec<_>>(),
+                    });
+                    println!("{payload}");
+                } else if decisions.is_empty() {
                     println!("No decisions recorded.");
                 } else {
                     for decision in decisions {
@@ -707,22 +758,24 @@ pub fn run(cli: Cli) -> Result<()> {
                 };
                 let scope = if global { "global" } else { "repo" };
                 if as_json {
-                    let payload: Vec<_> = docs
-                        .iter()
-                        .map(|d| {
-                            json!({
-                                "id": d.id,
-                                "title": d.title,
-                                "path": d.path,
-                                "chunks": d.chunk_count,
-                                "bytes": d.byte_len,
-                                "source": d.source,
-                                "ingested_at": d.ingested_at,
-                                "scope": scope,
+                    let payload = json!({
+                        "docs": docs
+                            .iter()
+                            .map(|d| {
+                                json!({
+                                    "id": d.id,
+                                    "title": d.title,
+                                    "path": d.path,
+                                    "chunks": d.chunk_count,
+                                    "bytes": d.byte_len,
+                                    "source": d.source,
+                                    "ingested_at": d.ingested_at,
+                                    "scope": scope,
+                                })
                             })
-                        })
-                        .collect();
-                    println!("{}", json!(payload));
+                            .collect::<Vec<_>>(),
+                    });
+                    println!("{payload}");
                 } else if docs.is_empty() {
                     println!("No {scope} documents ingested.");
                 } else {
@@ -877,9 +930,26 @@ pub fn run(cli: Cli) -> Result<()> {
             println!("  to enable vector recall on this machine.");
         }
         TopLevelCommand::Command { command } => match command {
-            CommandCommand::List => {
+            CommandCommand::List { json: as_json } => {
                 let commands = commands::command::list(&cwd)?;
-                if commands.is_empty() {
+                if as_json {
+                    let payload = json!({
+                        "commands": commands
+                            .iter()
+                            .map(|command| json!({
+                                "id": command.id,
+                                "kind": command.kind,
+                                "cmdline": command.cmdline,
+                                "last_exit_code": command.last_exit_code,
+                                "last_run_at": command.last_run_at,
+                                "success_count": command.success_count,
+                                "fail_count": command.fail_count,
+                                "confidence": command.confidence(),
+                            }))
+                            .collect::<Vec<_>>(),
+                    });
+                    println!("{payload}");
+                } else if commands.is_empty() {
                     println!("No commands recorded yet.");
                 } else {
                     for command in commands {

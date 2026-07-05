@@ -24,8 +24,13 @@ pub enum TopLevelCommand {
     Init {
         #[arg(long, value_name = "PATH")]
         from_backup: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
     },
-    Status,
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
     Stats {
         #[arg(long, value_enum, default_value_t = StatsWindowArg::ThirtyDays)]
         window: StatsWindowArg,
@@ -677,7 +682,10 @@ pub enum FactCommand {
         #[arg(long)]
         actor: Option<String>,
     },
-    List,
+    List {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -780,7 +788,10 @@ pub enum DecisionCommand {
         #[arg(long)]
         actor: Option<String>,
     },
-    List,
+    List {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -830,7 +841,10 @@ pub enum TaskCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum CommandCommand {
-    List,
+    List {
+        #[arg(long)]
+        json: bool,
+    },
     Verify {
         #[arg(value_enum)]
         kind: CommandKind,

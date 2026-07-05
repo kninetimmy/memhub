@@ -26,20 +26,22 @@ Run: `command -v memhub >/dev/null 2>&1 && echo "present" || echo "absent"`
 
 ## Status read
 
-Run, and parse the JSON output:
+Run, and parse the JSON output (a noun-keyed wrapped object,
+`{"status": {...}}`):
 
 ```bash
 memhub status --json
 ```
 
-Capture:
-- `project.name`, `project.created_at`.
-- Schema version. If the binary supports a `--latest-known` or
+Capture, from the `status` object:
+- `project_name`.
+- `schema_version`. If the binary supports a `--latest-known` or
   equivalent flag, compare; otherwise treat any non-error `status`
   as schema-current and trust that migrations applied on connect.
-- K9 integration flags (`integrations.k9.*` if present).
-- Row counts: facts, decisions, tasks (broken down by status if
-  available), session_notes, pending_writes, writes_log entries.
+- K9 integration flags (`k9_detected`, `k9_enabled`,
+  `k9_agent_docs_path`, `k9_drift`).
+- Row counts: `facts`/`stale_facts`, `decisions`, `tasks_total`/
+  `tasks_open`, `pending_writes`, `writes_logged`.
 
 If `memhub status --json` exits non-zero, surface stderr and report
 **Red** with that single finding.
