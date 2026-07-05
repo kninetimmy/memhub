@@ -147,7 +147,7 @@ memhub arch set --from-file /tmp/memhub-init-arch.md \
 For coexist/migrate paths, ask before each integration step:
 
 ```bash
-memhub integrations enable-k9 --agent-docs-path agent_docs --json
+memhub integrations enable-k9 --agent-docs-path agent_docs
 # Offer bootstrap-k9 separately, only if K9 decisions/backlog have content
 memhub integrations bootstrap-k9 --dry-run --json    # preview parsed rows
 memhub integrations bootstrap-k9 --json              # apply
