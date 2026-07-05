@@ -19,7 +19,7 @@ numbers. Default-off config additions must keep an untouched install byte-identi
 
 | Wave | Theme | Done / Total | Gating decisions |
 |---|---|---|---|
-| 0 | Fix-now defects | 16 / 17 | Q29 (F1) |
+| 0 | Fix-now defects | 17 / 17 | — (complete) |
 | 1 | Loud states (doctor/status/integrity) | 0 / 5 | Q35 |
 | 2 | Session-start token diet | 0 / 7 | Q21–Q25, **Q41 (spike gates trim)** |
 | 3 | Staleness / lifecycle | 0 / 7 | Q1–Q6 |
@@ -30,14 +30,14 @@ numbers. Default-off config additions must keep an untouched install byte-identi
 | 8 | CI / infra / licensing | 0 / 2 | Q37–Q38 |
 | 9 | Housekeeping | 0 / 7 | Q26–Q27, Q36 |
 
-Decisions resolved: 1 / 56 (Q32).
+Decisions resolved: 3 / 56 (Q29, Q32, Q39).
 
 ---
 
 ## Wave 0 — Fix-now (broken today; all small)
 
-Three PRs: **PR-A text/docs** (no decisions), **PR-B safe code** (no decisions), and
-**PR #17** (F11, gated on Q39) — leaving one gated item (F1).
+Four PRs: **PR-A text/docs** and **PR-B safe code** (no decisions), **PR #17**
+(F11, decision Q39), and **PR #18** (F1, decision Q29) — **Wave 0 complete.**
 
 ### PR-A — text/docs (zero decisions)
 - [x] **F13/P3** — fixed invalid YAML frontmatter: folded `description:` to block
@@ -105,6 +105,15 @@ Three PRs: **PR-A text/docs** (no decisions), **PR-B safe code** (no decisions),
   — 2026-07-05, PR-B (wave0/pr-b-safe-code).
 
 ### Gated (later in Wave 0)
+<<<<<<< HEAD
+- [x] **F1** — added `--json` to `status`, `init`, `fact list`, `decision list`, `command
+  list`; adopted the noun-keyed wrapped-object JSON convention (`{"status":{...}}`,
+  `{"facts":[...]}`, etc.) per **Q29**, and migrated `doc ls --json` from a bare array to
+  `{"docs":[...]}` to match. `tests/cli_args.rs` adds the clap-surface smoke test (N24).
+  — 2026-07-05, PR #18 (feat/15-json-cli-flags).
+- [ ] **F11** — MCP `doc_add` path confinement (canonicalize, require repo-root/allowlist,
+  apply deny-list). **Gated on Q39.**
+=======
 - [ ] **F1** — add `--json` to `status`, `init` (+ `fact/decision/command list`).
   **Gated on Q29** (JSON shape convention).
 - [x] **F11** — MCP `doc_add` path confinement: canonicalize the agent-supplied path,
@@ -113,6 +122,7 @@ Three PRs: **PR-A text/docs** (no decisions), **PR-B safe code** (no decisions),
   Gate lives on the MCP path only (`doc_add_impl`); CLI `doc add` / `prepare_doc` is
   unchanged and stays unrestricted. **Gated on Q39** (resolved: repo-root + allowlist,
   not repo-root-only). — 2026-07-05, PR #17.
+>>>>>>> origin/main
 
 ### Immediate / no-PR
 - [x] **F17/N20** — committed `docs/reviews/` (review + tracker), reachable from the Mac
@@ -210,8 +220,8 @@ Resolve per wave. Recommendations are in the review; mark here when the user rul
 **Upgrade/GC:** [ ] Q12 [ ] Q13 [ ] Q14 [ ] Q15 [ ] Q16
 **Retrieval:** [ ] Q17 [ ] Q18 [ ] Q19 [ ] Q20
 **CLAUDE.md:** [ ] Q21 [ ] Q22 [ ] Q23 [ ] Q24 [ ] Q25
-**Surfaces:** [ ] Q26 [ ] Q27 [ ] Q28 [ ] Q29
+**Surfaces:** [ ] Q26 [ ] Q27 [ ] Q28 [x] Q29 *(resolved 2026-07-05 — wrapped noun-keyed objects; `doc ls` migrated; PR #18)*
 **Cross-machine:** [ ] Q30 [ ] Q31 [x] Q32 *(resolved — decision 134; Mac lineage not adopted, ported as Windows 128–133)* [ ] Q33
 **DB:** [ ] Q34 [ ] Q35 [ ] Q36
-**Infra:** [ ] Q37 [ ] Q38 [ ] Q39
+**Infra:** [ ] Q37 [ ] Q38 [x] Q39 *(resolved 2026-07-05 — repo-root + `[doc] allowed_dirs` allowlist for MCP `doc_add`; PR #17)*
 **Parity/free-form:** [ ] Q40 [ ] Q41 [ ] Q42 [ ] Q43 [ ] Q44 [ ] Q45 [ ] Q46 [ ] Q47 [ ] Q48 [ ] Q49 [ ] Q50 [ ] Q51 [ ] Q52 [ ] Q53 [ ] Q54 [ ] Q55 [ ] Q56

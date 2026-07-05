@@ -3,8 +3,11 @@ use serde_json::json;
 use crate::code_index::CodeIndexStatus;
 use crate::code_index::locate::LocateResponse;
 use crate::commands;
+use crate::commands::import::ImportSummary;
 use crate::config::RetrievalMode;
-use crate::models::{InitResult, NarrativeEntry, NarrativeKind, PendingWriteRecord, StatsSummary};
+use crate::models::{
+    InitResult, NarrativeEntry, NarrativeKind, PendingWriteRecord, StatsSummary, StatusSummary,
+};
 use crate::retrieval::RecallResponse;
 
 pub(crate) fn print_stats_human(s: &StatsSummary) {
@@ -768,6 +771,61 @@ pub(crate) fn print_init_result(result: &InitResult) {
             result.migrations_applied.join(", ")
         );
     }
+}
+
+pub(crate) fn init_result_to_json(result: &InitResult) -> serde_json::Value {
+    json!({
+        "repo_root": result.repo_root.display().to_string(),
+        "db_path": result.db_path.display().to_string(),
+        "config_created": result.config_created,
+        "gitignore_updated": result.gitignore_updated,
+        "memhub_preexisting": result.memhub_preexisting,
+        "migrations_applied": result.migrations_applied,
+    })
+}
+
+pub(crate) fn import_summary_to_json(summary: &ImportSummary) -> serde_json::Value {
+    json!({
+        "source": summary.source.display().to_string(),
+        "target_root": summary.target_root.display().to_string(),
+        "forced": summary.forced,
+        "facts": summary.facts,
+        "decisions": summary.decisions,
+        "tasks": summary.tasks,
+        "commands": summary.commands,
+        "pending_writes": summary.pending_writes,
+        "writes_log": summary.writes_log,
+        "session_notes": summary.session_notes,
+        "project_state": summary.project_state,
+        "project_arch": summary.project_arch,
+        "retained_doc_chunks": summary.retained_doc_chunks,
+    })
+}
+
+pub(crate) fn status_summary_to_json(s: &StatusSummary) -> serde_json::Value {
+    json!({
+        "project_name": s.project_name,
+        "repo_root": s.repo_root.display().to_string(),
+        "db_path": s.db_path.display().to_string(),
+        "config_path": s.config_path.display().to_string(),
+        "schema_version": s.schema_version,
+        "facts": s.facts,
+        "stale_facts": s.stale_facts,
+        "decisions": s.decisions,
+        "tasks_open": s.tasks_open,
+        "tasks_total": s.tasks_total,
+        "commands": s.commands,
+        "commits": s.commits,
+        "files": s.files,
+        "chunks": s.chunks,
+        "pending_writes": s.pending_writes,
+        "writes_logged": s.writes_logged,
+        "deny_patterns": s.deny_patterns,
+        "k9_detected": s.k9_detected,
+        "k9_enabled": s.k9_enabled,
+        "k9_agent_docs_path": s.k9_agent_docs_path,
+        "k9_drift": s.k9_drift,
+    })
 }
 
 pub(crate) fn locate_response_to_json(response: &LocateResponse) -> serde_json::Value {
