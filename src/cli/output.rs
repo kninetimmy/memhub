@@ -258,7 +258,6 @@ pub(crate) fn recall_response_to_json(response: &RecallResponse) -> serde_json::
                 "score": hit.score,
                 "fts_score": hit.fts_score,
                 "vector_score": hit.vector_score,
-                "confidence": hit.confidence,
                 "stale": hit.stale,
                 "source": hit.source,
                 "created_at": hit.created_at,

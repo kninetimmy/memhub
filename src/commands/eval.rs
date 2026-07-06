@@ -799,7 +799,6 @@ mod tests {
             score: 0.9,
             fts_score: 0.9,
             vector_score: 0.0,
-            confidence: 1.0,
             stale: false,
             source: "user".to_string(),
             created_at: "2026-05-13".to_string(),

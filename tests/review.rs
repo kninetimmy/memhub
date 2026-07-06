@@ -129,7 +129,6 @@ fn review_accept_promotes_fact_and_marks_pending_accepted() {
     assert_eq!(facts[0].key, "build-command");
     assert_eq!(facts[0].value, "cargo build");
     assert_eq!(facts[0].source, "user+agent:codex");
-    assert!((facts[0].confidence - 1.0).abs() < f64::EPSILON);
 
     let pending = review::show(temp.path(), pending_id).expect("show");
     assert_eq!(pending.status, "accepted");
