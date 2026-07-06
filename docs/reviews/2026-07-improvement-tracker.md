@@ -21,7 +21,7 @@ numbers. Default-off config additions must keep an untouched install byte-identi
 |---|---|---|---|
 | 0 | Fix-now defects | 17 / 17 | — (complete) |
 | 1 | Loud states (doctor/status/integrity) | 5 / 5 | Q35 ✓ (complete) |
-| 2 | Session-start token diet | 4 / 7 | Q21–Q25 ✓ · Q41 ✓ (gate cleared 2026-07-06) |
+| 2 | Session-start token diet | 6 / 7 | Q21–Q25 ✓ · Q41 ✓ (only C3 left — user-gated) |
 | 3 | Staleness / lifecycle | 0 / 7 | Q1–Q6 |
 | 4 | Retrieval performance | 0 / 12 | Q17–Q19, Q24, Q40 |
 | 5 | Upgrade / GC hardening | 0 / 8 | Q12–Q16 |
@@ -206,8 +206,15 @@ Four PRs: **PR-A text/docs** and **PR-B safe code** (no decisions), **PR #17**
   (single-source const now shared with `skill_parity`), malformed/missing CLAUDE.md,
   opt-in `[audit] user_md_path`. `--json` → `{"audit_md":{...}}` (Q29); `--strict` exits 1
   iff ≥1 finding. No new deps, no DB writes. — 2026-07-06, PR #37 (issue #32).
-- [ ] C6 `/audit-md` skill (judgment layer) — issue #33, unblocked once #37 lands (was blocked by #32)
-- [ ] C7 `memhub upgrade` nag line — issue #33, unblocked once #37 lands (was blocked by #32)
+- [x] C6 `/audit-md` skill (judgment layer) — read-only skill across all 3 agents
+  (Claude/Codex/OpenCode + OpenCode command wrapper) wrapping `audit md --json`, with
+  per-finding-id fix recommendations and a forward-compatible fallback for unknown ids;
+  `skill_parity` stays green. — 2026-07-06, PR #38 (issue #33).
+- [x] C7 `memhub upgrade` nag line — best-effort `check_audit_md` runs `audit md` under
+  the fresh binary in `finish_phase` + `dry_run_report`, emits a single nag line only when
+  findings exist (silent on clean), additive `audit_md` JSON field; degrades to a `Warn`
+  row on audit error, structurally never fails the upgrade (returns `AuditNag`, not
+  `Result`). New `tests/upgrade_audit_nag.rs`. — 2026-07-06, PR #38 (issue #33).
 - [x] rider N4 keystone-phrase parity test — landed with C2. — 2026-07-06, PR #34 (issue #30).
 - [ ] rider N1 MCP description diet — deferred to Wave 4 (same PR as Q40/R2)
 
