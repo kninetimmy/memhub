@@ -1,6 +1,10 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "command": {
+    "audit-md": {
+      "description": "Audit CLAUDE.md/AGENTS.md for drift and bloat",
+      "template": "Use the memhub audit-md skill. Arguments: $ARGUMENTS"
+    },
     "check-init": {
       "description": "Check memhub project health",
       "template": "Use the memhub check-init skill. Arguments: $ARGUMENTS"

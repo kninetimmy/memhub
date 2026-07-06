@@ -603,7 +603,14 @@ fn finish_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
 
-    emit(&reports, pruned, &skills, args.json);
+    // Best-effort audit-md nag (Wave 2 C7, issue #33): unlike the skill
+    // resync/gc above, this needs no old-vs-new-binary IPC — it's a
+    // read-only lint over `cwd`'s own CLAUDE.md/AGENTS.md with no schema
+    // dependency, so it runs directly here under the freshly installed
+    // binary (the same reasoning migrate + verify already run here).
+    let audit_nag = check_audit_md(cwd);
+
+    emit(&reports, pruned, &skills, &audit_nag, args.json);
 
     let failed: Vec<&str> = reports
         .iter()
@@ -1001,6 +1008,9 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
     } else {
         sync_skills(cwd, true)
     };
+    // Read-only regardless of `dry`, so the preview IS the real check
+    // (issue #33: "`--dry-run` reports whether it *would* nag").
+    let audit_nag = check_audit_md(cwd);
 
     if args.json {
         println!(
@@ -1024,6 +1034,9 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
                     "verdict": global_preview.1,
                 },
                 "skills": skills,
+                // Additive field (issue #33): same shape as the real
+                // (non-dry) upgrade JSON's "audit_md" field.
+                "audit_md": audit_nag,
             })
         );
         return Ok(());
@@ -1060,6 +1073,9 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
     );
     for s in &skills {
         println!("  skills:       {}", s.dry_line());
+    }
+    if let Some(line) = audit_nag.nag_line(true) {
+        println!("  audit md:     {line}");
     }
     if args.no_gc {
         println!("  target gc:    skipped (--no-gc)");
@@ -1104,7 +1120,13 @@ fn describe_shadow(cargo_bin: &Path) -> Result<String> {
 // Output
 // ---------------------------------------------------------------------
 
-fn emit(reports: &[InstanceReport], pruned: usize, skills: &[SkillSync], as_json: bool) {
+fn emit(
+    reports: &[InstanceReport],
+    pruned: usize,
+    skills: &[SkillSync],
+    audit: &AuditNag,
+    as_json: bool,
+) {
     let ready = reports
         .iter()
         .filter(|r| matches!(r.status, InstanceStatus::Ready | InstanceStatus::Migrated))
@@ -1129,6 +1151,9 @@ fn emit(reports: &[InstanceReport], pruned: usize, skills: &[SkillSync], as_json
                 "total": total,
                 "pruned": pruned,
                 "skills": skills,
+                // Additive field (issue #33): the audit-md nag result.
+                // Always present, `status` distinguishes clean/findings/warn.
+                "audit_md": audit,
             })
         );
         return;
@@ -1157,6 +1182,9 @@ fn emit(reports: &[InstanceReport], pruned: usize, skills: &[SkillSync], as_json
     }
     for s in skills {
         println!("  skills: {}", s.line());
+    }
+    if let Some(line) = audit.nag_line(false) {
+        println!("  audit md: {line}");
     }
     println!("  {ready}/{total} instances ready");
 }
@@ -1432,6 +1460,104 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------
+// audit md nag (Wave 2 C7, issue #33)
+// ---------------------------------------------------------------------
+
+/// Best-effort outcome of running `memhub audit md` as part of `upgrade`.
+/// Read-only and always-on (no `--no-*` opt-out — issue #33 acceptance
+/// criteria says one isn't required), and never fatal: same posture as
+/// `SkillSync` / the target-gc step above. A failure to even run the
+/// audit (e.g. `.memhub` not discoverable, config unreadable) degrades
+/// to `Warn` rather than propagating an error that would fail the
+/// upgrade.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuditNagStatus {
+    /// The audit ran to completion with zero findings.
+    Clean,
+    /// The audit ran to completion with at least one finding.
+    Findings,
+    /// The audit itself could not be completed. Degraded, not fatal —
+    /// the upgrade still succeeds.
+    Warn,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AuditNag {
+    pub status: AuditNagStatus,
+    /// Finding count when `status == Findings`; `0` otherwise.
+    pub count: usize,
+    /// Set only when `status == Warn` (the error the audit itself hit).
+    pub detail: Option<String>,
+}
+
+impl AuditNag {
+    fn clean() -> Self {
+        AuditNag {
+            status: AuditNagStatus::Clean,
+            count: 0,
+            detail: None,
+        }
+    }
+
+    fn findings(count: usize) -> Self {
+        AuditNag {
+            status: AuditNagStatus::Findings,
+            count,
+            detail: None,
+        }
+    }
+
+    fn warn(detail: impl Into<String>) -> Self {
+        AuditNag {
+            status: AuditNagStatus::Warn,
+            count: 0,
+            detail: Some(detail.into()),
+        }
+    }
+
+    /// A single nag line, only when there's something to say — a clean
+    /// repo prints nothing (issue #33: "prints a single nag line when
+    /// findings exist"), rather than adding routine noise to every
+    /// upgrade the way the always-printed skills/gc lines do. `dry`
+    /// swaps "N finding(s)" for "would flag N finding(s)" to match the
+    /// `would migrate` / `would sync` convention `dry_run_report`
+    /// already uses for its other previews.
+    pub fn nag_line(&self, dry: bool) -> Option<String> {
+        match self.status {
+            AuditNagStatus::Clean => None,
+            AuditNagStatus::Findings if dry => Some(format!(
+                "would flag {} finding(s) — see `memhub audit md` (or the /audit-md skill)",
+                self.count
+            )),
+            AuditNagStatus::Findings => Some(format!(
+                "{} finding(s) — run `memhub audit md` (or the /audit-md skill) for details",
+                self.count
+            )),
+            AuditNagStatus::Warn => Some(format!(
+                "skipped ({})",
+                self.detail.as_deref().unwrap_or("audit md failed")
+            )),
+        }
+    }
+}
+
+/// Run `memhub audit md` against `cwd` and reduce it to an `AuditNag`.
+/// Best-effort: any `Err` from the audit (e.g. `.memhub` not
+/// discoverable from `cwd`, config unreadable) becomes
+/// `AuditNagStatus::Warn` rather than propagating — same "never fatal"
+/// posture as `sync_skills` / `crate::commands::gc::run` above. Always
+/// calls with `strict = false`; the exit-code escalation `--strict`
+/// provides is irrelevant here, only `findings` is read.
+pub fn check_audit_md(cwd: &Path) -> AuditNag {
+    match crate::commands::audit_md::run(cwd, false) {
+        Ok(report) if report.findings.is_empty() => AuditNag::clean(),
+        Ok(report) => AuditNag::findings(report.findings.len()),
+        Err(e) => AuditNag::warn(e.to_string()),
+    }
 }
 
 // ---------------------------------------------------------------------
