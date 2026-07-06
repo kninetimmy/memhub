@@ -143,6 +143,137 @@ fn fact_add_upsert_clears_stale() {
 }
 
 #[test]
+fn fact_verify_refreshes_verified_at_without_upsert_side_effects() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    fact::add(
+        temp.path(),
+        "lint-command",
+        "cargo clippy",
+        "user+agent:codex",
+        "cli:user",
+    )
+    .expect("add fact");
+    backdate_fact(temp.path(), "lint-command", 200);
+    assert!(fact::list(temp.path()).expect("list").remove(0).is_stale);
+
+    let (id, key) = fact::verify(temp.path(), "lint-command", "cli:user")
+        .expect("verify")
+        .expect("fact matched");
+    assert_eq!(key, "lint-command");
+
+    let facts = fact::list(temp.path()).expect("list facts");
+    assert_eq!(facts.len(), 1, "verify must not insert a new row");
+    let verified = facts
+        .iter()
+        .find(|f| f.id == id)
+        .expect("verified fact present");
+    assert!(!verified.is_stale, "verify should clear staleness");
+    assert_eq!(verified.value, "cargo clippy", "verify must not touch value");
+    assert_eq!(
+        verified.source, "user+agent:codex",
+        "verify must not overwrite source (unlike `fact add`, which does — see \
+         fact_add_upsert_clears_stale / review §2 L1)"
+    );
+    assert!(
+        (verified.confidence - 1.0).abs() < f64::EPSILON,
+        "verify must not touch confidence"
+    );
+}
+
+#[test]
+fn fact_verify_resolves_by_numeric_id_or_key() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    let (id, _created) = fact::add(
+        temp.path(),
+        "build-command",
+        "cargo build",
+        "user",
+        "cli:user",
+    )
+    .expect("add fact");
+    backdate_fact(temp.path(), "build-command", 200);
+
+    let (verified_id, verified_key) = fact::verify(temp.path(), &id.to_string(), "cli:user")
+        .expect("verify by id")
+        .expect("fact matched");
+    assert_eq!(verified_id, id);
+    assert_eq!(verified_key, "build-command");
+    assert!(!fact::list(temp.path()).expect("list").remove(0).is_stale);
+
+    backdate_fact(temp.path(), "build-command", 200);
+    let (verified_id2, verified_key2) = fact::verify(temp.path(), "build-command", "cli:user")
+        .expect("verify by key")
+        .expect("fact matched");
+    assert_eq!(verified_id2, id);
+    assert_eq!(verified_key2, "build-command");
+    assert!(!fact::list(temp.path()).expect("list").remove(0).is_stale);
+}
+
+#[test]
+fn fact_verify_missing_ident_is_none_and_creates_nothing() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    fact::add(
+        temp.path(),
+        "build-command",
+        "cargo build",
+        "user",
+        "cli:user",
+    )
+    .expect("add fact");
+
+    let by_key = fact::verify(temp.path(), "does-not-exist", "cli:user").expect("verify call");
+    assert!(by_key.is_none());
+
+    let by_id = fact::verify(temp.path(), "999999", "cli:user").expect("verify call");
+    assert!(by_id.is_none());
+
+    assert_eq!(
+        fact::list(temp.path()).expect("list").len(),
+        1,
+        "a miss must not insert a new fact (no add-upsert side effect)"
+    );
+}
+
+#[test]
+fn fact_verify_logs_writes_log_verify_action() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    let (id, _created) = fact::add(
+        temp.path(),
+        "build-command",
+        "cargo build",
+        "user",
+        "cli:user",
+    )
+    .expect("add fact");
+    fact::verify(temp.path(), "build-command", "cli:wrap-up")
+        .expect("verify")
+        .expect("fact matched");
+
+    let ctx = db::open_project(temp.path()).expect("open project");
+    let (actor, table_name, action): (String, String, String) = ctx
+        .conn
+        .query_row(
+            "SELECT actor, table_name, action FROM writes_log
+             WHERE table_name = 'facts' AND row_id = ?1
+             ORDER BY id DESC LIMIT 1",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("writes_log row exists");
+    assert_eq!(actor, "cli:wrap-up");
+    assert_eq!(table_name, "facts");
+    assert_eq!(action, "verify");
+}
+
+#[test]
 fn review_accept_produces_fresh_fact() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");

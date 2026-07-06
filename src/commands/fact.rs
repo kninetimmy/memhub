@@ -147,6 +147,65 @@ pub fn promote(start: &Path, id: i64, actor: &str) -> Result<GlobalFactOutcome> 
     })
 }
 
+/// Resolve a fact by numeric id or by exact key, mirroring
+/// `doc::resolve_doc_id`'s id-first-then-lookup shape. Returns
+/// `(id, key)` so callers can report the resolved key even when
+/// `ident` was numeric.
+fn resolve_fact(tx: &Transaction<'_>, ident: &str) -> Result<Option<(i64, String)>> {
+    if let Ok(id) = ident.parse::<i64>() {
+        let found: Option<(i64, String)> = tx
+            .query_row(
+                "SELECT id, key FROM facts WHERE project_id = 1 AND id = ?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        if found.is_some() {
+            return Ok(found);
+        }
+    }
+    tx.query_row(
+        "SELECT id, key FROM facts WHERE project_id = 1 AND key = ?1",
+        params![ident],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+/// Refresh a fact's `verified_at` to now — nothing else durable changes.
+/// Unlike `add`, this never touches `value`, `source`, or `confidence`,
+/// and never runs the add-upsert dedupe path; it is a pure re-verify
+/// (L1). Accepts either a numeric id or an exact key. Returns
+/// `(id, key)` on a match, or `Ok(None)` when nothing matched `ident`
+/// so the CLI can report a clean miss instead of a false success.
+pub fn verify(start: &Path, ident: &str, actor: &str) -> Result<Option<(i64, String)>> {
+    let mut ctx = db::open_project(start)?;
+    let tx = ctx.conn.transaction()?;
+
+    let Some((id, key)) = resolve_fact(&tx, ident)? else {
+        return Ok(None);
+    };
+
+    tx.execute(
+        "UPDATE facts SET verified_at = CURRENT_TIMESTAMP WHERE id = ?1",
+        params![id],
+    )?;
+
+    db::log_write(
+        &tx,
+        actor,
+        "facts",
+        Some(id),
+        "verify",
+        &format!("fact verify: {ident}"),
+    )?;
+
+    tx.commit()?;
+    sync_md::sync_if_enabled(start)?;
+    Ok(Some((id, key)))
+}
+
 pub fn list(start: &Path) -> Result<Vec<Fact>> {
     let ctx = db::open_project(start)?;
     let mut stmt = ctx.conn.prepare(

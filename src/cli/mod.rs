@@ -471,6 +471,38 @@ pub fn run(cli: Cli) -> Result<()> {
                     }
                 }
             }
+            FactCommand::Verify {
+                ident,
+                json: as_json,
+                actor,
+            } => {
+                let actor = resolve_actor(actor.as_deref())?;
+                let found = commands::fact::verify(&cwd, &ident, &actor)?;
+                match found {
+                    Some((id, key)) => {
+                        if as_json {
+                            println!(
+                                "{}",
+                                json!({ "verified": true, "id": id, "key": key, "ident": ident })
+                            );
+                        } else {
+                            println!("Verified fact {id}: {key}");
+                        }
+                    }
+                    None => {
+                        if as_json {
+                            println!("{}", json!({ "verified": false, "ident": ident }));
+                        } else {
+                            println!("No fact matched {ident}.");
+                        }
+                        // A miss is a failed operation: exit nonzero so a
+                        // script's `memhub fact verify x && ...` doesn't
+                        // proceed as though it verified something (F16
+                        // convention, mirrors `doc rm`/`doc show`).
+                        process::exit(1);
+                    }
+                }
+            }
         },
         TopLevelCommand::Decision { command } => match command {
             DecisionCommand::Add {

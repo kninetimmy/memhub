@@ -110,6 +110,37 @@ fn fact_list_without_json_defaults_to_false() {
     }
 }
 
+/// Wave 3 L1 / issue #41: `memhub fact verify <id|key> [--json] [--actor]`.
+#[test]
+fn fact_verify_parses_ident_json_and_actor() {
+    match parse(&["fact", "verify", "my-key", "--json", "--actor", "cli:script"]) {
+        TopLevelCommand::Fact { command } => match command {
+            FactCommand::Verify { ident, json, actor } => {
+                assert_eq!(ident, "my-key");
+                assert!(json);
+                assert_eq!(actor.as_deref(), Some("cli:script"));
+            }
+            other => panic!("expected FactCommand::Verify, got {other:?}"),
+        },
+        other => panic!("expected Fact, got {other:?}"),
+    }
+}
+
+#[test]
+fn fact_verify_without_flags_defaults() {
+    match parse(&["fact", "verify", "42"]) {
+        TopLevelCommand::Fact { command } => match command {
+            FactCommand::Verify { ident, json, actor } => {
+                assert_eq!(ident, "42");
+                assert!(!json);
+                assert!(actor.is_none());
+            }
+            other => panic!("expected FactCommand::Verify, got {other:?}"),
+        },
+        other => panic!("expected Fact, got {other:?}"),
+    }
+}
+
 #[test]
 fn decision_list_json_flag_parses() {
     match parse(&["decision", "list", "--json"]) {
