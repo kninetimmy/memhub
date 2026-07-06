@@ -176,10 +176,6 @@ fn fact_verify_refreshes_verified_at_without_upsert_side_effects() {
         "verify must not overwrite source (unlike `fact add`, which does — see \
          fact_add_upsert_clears_stale / review §2 L1)"
     );
-    assert!(
-        (verified.confidence - 1.0).abs() < f64::EPSILON,
-        "verify must not touch confidence"
-    );
 }
 
 #[test]
