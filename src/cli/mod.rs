@@ -18,7 +18,8 @@ use output::{
     pending_write_record_to_json, print_code_status, print_doctor_report_human,
     print_eval_summary, print_index_status, print_init_result, print_locate,
     print_locate_eval_summary, print_metrics_status_human, print_recall_human, print_stats_human,
-    print_stats_json, recall_response_to_json, status_summary_to_json,
+    print_stats_json, print_status_checks_human, recall_response_to_json, status_checks_to_json,
+    status_summary_to_json,
 };
 use serde_json::json;
 
@@ -207,8 +208,13 @@ pub fn run(cli: Cli) -> Result<()> {
         },
         TopLevelCommand::Status { json: as_json } => {
             let summary = commands::status::run(&cwd)?;
+            // Cheap subsystem-state checks (issue #22) — a subset of
+            // `doctor`'s own checks, reused rather than duplicated.
+            let checks = commands::status::checks(&cwd)?;
             if as_json {
-                println!("{}", json!({ "status": status_summary_to_json(&summary) }));
+                let mut status_json = status_summary_to_json(&summary);
+                status_json["checks"] = status_checks_to_json(&checks);
+                println!("{}", json!({ "status": status_json }));
             } else {
                 println!("Project: {}", summary.project_name);
                 println!("Repo root: {}", summary.repo_root.display());
@@ -228,22 +234,14 @@ pub fn run(cli: Cli) -> Result<()> {
                 println!("Pending writes: {}", summary.pending_writes);
                 println!("Writes logged: {}", summary.writes_logged);
                 println!("Deny patterns: {}", summary.deny_patterns);
-                println!(
-                    "K9 detected: {}",
-                    if summary.k9_detected { "yes" } else { "no" }
-                );
-                println!(
-                    "K9 integration: {} (agent_docs_path: {})",
-                    if summary.k9_enabled {
-                        "enabled"
-                    } else {
-                        "disabled"
-                    },
-                    summary.k9_agent_docs_path
-                );
-                if let Some(drift) = &summary.k9_drift {
-                    println!("  note: {drift}");
-                }
+                // Subsystem-state lines (issue #22): schema, render
+                // freshness, retrieval mode, embeddings, sync (when
+                // enabled), metrics (when enabled), and K9 — K9 only
+                // appears here when `check_k9_coexistence` finds
+                // something to report, replacing the old unconditional
+                // "K9 detected: no" / "K9 integration: disabled" lines
+                // that sprayed on every clean, non-K9 repo.
+                print_status_checks_human(&checks);
             }
         }
         TopLevelCommand::Doctor {

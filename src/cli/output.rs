@@ -829,6 +829,40 @@ pub(crate) fn status_summary_to_json(s: &StatusSummary) -> serde_json::Value {
     })
 }
 
+/// Subsystem-state checks (issue #22) as a JSON array, same per-check
+/// shape as `doctor --json`'s own `checks` array (via the shared
+/// `check_to_json`) — a superset-compatible addition alongside
+/// `status_summary_to_json`'s existing keys, not a replacement.
+pub(crate) fn status_checks_to_json(checks: &[Check]) -> serde_json::Value {
+    json!(checks.iter().map(check_to_json).collect::<Vec<_>>())
+}
+
+/// Human-readable subsystem-state lines for `status` (issue #22).
+/// Unlike `print_doctor_report_human`, `Skipped` checks are omitted
+/// entirely rather than shown with a `·` glyph — `status` is the quick
+/// overview, so a not-applicable/disabled subsystem (K9 not detected,
+/// sync/metrics disabled, embeddings n/a in fts mode, ...) says
+/// nothing rather than spraying placeholder lines. Nothing is printed
+/// at all if every check is skipped.
+pub(crate) fn print_status_checks_human(checks: &[Check]) {
+    let visible: Vec<&Check> = checks
+        .iter()
+        .filter(|c| c.status != Status::Skipped)
+        .collect();
+    if visible.is_empty() {
+        return;
+    }
+
+    println!();
+    println!("Subsystems:");
+    for c in visible {
+        println!("  {} {}: {}", status_glyph(c.status), c.id, c.message);
+        if let Some(detail) = &c.detail {
+            println!("      {detail}");
+        }
+    }
+}
+
 pub(crate) fn locate_response_to_json(response: &LocateResponse) -> serde_json::Value {
     let results = response
         .results
