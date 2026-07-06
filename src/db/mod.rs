@@ -163,6 +163,13 @@ pub fn open_project(start: &Path) -> Result<ProjectContext> {
     // scrape above. Runs after it so the reconciler sees current bounds.
     crate::metrics::maintenance::run_if_enabled(&conn, &config.metrics);
 
+    // Automatic pending-write expiry (Wave 3 Q6, PRD §11.3): reuses the
+    // exact expiry logic the manual `memhub review expire` command runs
+    // (`commands::review::expire_in_conn`) as a best-effort side effect
+    // of every open — see `auto_expire_best_effort` for why this is a
+    // single autocommit statement rather than an explicit transaction.
+    crate::commands::review::auto_expire_best_effort(&conn);
+
     Ok(ProjectContext {
         paths,
         config,

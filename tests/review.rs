@@ -296,16 +296,22 @@ fn review_expire_marks_old_pending_writes_and_leaves_fresh_ones() {
     ctx.conn
         .execute(
             "UPDATE pending_writes
-             SET created_at = datetime('now', '-45 days')
+             SET created_at = datetime('now', '-10 days')
              WHERE id = ?1",
             params![old_id],
         )
         .expect("backdate row");
     drop(ctx);
 
-    let summary = review::expire(temp.path(), 30).expect("expire");
+    // A window narrower than the automatic pass's default 30 days (Wave
+    // 3 Q6 — see `open_project_auto_expires_aged_pending_writes` below),
+    // so this exercises the manual command's own custom-window pass
+    // distinctly: the row here (10 days old) is untouched by the
+    // automatic default pass that every `open_project` call above also
+    // ran, and is only caught because this call explicitly asks for 5.
+    let summary = review::expire(temp.path(), 5).expect("expire");
     assert_eq!(summary.expired, 1);
-    assert_eq!(summary.older_than_days, 30);
+    assert_eq!(summary.older_than_days, 5);
 
     let old = review::show(temp.path(), old_id).expect("show old");
     assert_eq!(old.status, "expired");
@@ -314,6 +320,71 @@ fn review_expire_marks_old_pending_writes_and_leaves_fresh_ones() {
     let fresh = review::list(temp.path(), Some("pending"), 25).expect("list pending");
     assert_eq!(fresh.len(), 1);
     assert_eq!(fresh[0].kind, "fact");
+}
+
+#[test]
+fn open_project_auto_expires_aged_pending_writes() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    let old_id = stage_fact(temp.path(), "old-fact", "value", "Old proposal.");
+    let fresh_id = stage_fact(temp.path(), "fresh-fact", "value", "Fresh proposal.");
+
+    let ctx = memhub::db::open_project(temp.path()).expect("open");
+    ctx.conn
+        .execute(
+            "UPDATE pending_writes
+             SET created_at = datetime('now', '-45 days')
+             WHERE id = ?1",
+            params![old_id],
+        )
+        .expect("backdate row");
+    drop(ctx);
+
+    // No explicit `review expire` call here — the next plain
+    // `open_project` (any command, CLI or MCP, goes through this same
+    // path) is where automatic expiry runs (Wave 3 Q6).
+    let ctx = memhub::db::open_project(temp.path()).expect("second open");
+
+    let old = review::show(temp.path(), old_id).expect("show old");
+    assert_eq!(old.status, "expired");
+    assert!(old.reviewed_at.is_some());
+
+    let fresh = review::show(temp.path(), fresh_id).expect("show fresh");
+    assert_eq!(fresh.status, "pending");
+
+    // Tagged with a distinct actor from the manual command's `cli:user`
+    // so an automatic expiry is identifiable in `writes_log`.
+    let actor: String = ctx
+        .conn
+        .query_row(
+            "SELECT actor FROM writes_log
+             WHERE table_name = 'pending_writes' AND action = 'update'
+             ORDER BY id DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("query writes_log");
+    assert_eq!(actor, "review:auto_expire");
+    drop(ctx);
+
+    // Idempotent: a third open with nothing new to expire changes
+    // nothing and adds no further writes_log row.
+    let before_log_count: i64 = memhub::db::open_project(temp.path())
+        .expect("third open")
+        .conn
+        .query_row("SELECT COUNT(*) FROM writes_log", [], |row| row.get(0))
+        .expect("count writes_log");
+
+    let ctx = memhub::db::open_project(temp.path()).expect("fourth open");
+    let after_log_count: i64 = ctx
+        .conn
+        .query_row("SELECT COUNT(*) FROM writes_log", [], |row| row.get(0))
+        .expect("count writes_log");
+    assert_eq!(
+        after_log_count, before_log_count,
+        "a no-op automatic expiry pass must not add writes_log rows"
+    );
 }
 
 #[test]
