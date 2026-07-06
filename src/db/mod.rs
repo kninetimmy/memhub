@@ -211,6 +211,7 @@ fn open_connection(path: &Path) -> Result<Connection> {
     conn.execute_batch(
         "PRAGMA foreign_keys = ON;
          PRAGMA journal_mode = WAL;
+         PRAGMA synchronous = NORMAL;
          PRAGMA busy_timeout = 5000;
          PRAGMA recursive_triggers = OFF;",
     )?;
@@ -445,4 +446,27 @@ pub fn log_write(
         params![actor, table_name, row_id, action, reason],
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn open_connection_sets_synchronous_normal() {
+        // D5/Q35: WAL is paired with `synchronous = NORMAL` (decision 140)
+        // rather than the SQLite default FULL, dropping one fsync per
+        // commit. 1 is SQLite's integer encoding for NORMAL. This covers
+        // both the main repo DB and the machine-global store, which open
+        // through this same `open_connection` path.
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("project.sqlite");
+        let conn = open_connection(&path).expect("open");
+
+        let synchronous: i64 = conn
+            .query_row("PRAGMA synchronous", [], |row| row.get(0))
+            .expect("query synchronous pragma");
+        assert_eq!(synchronous, 1, "expected synchronous = NORMAL (1)");
+    }
 }

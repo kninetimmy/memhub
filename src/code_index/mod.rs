@@ -52,6 +52,7 @@ pub fn open_code_index(db_path: &Path) -> Result<Connection> {
     conn.execute_batch(
         "PRAGMA foreign_keys = ON;
          PRAGMA journal_mode = WAL;
+         PRAGMA synchronous = NORMAL;
          PRAGMA busy_timeout = 5000;
          PRAGMA recursive_triggers = OFF;",
     )?;
@@ -732,6 +733,21 @@ mod tests {
             .expect("count fts");
         assert_eq!(embeddings, 0);
         assert_eq!(fts, 0);
+    }
+
+    #[test]
+    fn synchronous_pragma_is_normal_on_open() {
+        // D5/Q35: WAL is paired with `synchronous = NORMAL` (decision 140)
+        // rather than the SQLite default FULL, dropping one fsync per
+        // commit. 1 is SQLite's integer encoding for NORMAL.
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("code_index.sqlite");
+        let conn = open_code_index(&path).expect("open");
+
+        let synchronous: i64 = conn
+            .query_row("PRAGMA synchronous", [], |row| row.get(0))
+            .expect("query synchronous pragma");
+        assert_eq!(synchronous, 1, "expected synchronous = NORMAL (1)");
     }
 
     #[test]
