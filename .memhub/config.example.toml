@@ -9,6 +9,7 @@
 # Fields that should NOT drift across machines (commit changes here):
 #   - deny_list.patterns               (security boundary)
 #   - retrieval.mode                   (recall behavior)
+#   - retrieval.fact_stale_after_days  (recall behavior)
 #   - retrieval.use_reranker           (recall behavior)
 #   - retrieval.rerank_candidate_pool  (recall behavior)
 #   - retrieval.scoring.*              (reproducible recall)
@@ -95,7 +96,17 @@ output_dir = ".memhub/rendered"
 mode = "hybrid"
 default_max_results = 6
 accepted_only_by_default = false
-include_stale_by_default = false
+# Un-silence staleness (Q1 / decision 145): keep facts past
+# fact_stale_after_days in recall but DEMOTE them (scoring.stale_penalty)
+# and flag them stale:true, instead of silently excluding them. This is
+# the no-loss default — a bad default hides valid memories, demote is the
+# reversible posture. Set to false to restore hard exclusion.
+include_stale_by_default = true
+# Fact-staleness horizon in days: a fact never verified, or last verified
+# more than this many days ago, is treated as stale (and demoted per the
+# flag above). Promotes the formerly hardcoded 90-day window to config
+# without changing its length.
+fact_stale_after_days = 90
 # Cross-encoder re-ranker (ms-marco-MiniLM-L-6-v2). Adds ~275 ms per
 # recall at pool=20; lifted Recall@1 by ~17pp on memhub's golden set in
 # the bake-off (decision 68). Ignored in fts mode.

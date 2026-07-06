@@ -17,7 +17,6 @@ use rusqlite::{Connection, Row, params};
 
 use crate::config::{RetrievalMode, RetrievalScoringConfig};
 use crate::db;
-use crate::models::FACT_STALE_AFTER_DAYS;
 use crate::retrieval::embeddings::{EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME, embed_one};
 use crate::retrieval::persist::{
     SourceType, decision_embed_text, doc_chunk_embed_text, fact_embed_text, task_embed_text,
@@ -159,6 +158,7 @@ pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
     let mut candidate_count = repo.candidate_count;
     let mut warnings = repo.warnings;
     let mut doc_chunk_total = repo.doc_chunk_total;
+    let mut demoted_stale_count = repo.demoted_stale_count;
 
     if ctx.config.global.enabled
         && let Some(gctx) = db::open_global_if_exists()?
@@ -171,6 +171,28 @@ pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
         candidate_count += g.candidate_count;
         warnings.extend(g.warnings);
         doc_chunk_total += g.doc_chunk_total;
+        demoted_stale_count += g.demoted_stale_count;
+    }
+
+    // Un-silence staleness (Q1 / decision 145): when stale facts were kept
+    // and demoted rather than excluded, tell the caller how many. This is
+    // the demoted-count that replaced the old silent drop — a peer of the
+    // `stale_embeddings` warning, surfaced identically in CLI/JSON/MCP.
+    if demoted_stale_count > 0 {
+        warnings.push(RecallWarning {
+            kind: "stale_facts_demoted".to_string(),
+            stale_count: demoted_stale_count,
+            total_count: candidate_count,
+            reason: format!(
+                "{demoted_stale_count} stale fact(s) past the {}-day \
+                 fact_stale_after_days horizon were kept but demoted \
+                 (stale: true) instead of excluded",
+                resolved.fact_stale_after_days,
+            ),
+            fix: "Re-verify current facts (`memhub fact verify <key>`), or set \
+                  [retrieval] include_stale_by_default = false to exclude stale facts."
+                .to_string(),
+        });
     }
 
     // Re-sort the unified pool by blended score before the rerank
@@ -214,6 +236,10 @@ struct ResolvedOptions {
     max_results: usize,
     source_types: Vec<SourceType>,
     include_stale: bool,
+    /// Fact-staleness horizon in days (`[retrieval] fact_stale_after_days`).
+    /// A fact never verified, or last verified more than this many days ago,
+    /// is stale — kept and demoted when `include_stale`, else excluded.
+    fact_stale_after_days: i64,
     accepted_only: bool,
     /// Effective rerank toggle; honored only when mode = hybrid.
     use_reranker: bool,
@@ -285,6 +311,7 @@ impl ResolvedOptions {
             max_results,
             source_types,
             include_stale: opts.include_stale.unwrap_or(cfg.include_stale_by_default),
+            fact_stale_after_days: cfg.fact_stale_after_days,
             accepted_only: opts.accepted_only.unwrap_or(cfg.accepted_only_by_default),
             use_reranker: opts.use_reranker.unwrap_or(cfg.use_reranker),
             rerank_candidate_pool: cfg.rerank_candidate_pool.max(max_results),
@@ -304,6 +331,11 @@ struct GatherResult {
     scored: Vec<ScoredHit>,
     candidate_count: usize,
     warnings: Vec<RecallWarning>,
+    /// Stale facts that survived the filter (i.e. were kept and demoted
+    /// rather than excluded) in this corpus. Summed across corpora by the
+    /// orchestrator to surface the `stale_facts_demoted` warning. Always 0
+    /// when `include_stale` is off, since stale rows are filtered out then.
+    demoted_stale_count: usize,
     /// `COUNT(*)` of `doc_chunks` in this corpus, summed across
     /// corpora by the orchestrator for the `available_docs` cue.
     doc_chunk_total: i64,
@@ -376,10 +408,16 @@ fn gather_scored(
         }
     }
 
-    // Hydrate source rows for every candidate.
-    hydrate_sources(conn, &mut candidates)?;
+    // Hydrate source rows for every candidate. The staleness horizon is
+    // config-driven (`[retrieval] fact_stale_after_days`) so the caller can
+    // widen or tighten the window without a rebuild.
+    hydrate_sources(conn, &mut candidates, opts.fact_stale_after_days)?;
 
     // Apply filters (per §4 of the addendum, filters apply before scoring).
+    // Stale handling is the Q1 currency ruling (decision 145): by default
+    // (`include_stale`) keep aged facts and let `score()` demote them
+    // (`stale_penalty`) with `stale: true`, rather than silently dropping
+    // them. `include_stale = false` restores the old hard exclusion.
     let surviving: Vec<CandidateRow> = candidates
         .into_values()
         .filter(|c| c.has_source_row())
@@ -400,6 +438,9 @@ fn gather_scored(
         .collect();
 
     let candidate_count = surviving.len();
+    // Stale survivors are the demoted rows (only nonzero when include_stale
+    // kept them). Reported to the caller as `stale_facts_demoted`.
+    let demoted_stale_count = surviving.iter().filter(|c| c.is_stale).count();
 
     let mut scored: Vec<ScoredHit> = score(&surviving, scoring);
     scored.sort_by(|a, b| {
@@ -424,6 +465,7 @@ fn gather_scored(
         scored,
         candidate_count,
         warnings,
+        demoted_stale_count,
         doc_chunk_total,
     })
 }
@@ -890,6 +932,7 @@ fn current_embed_text(
 fn hydrate_sources(
     conn: &Connection,
     candidates: &mut HashMap<(SourceType, i64), CandidateRow>,
+    fact_stale_after_days: i64,
 ) -> Result<()> {
     // Group by source type to minimize prepared statements.
     let mut by_type: HashMap<SourceType, Vec<i64>> = HashMap::new();
@@ -899,7 +942,7 @@ fn hydrate_sources(
 
     for (st, ids) in by_type {
         for id in ids {
-            if let Some(row) = load_source_row(conn, st, id)?
+            if let Some(row) = load_source_row(conn, st, id, fact_stale_after_days)?
                 && let Some(entry) = candidates.get_mut(&(st, id))
             {
                 entry.title = row.title;
@@ -929,6 +972,7 @@ fn load_source_row(
     conn: &Connection,
     source_type: SourceType,
     source_id: i64,
+    fact_stale_after_days: i64,
 ) -> Result<Option<HydratedSource>> {
     match source_type {
         SourceType::Fact => {
@@ -942,7 +986,7 @@ fn load_source_row(
                 FROM facts WHERE id = ?1",
             )?;
             let row: std::result::Result<HydratedSource, rusqlite::Error> =
-                stmt.query_row(params![source_id, FACT_STALE_AFTER_DAYS], |r: &Row<'_>| {
+                stmt.query_row(params![source_id, fact_stale_after_days], |r: &Row<'_>| {
                     let key: String = r.get(0)?;
                     let value: String = r.get(1)?;
                     let source: String = r.get(2)?;
@@ -1464,6 +1508,178 @@ mod tests {
         );
     }
 
+    /// Force a fact's `verified_at` back by `days` so recall's staleness
+    /// SQL (`julianday('now') - julianday(verified_at) > horizon`) treats it
+    /// as stale without waiting real wall-clock time. `fact::add` stamps
+    /// `verified_at = CURRENT_TIMESTAMP`, so a fresh fact is never stale.
+    fn age_fact(temp: &std::path::Path, fact_id: i64, days: i64) {
+        let ctx = crate::db::open_project(temp).expect("open");
+        ctx.conn
+            .execute(
+                "UPDATE facts SET verified_at = datetime('now', ?1) WHERE id = ?2",
+                params![format!("-{days} days"), fact_id],
+            )
+            .expect("age fact verified_at");
+    }
+
+    // Q1 / decision 145 — un-silence staleness. The default posture is
+    // demote + flag, NOT silent exclusion: an aged fact stays in the bundle
+    // (demoted, `stale: true`) and recall reports a `stale_facts_demoted`
+    // count instead of the row vanishing.
+    #[test]
+    fn stale_fact_is_demoted_and_flagged_not_excluded_by_default() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let (fact_id, _) = fact::add(
+            temp.path(),
+            "deploy-command",
+            "kubectl apply staleflagprobe",
+            "user",
+            "cli:user",
+        )
+        .expect("fact");
+        // 200 days > the default 90-day horizon → stale.
+        age_fact(temp.path(), fact_id, 200);
+
+        let response = recall(
+            temp.path(),
+            RecallOptions {
+                query: "staleflagprobe".to_string(),
+                mode: Some(RetrievalMode::Fts),
+                max_results: 5,
+                source_types: vec![SourceType::Fact],
+                include_stale: None, // default → keep + demote + flag
+                accepted_only: None,
+                use_reranker: None,
+                min_rerank_score: None,
+                log_metrics: false,
+            },
+        )
+        .expect("recall");
+
+        let hit = response
+            .results
+            .iter()
+            .find(|h| h.source_id == fact_id)
+            .expect("stale fact must surface demoted, not vanish");
+        assert!(hit.stale, "stale fact must carry stale: true");
+
+        let warn = response
+            .warnings
+            .iter()
+            .find(|w| w.kind == "stale_facts_demoted")
+            .expect("recall must report the demoted-stale count");
+        assert!(warn.stale_count >= 1, "demoted count should be >= 1");
+    }
+
+    // The escape hatch survives: an explicit `include_stale = false` (or the
+    // config toggle) still hard-excludes stale facts and emits no demoted
+    // warning, so operators who want the old behavior keep it.
+    #[test]
+    fn include_stale_false_restores_hard_exclusion() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let (fact_id, _) = fact::add(
+            temp.path(),
+            "deploy-command",
+            "kubectl apply staleflagprobe",
+            "user",
+            "cli:user",
+        )
+        .expect("fact");
+        age_fact(temp.path(), fact_id, 200);
+
+        let response = recall(
+            temp.path(),
+            RecallOptions {
+                query: "staleflagprobe".to_string(),
+                mode: Some(RetrievalMode::Fts),
+                max_results: 5,
+                source_types: vec![SourceType::Fact],
+                include_stale: Some(false), // explicit opt-out → exclude
+                accepted_only: None,
+                use_reranker: None,
+                min_rerank_score: None,
+                log_metrics: false,
+            },
+        )
+        .expect("recall");
+
+        assert!(
+            !response.results.iter().any(|h| h.source_id == fact_id),
+            "include_stale = false must still hard-exclude stale facts"
+        );
+        assert!(
+            !response
+                .warnings
+                .iter()
+                .any(|w| w.kind == "stale_facts_demoted"),
+            "no demoted-count warning when stale facts are excluded"
+        );
+    }
+
+    // The horizon is config-driven: `[retrieval] fact_stale_after_days`
+    // widens or tightens which facts count as stale.
+    #[test]
+    fn fact_stale_after_days_config_controls_the_horizon() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let (fact_id, _) = fact::add(
+            temp.path(),
+            "deploy-command",
+            "kubectl apply horizonprobe",
+            "user",
+            "cli:user",
+        )
+        .expect("fact");
+        // 120 days old: stale under the default 90-day horizon.
+        age_fact(temp.path(), fact_id, 120);
+
+        let opts = |include_stale| RecallOptions {
+            query: "horizonprobe".to_string(),
+            mode: Some(RetrievalMode::Fts),
+            max_results: 5,
+            source_types: vec![SourceType::Fact],
+            include_stale,
+            accepted_only: None,
+            use_reranker: None,
+            min_rerank_score: None,
+            log_metrics: false,
+        };
+
+        let before = recall(temp.path(), opts(None)).expect("recall default horizon");
+        let hit = before
+            .results
+            .iter()
+            .find(|h| h.source_id == fact_id)
+            .expect("fact present");
+        assert!(hit.stale, "120d-old fact is stale under the 90d default");
+
+        // Widen the horizon to a year: the same fact is now within it.
+        let cfg_path = temp.path().join(".memhub/config.toml");
+        let mut cfg = ProjectConfig::load(&cfg_path).expect("load cfg");
+        cfg.retrieval.fact_stale_after_days = 365;
+        cfg.save(&cfg_path).expect("save cfg");
+
+        let after = recall(temp.path(), opts(None)).expect("recall widened horizon");
+        let hit = after
+            .results
+            .iter()
+            .find(|h| h.source_id == fact_id)
+            .expect("fact still present");
+        assert!(
+            !hit.stale,
+            "120d-old fact must be fresh once the horizon widens to 365d"
+        );
+        assert!(
+            !after
+                .warnings
+                .iter()
+                .any(|w| w.kind == "stale_facts_demoted"),
+            "no demoted-count warning once the fact is within the horizon"
+        );
+    }
+
     #[test]
     fn fts_normalization_collapses_to_one_for_single_hit() {
         let v = normalize_fts(-5.0, -5.0, -5.0);
@@ -1567,6 +1783,14 @@ mod tests {
                 - super::super::super::config::DEFAULT_MIN_RERANK_SCORE)
                 .abs()
                 < 1e-6
+        );
+        assert_eq!(
+            cfg.retrieval.fact_stale_after_days,
+            super::super::super::config::DEFAULT_FACT_STALE_AFTER_DAYS,
+        );
+        assert!(
+            cfg.retrieval.include_stale_by_default,
+            "Q1 default is demote+flag: stale facts are included by default"
         );
     }
 

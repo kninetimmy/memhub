@@ -384,6 +384,7 @@ const KNOWN_LEAVES: &[&str] = &[
     "retrieval.default_max_results",
     "retrieval.accepted_only_by_default",
     "retrieval.include_stale_by_default",
+    "retrieval.fact_stale_after_days",
     "retrieval.use_reranker",
     "retrieval.rerank_candidate_pool",
     "retrieval.include_docs_in_default",
@@ -577,6 +578,15 @@ fn check_config_types(raw: &str) -> Check {
         }
     }
 
+    // The staleness horizon must be a positive day count — 0 or negative
+    // would mark every fact stale, defeating the demote/exclude distinction.
+    if cfg.retrieval.fact_stale_after_days < 1 {
+        problems.push(format!(
+            "retrieval.fact_stale_after_days={} must be >= 1",
+            cfg.retrieval.fact_stale_after_days,
+        ));
+    }
+
     if problems.is_empty() {
         Check::new(
             "config_types",
@@ -611,6 +621,7 @@ const BASELINE_FIELDS: &[&str] = &[
     "integrations.k9.enabled",
     "integrations.k9.agent_docs_path",
     "retrieval.mode",
+    "retrieval.fact_stale_after_days",
     "retrieval.use_reranker",
     "retrieval.rerank_candidate_pool",
     "retrieval.scoring.fts_weight",
