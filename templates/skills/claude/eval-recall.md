@@ -3,7 +3,7 @@ name: eval-recall
 description: Run the memhub Recall@K eval harness against tests/retrieval_golden.json and report the baseline. Read-only; never mutates the DB or writes_log.
 framework: memhub
 framework_version: 1.0.0
-last_updated: 2026-05-13
+last_updated: 2026-07-06
 ---
 
 Run the M8 retrieval acceptance gate. Drives `memhub eval retrieval`
@@ -131,5 +131,17 @@ plausible target.
   `memhub index rebuild` to have backfilled embeddings first
   (otherwise expect `stale_embeddings` warnings in recall, but eval
   itself still runs).
+- **In the memhub source repo specifically**, this invocation scores
+  against *this machine's* live `.memhub/project.sqlite` (the golden
+  set is self-referential — its queries target memhub's own real
+  decisions/facts/tasks), so treat the number it reports as a
+  self-hosted calibration/dogfood signal, not the enforced baseline.
+  The enforced, deterministic reference is
+  `cargo test --test retrieval_golden_hermetic` (issue #44, N28): it
+  seeds a disposable fixture DB from scratch and reproduces the same
+  18-query golden set independent of this machine's DB state. Recorded
+  baseline there: Recall@3 100% (17/17), 0 safety failures
+  (2026-07-06, see `docs/reference/operations.md`'s Retrieval section).
+  If this live invocation and that test disagree, trust the test.
 - For the equivalent gesture from Codex, see the `/eval-recall` skill
   under `templates/skills/codex/`.

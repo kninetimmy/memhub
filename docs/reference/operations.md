@@ -170,6 +170,37 @@ or backfill an existing row with `memhub decision set-summary <ID>
 For A/B testing in any repo: `memhub eval retrieval` vs
 `memhub eval retrieval --no-rerank`.
 
+**Hermetic golden fixture (N28, issue #44).** `tests/retrieval_golden.json`'s
+18 queries target memhub's own real decisions/facts/tasks (e.g. decision 34
+"Agents prefer recall over reading PROJECT_LEDGER.md", decision 48 "recall is
+read-only"), so running `memhub eval retrieval` from this repo's root scores
+against *this machine's* live `.memhub/project.sqlite` — a corpus that drifts
+as new rows land, making the golden-set contract a property of a given DB's
+row population, not just of the code. `tests/retrieval_golden_hermetic.rs` is
+the hermetic CI gate: it seeds a disposable tempdir project — switched to
+hybrid mode *before* seeding so eager-embed (decision 27) actually fires —
+whose rows reproduce the golden set's targets (copied verbatim from the live
+decisions where one is cited, including the real backfilled `summary` text
+on the four decisions that need it), then drives the compiled `memhub eval
+retrieval --json` binary against it with `--golden` pointed at the real
+shipped `tests/retrieval_golden.json`. That is the same pattern
+`tests/locate_polyglot.rs` already established for `eval locate` — a fixture
+seeded fresh per run, independent of live `.memhub` state — applied to the
+retrieval golden.
+
+Baseline recorded 2026-07-06 (issue #44): Recall@3 = 100% (17/17 match
+queries, every one at rank 1), 0 safety failures, over the 18-query set
+(hybrid mode, default rerank floor 2.0). This is the reference other
+Wave 3 lifecycle PRs (L2 staleness, L3 supersession, L6 age decay) compare
+their own hermetic re-run against. There is no persisted fixture DB to
+regenerate — the corpus is defined entirely by the `fact::add` /
+`decision::add` calls in that test's `seed_hermetic_corpus`, rebuilt from
+scratch every run. When `tests/retrieval_golden.json` legitimately changes,
+update `seed_hermetic_corpus` to match and re-run
+`cargo test --test retrieval_golden_hermetic`. The live-DB run from the repo
+root (what `/eval-recall` still drives by default) remains a self-hosted
+calibration signal, not the enforced gate.
+
 ## Token Accounting
 
 Off by default. Opt in per machine with `memhub metrics enable` — this

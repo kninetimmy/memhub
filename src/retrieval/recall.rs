@@ -81,7 +81,6 @@ pub struct RecallHit {
     pub score: f64,
     pub fts_score: f64,
     pub vector_score: f64,
-    pub confidence: f64,
     pub stale: bool,
     pub source: String,
     pub created_at: String,
@@ -513,7 +512,6 @@ fn finalize(
             score: hit.score,
             fts_score: hit.fts_score,
             vector_score: hit.vector_score,
-            confidence: hit.confidence,
             stale: hit.stale,
             source: hit.source,
             created_at: hit.created_at,
@@ -585,7 +583,6 @@ struct CandidateRow {
     /// populated for decisions (migration 0011 / decision 72).
     summary: Option<String>,
     source: String,
-    confidence: f64,
     is_stale: bool,
     created_at: String,
     hydrated: bool,
@@ -602,7 +599,6 @@ impl CandidateRow {
             body: String::new(),
             summary: None,
             source: String::new(),
-            confidence: 1.0,
             is_stale: false,
             created_at: String::new(),
             hydrated: false,
@@ -632,7 +628,6 @@ struct ScoredHit {
     score: f64,
     fts_score: f64,
     vector_score: f64,
-    confidence: f64,
     stale: bool,
     source: String,
     created_at: String,
@@ -911,7 +906,6 @@ fn hydrate_sources(
                 entry.body = row.body;
                 entry.summary = row.summary;
                 entry.source = row.source;
-                entry.confidence = row.confidence;
                 entry.is_stale = row.is_stale;
                 entry.created_at = row.created_at;
                 entry.hydrated = true;
@@ -927,7 +921,6 @@ struct HydratedSource {
     /// Only populated for decisions (migration 0011 / decision 72).
     summary: Option<String>,
     source: String,
-    confidence: f64,
     is_stale: bool,
     created_at: String,
 }
@@ -940,7 +933,7 @@ fn load_source_row(
     match source_type {
         SourceType::Fact => {
             let mut stmt = conn.prepare(
-                "SELECT key, value, source, confidence, verified_at, created_at, \
+                "SELECT key, value, source, verified_at, created_at, \
                     CASE \
                         WHEN verified_at IS NULL THEN 1 \
                         WHEN (julianday('now') - julianday(verified_at)) > ?2 THEN 1 \
@@ -953,15 +946,13 @@ fn load_source_row(
                     let key: String = r.get(0)?;
                     let value: String = r.get(1)?;
                     let source: String = r.get(2)?;
-                    let confidence: f64 = r.get(3)?;
-                    let created_at: String = r.get(5)?;
-                    let stale_int: i64 = r.get(6)?;
+                    let created_at: String = r.get(4)?;
+                    let stale_int: i64 = r.get(5)?;
                     Ok(HydratedSource {
                         title: key,
                         body: value,
                         summary: None,
                         source,
-                        confidence,
                         is_stale: stale_int != 0,
                         created_at,
                     })
@@ -985,7 +976,6 @@ fn load_source_row(
                         body: rationale,
                         summary,
                         source,
-                        confidence: 1.0,
                         is_stale: false,
                         created_at: decided_at,
                     })
@@ -1005,7 +995,6 @@ fn load_source_row(
                         body: notes.unwrap_or_default(),
                         summary: None,
                         source: String::new(),
-                        confidence: 1.0,
                         is_stale: false,
                         created_at,
                     })
@@ -1037,7 +1026,6 @@ fn load_source_row(
                         body,
                         summary: None,
                         source,
-                        confidence: 1.0,
                         is_stale: false,
                         created_at,
                     })
@@ -1098,7 +1086,6 @@ fn score(rows: &[CandidateRow], scoring: &RetrievalScoringConfig) -> Vec<ScoredH
                 score,
                 fts_score,
                 vector_score,
-                confidence: c.confidence,
                 stale: c.is_stale,
                 source: c.source.clone(),
                 created_at: c.created_at.clone(),

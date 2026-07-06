@@ -442,7 +442,6 @@ pub fn run(cli: Cli) -> Result<()> {
                                 "id": fact.id,
                                 "key": fact.key,
                                 "value": fact.value,
-                                "confidence": fact.confidence,
                                 "source": fact.source,
                                 "verified_at": fact.verified_at,
                                 "created_at": fact.created_at,
@@ -458,13 +457,12 @@ pub fn run(cli: Cli) -> Result<()> {
                         let verified_at = fact.verified_at.unwrap_or_else(|| "n/a".to_string());
                         let stale_marker = if fact.is_stale { " [stale]" } else { "" };
                         println!(
-                            "[{}] {} = {}{} (source: {}, confidence: {:.2}, verified: {}, created: {})",
+                            "[{}] {} = {}{} (source: {}, verified: {}, created: {})",
                             fact.id,
                             fact.key,
                             fact.value,
                             stale_marker,
                             fact.source,
-                            fact.confidence,
                             verified_at,
                             fact.created_at
                         );

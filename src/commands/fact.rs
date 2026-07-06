@@ -209,7 +209,7 @@ pub fn verify(start: &Path, ident: &str, actor: &str) -> Result<Option<(i64, Str
 pub fn list(start: &Path) -> Result<Vec<Fact>> {
     let ctx = db::open_project(start)?;
     let mut stmt = ctx.conn.prepare(
-        "SELECT id, key, value, confidence, source, verified_at, created_at,
+        "SELECT id, key, value, source, verified_at, created_at,
                 CASE
                     WHEN verified_at IS NULL THEN 1
                     WHEN (julianday('now') - julianday(verified_at)) > ?1 THEN 1
@@ -220,15 +220,14 @@ pub fn list(start: &Path) -> Result<Vec<Fact>> {
     )?;
 
     let rows = stmt.query_map(params![FACT_STALE_AFTER_DAYS], |row| {
-        let is_stale_int: i64 = row.get(7)?;
+        let is_stale_int: i64 = row.get(6)?;
         Ok(Fact {
             id: row.get(0)?,
             key: row.get(1)?,
             value: row.get(2)?,
-            confidence: row.get(3)?,
-            source: row.get(4)?,
-            verified_at: row.get(5)?,
-            created_at: row.get(6)?,
+            source: row.get(3)?,
+            verified_at: row.get(4)?,
+            created_at: row.get(5)?,
             is_stale: is_stale_int != 0,
         })
     })?;

@@ -298,7 +298,6 @@ fn review_accept_produces_fresh_fact() {
         .expect("accepted fact");
     assert!(!accepted.is_stale);
     assert_eq!(accepted.source, "user+agent:codex");
-    assert!((accepted.confidence - 1.0).abs() < f64::EPSILON);
 }
 
 #[test]

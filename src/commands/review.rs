@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::Value;
 
 use crate::commands::{decision, fact};
@@ -11,6 +11,12 @@ use crate::{MemhubError, Result};
 
 pub const DEFAULT_LIST_LIMIT: usize = 25;
 pub const DEFAULT_EXPIRY_DAYS: i64 = 30;
+
+/// `writes_log.actor` for the automatic expiry pass in
+/// `auto_expire_best_effort` below, distinct from the manual
+/// `memhub review expire` command's `cli:user` so the two are
+/// distinguishable in the log (Wave 3 Q6).
+const AUTO_EXPIRE_ACTOR: &str = "review:auto_expire";
 
 pub fn list(
     start: &Path,
@@ -239,19 +245,61 @@ pub fn expire(start: &Path, older_than_days: i64) -> Result<ReviewExpireSummary>
 
     let mut ctx = db::open_project(start)?;
     let tx = ctx.conn.transaction()?;
+    let expired = expire_in_conn(&tx, older_than_days, "cli:user")?;
+    tx.commit()?;
 
+    Ok(ReviewExpireSummary {
+        older_than_days,
+        expired,
+    })
+}
+
+/// Automatic pass called once from `db::open_project` (Wave 3 Q6):
+/// expire pending writes older than `DEFAULT_EXPIRY_DAYS` as a cheap,
+/// idempotent side effect of every open, so the review queue can't
+/// accumulate stale proposals forever even if nobody ever runs
+/// `memhub review expire` by hand (PRD §11.3 — "pending writes older
+/// than 30 days auto-expire").
+///
+/// Deliberately a single autocommit statement on `conn` — no explicit
+/// transaction wrapper — so this never holds the write lock any
+/// longer than one `UPDATE`, and can't fight a concurrent writer's own
+/// transaction the way a longer-held explicit transaction could.
+///
+/// Best-effort, matching the registry/metrics side effects this runs
+/// alongside in `open_project`: a failure here (e.g. a transient
+/// `SQLITE_BUSY` under contention) is logged and swallowed rather than
+/// failing an otherwise successful host command. Nothing is printed on
+/// success, and a `writes_log` row is only written when a row actually
+/// changed (see `expire_in_conn`), so a no-op pass — the overwhelming
+/// majority of calls — adds no output and no log noise.
+pub fn auto_expire_best_effort(conn: &Connection) {
+    if let Err(err) = expire_in_conn(conn, DEFAULT_EXPIRY_DAYS, AUTO_EXPIRE_ACTOR) {
+        log::warn!("automatic pending-write expiry failed: {err}");
+    }
+}
+
+/// Shared expiry core: mark `pending` rows older than `older_than_days`
+/// as `expired`, logging one `writes_log` row under `actor` iff
+/// anything actually changed. This is the ONLY copy of the expiry SQL —
+/// `expire` (manual) and `auto_expire_best_effort` (automatic) both
+/// call it rather than forking their own copy. `conn` accepts either a
+/// bare `Connection` (autocommit — the automatic pass) or a
+/// `Transaction` (via its `Deref<Target = Connection>` — the manual
+/// command, which wraps the update and the log write together).
+fn expire_in_conn(conn: &Connection, older_than_days: i64, actor: &str) -> Result<usize> {
     let cutoff_expr = format!("datetime('now', '-{older_than_days} days')");
     let update_sql = format!(
         "UPDATE pending_writes
          SET status = 'expired', reviewed_at = CURRENT_TIMESTAMP
          WHERE project_id = 1 AND status = 'pending' AND created_at < {cutoff_expr}"
     );
-    let expired = tx.execute(&update_sql, [])?;
+    let expired = conn.execute(&update_sql, [])?;
 
     if expired > 0 {
         db::log_write(
-            &tx,
-            "cli:user",
+            conn,
+            actor,
             "pending_writes",
             None,
             "update",
@@ -259,12 +307,7 @@ pub fn expire(start: &Path, older_than_days: i64) -> Result<ReviewExpireSummary>
         )?;
     }
 
-    tx.commit()?;
-
-    Ok(ReviewExpireSummary {
-        older_than_days,
-        expired,
-    })
+    Ok(expired)
 }
 
 fn load_pending(start: &Path, id: i64) -> Result<PendingWriteRecord> {

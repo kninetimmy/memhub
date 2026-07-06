@@ -1,6 +1,7 @@
 use std::fs;
 
 use memhub::MemhubError;
+use memhub::db;
 use memhub::commands::{
     decision, doc, export, fact, import, init, narrative, pending_write, review, search,
     session_note, task,
@@ -243,6 +244,18 @@ fn import_accepts_v1_export_missing_reviewed_at_field() {
     let target = tempdir().expect("target tempdir");
     init::run(target.path()).expect("target init");
 
+    // Use a current created_at so the imported pending write stays inside the
+    // 30-day auto-expiry window (Q6 / #43). With the original 2025 date the
+    // next open_project (via review::show) auto-expires it, and this test —
+    // which guards serde-default reviewed_at, not expiry — would fail for an
+    // unrelated reason. Read from SQLite so it never time-bombs.
+    let now: String = {
+        let ctx = db::open_project(target.path()).expect("open target");
+        ctx.conn
+            .query_row("SELECT datetime('now')", [], |r| r.get(0))
+            .expect("read current timestamp")
+    };
+
     let legacy_export = serde_json::json!({
         "memhub_export_version": 1,
         "exported_at": "2025-01-01T00:00:00Z",
@@ -264,7 +277,7 @@ fn import_accepts_v1_export_missing_reviewed_at_field() {
             "status": "pending",
             "actor": "codex",
             "actor_raw": "openai-codex",
-            "created_at": "2025-01-01T00:00:00Z",
+            "created_at": now,
             "provenance_json": "{}",
         }],
         "writes_log": [],
