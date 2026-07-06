@@ -1,6 +1,7 @@
 use serde_json::json;
 
 use crate::code_index::CodeIndexStatus;
+use crate::commands::doctor::{Check, DoctorReport, Group, Status};
 use crate::code_index::locate::LocateResponse;
 use crate::commands;
 use crate::commands::import::ImportSummary;
@@ -946,4 +947,84 @@ pub(crate) fn print_code_status(status: &CodeIndexStatus) {
     } else {
         println!("  staleness:      up to date with HEAD");
     }
+}
+
+pub(crate) fn doctor_report_to_json(r: &DoctorReport) -> serde_json::Value {
+    json!({
+        "project": r.project,
+        "overall": r.overall.as_str(),
+        "exit_code": r.exit_code,
+        "counts": {
+            "ok": r.counts.ok,
+            "warn": r.counts.warn,
+            "error": r.counts.error,
+            "skipped": r.counts.skipped,
+        },
+        "checks": r.checks.iter().map(check_to_json).collect::<Vec<_>>(),
+    })
+}
+
+fn check_to_json(c: &Check) -> serde_json::Value {
+    let mut v = json!({
+        "id": c.id,
+        "group": c.group.as_str(),
+        "status": c.status.as_str(),
+        "message": c.message,
+    });
+    if let Some(detail) = &c.detail {
+        v["detail"] = json!(detail);
+    }
+    v
+}
+
+fn status_glyph(status: Status) -> &'static str {
+    match status {
+        Status::Ok => "\u{2714}",      // ✔
+        Status::Warn => "\u{26A0}",    // ⚠
+        Status::Error => "\u{2716}",   // ✖
+        Status::Skipped => "\u{00B7}", // ·
+    }
+}
+
+const DOCTOR_GROUP_ORDER: &[Group] = &[
+    Group::Project,
+    Group::Config,
+    Group::Integrity,
+    Group::RetrievalMetrics,
+    Group::Integrations,
+];
+
+fn group_heading(group: Group) -> &'static str {
+    match group {
+        Group::Project => "Project",
+        Group::Config => "Config",
+        Group::Integrity => "Integrity",
+        Group::RetrievalMetrics => "Retrieval / Metrics",
+        Group::Integrations => "Integrations",
+    }
+}
+
+pub(crate) fn print_doctor_report_human(r: &DoctorReport) {
+    println!("memhub doctor — project: {}", r.project);
+    println!();
+
+    for &group in DOCTOR_GROUP_ORDER {
+        let in_group: Vec<&Check> = r.checks.iter().filter(|c| c.group == group).collect();
+        if in_group.is_empty() {
+            continue;
+        }
+        println!("{}", group_heading(group));
+        for c in in_group {
+            println!("  {} {}: {}", status_glyph(c.status), c.id, c.message);
+            if let Some(detail) = &c.detail {
+                println!("      {detail}");
+            }
+        }
+        println!();
+    }
+
+    println!(
+        "Summary: {} ok · {} warn · {} error → exit {}",
+        r.counts.ok, r.counts.warn, r.counts.error, r.exit_code
+    );
 }

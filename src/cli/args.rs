@@ -31,6 +31,18 @@ pub enum TopLevelCommand {
         #[arg(long)]
         json: bool,
     },
+    /// One read-only health command across project / config / DB
+    /// integrity / retrieval-metrics / integrations. Absorbs
+    /// `/check-init`. Exit 0 unless an `error`-level check fires;
+    /// `--strict` additionally fails on any `warn`. Writes to no table;
+    /// no MCP tool.
+    Doctor {
+        #[arg(long)]
+        json: bool,
+        /// Promote `warn` to a failing exit code (still 1, never 2).
+        #[arg(long)]
+        strict: bool,
+    },
     Stats {
         #[arg(long, value_enum, default_value_t = StatsWindowArg::ThirtyDays)]
         window: StatsWindowArg,

@@ -10,7 +10,7 @@ Run the read-only memhub health check for the current repo. Do not write or repa
 
 Workflow:
 - Verify `.memhub/` exists and `memhub` is on PATH.
-- Run `memhub status` and prefer JSON output if the installed binary supports it.
-- Verify `.memhub/rendered/PROJECT.md` and `.memhub/rendered/PROJECT_LEDGER.md` exist, start with `<!-- memhub:rendered -->`, and are not obviously stale.
-- Check pending writes with `memhub review list --status pending --json` and recent activity with `memhub stats --window 7d --json`.
-- Report Green, Yellow, or Red with concrete next action. Never run `memhub render` or mutate files from this skill.
+- Run `memhub doctor --json` and parse the wrapped `{"doctor": {...}}` object (`overall`, `exit_code`, `counts`, `checks[]` — each `{id, group, status, message, detail?}`).
+- Report Green (`overall: ok`), Yellow (`overall: warn` — list each warn check and its message/fix), or Red (`overall: error`, or `.memhub`/binary missing) with concrete next action.
+- Fall back to `memhub status` if the installed binary predates `doctor` (issue #21).
+- Never run `memhub render`, `memhub doctor --strict`, or mutate files from this skill.

@@ -38,6 +38,29 @@ fn status_without_json_defaults_to_false() {
     }
 }
 
+/// Wave 1·A / issue #21: `memhub doctor [--json] [--strict]`.
+#[test]
+fn doctor_json_and_strict_flags_parse() {
+    match parse(&["doctor", "--json", "--strict"]) {
+        TopLevelCommand::Doctor { json, strict } => {
+            assert!(json);
+            assert!(strict);
+        }
+        other => panic!("expected Doctor, got {other:?}"),
+    }
+}
+
+#[test]
+fn doctor_without_flags_defaults_to_false() {
+    match parse(&["doctor"]) {
+        TopLevelCommand::Doctor { json, strict } => {
+            assert!(!json);
+            assert!(!strict);
+        }
+        other => panic!("expected Doctor, got {other:?}"),
+    }
+}
+
 #[test]
 fn init_json_flag_parses() {
     match parse(&["init", "--json"]) {
