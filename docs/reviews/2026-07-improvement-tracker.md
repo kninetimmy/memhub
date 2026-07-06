@@ -21,7 +21,7 @@ numbers. Default-off config additions must keep an untouched install byte-identi
 |---|---|---|---|
 | 0 | Fix-now defects | 17 / 17 | — (complete) |
 | 1 | Loud states (doctor/status/integrity) | 5 / 5 | Q35 ✓ (complete) |
-| 2 | Session-start token diet | 6 / 7 | Q21–Q25 ✓ · Q41 ✓ (only C3 left — user-gated) |
+| 2 | Session-start token diet | 7 / 7 | Q21–Q25 ✓ · Q41 ✓ (complete) |
 | 3 | Staleness / lifecycle | 0 / 7 | Q1–Q6 |
 | 4 | Retrieval performance | 0 / 12 | Q17–Q19, Q24, Q40 |
 | 5 | Upgrade / GC hardening | 0 / 8 | Q12–Q16 |
@@ -196,8 +196,13 @@ Four PRs: **PR-A text/docs** and **PR-B safe code** (no decisions), **PR #17**
   — 2026-07-06, PR #34 (issue #30).
 - [x] C2 generate AGENTS.md from CLAUDE.md (pure `generate_agents_md`); upgraded
   `skill_parity` from `##`-header parity to content-equality. — 2026-07-06, PR #34 (issue #30).
-- [ ] C3 trim user-global CLAUDE.md (−40%) — **no issue yet**; edits the machine-local
-  `~/.claude/CLAUDE.md` outside this repo → user-gated, scope separately.
+- [x] C3 trim user-global CLAUDE.md — pure verbosity trim of `~/.claude/CLAUDE.md`
+  (machine-local, outside this repo): 186→129 lines, 9,913→6,577 bytes (−33% bytes /
+  −36% words), every rule preserved. Three structural merges (Prompt-refinement folded
+  into a "How I want you to work" bullet; TODOs+dead-code; typecheck+test). User accepted
+  −36% over pushing to the −40% target to keep the Subagent-Policy / Model-Fit rules at
+  full fidelity. Backup at `~/.claude/CLAUDE.md.bak-2026-07-06`. Main-thread edit — no
+  PR/issue (file lives outside the repo). — 2026-07-06.
 - [x] C4 root managed block — versioned `memhub:managed-block` in `src/managed_block.rs`,
   propagates CLAUDE.md→AGENTS.md unchanged via the generator. — 2026-07-06, PR #35 (issue #31).
 - [x] C5 `memhub audit md [--json] [--strict]` — read-only linter over root memory files:
