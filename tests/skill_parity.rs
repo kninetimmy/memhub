@@ -319,6 +319,34 @@ fn claude_md_keeps_keystone_phrases() {
     );
 }
 
+/// C4 (issue #31 / decision Q23): `CLAUDE.md` must carry a versioned,
+/// machine-parseable `memhub:managed-block`, and it must survive the
+/// `generate_agents_md` transform into `AGENTS.md` unchanged (the block
+/// rides through with the rest of the body — it is not on the
+/// injected/allowlisted-divergence list). This is the "governs the real
+/// shipped file" counterpart to `managed_block::tests::parses_a_well_formed_block`,
+/// which only exercises the parser against a synthetic fixture.
+#[test]
+fn claude_md_managed_block_parses() {
+    let claude = fs::read_to_string(repo_root().join("CLAUDE.md")).expect("read CLAUDE.md");
+    let block = memhub::managed_block::parse_managed_block(&claude)
+        .expect("CLAUDE.md must carry a parseable memhub:managed-block");
+
+    assert_eq!(block.version, memhub::managed_block::MANAGED_BLOCK_VERSION);
+    assert_eq!(block.field("memhub-primary"), Some("true"));
+    assert_eq!(block.field("db"), Some(".memhub/project.sqlite"));
+    assert_eq!(block.field("rendered"), Some(".memhub/rendered/"));
+    assert_eq!(block.field("config"), Some(".memhub/config.toml"));
+
+    let agents = fs::read_to_string(repo_root().join("AGENTS.md")).expect("read AGENTS.md");
+    let agents_block = memhub::managed_block::parse_managed_block(&agents)
+        .expect("AGENTS.md must carry the same managed block, propagated by the generator");
+    assert_eq!(
+        block, agents_block,
+        "managed block must propagate from CLAUDE.md into AGENTS.md unchanged"
+    );
+}
+
 /// Every skill template file across all three agents, as absolute paths:
 /// `templates/skills/claude/*.md`, `templates/skills/codex/*/SKILL.md`,
 /// `templates/skills/opencode/*/SKILL.md`.

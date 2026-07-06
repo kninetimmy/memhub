@@ -9,6 +9,7 @@ pub mod db;
 pub mod errors;
 pub mod export;
 pub mod logging;
+pub mod managed_block;
 pub mod mcp;
 pub mod metrics;
 pub mod models;

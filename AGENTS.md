@@ -4,6 +4,13 @@ Local-first Rust CLI for durable per-repo project memory shared between Codex, C
 
 Operational detail for every subsystem — retrieval, token accounting, doc ingestion, the code index, machine-global memory, cross-machine workflow and Drive sync, and machine-wide upgrade/GC — now lives in [docs/reference/operations.md](docs/reference/operations.md) and is memhub-recall-searchable. Recall it on demand rather than loading it every session; this file keeps only what an agent needs inline from turn one.
 
+<!-- memhub:managed-block v=1 -->
+memhub-primary: true
+db: .memhub/project.sqlite
+rendered: .memhub/rendered/
+config: .memhub/config.toml
+<!-- /memhub:managed-block -->
+
 This file is the Codex / OpenCode counterpart to `CLAUDE.md`, and is **generated** from it by `generate_agents_md` — do not hand-edit it; edit `CLAUDE.md` and regenerate with `MEMHUB_REGEN=1 cargo test --test skill_parity`. The two exist so Codex CLI, OpenCode CLI, and Claude Code sessions get the same orientation when they open this repo; where they diverge it is intentional (a different H1, plus the Codex/OpenCode-only sections injected at the end).
 
 ## Session Continuity
