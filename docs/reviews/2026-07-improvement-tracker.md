@@ -20,7 +20,7 @@ numbers. Default-off config additions must keep an untouched install byte-identi
 | Wave | Theme | Done / Total | Gating decisions |
 |---|---|---|---|
 | 0 | Fix-now defects | 17 / 17 | — (complete) |
-| 1 | Loud states (doctor/status/integrity) | 0 / 5 | Q35 |
+| 1 | Loud states (doctor/status/integrity) | 1 / 5 | Q35 ✓ |
 | 2 | Session-start token diet | 0 / 7 | Q21–Q25, **Q41 (spike gates trim)** |
 | 3 | Staleness / lifecycle | 0 / 7 | Q1–Q6 |
 | 4 | Retrieval performance | 0 / 12 | Q17–Q19, Q24, Q40 |
@@ -129,7 +129,9 @@ Four PRs: **PR-A text/docs** and **PR-B safe code** (no decisions), **PR #17**
 - [ ] S3 `status` refresh (subsystem states; K9 lines only when detected)
 - [ ] D1 integrity surface (FTS rowcounts, FTS5 integrity-check, orphan embeddings, `integrity_check`+`foreign_key_check`)
 - [ ] X4 session-accounting health line
-- [ ] D9 map SQLITE_BUSY to friendly error
+- [x] D9 map SQLITE_BUSY / SQLITE_LOCKED to a friendly error — shipped with D5/Q35
+  (`synchronous = NORMAL` at both `open_connection` and `open_code_index`) in the same
+  PR. — 2026-07-05, PR #23 (issue #20).
 
 ## Wave 2 — Token diet  (gating: Q21–Q25; **Q41 spike gates any trim**)
 - [ ] C1 rewrite repo CLAUDE.md to ~2,500-token target + doc-ingest addenda/operations.md
