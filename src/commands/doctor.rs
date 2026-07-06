@@ -8,7 +8,10 @@
 //! **Contract frozen by the main thread — do not redesign:** exit `0`
 //! unless an `error`-level check fires (`1` otherwise); `--strict`
 //! additionally fails on any `warn`. CLI-only, no MCP tool. Read-only —
-//! every check only `SELECT`s / `PRAGMA`s; nothing here writes a row.
+//! checks are `SELECT`/`PRAGMA`, except the FTS5 integrity check, which
+//! runs the special `INSERT INTO {fts}({fts}) VALUES('integrity-check')`
+//! command; that is FTS5's consistency-scan syntax, not a row write —
+//! nothing here persists new data.
 //!
 //! Each check is a reusable, side-effect-free function returning a
 //! [`Check`] (plain data, no printing) so `commands::status`'s own
@@ -593,13 +596,17 @@ fn check_config_types(raw: &str) -> Check {
 
 /// Commit-back-here fields per the header comment in
 /// `.memhub/config.example.toml` — recall behavior + security-relevant
-/// settings that should be identical on every machine. Deliberately
-/// excludes every `enabled` toggle (metrics/global/sync/K9) and
-/// `doc.allowed_dirs`: both are documented there as fields a machine
-/// legitimately diverges on and does not commit back.
+/// settings that should be identical on every machine. `integrations.k9.*`
+/// is listed there as a commit-back project property, so `k9.enabled` is
+/// the one `enabled` toggle included here; `metrics.enabled` and the
+/// `global`/`sync` `enabled` flags stay excluded — the header documents
+/// those three as fields a machine legitimately diverges on and does not
+/// commit back. `doc.allowed_dirs` is excluded for the same per-machine
+/// reason.
 const BASELINE_FIELDS: &[&str] = &[
     "deny_list.patterns",
     "render.output_dir",
+    "integrations.k9.enabled",
     "integrations.k9.agent_docs_path",
     "retrieval.mode",
     "retrieval.use_reranker",
@@ -1239,27 +1246,58 @@ pub(crate) fn check_sync_freshness(start: &Path, config: &ProjectConfig) -> Chec
     };
 
     match sync::check(start, &remote) {
-        Ok(report) => match report.verdict {
-            sync::SyncVerdict::DriveAhead | sync::SyncVerdict::Diverged => Check::new(
-                "sync_freshness",
-                Group::Integrations,
-                Status::Warn,
-                "remote is ahead — run /catch-up before writing",
-            ),
-            sync::SyncVerdict::UpToDate
-            | sync::SyncVerdict::LocalAhead
-            | sync::SyncVerdict::NoRemote => Check::new(
-                "sync_freshness",
-                Group::Integrations,
-                Status::Ok,
-                format!("sync verdict: {}", report.verdict.as_str()),
-            ),
-        },
+        Ok(report) => sync_report_to_check(&report),
         Err(e) => Check::new(
             "sync_freshness",
             Group::Integrations,
             Status::Warn,
             format!("sync check failed: {e}"),
+        ),
+    }
+}
+
+/// Interprets one `sync::CheckReport` into a `Check`. Checks
+/// `project_id_mismatch` and `schema_blocks_adopt` before falling back
+/// to the git-style `verdict` — both are independent of the logical-
+/// version comparison that drives `verdict`, so either can be true
+/// under an otherwise-OK-looking verdict (e.g. a wrong-project remote
+/// can still land on `UpToDate` if its logical version happens to
+/// match). Surfacing them first means neither is masked.
+fn sync_report_to_check(report: &sync::CheckReport) -> Check {
+    if let Some(remote_project_id) = &report.project_id_mismatch {
+        return Check::new(
+            "sync_freshness",
+            Group::Integrations,
+            Status::Warn,
+            format!(
+                "remote snapshot is for a different project ({remote_project_id}) — do not adopt"
+            ),
+        );
+    }
+
+    if report.schema_blocks_adopt {
+        return Check::new(
+            "sync_freshness",
+            Group::Integrations,
+            Status::Warn,
+            "remote snapshot schema is newer than this binary — run `memhub upgrade` before adopting",
+        );
+    }
+
+    match report.verdict {
+        sync::SyncVerdict::DriveAhead | sync::SyncVerdict::Diverged => Check::new(
+            "sync_freshness",
+            Group::Integrations,
+            Status::Warn,
+            "remote is ahead — run /catch-up before writing",
+        ),
+        sync::SyncVerdict::UpToDate
+        | sync::SyncVerdict::LocalAhead
+        | sync::SyncVerdict::NoRemote => Check::new(
+            "sync_freshness",
+            Group::Integrations,
+            Status::Ok,
+            format!("sync verdict: {}", report.verdict.as_str()),
         ),
     }
 }
@@ -1478,6 +1516,32 @@ made_up_nested_key = 1
 
         let check = check_baseline_drift(&local, temp.path());
         assert_eq!(check.status, Status::Skipped);
+    }
+
+    #[test]
+    fn baseline_drift_detects_a_changed_k9_enabled() {
+        let local: toml::Value =
+            toml::from_str("[integrations.k9]\nenabled = true\nagent_docs_path = \"agent_docs\"\n")
+                .expect("local");
+        let example: toml::Value =
+            toml::from_str("[integrations.k9]\nenabled = false\nagent_docs_path = \"agent_docs\"\n")
+                .expect("example");
+
+        let temp = tempdir().expect("tempdir");
+        fs::write(
+            temp.path().join(db::CONFIG_EXAMPLE_FILENAME),
+            toml::to_string(&example).unwrap(),
+        )
+        .expect("write example");
+
+        let check = check_baseline_drift(&local, temp.path());
+        assert_eq!(check.status, Status::Warn);
+        assert!(
+            check
+                .detail
+                .unwrap_or_default()
+                .contains("integrations.k9.enabled")
+        );
     }
 
     // -- K9 coexistence ------------------------------------------------------
@@ -1740,6 +1804,49 @@ made_up_nested_key = 1
         let ctx = db::open_project(temp.path()).expect("open");
         let check = check_sync_freshness(temp.path(), &ctx.config);
         assert_eq!(check.status, Status::Skipped);
+    }
+
+    /// A deliberately "boring" report — up-to-date verdict, no mismatch,
+    /// no schema block — so each test below only needs to flip the one
+    /// field it's exercising.
+    fn base_check_report() -> sync::CheckReport {
+        sync::CheckReport {
+            verdict: sync::SyncVerdict::UpToDate,
+            baseline_present: true,
+            project_id: "proj-a".to_string(),
+            local_logical: sync::LogicalVersion {
+                writes_log_max_id: 0,
+                writes_log_count: 0,
+                digest: "d".to_string(),
+            },
+            remote_logical: None,
+            local_schema: "0017_x".to_string(),
+            remote_schema: None,
+            schema_blocks_adopt: false,
+            project_id_mismatch: None,
+            remote_machine_id: None,
+            remote_created_at: None,
+        }
+    }
+
+    #[test]
+    fn sync_freshness_warns_on_project_id_mismatch_despite_ok_verdict() {
+        let mut report = base_check_report();
+        report.project_id_mismatch = Some("other-project".to_string());
+
+        let check = sync_report_to_check(&report);
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.message.contains("different project"));
+    }
+
+    #[test]
+    fn sync_freshness_warns_on_schema_blocks_adopt_despite_ok_verdict() {
+        let mut report = base_check_report();
+        report.schema_blocks_adopt = true;
+
+        let check = sync_report_to_check(&report);
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.message.contains("memhub upgrade"));
     }
 
     // -- misc ------------------------------------------------------
