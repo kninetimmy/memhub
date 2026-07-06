@@ -152,6 +152,53 @@ fn decision_list_json_flag_parses() {
     }
 }
 
+/// Wave 3 L3 / issue #46: `memhub fact supersede <old> --by <new>`. Both
+/// sides accept a numeric id or an exact key (parsed as strings).
+#[test]
+fn fact_supersede_parses_old_and_by() {
+    match parse(&[
+        "fact",
+        "supersede",
+        "old-key",
+        "--by",
+        "new-key",
+        "--actor",
+        "cli:script",
+    ]) {
+        TopLevelCommand::Fact { command } => match command {
+            FactCommand::Supersede {
+                old,
+                by,
+                json,
+                actor,
+            } => {
+                assert_eq!(old, "old-key");
+                assert_eq!(by, "new-key");
+                assert!(!json);
+                assert_eq!(actor.as_deref(), Some("cli:script"));
+            }
+            other => panic!("expected FactCommand::Supersede, got {other:?}"),
+        },
+        other => panic!("expected Fact, got {other:?}"),
+    }
+}
+
+/// `memhub decision supersede <old> --by <new>` — decisions have no natural
+/// key, so both ids parse as integers.
+#[test]
+fn decision_supersede_parses_numeric_ids() {
+    match parse(&["decision", "supersede", "3", "--by", "7"]) {
+        TopLevelCommand::Decision { command } => match command {
+            DecisionCommand::Supersede { old, by, .. } => {
+                assert_eq!(old, 3);
+                assert_eq!(by, 7);
+            }
+            other => panic!("expected DecisionCommand::Supersede, got {other:?}"),
+        },
+        other => panic!("expected Decision, got {other:?}"),
+    }
+}
+
 #[test]
 fn command_list_json_flag_parses() {
     match parse(&["command", "list", "--json"]) {

@@ -214,7 +214,8 @@ pub fn list(start: &Path) -> Result<Vec<Fact>> {
                     WHEN verified_at IS NULL THEN 1
                     WHEN (julianday('now') - julianday(verified_at)) > ?1 THEN 1
                     ELSE 0
-                END AS is_stale
+                END AS is_stale,
+                superseded_by
          FROM facts
          ORDER BY key ASC",
     )?;
@@ -229,11 +230,86 @@ pub fn list(start: &Path) -> Result<Vec<Fact>> {
             verified_at: row.get(4)?,
             created_at: row.get(5)?,
             is_stale: is_stale_int != 0,
+            superseded_by: row.get(7)?,
         })
     })?;
 
     rows.collect::<std::result::Result<Vec<_>, _>>()
         .map_err(Into::into)
+}
+
+/// Outcome of a fact supersession — the demoted old row and the row it now
+/// points to. Both sides are reported so the CLI can echo resolved keys even
+/// when the caller passed numeric ids.
+#[derive(Debug)]
+pub struct FactSupersedeOutcome {
+    pub old_id: i64,
+    pub old_key: String,
+    pub new_id: i64,
+    pub new_key: String,
+}
+
+/// Mark `old_ident`'s fact superseded by `new_ident`'s fact (Wave 3 L3).
+/// Demote-with-link, no-loss: the old row is NOT deleted — it stays present
+/// with `superseded_by` set, is penalized in recall, and is annotated in
+/// render. Both idents accept a numeric id or an exact key (mirroring
+/// `fact verify`). Errors if either side is missing or if a fact would
+/// supersede itself. Transaction-scoped so it composes with the CLI verb and
+/// the review-accept path.
+pub fn supersede_in_tx(
+    tx: &Transaction<'_>,
+    old_ident: &str,
+    new_ident: &str,
+    actor: &str,
+) -> Result<FactSupersedeOutcome> {
+    let (old_id, old_key) = resolve_fact(tx, old_ident)?.ok_or_else(|| {
+        crate::MemhubError::InvalidInput(format!("no fact matched '{old_ident}'"))
+    })?;
+    let (new_id, new_key) = resolve_fact(tx, new_ident)?.ok_or_else(|| {
+        crate::MemhubError::InvalidInput(format!("no fact matched '{new_ident}'"))
+    })?;
+    if old_id == new_id {
+        return Err(crate::MemhubError::InvalidInput(
+            "a fact cannot supersede itself".to_string(),
+        ));
+    }
+
+    tx.execute(
+        "UPDATE facts SET superseded_by = ?1 WHERE project_id = 1 AND id = ?2",
+        params![new_id, old_id],
+    )?;
+
+    db::log_write(
+        tx,
+        actor,
+        "facts",
+        Some(old_id),
+        "supersede",
+        &format!("fact supersede {old_id} by {new_id}"),
+    )?;
+
+    Ok(FactSupersedeOutcome {
+        old_id,
+        old_key,
+        new_id,
+        new_key,
+    })
+}
+
+/// CLI wrapper around [`supersede_in_tx`]: open the project, run the
+/// supersession in one transaction, then re-render markdown if enabled.
+pub fn supersede(
+    start: &Path,
+    old_ident: &str,
+    new_ident: &str,
+    actor: &str,
+) -> Result<FactSupersedeOutcome> {
+    let mut ctx = db::open_project(start)?;
+    let tx = ctx.conn.transaction()?;
+    let outcome = supersede_in_tx(&tx, old_ident, new_ident, actor)?;
+    tx.commit()?;
+    sync_md::sync_if_enabled(start)?;
+    Ok(outcome)
 }
 
 pub fn count_stale(start: &Path) -> Result<i64> {
@@ -247,4 +323,111 @@ pub fn count_stale(start: &Path) -> Result<i64> {
         |row| row.get(0),
     )?;
     Ok(count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::init;
+    use tempfile::tempdir;
+
+    fn writes_log_count(start: &Path, action: &str) -> i64 {
+        let ctx = db::open_project(start).expect("open");
+        ctx.conn
+            .query_row(
+                "SELECT COUNT(*) FROM writes_log WHERE table_name = 'facts' AND action = ?1",
+                params![action],
+                |r| r.get(0),
+            )
+            .expect("count writes_log")
+    }
+
+    // Wave 3 L3 — supersede is demote-with-link, no-loss (decision 145):
+    // the old fact is NOT deleted; it stays present with `superseded_by`
+    // pointing at its replacement.
+    #[test]
+    fn supersede_links_old_to_new_without_deleting() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let (old_id, _) =
+            add(temp.path(), "deploy-cmd", "kubectl apply v1", "user", "cli:user").expect("old");
+        let (new_id, _) = add(
+            temp.path(),
+            "deploy-cmd-v2",
+            "kubectl apply v2",
+            "user",
+            "cli:user",
+        )
+        .expect("new");
+
+        let outcome = supersede(
+            temp.path(),
+            &old_id.to_string(),
+            &new_id.to_string(),
+            "cli:user",
+        )
+        .expect("supersede");
+        assert_eq!(outcome.old_id, old_id);
+        assert_eq!(outcome.new_id, new_id);
+
+        let facts = list(temp.path()).expect("list");
+        let old = facts
+            .iter()
+            .find(|f| f.id == old_id)
+            .expect("superseded fact must still be present (no-loss)");
+        assert_eq!(old.superseded_by, Some(new_id), "old links to the new fact");
+        let new = facts.iter().find(|f| f.id == new_id).expect("new present");
+        assert_eq!(new.superseded_by, None, "the replacement is not superseded");
+        assert_eq!(writes_log_count(temp.path(), "supersede"), 1);
+    }
+
+    // Both sides resolve by exact key (mirroring `fact verify`), not just id.
+    #[test]
+    fn supersede_resolves_by_key() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let (old_id, _) =
+            add(temp.path(), "old-key", "v1", "user", "cli:user").expect("old");
+        let (new_id, _) =
+            add(temp.path(), "new-key", "v2", "user", "cli:user").expect("new");
+
+        let outcome =
+            supersede(temp.path(), "old-key", "new-key", "cli:user").expect("supersede by key");
+        assert_eq!(outcome.old_id, old_id);
+        assert_eq!(outcome.new_id, new_id);
+        assert_eq!(
+            list(temp.path())
+                .expect("list")
+                .iter()
+                .find(|f| f.id == old_id)
+                .unwrap()
+                .superseded_by,
+            Some(new_id)
+        );
+    }
+
+    #[test]
+    fn supersede_rejects_self_and_missing() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let (id, _) = add(temp.path(), "only", "v", "user", "cli:user").expect("fact");
+
+        let self_err = supersede(temp.path(), &id.to_string(), &id.to_string(), "cli:user")
+            .expect_err("self-supersede must fail");
+        assert!(matches!(self_err, crate::MemhubError::InvalidInput(_)));
+
+        let missing_err = supersede(temp.path(), &id.to_string(), "nope", "cli:user")
+            .expect_err("missing new must fail");
+        assert!(matches!(missing_err, crate::MemhubError::InvalidInput(_)));
+        // The failed op left the durable row untouched.
+        assert_eq!(
+            list(temp.path())
+                .expect("list")
+                .iter()
+                .find(|f| f.id == id)
+                .unwrap()
+                .superseded_by,
+            None
+        );
+    }
 }

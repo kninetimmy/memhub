@@ -123,6 +123,60 @@ pub fn propose_decision_scoped(
     )
 }
 
+/// Stage an agent-proposed supersession for the repo's review queue (Wave 3
+/// L3). This is the ONLY supersede surface an agent has: it merely stages a
+/// `kind: "supersede"` pending write — the durable, demote-with-link
+/// supersession happens exclusively on human `memhub review accept` (or via
+/// the CLI `fact/decision supersede` verbs). The untrusted-writer guardrail
+/// means an agent can never retire a fact/decision on its own.
+///
+/// `target_kind` is `"fact"` or `"decision"`. `old`/`new` are identifiers
+/// resolved at accept time (fact: numeric id or exact key; decision: numeric
+/// id) — deferring resolution keeps staging cheap and lets the reviewer act
+/// on the freshest rows.
+#[allow(clippy::too_many_arguments)]
+pub fn propose_supersede(
+    start: &Path,
+    target_kind: &str,
+    old: &str,
+    new: &str,
+    rationale: &str,
+    actor: &str,
+    actor_raw: &str,
+    provenance_json: &str,
+) -> Result<i64> {
+    let target_kind = target_kind.trim();
+    if target_kind != "fact" && target_kind != "decision" {
+        return Err(MemhubError::InvalidInput(format!(
+            "supersede target_kind must be 'fact' or 'decision', got '{target_kind}'"
+        )));
+    }
+    ensure_non_empty("supersede old", old)?;
+    ensure_non_empty("supersede new", new)?;
+    ensure_non_empty("supersede rationale", rationale)?;
+    if old.trim() == new.trim() {
+        return Err(MemhubError::InvalidInput(
+            "supersede old and new must differ".to_string(),
+        ));
+    }
+    let payload = json!({
+        "target_kind": target_kind,
+        "old": old,
+        "new": new,
+    });
+
+    insert_pending_write(
+        start,
+        "supersede",
+        &payload.to_string(),
+        rationale,
+        actor,
+        actor_raw,
+        "mcp propose_supersede",
+        provenance_json,
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn insert_pending_write(
     start: &Path,

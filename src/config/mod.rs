@@ -19,6 +19,15 @@ pub const DEFAULT_RECALL_MAX_RESULTS: usize = 6;
 pub const DEFAULT_FTS_WEIGHT: f64 = 0.5;
 pub const DEFAULT_VECTOR_WEIGHT: f64 = 0.5;
 pub const DEFAULT_STALE_PENALTY: f64 = 0.3;
+/// Blended-score demotion applied to a superseded fact/decision in recall
+/// (Wave 3 L3, decision 145's demote-with-link ruling). A superseded row is
+/// never excluded — it is kept, tagged `superseded_by: N`, and pushed down.
+/// Set above `DEFAULT_STALE_PENALTY` (0.3) because supersession is an
+/// explicit "this was replaced" signal, stronger than mere age, yet still a
+/// demotion rather than a filter. It stacks additively with the stale
+/// penalty (a row that is both stale and superseded sinks furthest) and,
+/// like the stale penalty, is a peer, independent signal in `score()`.
+pub const DEFAULT_SUPERSEDED_PENALTY: f64 = 0.4;
 /// Default cross-encoder score floor for hybrid-mode candidates after
 /// re-ranking. Calibrated empirically against memhub's own golden set
 /// (decision 71, task #22): the gibberish safety probe rerank-scores at
@@ -118,6 +127,12 @@ pub struct RetrievalScoringConfig {
     pub vector_weight: f64,
     #[serde(default = "default_stale_penalty")]
     pub stale_penalty: f64,
+    /// Blended-score demotion for a superseded fact/decision (Wave 3 L3).
+    /// A second, independent demotion signal alongside `stale_penalty`:
+    /// superseded rows are demoted (never excluded) and tagged
+    /// `superseded_by: N`. Defaults to `DEFAULT_SUPERSEDED_PENALTY`.
+    #[serde(default = "default_superseded_penalty")]
+    pub superseded_penalty: f64,
     /// Minimum cross-encoder relevance score for a candidate to survive
     /// the re-rank pass. MiniLM gives positive logits to relevant docs
     /// and negative logits to nonsense; a floor near 0 cleanly separates
@@ -143,6 +158,7 @@ impl Default for RetrievalScoringConfig {
             fts_weight: DEFAULT_FTS_WEIGHT,
             vector_weight: DEFAULT_VECTOR_WEIGHT,
             stale_penalty: DEFAULT_STALE_PENALTY,
+            superseded_penalty: DEFAULT_SUPERSEDED_PENALTY,
             min_rerank_score: DEFAULT_MIN_RERANK_SCORE,
             doc_min_rerank_score: DEFAULT_DOC_MIN_RERANK_SCORE,
         }
@@ -157,6 +173,9 @@ fn default_vector_weight() -> f64 {
 }
 fn default_stale_penalty() -> f64 {
     DEFAULT_STALE_PENALTY
+}
+fn default_superseded_penalty() -> f64 {
+    DEFAULT_SUPERSEDED_PENALTY
 }
 fn default_min_rerank_score() -> f32 {
     DEFAULT_MIN_RERANK_SCORE

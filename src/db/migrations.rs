@@ -102,6 +102,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0017_session_baseline",
         include_str!("../../migrations/0017_session_baseline.sql"),
     ),
+    (
+        "0018_supersede",
+        include_str!("../../migrations/0018_supersede.sql"),
+    ),
 ];
 
 pub fn apply_all(conn: &mut Connection) -> Result<Vec<String>> {
@@ -190,5 +194,33 @@ mod tests {
         assert_eq!(ordinal("0017_session_baseline"), 17);
         assert_eq!(ordinal("0001_initial"), 1);
         assert_eq!(ordinal("garbage"), 0);
+    }
+
+    /// Migration 0018 (Wave 3 L3) adds the fact supersession link column.
+    /// Decisions already carry `superseded_by` from 0001, so only `facts`
+    /// gains it here; assert it exists (and stays replay-safe via the
+    /// `idempotent_reapply_is_a_noop` test above).
+    #[test]
+    fn migration_0018_adds_facts_superseded_by_column() {
+        let mut conn = Connection::open_in_memory().expect("open");
+        apply_all(&mut conn).expect("apply");
+        let facts_has: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('facts') WHERE name = 'superseded_by'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("pragma facts");
+        assert_eq!(facts_has, 1, "facts.superseded_by must exist after 0018");
+        // Decisions' equivalent column predates this migration (0001); the
+        // supersede feature relies on it too, so pin its presence.
+        let decisions_has: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('decisions') WHERE name = 'superseded_by'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("pragma decisions");
+        assert_eq!(decisions_has, 1, "decisions.superseded_by must exist");
     }
 }

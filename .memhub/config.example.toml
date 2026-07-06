@@ -126,6 +126,13 @@ include_docs_in_default = false
 fts_weight = 0.5
 vector_weight = 0.5
 stale_penalty = 0.3
+# Blended-score demotion for a SUPERSEDED fact/decision (Wave 3 L3,
+# decision 145's demote-with-link ruling). A superseded row is never
+# excluded — it stays, is tagged superseded_by:N, and is pushed down.
+# Set above stale_penalty (0.3): supersession is an explicit "replaced"
+# signal, stronger than mere age, yet still a demotion, not a filter.
+# Stacks additively with stale_penalty.
+superseded_penalty = 0.4
 # Cross-encoder relevance floor (replaces the legacy min_vector_score
 # cosine floor — see decisions 70, 71). Calibrated empirically against
 # memhub's golden set: gibberish probe scores ~+1.25, next legitimate

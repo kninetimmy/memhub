@@ -176,6 +176,42 @@ pub fn accept(start: &Path, id: i64, actor: &str) -> Result<AcceptOutcome> {
                 )?;
                 (decision_id, "decisions")
             }
+            // Staged supersession (Wave 3 L3). The agent could only
+            // `propose_supersede`; the durable demote-with-link runs here,
+            // now that a human accepted it. The demoted OLD row is the
+            // durable target reported back. Repo-scoped only — supersede
+            // proposals never carry `target: "global"`.
+            "supersede" => {
+                let target_kind = payload
+                    .get("target_kind")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| missing_payload_field(id, "target_kind"))?;
+                let old = payload
+                    .get("old")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| missing_payload_field(id, "old"))?;
+                let new = payload
+                    .get("new")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| missing_payload_field(id, "new"))?;
+                match target_kind {
+                    "fact" => {
+                        let outcome = fact::supersede_in_tx(&tx, old, new, actor)?;
+                        (outcome.old_id, "facts")
+                    }
+                    "decision" => {
+                        let old_id = parse_decision_id(id, "old", old)?;
+                        let new_id = parse_decision_id(id, "new", new)?;
+                        let outcome = decision::supersede_in_tx(&tx, old_id, new_id, actor)?;
+                        (outcome.old_id, "decisions")
+                    }
+                    other => {
+                        return Err(MemhubError::InvalidInput(format!(
+                            "pending write {id}: supersede target_kind '{other}' must be 'fact' or 'decision'"
+                        )));
+                    }
+                }
+            }
             other => {
                 return Err(MemhubError::InvalidInput(format!(
                     "pending write {id} has unknown kind '{other}'"
@@ -382,6 +418,17 @@ fn missing_payload_field(id: i64, field: &str) -> MemhubError {
     ))
 }
 
+/// Parse a decision supersede identifier (numeric id) from a staged
+/// payload, with a clear error naming the offending field. Decisions have
+/// no natural key, so a supersede proposal must carry numeric ids.
+fn parse_decision_id(id: i64, field: &str, raw: &str) -> Result<i64> {
+    raw.trim().parse::<i64>().map_err(|_| {
+        MemhubError::InvalidInput(format!(
+            "pending write {id}: decision supersede '{field}' must be a numeric id, got '{raw}'"
+        ))
+    })
+}
+
 /// Durable write for a `target: "global"` pending write. Runs in the
 /// global DB's own transaction (committed here) so the repo-side
 /// status update can follow. Requires the accepting repo to still
@@ -535,5 +582,86 @@ mod tests {
             derive_source_from_pending_actor("claude-code"),
             "user+agent:claude-code"
         );
+    }
+
+    // Wave 3 L3 — the MCP supersede surface is propose-only. A staged
+    // `propose_supersede` does NOT mutate durable state; the demote-with-link
+    // becomes durable only when a human `review accept` runs it here.
+    #[test]
+    fn accept_supersede_fact_is_staged_then_durable() {
+        use crate::commands::{fact, init, pending_write};
+        let temp = tempfile::tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let (old_id, _) =
+            fact::add(temp.path(), "k-old", "v old", "user", "cli:user").expect("old");
+        let (new_id, _) =
+            fact::add(temp.path(), "k-new", "v new", "user", "cli:user").expect("new");
+
+        let pid = pending_write::propose_supersede(
+            temp.path(),
+            "fact",
+            &old_id.to_string(),
+            &new_id.to_string(),
+            "old replaced by new",
+            "codex",
+            "codex",
+            "{}",
+        )
+        .expect("stage");
+
+        // Untrusted-writer guardrail: staging must not durably supersede.
+        assert_eq!(
+            fact::list(temp.path())
+                .expect("list")
+                .iter()
+                .find(|f| f.id == old_id)
+                .unwrap()
+                .superseded_by,
+            None,
+            "propose_supersede must not durably mutate the fact"
+        );
+
+        let outcome = super::accept(temp.path(), pid, "cli:user").expect("accept");
+        assert_eq!(outcome.durable_table, "facts");
+        assert_eq!(outcome.durable_id, old_id);
+        assert_eq!(
+            fact::list(temp.path())
+                .expect("list")
+                .iter()
+                .find(|f| f.id == old_id)
+                .unwrap()
+                .superseded_by,
+            Some(new_id),
+            "accept applies the durable demote-with-link"
+        );
+    }
+
+    #[test]
+    fn accept_supersede_decision_is_durable() {
+        use crate::commands::{decision, init, pending_write};
+        let temp = tempfile::tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let old_id = decision::add(temp.path(), "Old", "r1", "user", "cli:user").expect("old");
+        let new_id = decision::add(temp.path(), "New", "r2", "user", "cli:user").expect("new");
+
+        let pid = pending_write::propose_supersede(
+            temp.path(),
+            "decision",
+            &old_id.to_string(),
+            &new_id.to_string(),
+            "replaced",
+            "claude-code",
+            "claude-code",
+            "{}",
+        )
+        .expect("stage");
+        let outcome = super::accept(temp.path(), pid, "cli:user").expect("accept");
+        assert_eq!(outcome.durable_table, "decisions");
+        assert_eq!(outcome.durable_id, old_id);
+
+        let all = decision::list(temp.path()).expect("list");
+        let old = all.iter().find(|d| d.id == old_id).unwrap();
+        assert_eq!(old.status, "superseded");
+        assert_eq!(old.superseded_by, Some(new_id));
     }
 }

@@ -21,6 +21,11 @@ pub struct Fact {
     pub verified_at: Option<String>,
     pub created_at: String,
     pub is_stale: bool,
+    /// `Some(new_fact_id)` once this fact has been superseded (Wave 3 L3,
+    /// migration 0018). The row is demoted-with-link, never deleted: it
+    /// stays present, is tagged with the replacement id, and recall
+    /// penalizes it. `None` for an active fact.
+    pub superseded_by: Option<i64>,
 }
 
 #[derive(Debug)]
@@ -35,6 +40,11 @@ pub struct Decision {
     /// and the cross-encoder re-rank input so jargon-titled decisions
     /// surface for plain-English queries. See decision 72.
     pub summary: Option<String>,
+    /// `Some(new_decision_id)` once this decision has been superseded
+    /// (Wave 3 L3). Supersession sets `status = 'superseded'` and this
+    /// link together; the row is demoted-with-link, never deleted.
+    /// `None` for an active/draft decision.
+    pub superseded_by: Option<i64>,
 }
 
 #[derive(Debug)]

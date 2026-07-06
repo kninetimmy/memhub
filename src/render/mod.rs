@@ -185,7 +185,7 @@ fn load_latest_narrative(conn: &Connection, table: &str) -> Result<Option<Narrat
 
 fn load_decisions(conn: &Connection) -> Result<Vec<Decision>> {
     let mut stmt = conn.prepare(
-        "SELECT id, title, rationale, status, decided_at, source, summary
+        "SELECT id, title, rationale, status, decided_at, source, summary, superseded_by
          FROM decisions
          WHERE project_id = 1
          ORDER BY decided_at DESC, id DESC",
@@ -200,6 +200,7 @@ fn load_decisions(conn: &Connection) -> Result<Vec<Decision>> {
                 decided_at: row.get(4)?,
                 source: row.get(5)?,
                 summary: row.get(6)?,
+                superseded_by: row.get(7)?,
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -243,7 +244,8 @@ fn load_facts(conn: &Connection) -> Result<Vec<Fact>> {
                     WHEN verified_at IS NULL THEN 1
                     WHEN (julianday('now') - julianday(verified_at)) > ?1 THEN 1
                     ELSE 0
-                END AS is_stale
+                END AS is_stale,
+                superseded_by
          FROM facts
          WHERE project_id = 1
          ORDER BY key ASC",
@@ -259,6 +261,7 @@ fn load_facts(conn: &Connection) -> Result<Vec<Fact>> {
                 verified_at: row.get(4)?,
                 created_at: row.get(5)?,
                 is_stale: is_stale_int != 0,
+                superseded_by: row.get(7)?,
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -425,9 +428,18 @@ fn format_ledger_md(s: &RenderSnapshot) -> String {
         ));
         for d in &s.decisions {
             out.push_str(&format!("### D{} — {}\n\n", d.id, d.title));
+            // Annotate (never hide) a superseded decision with its
+            // replacement link (Wave 3 L3). The status is already
+            // 'superseded'; the arrow points at the successor's `D{id}`
+            // (the ledger renders each decision under a `### D{id}` header,
+            // so the reference is resolvable in place).
+            let status_annotated = match d.superseded_by {
+                Some(new_id) => format!("{} → D{new_id}", d.status),
+                None => d.status.clone(),
+            };
             out.push_str(&format!(
                 "**Status:** {} • **Decided:** {} • **Source:** {}\n\n",
-                d.status, d.decided_at, d.source
+                status_annotated, d.decided_at, d.source
             ));
             if d.rationale.trim().is_empty() {
                 out.push_str("_No rationale recorded._\n\n");
@@ -474,16 +486,31 @@ fn format_ledger_md(s: &RenderSnapshot) -> String {
             s.facts.len(),
             s.stale_fact_count
         ));
-        out.push_str("| Key | Value | Source | Verified | Stale |\n");
-        out.push_str("|-----|-------|--------|----------|-------|\n");
+        // The "Superseded" column annotates (never hides) a superseded fact
+        // with its replacement id — the demote-with-link surface for facts
+        // (Wave 3 L3), parallel to the decisions annotation above.
+        out.push_str("| Key | Value | Source | Verified | Stale | Superseded |\n");
+        out.push_str("|-----|-------|--------|----------|-------|------------|\n");
         for f in &s.facts {
+            // Show the superseding fact's KEY (not its id): the facts table
+            // has no id column, but every fact's key is right there in the
+            // Key column, so the link resolves in place. Fall back to the
+            // id only if the target somehow isn't in the rendered set.
+            let superseded = match f.superseded_by {
+                Some(new_id) => match s.facts.iter().find(|other| other.id == new_id) {
+                    Some(other) => format!("→ {}", other.key),
+                    None => format!("→ #{new_id}"),
+                },
+                None => "no".to_string(),
+            };
             out.push_str(&format!(
-                "| {} | {} | {} | {} | {} |\n",
+                "| {} | {} | {} | {} | {} | {} |\n",
                 escape_table_cell(&f.key),
                 escape_table_cell(&f.value),
                 escape_table_cell(&f.source),
                 escape_table_cell(f.verified_at.as_deref().unwrap_or("never")),
-                if f.is_stale { "yes" } else { "no" }
+                if f.is_stale { "yes" } else { "no" },
+                escape_table_cell(&superseded),
             ));
         }
         out.push('\n');
@@ -626,5 +653,70 @@ mod tests {
         let md = render_project_md_for_test(&temp);
         assert!(md.contains("## Token Accounting (last 7 days)"));
         assert!(md.contains("Recalls:"));
+    }
+
+    // Wave 3 L3 — render ANNOTATES superseded rows, never hides them. The
+    // ledger must carry the decision supersession link and the facts-table
+    // "Superseded" column, and the old fact/decision must still be present.
+    #[test]
+    fn ledger_annotates_superseded_facts_and_decisions() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::commands::init::run(temp.path()).expect("init");
+
+        let (fold, _) =
+            crate::commands::fact::add(temp.path(), "f-old", "old val", "user", "cli:user")
+                .expect("fold");
+        let (fnew, _) =
+            crate::commands::fact::add(temp.path(), "f-new", "new val", "user", "cli:user")
+                .expect("fnew");
+        crate::commands::fact::supersede(
+            temp.path(),
+            &fold.to_string(),
+            &fnew.to_string(),
+            "cli:user",
+        )
+        .expect("fact supersede");
+
+        let dold = crate::commands::decision::add(
+            temp.path(),
+            "Old decision",
+            "old rationale",
+            "user",
+            "cli:user",
+        )
+        .expect("dold");
+        let dnew = crate::commands::decision::add(
+            temp.path(),
+            "New decision",
+            "new rationale",
+            "user",
+            "cli:user",
+        )
+        .expect("dnew");
+        crate::commands::decision::supersede(temp.path(), dold, dnew, "cli:user")
+            .expect("decision supersede");
+
+        let ctx = crate::db::open_project(temp.path()).expect("open");
+        let snapshot = super::build_snapshot(&ctx.conn, "test", ctx.config.metrics.enabled)
+            .expect("build_snapshot");
+        let ledger = super::format_ledger_md(&snapshot);
+
+        assert!(
+            ledger.contains(&format!("superseded → D{dnew}")),
+            "decision ledger must annotate the supersession link:\n{ledger}"
+        );
+        assert!(
+            ledger.contains("| Superseded |"),
+            "facts table must carry a Superseded column:\n{ledger}"
+        );
+        assert!(
+            ledger.contains("→ f-new"),
+            "facts table must annotate the superseding key:\n{ledger}"
+        );
+        // No-loss: the superseded fact key is still rendered, not hidden.
+        assert!(
+            ledger.contains("f-old"),
+            "superseded fact must remain in the ledger:\n{ledger}"
+        );
     }
 }

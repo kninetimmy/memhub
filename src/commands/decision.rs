@@ -250,7 +250,7 @@ fn normalize_summary(summary: Option<&str>) -> Option<String> {
 pub fn list(start: &Path) -> Result<Vec<Decision>> {
     let ctx = db::open_project(start)?;
     let mut stmt = ctx.conn.prepare(
-        "SELECT id, title, rationale, status, decided_at, source, summary
+        "SELECT id, title, rationale, status, decided_at, source, summary, superseded_by
          FROM decisions
          ORDER BY decided_at DESC, id DESC",
     )?;
@@ -264,6 +264,7 @@ pub fn list(start: &Path) -> Result<Vec<Decision>> {
             decided_at: row.get(4)?,
             source: row.get(5)?,
             summary: row.get(6)?,
+            superseded_by: row.get(7)?,
         })
     })?;
 
@@ -280,7 +281,7 @@ pub fn list_active_recent(start: &Path, limit: usize) -> Result<Vec<Decision>> {
 
     let ctx = db::open_project(start)?;
     let mut stmt = ctx.conn.prepare(
-        "SELECT id, title, rationale, status, decided_at, source, summary
+        "SELECT id, title, rationale, status, decided_at, source, summary, superseded_by
          FROM decisions
          WHERE project_id = 1 AND status = 'active'
          ORDER BY decided_at DESC, id DESC
@@ -296,9 +297,169 @@ pub fn list_active_recent(start: &Path, limit: usize) -> Result<Vec<Decision>> {
             decided_at: row.get(4)?,
             source: row.get(5)?,
             summary: row.get(6)?,
+            superseded_by: row.get(7)?,
         })
     })?;
 
     rows.collect::<std::result::Result<Vec<_>, _>>()
         .map_err(Into::into)
+}
+
+/// Outcome of a decision supersession — the demoted old decision and the one
+/// it now points to, with titles for a friendly CLI echo.
+#[derive(Debug)]
+pub struct DecisionSupersedeOutcome {
+    pub old_id: i64,
+    pub old_title: String,
+    pub new_id: i64,
+    pub new_title: String,
+}
+
+/// Look up a decision by numeric id, returning its title. Decisions have no
+/// natural key (unlike facts), so supersession resolves them by id alone.
+fn resolve_decision(tx: &Transaction<'_>, id: i64) -> Result<Option<String>> {
+    tx.query_row(
+        "SELECT title FROM decisions WHERE project_id = 1 AND id = ?1",
+        params![id],
+        |r| r.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+/// Retire `old_id`'s decision by supersession (Wave 3 L3): set its status to
+/// 'superseded' and link it to `new_id`. Demote-with-link, no-loss — the row
+/// is NOT deleted; it stays present (annotated in render, penalized in
+/// recall, and dropped from the active-decisions list). Q2 ruling: decisions
+/// retire by supersession, not by age. Title/rationale/summary are unchanged,
+/// so no re-embed or FTS/chunk resync is required. Errors if either id is
+/// missing or if a decision would supersede itself.
+pub fn supersede_in_tx(
+    tx: &Transaction<'_>,
+    old_id: i64,
+    new_id: i64,
+    actor: &str,
+) -> Result<DecisionSupersedeOutcome> {
+    let old_title = resolve_decision(tx, old_id)?
+        .ok_or_else(|| crate::MemhubError::InvalidInput(format!("no decision with id {old_id}")))?;
+    let new_title = resolve_decision(tx, new_id)?
+        .ok_or_else(|| crate::MemhubError::InvalidInput(format!("no decision with id {new_id}")))?;
+    if old_id == new_id {
+        return Err(crate::MemhubError::InvalidInput(
+            "a decision cannot supersede itself".to_string(),
+        ));
+    }
+
+    tx.execute(
+        "UPDATE decisions SET status = 'superseded', superseded_by = ?1
+         WHERE project_id = 1 AND id = ?2",
+        params![new_id, old_id],
+    )?;
+
+    db::log_write(
+        tx,
+        actor,
+        "decisions",
+        Some(old_id),
+        "supersede",
+        &format!("decision supersede {old_id} by {new_id}"),
+    )?;
+
+    Ok(DecisionSupersedeOutcome {
+        old_id,
+        old_title,
+        new_id,
+        new_title,
+    })
+}
+
+/// CLI wrapper around [`supersede_in_tx`]: open the project, run the
+/// supersession in one transaction, then re-render markdown if enabled.
+pub fn supersede(
+    start: &Path,
+    old_id: i64,
+    new_id: i64,
+    actor: &str,
+) -> Result<DecisionSupersedeOutcome> {
+    let mut ctx = db::open_project(start)?;
+    let tx = ctx.conn.transaction()?;
+    let outcome = supersede_in_tx(&tx, old_id, new_id, actor)?;
+    tx.commit()?;
+    sync_md::sync_if_enabled(start)?;
+    Ok(outcome)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::init;
+    use tempfile::tempdir;
+
+    // Wave 3 L3 / Q2 — decisions retire by supersession, not age. The old
+    // decision flips to status 'superseded', links to its replacement, and
+    // stays present (demote-with-link) but drops out of the active list.
+    #[test]
+    fn supersede_sets_status_link_and_leaves_active_list() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let old_id = add(
+            temp.path(),
+            "Use JSON logs",
+            "chosen for tooling",
+            "user",
+            "cli:user",
+        )
+        .expect("old");
+        let new_id = add(
+            temp.path(),
+            "Use structured tracing",
+            "replaces JSON logging",
+            "user",
+            "cli:user",
+        )
+        .expect("new");
+
+        let outcome = supersede(temp.path(), old_id, new_id, "cli:user").expect("supersede");
+        assert_eq!(outcome.old_id, old_id);
+        assert_eq!(outcome.new_id, new_id);
+
+        let all = list(temp.path()).expect("list");
+        let old = all
+            .iter()
+            .find(|d| d.id == old_id)
+            .expect("superseded decision must still be present (no-loss)");
+        assert_eq!(old.status, "superseded");
+        assert_eq!(old.superseded_by, Some(new_id));
+
+        let active = list_active_recent(temp.path(), 10).expect("active");
+        assert!(
+            !active.iter().any(|d| d.id == old_id),
+            "superseded decision must leave the active-recent list"
+        );
+        assert!(
+            active.iter().any(|d| d.id == new_id),
+            "the replacement stays active"
+        );
+    }
+
+    #[test]
+    fn supersede_rejects_self_and_missing_decision() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let id = add(temp.path(), "Only", "r", "user", "cli:user").expect("decision");
+
+        assert!(matches!(
+            supersede(temp.path(), id, id, "cli:user").expect_err("self must fail"),
+            crate::MemhubError::InvalidInput(_)
+        ));
+        assert!(matches!(
+            supersede(temp.path(), id, 9999, "cli:user").expect_err("missing must fail"),
+            crate::MemhubError::InvalidInput(_)
+        ));
+        // Untouched by the failed ops.
+        let d = list(temp.path()).expect("list");
+        let row = d.iter().find(|d| d.id == id).unwrap();
+        assert_eq!(row.status, "active");
+        assert_eq!(row.superseded_by, None);
+    }
 }

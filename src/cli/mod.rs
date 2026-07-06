@@ -446,6 +446,7 @@ pub fn run(cli: Cli) -> Result<()> {
                                 "verified_at": fact.verified_at,
                                 "created_at": fact.created_at,
                                 "is_stale": fact.is_stale,
+                                "superseded_by": fact.superseded_by,
                             }))
                             .collect::<Vec<_>>(),
                     });
@@ -456,12 +457,17 @@ pub fn run(cli: Cli) -> Result<()> {
                     for fact in facts {
                         let verified_at = fact.verified_at.unwrap_or_else(|| "n/a".to_string());
                         let stale_marker = if fact.is_stale { " [stale]" } else { "" };
+                        let superseded_marker = match fact.superseded_by {
+                            Some(new_id) => format!(" [superseded by #{new_id}]"),
+                            None => String::new(),
+                        };
                         println!(
-                            "[{}] {} = {}{} (source: {}, verified: {}, created: {})",
+                            "[{}] {} = {}{}{} (source: {}, verified: {}, created: {})",
                             fact.id,
                             fact.key,
                             fact.value,
                             stale_marker,
+                            superseded_marker,
                             fact.source,
                             verified_at,
                             fact.created_at
@@ -499,6 +505,32 @@ pub fn run(cli: Cli) -> Result<()> {
                         // convention, mirrors `doc rm`/`doc show`).
                         process::exit(1);
                     }
+                }
+            }
+            FactCommand::Supersede {
+                old,
+                by,
+                json: as_json,
+                actor,
+            } => {
+                let actor = resolve_actor(actor.as_deref())?;
+                let outcome = commands::fact::supersede(&cwd, &old, &by, &actor)?;
+                if as_json {
+                    println!(
+                        "{}",
+                        json!({
+                            "superseded": true,
+                            "old_id": outcome.old_id,
+                            "old_key": outcome.old_key,
+                            "new_id": outcome.new_id,
+                            "new_key": outcome.new_key,
+                        })
+                    );
+                } else {
+                    println!(
+                        "Superseded fact {} ({}) by fact {} ({})",
+                        outcome.old_id, outcome.old_key, outcome.new_id, outcome.new_key
+                    );
                 }
             }
         },
@@ -621,6 +653,32 @@ pub fn run(cli: Cli) -> Result<()> {
                     println!("Cleared summary on decision {id}");
                 }
             }
+            DecisionCommand::Supersede {
+                old,
+                by,
+                json: as_json,
+                actor,
+            } => {
+                let actor = resolve_actor(actor.as_deref())?;
+                let outcome = commands::decision::supersede(&cwd, old, by, &actor)?;
+                if as_json {
+                    println!(
+                        "{}",
+                        json!({
+                            "superseded": true,
+                            "old_id": outcome.old_id,
+                            "old_title": outcome.old_title,
+                            "new_id": outcome.new_id,
+                            "new_title": outcome.new_title,
+                        })
+                    );
+                } else {
+                    println!(
+                        "Superseded decision {} ({}) by decision {} ({})",
+                        outcome.old_id, outcome.old_title, outcome.new_id, outcome.new_title
+                    );
+                }
+            }
             DecisionCommand::List { json: as_json } => {
                 let decisions = commands::decision::list(&cwd)?;
                 if as_json {
@@ -635,6 +693,7 @@ pub fn run(cli: Cli) -> Result<()> {
                                 "decided_at": decision.decided_at,
                                 "source": decision.source,
                                 "summary": decision.summary,
+                                "superseded_by": decision.superseded_by,
                             }))
                             .collect::<Vec<_>>(),
                     });
@@ -643,11 +702,15 @@ pub fn run(cli: Cli) -> Result<()> {
                     println!("No decisions recorded.");
                 } else {
                     for decision in decisions {
+                        let status_label = match decision.superseded_by {
+                            Some(new_id) => format!("{} → D{new_id}", decision.status),
+                            None => decision.status.clone(),
+                        };
                         println!(
                             "[{}] {} [{}] at {} (source: {})\n  rationale: {}",
                             decision.id,
                             decision.title,
-                            decision.status,
+                            status_label,
                             decision.decided_at,
                             decision.source,
                             decision.rationale

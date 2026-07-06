@@ -259,6 +259,7 @@ pub(crate) fn recall_response_to_json(response: &RecallResponse) -> serde_json::
                 "fts_score": hit.fts_score,
                 "vector_score": hit.vector_score,
                 "stale": hit.stale,
+                "superseded_by": hit.superseded_by,
                 "source": hit.source,
                 "created_at": hit.created_at,
                 "rerank_score": hit.rerank_score,
@@ -317,6 +318,12 @@ pub(crate) fn print_recall_human(response: &RecallResponse) {
         println!();
         for hit in &response.results {
             let stale_tag = if hit.stale { " [stale]" } else { "" };
+            // Annotate (never hide) a superseded hit with its replacement
+            // id — the demote-with-link surface in recall output (Wave 3 L3).
+            let superseded_tag = match hit.superseded_by {
+                Some(new_id) => format!(" [superseded by #{new_id}]"),
+                None => String::new(),
+            };
             // Only annotate global provenance; repo is the unmarked
             // default so existing output stays visually unchanged.
             let scope_tag = if hit.scope == "global" {
@@ -330,13 +337,14 @@ pub(crate) fn print_recall_human(response: &RecallResponse) {
                 format!(" source={}", hit.source)
             };
             println!(
-                "#{rank} [{stype}:{sid}] {title}{scope}{stale}  score={score:.3} (fts={fts:.3}, vec={vec:.3}){src}",
+                "#{rank} [{stype}:{sid}] {title}{scope}{stale}{superseded}  score={score:.3} (fts={fts:.3}, vec={vec:.3}){src}",
                 rank = hit.rank,
                 stype = hit.source_type,
                 sid = hit.source_id,
                 scope = scope_tag,
                 title = hit.title,
                 stale = stale_tag,
+                superseded = superseded_tag,
                 score = hit.score,
                 fts = hit.fts_score,
                 vec = hit.vector_score,
