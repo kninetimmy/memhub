@@ -74,6 +74,30 @@ issues before execution. IDs are `A#` to keep them distinct from the review's fi
   genuinely needed. **Open decision (yours — load-bearing, gates the schema design):** how far up
   the spectrum. Effort: (a) small · (b) large · (c) very large.
 
+- [ ] **A4 — Optional hosted-LLM reranker (Haiku) with local fallback.** Let a user who has
+  Anthropic API usage opt into using **Haiku as the recall reranker**, falling back to the bundled
+  local cross-encoder (ms-marco-MiniLM) when usage is unavailable or offline. **Scope correction (load-bearing):**
+  this applies to the **rerank/judgment stage only** — the BGE-small *embedding* step cannot use Haiku
+  (Anthropic exposes no embeddings endpoint; a hosted embedding option would mean a separate provider —
+  Voyage / OpenAI / Cohere / Gemini — plus full-corpus re-embedding + a vector-dimension migration, a
+  much larger change with weaker payoff). The rerank stage slots into memhub's existing two-stage
+  reranker seam (the `use_reranker` knob), so a `[retrieval] reranker = "local" | "haiku"` toggle is
+  architecturally natural. **Upside:** an LLM understands query intent better than a small cross-encoder
+  → smarter relevance, and it overlaps the contradiction/staleness judgment in Wave 3 L5. **Tensions
+  (all load-bearing):** (1) collides with the offline-first / "no cloud service or daemon" security
+  invariant → must be strictly opt-in with local fallback as default, and it is a **PRD-level decision**,
+  not a mere config toggle; (2) hot-path latency + rate-limit/outage exposure on *every* recall (recall
+  is called mid-conversation, sometimes repeatedly); (3) each recall becomes a billable call (the metrics
+  subsystem could measure it); (4) **determinism** — the golden Recall@K / N28 hermetic eval regime
+  assumes deterministic local ranking; an LLM reranker drifts across model updates even at temperature 0,
+  which cuts against the eval-gated culture. **Leaning:** bounded escalation, not a wholesale swap —
+  local FTS+BGE stays the always-on fast path; Haiku reranks only a small top-slice, or on explicit
+  request / hard queries, capping latency, cost, and eval-drift. **New dep:** an HTTP client
+  (flag-before-add) + a PRD amendment. **Open decision (yours):** pursue at all? if so — escalation
+  policy (always / top-slice / on-request) and default-off confirmed. Effort: med (rerank-only) · large
+  (only if a hosted *embedding* option is ever added). *(Captured 2026-07-06 from a design conversation;
+  needs its own scoping pass → plan gate → issues before execution.)*
+
 ---
 
 ## Wave 0 — Fix-now (broken today; all small)
