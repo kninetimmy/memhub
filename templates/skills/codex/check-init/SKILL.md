@@ -3,16 +3,22 @@ name: check-init
 description: Read-only health check of the memhub project in this repo — schema version, render freshness, K9 coexistence, write-log activity
 framework: memhub
 framework_version: 1.0.0
-last_updated: 2026-05-13
+last_updated: 2026-07-06
 ---
 
-Verify this repo's memhub setup is healthy. Read-only — no writes, no
-fixes applied without explicit approval.
+Verify this repo's memhub setup is healthy. Read-only — this skill
+never writes, never fixes, and never runs `memhub render` itself.
 
 This is the Codex counterpart to the Claude Code `/check-init` skill.
 Both run the same read-only `memhub` commands; they differ only in
 the agent identifier on whatever read-side telemetry the host
 captures.
+
+`/check-init` is now a thin wrapper: the health logic moved into
+`memhub doctor` (issue #21) so the same checks — project, config, DB
+integrity, retrieval/metrics, integrations — are available identically
+from the CLI, a script, or any agent, not just this skill. This
+skill's own job is just detection + reporting the doctor output.
 
 ## Detection
 
@@ -27,146 +33,58 @@ Run: `command -v memhub >/dev/null 2>&1 && echo "present" || echo "absent"`
   isn't on PATH; tell the user to install or rebuild memhub. Stop
   here.
 
-## Status read
-
-Run, and parse the JSON output (a noun-keyed wrapped object,
-`{"status": {...}}`):
+## Run the health check
 
 ```bash
-memhub status --json
+memhub doctor --json
 ```
 
-Capture, from the `status` object:
-- `project_name`.
-- `schema_version`. If the binary supports a `--latest-known` or
-  equivalent flag, compare; otherwise treat any non-error `status`
-  as schema-current and trust that migrations applied on connect.
-- K9 integration flags (`k9_detected`, `k9_enabled`,
-  `k9_agent_docs_path`, `k9_drift`).
-- Row counts: `facts`/`stale_facts`, `decisions`, `tasks_total`/
-  `tasks_open`, `pending_writes`, `writes_logged`.
+Parse the wrapped `{"doctor": {...}}` object:
+- `overall` — worst status across every check (`ok` / `warn` / `error`).
+- `exit_code` — 0 unless an `error`-level check fired.
+- `counts` — `{ok, warn, error, skipped}`.
+- `checks[]` — each `{id, group, status, message, detail?}`, grouped
+  by `group` (`project`, `config`, `integrity`, `retrieval_metrics`,
+  `integrations`).
 
-If `memhub status --json` exits non-zero, surface stderr and report
-**Red** with that single finding.
+If `memhub doctor --json` itself exits non-zero for a reason other
+than a reported `error` check (e.g. a crash), surface stderr and
+report **Red** with that single finding.
 
-If the binary doesn't expose `--json` on `status` (older build),
-fall back to the human-readable `memhub status` output and parse
-the labelled lines.
-
-## Render output check
-
-For each rendered file in the configured `[render].output_dir`
-(`.memhub/rendered/PROJECT.md` and
-`.memhub/rendered/PROJECT_LEDGER.md` by default):
-
-1. **File presence.** Missing → **Red**. Suggested fix:
-   `memhub render`.
-2. **Leading `<!-- memhub:rendered -->` marker.** Missing →
-   **Yellow** (the file was hand-edited or written by something
-   other than `memhub render`). Suggested fix: `memhub render` —
-   the prior file will be backed up under `.memhub/backups/rendered/`.
-3. **Freshness vs. DB.** Read the rendered file's
-   "Generated at: <ISO>" header line. Then capture:
-   - Latest `project_state.created_at` via `memhub state show --json`.
-   - Latest `project_arch.created_at` via `memhub arch show --json`.
-   - Most recent `writes_log` entry via `memhub stats --window 7d --json`
-     (or the equivalent activity-summary field).
-
-   If any of those is newer than the rendered file's "Generated at"
-   timestamp → **Yellow**. Suggested fix: `memhub render`.
-
-## K9 coexistence (informational)
-
-If `memhub status` indicates K9 is enabled:
-
-- Read `[integrations.k9].agent_docs_path` from
-  `.memhub/config.toml` (or whatever the status JSON exposes).
-- Confirm that directory exists. If not → **Yellow**: K9 enabled
-  but pointed at a missing path. Suggested fix:
-  `memhub integrations disable-k9` (K9 is disabled/legacy in this
-  repo).
-- Confirm the four K9 files (`project_state.md`, `project_arch.md`,
-  `project_decisions.md`, `project_backlog.md`) are present in
-  that directory. Missing → **Yellow** with the same suggested fix.
-- All four present → coexistence is intact. Informational only.
-
-If K9 is disabled (`integrations.k9.enabled == false`) but the four
-K9 files exist in `agent_docs/`, that's the post-migration archive
-state (memhub-primary, K9 files retained for history). Informational
-only.
-
-If `.memhub/config.toml` has no `[integrations.k9]` section at all,
-skip this section entirely — the repo is memhub-only.
-
-## Pending writes triage
-
-Run: `memhub review list --status pending --json` (or the equivalent
-listing command).
-
-- Any row older than 7 days → **Yellow**. Suggested fix: invoke
-  `/wrap-up` to triage, or `memhub review list` + accept/reject
-  manually.
-- All pending rows under 7 days old → informational ("N pending,
-  triage at next `/wrap-up`").
-- No pending rows → skip.
-
-## Writes log freshness
-
-Run: `memhub stats --window 7d --json` and report:
-- Last write actor and table (if surfaced by stats).
-- Count of writes in the last 7 days.
-- If the most recent `writes_log` entry is older than 14 days,
-  surface informationally — the project may simply be idle, not
-  unhealthy. Not a finding.
-
-## Backups directory
-
-If `.memhub/backups/` exists, report:
-- Total size (e.g., `du -sh .memhub/backups/`).
-- Most recent subdirectory name (e.g., `rendered/2026-05-13T*`).
-
-Informational only — backups accumulate by design; pruning is the
-user's call.
-
-## Schema version detail
-
-If the `memhub` binary version (from `memhub --version`) reports a
-build newer than the schema version of `project.sqlite`, the binary
-will apply pending migrations on next connect. That happens silently;
-informational. If the binary is *older* than the schema — i.e.,
-someone else upgraded the DB and this machine is on a stale build —
-surface as **Red**: most commands will refuse. Suggested fix:
-rebuild and reinstall the binary.
+If the installed binary doesn't support `doctor` yet (older build,
+predates issue #21), fall back to `memhub status` and report on
+schema version, K9 flags, and row counts from that instead — the
+pre-doctor behavior this skill used to implement directly.
 
 ## Report
 
 Summarize as one of:
 
-- **Green** — `.memhub/` healthy, schema current, both rendered
-  files fresh, no stale pending writes. One-line summary including
-  project name and last-write timestamp.
-- **Yellow** — minor issues. List each with a concrete suggested
-  fix (one command). No writes are made from this skill. Render
-  staleness, pending-write age, K9 path drift, and missing
-  managed-block markers all surface here.
-- **Red** — `.memhub/` missing, binary missing, schema/binary
-  mismatch in the dangerous direction, or render output missing
-  entirely. List the gaps; suggest the recovery path
-  (`/init-project`, rebuild the binary, or
-  `memhub init --from-backup <path>` if the user has an export).
+- **Green** — `overall: ok`. One-line summary: project name and the
+  `counts` line (e.g. "14 ok, 3 skipped, 0 warn, 0 error").
+- **Yellow** — `overall: warn`. List every `warn` check with its
+  message — most already name the fix (`run memhub render`, `run
+  memhub index rebuild`, `run /catch-up`, ...). No writes are made
+  from this skill.
+- **Red** — `overall: error`, or `.memhub`/binary missing per the
+  Detection step above. List every `error` check and its message.
 
 End the report with:
 - `memhub --version` output.
-- Detected schema version.
+- The `counts` from `doctor --json` (or the human `Summary: ...`
+  footer from plain `memhub doctor`).
 - A one-line "next action" recommendation if Yellow or Red.
 
 ## Notes
 
 - Read-only. Never write, never fix, never `memhub render` from this
-  skill. The user makes that call.
+  skill — `memhub doctor` itself never writes either (no table
+  writes, no fix-it mode; it only reports).
 - This skill is user-level; it fires in any repo. In a repo without
   `.memhub/`, it reports Red and points at `/init-project`.
-- Backups are informational. Pruning policy is the user's call;
-  this skill doesn't surface them as findings.
-- Memhub's PRD principle "intentionally boring" applies here too:
+- `memhub doctor --strict` (not used by this skill) promotes `warn`
+  to a failing exit code for scripting; this skill already reads the
+  full `checks[]` list itself, so it doesn't need the exit code to
+  decide severity.
+- memhub's PRD principle "intentionally boring" applies here too:
   this skill reports state. It does not heal, repair, or auto-fix.

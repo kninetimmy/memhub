@@ -12,10 +12,11 @@ pub use args::{
     ReviewCommand, StatsWindowArg, SyncCommand, TaskCommand, TaskStatus, TopLevelCommand,
 };
 use output::{
-    code_status_to_json, eval_summary_to_json, import_summary_to_json, index_status_to_json,
-    init_result_to_json, locate_eval_summary_to_json, locate_response_to_json,
-    metrics_status_to_json, narrative_entry_to_json, pending_write_record_to_json,
-    print_code_status, print_eval_summary, print_index_status, print_init_result, print_locate,
+    code_status_to_json, doctor_report_to_json, eval_summary_to_json, import_summary_to_json,
+    index_status_to_json, init_result_to_json, locate_eval_summary_to_json,
+    locate_response_to_json, metrics_status_to_json, narrative_entry_to_json,
+    pending_write_record_to_json, print_code_status, print_doctor_report_human,
+    print_eval_summary, print_index_status, print_init_result, print_locate,
     print_locate_eval_summary, print_metrics_status_human, print_recall_human, print_stats_human,
     print_stats_json, recall_response_to_json, status_summary_to_json,
 };
@@ -244,6 +245,18 @@ pub fn run(cli: Cli) -> Result<()> {
                     println!("  note: {drift}");
                 }
             }
+        }
+        TopLevelCommand::Doctor {
+            json: as_json,
+            strict,
+        } => {
+            let report = commands::doctor::run(&cwd, strict)?;
+            if as_json {
+                println!("{}", json!({ "doctor": doctor_report_to_json(&report) }));
+            } else {
+                print_doctor_report_human(&report);
+            }
+            process::exit(report.exit_code);
         }
         TopLevelCommand::Stats {
             window,

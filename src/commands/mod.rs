@@ -2,6 +2,7 @@ pub mod bootstrap_k9;
 pub mod command;
 pub mod decision;
 pub mod doc;
+pub mod doctor;
 pub mod eval;
 pub mod export;
 pub mod fact;
