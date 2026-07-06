@@ -190,7 +190,13 @@ fn build_report(project_name: &str, checks: Vec<Check>, strict: bool) -> DoctorR
 // Project group
 // ---------------------------------------------------------------------
 
-fn check_schema(conn: &Connection) -> Check {
+// Visibility note (issue #22, Wave 1·C): the functions below are
+// `pub(crate)` rather than private specifically so `commands::status`
+// can call them directly instead of duplicating their logic. Only the
+// signature/visibility line changes — bodies are untouched so this
+// stays a clean merge alongside any later change to a check's
+// internals (e.g. `check_sync_freshness`).
+pub(crate) fn check_schema(conn: &Connection) -> Check {
     let applied: String = conn
         .query_row("SELECT schema_version FROM projects WHERE id = 1", [], |r| {
             r.get(0)
@@ -223,7 +229,7 @@ fn check_schema(conn: &Connection) -> Check {
 const RENDER_TABLE_NAME: &str = "render";
 const PROJECT_MD_FILENAME: &str = "PROJECT.md";
 
-fn check_render_freshness(conn: &Connection, repo_root: &Path, config: &ProjectConfig) -> Check {
+pub(crate) fn check_render_freshness(conn: &Connection, repo_root: &Path, config: &ProjectConfig) -> Check {
     let output_dir = repo_root.join(&config.render.output_dir);
     let exists = output_dir.join(PROJECT_MD_FILENAME).is_file();
 
@@ -289,7 +295,7 @@ fn check_render_freshness(conn: &Connection, repo_root: &Path, config: &ProjectC
     }
 }
 
-fn check_k9_coexistence(repo_root: &Path, integrations_cfg: &IntegrationsConfig) -> Check {
+pub(crate) fn check_k9_coexistence(repo_root: &Path, integrations_cfg: &IntegrationsConfig) -> Check {
     let state = integrations::k9_state(repo_root, integrations_cfg);
 
     // `drift` is checked before `detected`: the one case it fires with
@@ -863,7 +869,7 @@ fn count_orphaned_embeddings(conn: &Connection) -> rusqlite::Result<i64> {
 // Retrieval / Metrics group (X4)
 // ---------------------------------------------------------------------
 
-fn check_retrieval_mode(config: &ProjectConfig) -> Check {
+pub(crate) fn check_retrieval_mode(config: &ProjectConfig) -> Check {
     let mode = match config.retrieval.mode {
         RetrievalMode::Fts => "fts",
         RetrievalMode::Hybrid => "hybrid",
@@ -885,7 +891,7 @@ fn check_retrieval_mode(config: &ProjectConfig) -> Check {
     )
 }
 
-fn check_embeddings_freshness(start: &Path, config: &ProjectConfig) -> Check {
+pub(crate) fn check_embeddings_freshness(start: &Path, config: &ProjectConfig) -> Check {
     if config.retrieval.mode != RetrievalMode::Hybrid {
         return Check::new(
             "embeddings_freshness",
@@ -921,7 +927,7 @@ fn check_embeddings_freshness(start: &Path, config: &ProjectConfig) -> Check {
     }
 }
 
-fn check_metrics_health(conn: &Connection, config: &ProjectConfig) -> Check {
+pub(crate) fn check_metrics_health(conn: &Connection, config: &ProjectConfig) -> Check {
     let cfg = &config.metrics;
     if !cfg.enabled || !cfg.session_accounting {
         return Check::new(
@@ -1210,7 +1216,7 @@ fn paths_equal_loose(a: &str, b: &str) -> bool {
     a.replace('\\', "/").eq_ignore_ascii_case(&b.replace('\\', "/"))
 }
 
-fn check_sync_freshness(start: &Path, config: &ProjectConfig) -> Check {
+pub(crate) fn check_sync_freshness(start: &Path, config: &ProjectConfig) -> Check {
     if !config.sync.enabled {
         return Check::new(
             "sync_freshness",

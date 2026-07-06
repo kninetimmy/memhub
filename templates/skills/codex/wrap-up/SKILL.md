@@ -68,10 +68,10 @@ Run, in order, and keep the JSON for draft assembly:
    prior state row, fall back to the last 10 commits.
 7. `git status --porcelain` — uncommitted changes worth surfacing.
 
-If `memhub status` reports "K9 detected: yes" and the operator hasn't
-explicitly migrated, also note that this repo still has K9 markdown
-files and that they are no longer the source of truth — surface as
-informational, not blocking.
+If `memhub status --json`'s `k9_detected` is `true` and the operator
+hasn't explicitly migrated, also note that this repo still has K9
+markdown files and that they are no longer the source of truth —
+surface as informational, not blocking.
 
 ## Draft assembly
 
