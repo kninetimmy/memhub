@@ -17,7 +17,6 @@ pub struct Fact {
     pub id: i64,
     pub key: String,
     pub value: String,
-    pub confidence: f64,
     pub source: String,
     pub verified_at: Option<String>,
     pub created_at: String,

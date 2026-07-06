@@ -238,7 +238,7 @@ fn load_tasks(conn: &Connection) -> Result<Vec<Task>> {
 
 fn load_facts(conn: &Connection) -> Result<Vec<Fact>> {
     let mut stmt = conn.prepare(
-        "SELECT id, key, value, confidence, source, verified_at, created_at,
+        "SELECT id, key, value, source, verified_at, created_at,
                 CASE
                     WHEN verified_at IS NULL THEN 1
                     WHEN (julianday('now') - julianday(verified_at)) > ?1 THEN 1
@@ -250,15 +250,14 @@ fn load_facts(conn: &Connection) -> Result<Vec<Fact>> {
     )?;
     let rows = stmt
         .query_map(params![FACT_STALE_AFTER_DAYS], |row| {
-            let is_stale_int: i64 = row.get(7)?;
+            let is_stale_int: i64 = row.get(6)?;
             Ok(Fact {
                 id: row.get(0)?,
                 key: row.get(1)?,
                 value: row.get(2)?,
-                confidence: row.get(3)?,
-                source: row.get(4)?,
-                verified_at: row.get(5)?,
-                created_at: row.get(6)?,
+                source: row.get(3)?,
+                verified_at: row.get(4)?,
+                created_at: row.get(5)?,
                 is_stale: is_stale_int != 0,
             })
         })?
@@ -475,15 +474,14 @@ fn format_ledger_md(s: &RenderSnapshot) -> String {
             s.facts.len(),
             s.stale_fact_count
         ));
-        out.push_str("| Key | Value | Source | Confidence | Verified | Stale |\n");
-        out.push_str("|-----|-------|--------|-----------|----------|-------|\n");
+        out.push_str("| Key | Value | Source | Verified | Stale |\n");
+        out.push_str("|-----|-------|--------|----------|-------|\n");
         for f in &s.facts {
             out.push_str(&format!(
-                "| {} | {} | {} | {:.2} | {} | {} |\n",
+                "| {} | {} | {} | {} | {} |\n",
                 escape_table_cell(&f.key),
                 escape_table_cell(&f.value),
                 escape_table_cell(&f.source),
-                f.confidence,
                 escape_table_cell(f.verified_at.as_deref().unwrap_or("never")),
                 if f.is_stale { "yes" } else { "no" }
             ));
