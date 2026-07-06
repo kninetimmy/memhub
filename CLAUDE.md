@@ -4,6 +4,13 @@ Local-first Rust CLI for durable per-repo project memory shared between Codex, C
 
 Operational detail for every subsystem — retrieval, token accounting, doc ingestion, the code index, machine-global memory, cross-machine workflow and Drive sync, and machine-wide upgrade/GC — now lives in [docs/reference/operations.md](docs/reference/operations.md) and is memhub-recall-searchable. Recall it on demand rather than loading it every session; this file keeps only what an agent needs inline from turn one.
 
+<!-- memhub:managed-block v=1 -->
+memhub-primary: true
+db: .memhub/project.sqlite
+rendered: .memhub/rendered/
+config: .memhub/config.toml
+<!-- /memhub:managed-block -->
+
 ## Session Continuity
 
 This repo is memhub-primary as of M7-002 (2026-05-13). The DB at
