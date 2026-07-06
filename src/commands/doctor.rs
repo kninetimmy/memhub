@@ -406,6 +406,7 @@ const KNOWN_LEAVES: &[&str] = &[
     "sync.project_id",
     "sync.drive_subpath",
     "doc.allowed_dirs",
+    "audit.user_md_path",
 ];
 
 /// Intermediate table paths (never themselves reported as unknown; a
@@ -421,6 +422,7 @@ const KNOWN_TABLES: &[&str] = &[
     "global",
     "sync",
     "doc",
+    "audit",
 ];
 
 fn check_config(config_path: &Path, memhub_dir: &Path) -> Vec<Check> {

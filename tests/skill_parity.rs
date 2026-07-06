@@ -33,13 +33,12 @@ const OPENCODE_ONLY_SKILLS: &[&str] = &[];
 /// #30). Each is a safety gate, an identity line, or a guardrail an agent
 /// must see inline — the diet may relocate prose into
 /// `docs/reference/operations.md`, but never these.
-const CLAUDE_KEYSTONE_PHRASES: &[&str] = &[
-    "stale_embeddings",
-    "sync_adopt",
-    "Agents are untrusted writers",
-    "memhub-primary",
-    "Local-first",
-];
+///
+/// Canonical definition lives in `commands::audit_md` (issue #32): its
+/// `memhub audit md` keystone check asserts the exact same set, so the
+/// list is imported rather than duplicated here — otherwise the audit
+/// and this contract test could silently drift apart from each other.
+use memhub::commands::audit_md::CLAUDE_KEYSTONE_PHRASES;
 
 /// Claude skills are flat `templates/skills/claude/<name>.md`.
 fn claude_skill_names() -> BTreeSet<String> {

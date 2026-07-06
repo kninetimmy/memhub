@@ -257,6 +257,29 @@ pub enum TopLevelCommand {
         #[command(subcommand)]
         command: CodeCommand,
     },
+    /// Read-only linter over the repo's root memory files (Wave 2 C5,
+    /// issue #32).
+    Audit {
+        #[command(subcommand)]
+        command: AuditCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AuditCommand {
+    /// Check `CLAUDE.md` / `AGENTS.md` for drift and bloat: token-budget
+    /// size, `AGENTS.md == generate_agents_md(CLAUDE.md)` parity, the
+    /// managed-block pointer, and the N4 keystone phrases. Exit 0 by
+    /// default (findings printed either way); `--strict` exits 1 iff at
+    /// least one finding fired. Read-only: no DB writes.
+    Md {
+        #[arg(long)]
+        json: bool,
+        /// Exit nonzero if any finding fired (severity is not
+        /// distinguished for this purpose — any finding counts).
+        #[arg(long)]
+        strict: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

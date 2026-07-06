@@ -1,3 +1,4 @@
+pub mod audit_md;
 pub mod bootstrap_k9;
 pub mod command;
 pub mod decision;

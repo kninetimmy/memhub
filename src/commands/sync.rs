@@ -849,7 +849,11 @@ pub fn resolve_remote_dir(repo_root: &Path, cfg: &SyncConfig) -> Result<PathBuf>
 /// un-expanded tilde silently writes the snapshot into a bogus `./~`
 /// tree. Only a leading `~` is expanded (no `~user` form); any other
 /// path is returned verbatim, so absolute paths are unaffected.
-fn expand_home(subpath: &str) -> Result<PathBuf> {
+///
+/// `pub(crate)` (rather than private) so `commands::audit_md` can reuse
+/// it for `[audit] user_md_path` (issue #32) instead of duplicating
+/// this logic — same reuse rationale as the `pub(crate)` doctor checks.
+pub(crate) fn expand_home(subpath: &str) -> Result<PathBuf> {
     if subpath == "~" {
         return db::home_dir();
     }

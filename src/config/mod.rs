@@ -385,6 +385,20 @@ pub struct DocConfig {
     pub allowed_dirs: Vec<PathBuf>,
 }
 
+/// Opt-in config for `memhub audit md` (Wave 2 C5, issue #32 / decision
+/// Q25): when `user_md_path` is set, the audit also size-checks that
+/// user-global orientation file (e.g. `~/.claude/CLAUDE.md`) alongside
+/// this repo's own `CLAUDE.md`. Empty string means "unset" (matching
+/// the `sync`/`metrics` transcripts-dir convention elsewhere in this
+/// struct) — `memhub audit md` never reads outside the repo unless this
+/// is explicitly set. Per-machine: do NOT commit a real path back into
+/// `.memhub/config.example.toml`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AuditConfig {
+    #[serde(default)]
+    pub user_md_path: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectConfig {
     pub project_name: String,
@@ -406,6 +420,8 @@ pub struct ProjectConfig {
     pub sync: SyncConfig,
     #[serde(default)]
     pub doc: DocConfig,
+    #[serde(default)]
+    pub audit: AuditConfig,
 }
 
 impl ProjectConfig {
@@ -422,6 +438,7 @@ impl ProjectConfig {
             global: GlobalConfig::default(),
             sync: SyncConfig::default(),
             doc: DocConfig::default(),
+            audit: AuditConfig::default(),
         }
     }
 

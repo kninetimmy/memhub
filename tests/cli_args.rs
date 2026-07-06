@@ -12,7 +12,9 @@
 //! resolved) and is out of scope here.
 
 use clap::Parser;
-use memhub::cli::{Cli, CommandCommand, DecisionCommand, DocCommand, FactCommand, TopLevelCommand};
+use memhub::cli::{
+    AuditCommand, Cli, CommandCommand, DecisionCommand, DocCommand, FactCommand, TopLevelCommand,
+};
 
 fn parse(args: &[&str]) -> TopLevelCommand {
     let mut full = vec!["memhub"];
@@ -144,5 +146,33 @@ fn doc_ls_json_flag_still_parses() {
             other => panic!("expected DocCommand::Ls, got {other:?}"),
         },
         other => panic!("expected Doc, got {other:?}"),
+    }
+}
+
+/// Wave 2 C5 / issue #32: `memhub audit md [--json] [--strict]` (N24
+/// precedent).
+#[test]
+fn audit_md_json_and_strict_flags_parse() {
+    match parse(&["audit", "md", "--json", "--strict"]) {
+        TopLevelCommand::Audit { command } => match command {
+            AuditCommand::Md { json, strict } => {
+                assert!(json);
+                assert!(strict);
+            }
+        },
+        other => panic!("expected Audit, got {other:?}"),
+    }
+}
+
+#[test]
+fn audit_md_without_flags_defaults_to_false() {
+    match parse(&["audit", "md"]) {
+        TopLevelCommand::Audit { command } => match command {
+            AuditCommand::Md { json, strict } => {
+                assert!(!json);
+                assert!(!strict);
+            }
+        },
+        other => panic!("expected Audit, got {other:?}"),
     }
 }
