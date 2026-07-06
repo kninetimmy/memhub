@@ -20,7 +20,7 @@ numbers. Default-off config additions must keep an untouched install byte-identi
 | Wave | Theme | Done / Total | Gating decisions |
 |---|---|---|---|
 | 0 | Fix-now defects | 17 / 17 | — (complete) |
-| 1 | Loud states (doctor/status/integrity) | 1 / 5 | Q35 ✓ |
+| 1 | Loud states (doctor/status/integrity) | 5 / 5 | Q35 ✓ (complete) |
 | 2 | Session-start token diet | 0 / 7 | Q21–Q25, **Q41 (spike gates trim)** |
 | 3 | Staleness / lifecycle | 0 / 7 | Q1–Q6 |
 | 4 | Retrieval performance | 0 / 12 | Q17–Q19, Q24, Q40 |
@@ -124,14 +124,22 @@ Four PRs: **PR-A text/docs** and **PR-B safe code** (no decisions), **PR #17**
 
 ---
 
-## Wave 1 — Loud states  (gating: Q35)
-- [ ] S2 `memhub doctor` (absorbs `/check-init`, config-key validation, D1 integrity, X4 health line, plus probes P1/P4, N21/N23)
-- [ ] S3 `status` refresh (subsystem states; K9 lines only when detected)
-- [ ] D1 integrity surface (FTS rowcounts, FTS5 integrity-check, orphan embeddings, `integrity_check`+`foreign_key_check`)
-- [ ] X4 session-accounting health line
+## Wave 1 — Loud states  (gating: Q35) — COMPLETE
+- [x] S2 `memhub doctor` (absorbs `/check-init`, config-key validation, D1 integrity, X4
+  health line, plus probes P1/P4, N21/N23). — 2026-07-06, PR #25 (issue #21).
+- [x] S3 `status` refresh (subsystem states; K9 lines only when detected) — reuses doctor's
+  side-effect-free checks. — 2026-07-06, PR #27 (issue #22).
+- [x] D1 integrity surface (FTS rowcounts, FTS5 integrity-check, orphan embeddings,
+  `integrity_check`+`foreign_key_check`) — absorbed into doctor (`check_integrity`).
+  — 2026-07-06, PR #25 (issue #21).
+- [x] X4 session-accounting health line — absorbed into doctor (`check_metrics_health`).
+  — 2026-07-06, PR #25 (issue #21).
 - [x] D9 map SQLITE_BUSY / SQLITE_LOCKED to a friendly error — shipped with D5/Q35
   (`synchronous = NORMAL` at both `open_connection` and `open_code_index`) in the same
   PR. — 2026-07-05, PR #23 (issue #20).
+- [x] Wave 1·A follow-up — doctor flags `integrations.k9.enabled` drift and warns on sync
+  `project_id_mismatch` / `schema_blocks_adopt`; module-doc accuracy fix.
+  — 2026-07-06, PR #28 (issue #26).
 
 ## Wave 2 — Token diet  (gating: Q21–Q25; **Q41 spike gates any trim**)
 - [ ] C1 rewrite repo CLAUDE.md to ~2,500-token target + doc-ingest addenda/operations.md
