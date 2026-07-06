@@ -42,7 +42,22 @@ pub const DEFAULT_MIN_RERANK_SCORE: f32 = 2.0;
 /// `--source-type doc` keeps the normal `min_rerank_score`.
 pub const DEFAULT_DOC_MIN_RERANK_SCORE: f32 = 0.0;
 pub const DEFAULT_ACCEPTED_ONLY: bool = false;
-pub const DEFAULT_INCLUDE_STALE: bool = false;
+/// Default stale-fact handling in recall. `true` = keep aged facts in the
+/// result set but **demote** them (`scoring.stale_penalty`) and flag them
+/// `stale: true`, rather than silently dropping them. This is the Q1
+/// currency ruling (decision 145): "demote + flag, not silent exclusion —
+/// a bad default hides valid memories; demote is the no-loss posture."
+/// Set to `false` to restore hard exclusion of stale facts. The staleness
+/// horizon itself is `DEFAULT_FACT_STALE_AFTER_DAYS`.
+pub const DEFAULT_INCLUDE_STALE: bool = true;
+/// Recall's fact-staleness horizon in days. A fact is stale (and therefore
+/// demoted, per `DEFAULT_INCLUDE_STALE`) when it has never been verified or
+/// was last verified more than this many days ago. Kept identical to the
+/// long-standing hardcoded window (`models::FACT_STALE_AFTER_DAYS`, which
+/// still drives the non-recall fact-hygiene surfaces — `fact list`, render,
+/// stats) so promoting it to `[retrieval] fact_stale_after_days` does not
+/// move the horizon, only how stale rows are handled.
+pub const DEFAULT_FACT_STALE_AFTER_DAYS: i64 = crate::models::FACT_STALE_AFTER_DAYS;
 pub const DEFAULT_USE_RERANKER: bool = true;
 pub const DEFAULT_RERANK_CANDIDATE_POOL: usize = 20;
 /// Docs are opt-in to default recall (decision 86). Auto-flipped to
@@ -161,6 +176,9 @@ fn default_accepted_only() -> bool {
 fn default_include_stale() -> bool {
     DEFAULT_INCLUDE_STALE
 }
+fn default_fact_stale_after_days() -> i64 {
+    DEFAULT_FACT_STALE_AFTER_DAYS
+}
 fn default_use_reranker() -> bool {
     DEFAULT_USE_RERANKER
 }
@@ -208,6 +226,15 @@ pub struct RetrievalConfig {
     pub accepted_only_by_default: bool,
     #[serde(default = "default_include_stale")]
     pub include_stale_by_default: bool,
+    /// Age in days after which a fact is treated as stale by recall — never
+    /// verified, or last verified more than this many days ago. Stale facts
+    /// are kept but demoted (`scoring.stale_penalty`) and flagged
+    /// `stale: true` when `include_stale_by_default` is on (the default),
+    /// or excluded when it is off. Defaults to the established 90-day window
+    /// (`DEFAULT_FACT_STALE_AFTER_DAYS`); this key promotes that formerly
+    /// hardcoded horizon to config without changing its length.
+    #[serde(default = "default_fact_stale_after_days")]
+    pub fact_stale_after_days: i64,
     /// Apply the bundled cross-encoder re-ranker (ms-marco-MiniLM-L-6-v2)
     /// to hybrid recall results. Adds ~275 ms per recall at pool=20 and
     /// lifts Recall@1 by ~17pp on memhub's own golden set (decision 68).
@@ -238,6 +265,7 @@ impl Default for RetrievalConfig {
             default_max_results: DEFAULT_RECALL_MAX_RESULTS,
             accepted_only_by_default: DEFAULT_ACCEPTED_ONLY,
             include_stale_by_default: DEFAULT_INCLUDE_STALE,
+            fact_stale_after_days: DEFAULT_FACT_STALE_AFTER_DAYS,
             use_reranker: DEFAULT_USE_RERANKER,
             rerank_candidate_pool: DEFAULT_RERANK_CANDIDATE_POOL,
             include_docs_in_default: DEFAULT_INCLUDE_DOCS_IN_DEFAULT,
