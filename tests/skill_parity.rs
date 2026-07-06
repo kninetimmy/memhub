@@ -29,11 +29,17 @@ const CLAUDE_ONLY_SKILLS: &[&str] = &[];
 const CODEX_ONLY_SKILLS: &[&str] = &[];
 const OPENCODE_ONLY_SKILLS: &[&str] = &[];
 
-/// `## ` headers that intentionally exist in only one orientation
-/// file. `AGENTS.md` carries a Codex-specific attribution section that
-/// has no Claude counterpart by design.
-const AGENTS_ONLY_SECTIONS: &[&str] = &["Agent attribution (Codex-specific)"];
-const CLAUDE_ONLY_SECTIONS: &[&str] = &[];
+/// N4 keystone phrases that must survive the CLAUDE.md token diet (issue
+/// #30). Each is a safety gate, an identity line, or a guardrail an agent
+/// must see inline — the diet may relocate prose into
+/// `docs/reference/operations.md`, but never these.
+const CLAUDE_KEYSTONE_PHRASES: &[&str] = &[
+    "stale_embeddings",
+    "sync_adopt",
+    "Agents are untrusted writers",
+    "memhub-primary",
+    "Local-first",
+];
 
 /// Claude skills are flat `templates/skills/claude/<name>.md`.
 fn claude_skill_names() -> BTreeSet<String> {
@@ -261,47 +267,55 @@ fn readme_install_blocks_enumerate_every_skill() {
     }
 }
 
-/// Extract `## ` section headers in document order.
-fn section_headers(md: &str) -> Vec<String> {
-    md.lines()
-        .filter_map(|l| l.strip_prefix("## "))
-        .map(|s| s.trim().to_string())
-        .collect()
+/// Normalize line endings for a cross-platform byte comparison: this repo is
+/// `core.autocrlf=true`, so a Windows checkout has CRLF on disk while the
+/// generator emits LF.
+fn lf(s: &str) -> String {
+    s.replace("\r\n", "\n")
 }
 
+/// `AGENTS.md` is a pure derivative of `CLAUDE.md`, not a hand-maintained
+/// twin (issue #30 / decision Q21). This asserts content-equality against
+/// the generator, replacing the older header-only parity check — so the two
+/// files can no longer silently drift in prose, only in structure.
+///
+/// Regeneration path: `MEMHUB_REGEN=1 cargo test --test skill_parity` rewrites
+/// `AGENTS.md` from `CLAUDE.md` and passes; commit the result. A normal run is
+/// read-only and fails if the committed `AGENTS.md` is stale.
 #[test]
-fn claude_md_and_agents_md_sections_stay_in_parity() {
+fn agents_md_is_generated_from_claude_md() {
     let claude = fs::read_to_string(repo_root().join("CLAUDE.md")).expect("read CLAUDE.md");
-    let agents = fs::read_to_string(repo_root().join("AGENTS.md")).expect("read AGENTS.md");
+    let generated = memhub::agents_md::generate_agents_md(&claude);
+    let agents_path = repo_root().join("AGENTS.md");
 
-    let claude_sections: BTreeSet<String> = section_headers(&claude).into_iter().collect();
-    let agents_sections: BTreeSet<String> = section_headers(&agents).into_iter().collect();
+    if std::env::var_os("MEMHUB_REGEN").is_some() {
+        fs::write(&agents_path, &generated).expect("write AGENTS.md");
+    }
 
-    let allowed_agents_only: BTreeSet<String> =
-        AGENTS_ONLY_SECTIONS.iter().map(|s| s.to_string()).collect();
-    let allowed_claude_only: BTreeSet<String> =
-        CLAUDE_ONLY_SECTIONS.iter().map(|s| s.to_string()).collect();
-
-    let claude_only: BTreeSet<_> = claude_sections
-        .difference(&agents_sections)
-        .cloned()
-        .collect();
-    let agents_only: BTreeSet<_> = agents_sections
-        .difference(&claude_sections)
-        .cloned()
-        .collect();
-
+    let agents = fs::read_to_string(&agents_path).expect("read AGENTS.md");
     assert_eq!(
-        claude_only, allowed_claude_only,
-        "## sections in CLAUDE.md with no AGENTS.md counterpart (mirror the \
-         section into AGENTS.md, or allowlist it in CLAUDE_ONLY_SECTIONS \
-         with a reason)"
+        lf(&agents),
+        lf(&generated),
+        "AGENTS.md is out of sync with CLAUDE.md. Regenerate it with \
+         `MEMHUB_REGEN=1 cargo test --test skill_parity` and commit AGENTS.md."
     );
-    assert_eq!(
-        agents_only, allowed_agents_only,
-        "## sections in AGENTS.md with no CLAUDE.md counterpart (mirror the \
-         section into CLAUDE.md, or allowlist it in AGENTS_ONLY_SECTIONS \
-         with a reason)"
+}
+
+/// N4: the CLAUDE.md token diet must relocate prose into
+/// `docs/reference/operations.md` without dropping the load-bearing phrases
+/// an agent needs inline (the two safety gates, the identity line, the core
+/// guardrail).
+#[test]
+fn claude_md_keeps_keystone_phrases() {
+    let claude = fs::read_to_string(repo_root().join("CLAUDE.md")).expect("read CLAUDE.md");
+    let missing: Vec<&str> = CLAUDE_KEYSTONE_PHRASES
+        .iter()
+        .filter(|phrase| !claude.contains(**phrase))
+        .cloned()
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "CLAUDE.md lost keystone phrase(s) during the token diet: {missing:?}"
     );
 }
 

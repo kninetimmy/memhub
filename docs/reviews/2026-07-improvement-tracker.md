@@ -21,7 +21,7 @@ numbers. Default-off config additions must keep an untouched install byte-identi
 |---|---|---|---|
 | 0 | Fix-now defects | 17 / 17 | — (complete) |
 | 1 | Loud states (doctor/status/integrity) | 5 / 5 | Q35 ✓ (complete) |
-| 2 | Session-start token diet | 0 / 7 | Q21–Q25, **Q41 (spike gates trim)** |
+| 2 | Session-start token diet | 0 / 7 | Q21–Q25 ✓ · Q41 ✓ (gate cleared 2026-07-06) |
 | 3 | Staleness / lifecycle | 0 / 7 | Q1–Q6 |
 | 4 | Retrieval performance | 0 / 12 | Q17–Q19, Q24, Q40 |
 | 5 | Upgrade / GC hardening | 0 / 8 | Q12–Q16 |
@@ -30,7 +30,7 @@ numbers. Default-off config additions must keep an untouched install byte-identi
 | 8 | CI / infra / licensing | 0 / 2 | Q37–Q38 |
 | 9 | Housekeeping | 0 / 7 | Q26–Q27, Q36 |
 
-Decisions resolved: 4 / 56 (Q29, Q32, Q35, Q39).
+Decisions resolved: 10 / 56 (Q21, Q22, Q23, Q24, Q25, Q29, Q32, Q35, Q39, Q41).
 
 ---
 
@@ -141,7 +141,14 @@ Four PRs: **PR-A text/docs** and **PR-B safe code** (no decisions), **PR #17**
   `project_id_mismatch` / `schema_blocks_adopt`; module-doc accuracy fix.
   — 2026-07-06, PR #28 (issue #26).
 
-## Wave 2 — Token diet  (gating: Q21–Q25; **Q41 spike gates any trim**)
+## Wave 2 — Token diet  (gating: Q21–Q25 ✓ · Q41 ✓ — gate cleared 2026-07-06)
+<!-- Rulings: Q21 generate AGENTS.md from CLAUDE.md (derived, content-equal parity).
+     Q22 ~2,500-tok target; inline: Guardrails, Session Continuity, Delegation,
+     stale-embeddings gate, sync_adopt gate. Q23 implement versioned managed block.
+     Q24 fix — register `memhub serve` (confirmed 0 CLIs; registration lands Wave 4/Q40).
+     Q25 opt-in `[audit] user_md_path`. Q41 fail-safe — keep a ~10-line compact routing
+     block in AGENTS.md for Codex/OpenCode, trim CLAUDE.md's verbose routing; spike
+     deferred to Wave 4 to decide whether even that block can go. -->
 - [ ] C1 rewrite repo CLAUDE.md to ~2,500-token target + doc-ingest addenda/operations.md
 - [ ] C2 generate AGENTS.md from CLAUDE.md; upgrade `skill_parity` to content equality
 - [ ] C3 trim user-global CLAUDE.md (−40%)
@@ -222,9 +229,9 @@ Resolve per wave. Recommendations are in the review; mark here when the user rul
 **Wrap-up:** [ ] Q7 [ ] Q8 [ ] Q9 [ ] Q10 [ ] Q11
 **Upgrade/GC:** [ ] Q12 [ ] Q13 [ ] Q14 [ ] Q15 [ ] Q16
 **Retrieval:** [ ] Q17 [ ] Q18 [ ] Q19 [ ] Q20
-**CLAUDE.md:** [ ] Q21 [ ] Q22 [ ] Q23 [ ] Q24 [ ] Q25
+**CLAUDE.md:** [x] Q21 [x] Q22 [x] Q23 [x] Q24 [x] Q25 *(all resolved 2026-07-06 — Wave 2 gate: Q21 generate AGENTS.md from CLAUDE.md (derived, content-equal parity); Q22 accept ~2,500-tok target + inline {Guardrails, Session Continuity, Delegation, stale-embeddings gate, sync_adopt gate}; Q23 implement versioned managed block; Q24 fix — register `memhub serve` (confirmed registered in 0 CLIs; work lands Wave 4/Q40); Q25 opt-in `[audit] user_md_path`)*
 **Surfaces:** [ ] Q26 [ ] Q27 [ ] Q28 [x] Q29 *(resolved 2026-07-05 — wrapped noun-keyed objects; `doc ls` migrated; PR #18)*
 **Cross-machine:** [ ] Q30 [ ] Q31 [x] Q32 *(resolved — decision 134; Mac lineage not adopted, ported as Windows 128–133)* [ ] Q33
 **DB:** [ ] Q34 [x] Q35 *(resolved 2026-07-05 — `synchronous = NORMAL` alongside WAL across all DB surfaces; memhub decision 140 / review D5)* [ ] Q36
 **Infra:** [ ] Q37 [ ] Q38 [x] Q39 *(resolved 2026-07-05 — repo-root + `[doc] allowed_dirs` allowlist for MCP `doc_add`; PR #17)*
-**Parity/free-form:** [ ] Q40 [ ] Q41 [ ] Q42 [ ] Q43 [ ] Q44 [ ] Q45 [ ] Q46 [ ] Q47 [ ] Q48 [ ] Q49 [ ] Q50 [ ] Q51 [ ] Q52 [ ] Q53 [ ] Q54 [ ] Q55 [ ] Q56
+**Parity/free-form:** [ ] Q40 [x] Q41 *(resolved 2026-07-06 — adopt fail-safe: keep a ~10-line compact routing block in AGENTS.md for Codex/OpenCode, trim CLAUDE.md's verbose routing; the per-CLI instructions-delivery spike is deferred to Wave 4)* [ ] Q42 [ ] Q43 [ ] Q44 [ ] Q45 [ ] Q46 [ ] Q47 [ ] Q48 [ ] Q49 [ ] Q50 [ ] Q51 [ ] Q52 [ ] Q53 [ ] Q54 [ ] Q55 [ ] Q56

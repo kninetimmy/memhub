@@ -1,3 +1,4 @@
+pub mod agents_md;
 pub mod cli;
 pub mod code_index;
 pub mod commands;
