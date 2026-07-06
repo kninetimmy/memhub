@@ -15,7 +15,14 @@
 //! `MEMHUB_REGEN=1 cargo test --test skill_parity` (see that test).
 
 /// The `# memhub` H1 line `CLAUDE.md` must start with.
-const CLAUDE_TITLE: &str = "# memhub";
+///
+/// `pub(crate)` so `commands::audit_md` (issue #32) can check this same
+/// precondition itself before calling [`generate_agents_md`] — that
+/// function `assert!`s on it (a deliberate contract-frozen panic for a
+/// programmer error, not a recoverable `Result`), so a read-only linter
+/// over arbitrary repo content must verify it first rather than risk
+/// crashing the CLI on a malformed `CLAUDE.md`.
+pub(crate) const CLAUDE_TITLE: &str = "# memhub";
 
 /// The H1 line the generated `AGENTS.md` carries instead.
 const AGENTS_TITLE: &str = "# memhub — Codex CLI instructions";

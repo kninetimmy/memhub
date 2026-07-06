@@ -53,6 +53,10 @@
 #   - sync.project_id / sync.drive_subpath (per-repo; project_id is
 #                                       normally derived from the git
 #                                       remote and left empty)
+#   - audit.user_md_path                (opt-in `memhub audit md` check
+#                                       of a user-global orientation
+#                                       file; empty/unset by default —
+#                                       do NOT commit a real path back)
 
 project_name = "memhub"
 auto_sync_md = false
@@ -205,3 +209,12 @@ drive_subpath = ""
 # config.toml rather than committing a real path back here.
 [doc]
 allowed_dirs = []
+
+# Opt-in `memhub audit md` (Wave 2 C5, issue #32, decision Q25): when set,
+# also size-checks this user-global orientation file (e.g.
+# ~/.claude/CLAUDE.md) against the same ~2,500-token target/2,600 hard
+# ceiling used for this repo's own CLAUDE.md. Empty (unset) by default —
+# `memhub audit md` never reads outside the repo unless you set this
+# yourself. Per-machine: do NOT commit a real path back into this example.
+[audit]
+user_md_path = ""

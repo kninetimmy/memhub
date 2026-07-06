@@ -21,7 +21,7 @@ numbers. Default-off config additions must keep an untouched install byte-identi
 |---|---|---|---|
 | 0 | Fix-now defects | 17 / 17 | — (complete) |
 | 1 | Loud states (doctor/status/integrity) | 5 / 5 | Q35 ✓ (complete) |
-| 2 | Session-start token diet | 3 / 7 | Q21–Q25 ✓ · Q41 ✓ (gate cleared 2026-07-06) |
+| 2 | Session-start token diet | 4 / 7 | Q21–Q25 ✓ · Q41 ✓ (gate cleared 2026-07-06) |
 | 3 | Staleness / lifecycle | 0 / 7 | Q1–Q6 |
 | 4 | Retrieval performance | 0 / 12 | Q17–Q19, Q24, Q40 |
 | 5 | Upgrade / GC hardening | 0 / 8 | Q12–Q16 |
@@ -200,9 +200,14 @@ Four PRs: **PR-A text/docs** and **PR-B safe code** (no decisions), **PR #17**
   `~/.claude/CLAUDE.md` outside this repo → user-gated, scope separately.
 - [x] C4 root managed block — versioned `memhub:managed-block` in `src/managed_block.rs`,
   propagates CLAUDE.md→AGENTS.md unchanged via the generator. — 2026-07-06, PR #35 (issue #31).
-- [ ] C5 `memhub audit md [--json] [--strict]` — **issue #32, open, unblocked (ready to dispatch)**
-- [ ] C6 `/audit-md` skill (judgment layer) — issue #33, blocked by #32
-- [ ] C7 `memhub upgrade` nag line — issue #33, blocked by #32
+- [x] C5 `memhub audit md [--json] [--strict]` — read-only linter over root memory files:
+  size (2,500 target / 2,600 ceiling), AGENTS.md drift (reuses #30 `generate_agents_md`),
+  managed-block presence/version (reuses #31 `parse_managed_block`), keystone phrases
+  (single-source const now shared with `skill_parity`), malformed/missing CLAUDE.md,
+  opt-in `[audit] user_md_path`. `--json` → `{"audit_md":{...}}` (Q29); `--strict` exits 1
+  iff ≥1 finding. No new deps, no DB writes. — 2026-07-06, PR #37 (issue #32).
+- [ ] C6 `/audit-md` skill (judgment layer) — issue #33, unblocked once #37 lands (was blocked by #32)
+- [ ] C7 `memhub upgrade` nag line — issue #33, unblocked once #37 lands (was blocked by #32)
 - [x] rider N4 keystone-phrase parity test — landed with C2. — 2026-07-06, PR #34 (issue #30).
 - [ ] rider N1 MCP description diet — deferred to Wave 4 (same PR as Q40/R2)
 

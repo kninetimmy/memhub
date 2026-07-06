@@ -1,6 +1,7 @@
 use serde_json::json;
 
 use crate::code_index::CodeIndexStatus;
+use crate::commands::audit_md::{AuditMdReport, Finding, Severity};
 use crate::commands::doctor::{Check, DoctorReport, Group, Status};
 use crate::code_index::locate::LocateResponse;
 use crate::commands;
@@ -1060,5 +1061,65 @@ pub(crate) fn print_doctor_report_human(r: &DoctorReport) {
     println!(
         "Summary: {} ok · {} warn · {} error → exit {}",
         r.counts.ok, r.counts.warn, r.counts.error, r.exit_code
+    );
+}
+
+/// `{"audit_md": {...}}` — the wrapped noun-keyed shape (Q29), matching
+/// `doctor`'s own `{"doctor": {...}}` sibling. `count` is redundant with
+/// `findings.len()` but is included as a cheap convenience for scripts
+/// that only want to check "any findings?" without counting the array.
+pub(crate) fn audit_md_report_to_json(r: &AuditMdReport) -> serde_json::Value {
+    json!({
+        "exit_code": r.exit_code,
+        "count": r.findings.len(),
+        "findings": r.findings.iter().map(finding_to_json).collect::<Vec<_>>(),
+    })
+}
+
+fn finding_to_json(f: &Finding) -> serde_json::Value {
+    let mut v = json!({
+        "id": f.id,
+        "severity": f.severity.as_str(),
+        "message": f.message,
+    });
+    if let Some(detail) = &f.detail {
+        v["detail"] = json!(detail);
+    }
+    v
+}
+
+fn severity_glyph(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Warn => "\u{26A0}",  // ⚠
+        Severity::Error => "\u{2716}", // ✖
+    }
+}
+
+pub(crate) fn print_audit_md_report_human(r: &AuditMdReport) {
+    println!("memhub audit md");
+    println!();
+
+    if r.findings.is_empty() {
+        println!("No findings.");
+        return;
+    }
+
+    for f in &r.findings {
+        println!(
+            "  {} {} [{}]: {}",
+            severity_glyph(f.severity),
+            f.id,
+            f.severity.as_str(),
+            f.message
+        );
+        if let Some(detail) = &f.detail {
+            println!("      {detail}");
+        }
+    }
+    println!();
+    println!(
+        "Summary: {} finding(s) → exit {}",
+        r.findings.len(),
+        r.exit_code
     );
 }
