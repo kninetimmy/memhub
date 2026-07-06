@@ -21,7 +21,7 @@ numbers. Default-off config additions must keep an untouched install byte-identi
 |---|---|---|---|
 | 0 | Fix-now defects | 17 / 17 | — (complete) |
 | 1 | Loud states (doctor/status/integrity) | 5 / 5 | Q35 ✓ (complete) |
-| 2 | Session-start token diet | 0 / 7 | Q21–Q25 ✓ · Q41 ✓ (gate cleared 2026-07-06) |
+| 2 | Session-start token diet | 3 / 7 | Q21–Q25 ✓ · Q41 ✓ (gate cleared 2026-07-06) |
 | 3 | Staleness / lifecycle | 0 / 7 | Q1–Q6 |
 | 4 | Retrieval performance | 0 / 12 | Q17–Q19, Q24, Q40 |
 | 5 | Upgrade / GC hardening | 0 / 8 | Q12–Q16 |
@@ -31,6 +31,48 @@ numbers. Default-off config additions must keep an untouched install byte-identi
 | 9 | Housekeeping | 0 / 7 | Q26–Q27, Q36 |
 
 Decisions resolved: 10 / 56 (Q21, Q22, Q23, Q24, Q25, Q29, Q32, Q35, Q39, Q41).
+
+---
+
+## Post-review inbox — new asks beyond the July review (added 2026-07-06)
+
+Captured from a working session; **not** part of the July review's F/P/N/Q taxonomy and
+**not** wired into the active Wave 2 chain. Each needs its own scoping pass → plan gate →
+issues before execution. IDs are `A#` to keep them distinct from the review's findings.
+
+- [ ] **A1 — Onboarding / install-prompt feature-coverage audit (all 3 CLIs).** Ensure a
+  new user running the install/onboarding path — CLI `memhub init` (+ its epilogue) and the
+  `/init-project` skill in Claude / Codex / OpenCode — is offered **every current feature and
+  toggle**, not just the pre-M9 set the onboarding was designed around. Since-PRD additions to
+  surface: `[retrieval] mode` + `use_reranker`; machine-global store (`global enable`); metrics
+  (`metrics enable` + `recall_proxy` / `session_accounting` sub-switches); doc-ingest (+
+  `include_docs_in_default`); code-index warm-up (`code index`); Drive sync (`sync enable` +
+  `drive_subpath`); tokenizer `metrics calibrate`. **Related/subsumes:** review N10/Q50 (init
+  epilogue + `init --profile` / `doctor --setup` interview). **Open decision:** epilogue-only
+  vs an interactive setup interview; which toggles default-on. Effort: med.
+
+- [ ] **A2 — README refresh + visual assets.** Beyond Wave 0's F4 factual fixes: add diagrams /
+  screenshots. Candidates: the M10 Drive-sync model (VACUUM-INTO snapshot + manifest into an
+  OS-synced folder, fully offline), the recall pipeline (FTS BM25 + BGE-small vector → cross-
+  encoder rerank), the `/viz` dashboard, the render/category flow. **Considerations:** commit
+  assets as SVG / optimized PNG under `docs/assets/` (never in the binary — offline-first
+  unaffected); diagrams can be generated via the dataviz/artifact tooling. **Open decision:**
+  which diagrams; SVG vs PNG; asset location. Effort: med, low risk.
+
+- [ ] **A3 — Storage-category review + user-defined categories.** Review the fixed durable set —
+  today `SourceType::{Fact, Decision, Task, DocChunk}` (recall-scored) plus write-only session
+  **notes** and **commands** (`record_command`); "arch" is narrative in rendered `PROJECT.md`,
+  not an entity — and decide add/trim, **plus a mechanism for user-defined categories** (example:
+  an "API memory" bucket). **Architecture-adjacent — cascades** across schema (each type is its
+  own table + FTS + embeddings + triggers today), retrieval scoring & `source_type` filters,
+  render sections, MCP `propose_*` / `*_add` surfaces, and the "agents are untrusted writers"
+  guardrail. **Spectrum:** (a) *light* — optional `kind` / tag on facts (= review **W4**, Wave 6)
+  + filter/render by kind; (b) *medium* — a first-class user-category registry with per-category
+  retrieval/render; (c) *heavy* — a generic typed-memory subsystem. Tension with the
+  "intentionally boring / narrow milestones / no speculative subsystems" guardrail. **Leaning:**
+  start at (a)/W4 to satisfy "API memory" cheaply, promote to (b) only if first-class treatment is
+  genuinely needed. **Open decision (yours — load-bearing, gates the schema design):** how far up
+  the spectrum. Effort: (a) small · (b) large · (c) very large.
 
 ---
 
@@ -149,14 +191,20 @@ Four PRs: **PR-A text/docs** and **PR-B safe code** (no decisions), **PR #17**
      Q25 opt-in `[audit] user_md_path`. Q41 fail-safe — keep a ~10-line compact routing
      block in AGENTS.md for Codex/OpenCode, trim CLAUDE.md's verbose routing; spike
      deferred to Wave 4 to decide whether even that block can go. -->
-- [ ] C1 rewrite repo CLAUDE.md to ~2,500-token target + doc-ingest addenda/operations.md
-- [ ] C2 generate AGENTS.md from CLAUDE.md; upgrade `skill_parity` to content equality
-- [ ] C3 trim user-global CLAUDE.md (−40%)
-- [ ] C4 root managed block (implement versioned pointer, namespace vs the foreign P21 markers)
-- [ ] C5 `memhub audit md [--json] [--strict]`
-- [ ] C6 `/audit-md` skill (judgment layer)
-- [ ] C7 `memhub upgrade` nag line
-- [ ] rider: N1 MCP description diet (same PR as Q40/R2); N4 keystone-phrase parity test
+- [x] C1 rewrite repo CLAUDE.md to ~2,500-token target — cut 8,272→1,166 cl100k tok;
+  subsystem prose relocated content-preserving into new `docs/reference/operations.md`.
+  — 2026-07-06, PR #34 (issue #30).
+- [x] C2 generate AGENTS.md from CLAUDE.md (pure `generate_agents_md`); upgraded
+  `skill_parity` from `##`-header parity to content-equality. — 2026-07-06, PR #34 (issue #30).
+- [ ] C3 trim user-global CLAUDE.md (−40%) — **no issue yet**; edits the machine-local
+  `~/.claude/CLAUDE.md` outside this repo → user-gated, scope separately.
+- [x] C4 root managed block — versioned `memhub:managed-block` in `src/managed_block.rs`,
+  propagates CLAUDE.md→AGENTS.md unchanged via the generator. — 2026-07-06, PR #35 (issue #31).
+- [ ] C5 `memhub audit md [--json] [--strict]` — **issue #32, open, unblocked (ready to dispatch)**
+- [ ] C6 `/audit-md` skill (judgment layer) — issue #33, blocked by #32
+- [ ] C7 `memhub upgrade` nag line — issue #33, blocked by #32
+- [x] rider N4 keystone-phrase parity test — landed with C2. — 2026-07-06, PR #34 (issue #30).
+- [ ] rider N1 MCP description diet — deferred to Wave 4 (same PR as Q40/R2)
 
 ## Wave 3 — Lifecycle  (gating: Q1–Q6)
 - [ ] L1 `memhub fact verify` (no add-upsert side effects) + wrap-up per-item step
