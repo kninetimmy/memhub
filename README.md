@@ -721,7 +721,7 @@ Tasks and session notes write directly — they're low-stakes (intent and scratc
 | `memhub init` | Set up `.memhub/` in a repo |
 | `memhub status` | Open tasks, stale facts, pending writes, schema version |
 | `memhub recall <query>` | Hybrid ranked bundle of facts/decisions/tasks/docs |
-| `memhub fact add/list` | Durable key-value facts (build commands, MSRV, etc.) |
+| `memhub fact add/list/verify` | Durable key-value facts (build commands, MSRV, etc.); `verify` refreshes `verified_at` only, no confidence/source rewrite |
 | `memhub decision add/list` | Decisions with rationale, FTS-indexed and embedded |
 | `memhub task add/list/done` | Lightweight task tracking |
 | `memhub command verify` | Record verified command outcomes; derives confidence |
@@ -873,7 +873,7 @@ Export covers facts, decisions, tasks, commands, pending writes, writes_log, ses
 
 ### Staleness and confidence
 
-- **Facts** go stale after 90 days without re-verification. `memhub fact list` flags them; `memhub status` reports the count.
+- **Facts** go stale after 90 days without re-verification. `memhub fact verify <id|key>` refreshes `verified_at` only — no confidence reset, no source rewrite, no add-upsert dedupe (unlike `fact add`). `memhub fact list` flags stale rows; `memhub status` reports the count; `/wrap-up` offers a per-item re-verify step for the oldest facts. CLI only — not exposed over MCP, since agent self-verification is exactly what the untrusted-writer guardrail forbids.
 - **Commands** carry a derived confidence: `success_count / (success_count + fail_count)`.
 - **Embeddings** go stale when the source body changes (detected by `content_hash` drift) or when the binary upgrades to a different bundled model. Recall surfaces a warning; you decide whether to run `/reindex`.
 

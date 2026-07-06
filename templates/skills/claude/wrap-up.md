@@ -72,7 +72,7 @@ surface as informational, not blocking.
 
 ## Draft assembly
 
-Synthesize five things, drafted separately so each can be approved or
+Synthesize eight things, drafted separately so each can be approved or
 rejected on its own:
 
 1. **New `state` body.** Currently building / next up / open
@@ -107,6 +107,16 @@ rejected on its own:
 7. **Architecture drift.** Touch only if a real architectural shift
    occurred (new subsystem, schema change, invariant change). Default
    is no arch update.
+
+8. **Stale-fact re-verify candidates.** Run `memhub fact list --json`
+   and pick up to 5 facts ordered oldest-first by `verified_at`
+   (`null` sorts as oldest), preferring rows already flagged
+   `is_stale`. Skip this draft entirely if there are none. Present
+   each candidate as its own item — "Still true: `<key>` = `<value>`
+   (last verified <verified_at, or 'never'>)?" — never a single
+   grouped "re-verify all N?" prompt. A "no" means the fact is
+   probably wrong; tell me so I can fix or remove it instead of
+   verifying it.
 
 ## Approval gate
 
@@ -145,6 +155,10 @@ memhub note add "<two-to-four-sentence summary>" --json --actor claude:wrap-up
 
 # 7. Architecture (only if approved this session)
 memhub arch set "<approved body>" --json --actor claude:wrap-up
+
+# 8. Stale-fact re-verifications — one invocation per approved fact,
+#    never a bulk "verify all" pass
+memhub fact verify <id> --json --actor claude:wrap-up
 ```
 
 For multi-line state or arch bodies, write the body to a temp file

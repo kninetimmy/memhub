@@ -721,6 +721,19 @@ pub enum FactCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Refresh a fact's `verified_at` to now. Touches nothing else
+    /// durable — no confidence reset, no source rewrite, no
+    /// add-upsert dedupe path (unlike `fact add`). Accepts a numeric
+    /// id or an exact key. CLI only — never exposed over MCP, since
+    /// agent self-verification is exactly what the untrusted-writer
+    /// guardrail forbids.
+    Verify {
+        ident: String,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        actor: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
