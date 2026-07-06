@@ -22,7 +22,7 @@ numbers. Default-off config additions must keep an untouched install byte-identi
 | 0 | Fix-now defects | 17 / 17 | — (complete) |
 | 1 | Loud states (doctor/status/integrity) | 5 / 5 | Q35 ✓ (complete) |
 | 2 | Session-start token diet | 7 / 7 | Q21–Q25 ✓ · Q41 ✓ (complete) |
-| 3 | Staleness / lifecycle | 0 / 7 | Q1–Q6 |
+| 3 | Staleness / lifecycle | 2 / 7 | Q1–Q6 ✓ (Batch 1 done) |
 | 4 | Retrieval performance | 0 / 12 | Q17–Q19, Q24, Q40 |
 | 5 | Upgrade / GC hardening | 0 / 8 | Q12–Q16 |
 | 6 | Wrap-up policy / verbosity | 0 / 6 | Q7–Q11 |
@@ -30,7 +30,7 @@ numbers. Default-off config additions must keep an untouched install byte-identi
 | 8 | CI / infra / licensing | 0 / 2 | Q37–Q38 |
 | 9 | Housekeeping | 0 / 7 | Q26–Q27, Q36 |
 
-Decisions resolved: 10 / 56 (Q21, Q22, Q23, Q24, Q25, Q29, Q32, Q35, Q39, Q41).
+Decisions resolved: 16 / 56 (Q1, Q2, Q3, Q4, Q5, Q6, Q21, Q22, Q23, Q24, Q25, Q29, Q32, Q35, Q39, Q41).
 
 ---
 
@@ -223,15 +223,32 @@ Four PRs: **PR-A text/docs** and **PR-B safe code** (no decisions), **PR #17**
 - [x] rider N4 keystone-phrase parity test — landed with C2. — 2026-07-06, PR #34 (issue #30).
 - [ ] rider N1 MCP description diet — deferred to Wave 4 (same PR as Q40/R2)
 
-## Wave 3 — Lifecycle  (gating: Q1–Q6)
-- [ ] L1 `memhub fact verify` (no add-upsert side effects) + wrap-up per-item step
-- [ ] L2 un-silence staleness: `[retrieval] fact_stale_after_days` + demote/flag
-- [ ] L3 wire supersession (migration 0018 `facts.superseded_by`; verbs; hydrate/score/render)
-- [ ] L4 `memhub review stale` audit queue
-- [ ] L5 accept-time contradiction probe
-- [ ] L6 optional age decay (default-off) — eval-gated, last
+## Wave 3 — Lifecycle  (gating: Q1–Q6 ✓ — resolved 2026-07-06 as decision 145)
+
+Decomposed into 9 issues (#41–49): L1–L6 + Q5/Q6 + N28 (L7 declined). **Batch 1 done**
+2026-07-06 — main green at `cea07ff` (638 tests); Batch 2 = L2 (#45) → L3 → L4/L5 → L6.
+
+- [x] L1 `memhub fact verify` (no add-upsert side effects) + wrap-up per-item step —
+  touches `verified_at` only, off the MCP surface; per-item re-verify across all 3 agents.
+  — 2026-07-06, PR #51 / cea07ff (issue #41).
+- [ ] L2 un-silence staleness: `[retrieval] fact_stale_after_days` + demote/flag — **in progress (issue #45, opus)**
+- [ ] L3 wire supersession (migration 0018 `facts.superseded_by`; verbs; hydrate/score/render) — blocked by L2 (#46)
+- [ ] L4 `memhub review stale` audit queue — blocked by L3 (#47)
+- [ ] L5 accept-time contradiction probe — blocked by L3 (#48)
+- [ ] L6 optional age decay (default-off) — eval-gated, last — blocked (#49)
 - [-] L7 hard archival — **recommend against / defer** (per review)
-- [ ] rider: N28 hermetic retrieval golden fixture
+- [x] rider: N28 hermetic retrieval golden fixture — `tests/retrieval_golden_hermetic.rs`
+  drives the compiled binary against a seeded tempdir; baseline Recall@3 = 100% (the L2/L3/L6
+  eval reference). — 2026-07-06, PR #53 / 6c64e32 (issue #44).
+
+**Q5/Q6 also shipped this batch** (their own issues, tracked as decisions below):
+- [x] Q5 retire the vestigial always-1.0 confidence surface field from CLI/render/MCP —
+  dashboard-viz leftover parked as #54. — 2026-07-06, PR #52 / ef4a3e7 (issue #42).
+- [x] Q6 automatic pending-write expiry at `open_project` — best-effort single autocommit
+  side effect reusing the manual `review expire` core. — 2026-07-06, PR #50 / 66d3b5f (issue #43).
+- Hotfix #55 / 79ef76c fixed a #50 `export_import` back-compat regression (auto-expiry expired
+  an ancient imported pending write); caught by the full-suite gate on main. Every subsequent
+  merge was pre-flighted with a throwaway local merge + full suite before the canonical squash.
 
 ## Wave 4 — Performance  (gating: Q17–Q19, Q24, Q40)
 - [ ] R1 pre-warm models in `mcp::serve`
@@ -290,7 +307,7 @@ Four PRs: **PR-A text/docs** and **PR-B safe code** (no decisions), **PR #17**
 
 Resolve per wave. Recommendations are in the review; mark here when the user rules.
 
-**Lifecycle:** [ ] Q1 [ ] Q2 [ ] Q3 [ ] Q4 [ ] Q5 [ ] Q6
+**Lifecycle:** [x] Q1 [x] Q2 [x] Q3 [x] Q4 [x] Q5 [x] Q6 *(all resolved 2026-07-06 as memhub decision 145 — Wave 3 gate: Q1 demote+flag stale facts, not silent exclusion; Q2–Q4 supersession/audit/contradiction lifecycle; Q5 retire always-1.0 confidence (PR #52); Q6 auto pending-write expiry (PR #50))*
 **Wrap-up:** [ ] Q7 [ ] Q8 [ ] Q9 [ ] Q10 [ ] Q11
 **Upgrade/GC:** [ ] Q12 [ ] Q13 [ ] Q14 [ ] Q15 [ ] Q16
 **Retrieval:** [ ] Q17 [ ] Q18 [ ] Q19 [ ] Q20
