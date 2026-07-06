@@ -616,7 +616,6 @@ function renderRadialGauge(rootId, rows) {
 
 function renderAudit(payload) {
   renderBars("source-bars", payload.source_counts);
-  renderBars("confidence-bars", payload.confidence_histogram);
   renderRadialGauge("coverage-gauge", payload.embedding_coverage);
   const pending = payload.pending_writes.map((row) => `${row.label}: ${row.count}`).join(" | ");
   document.getElementById("audit-summary").textContent =

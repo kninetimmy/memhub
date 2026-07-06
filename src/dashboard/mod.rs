@@ -272,7 +272,6 @@ struct EmbeddingPoint {
     title: String,
     body: String,
     source: String,
-    confidence: f64,
     x: f64,
     y: f64,
 }
@@ -284,14 +283,12 @@ struct EmbeddingRow {
     title: String,
     body: String,
     source: String,
-    confidence: f64,
     vector: Vec<f64>,
 }
 
 #[derive(Debug, Serialize)]
 struct AuditPayload {
     source_counts: Vec<CountRow>,
-    confidence_histogram: Vec<CountRow>,
     stale_facts: i64,
     embedding_coverage: Vec<CoverageRow>,
     pending_writes: Vec<CountRow>,
@@ -525,7 +522,6 @@ fn read_audit(start: &Path) -> Result<AuditPayload> {
     )?;
     Ok(AuditPayload {
         source_counts: read_source_counts(conn)?,
-        confidence_histogram: read_confidence_histogram(conn)?,
         stale_facts,
         embedding_coverage: read_embedding_coverage(conn)?,
         pending_writes: count_grouped(conn, "status", "pending_writes")?,
@@ -545,7 +541,6 @@ fn read_embeddings(start: &Path) -> Result<EmbeddingPayload> {
             title: row.title,
             body: row.body,
             source: row.source,
-            confidence: row.confidence,
             x,
             y,
         })
@@ -695,35 +690,6 @@ fn read_source_counts(conn: &Connection) -> Result<Vec<CountRow>> {
         .map_err(MemhubError::from)
 }
 
-fn read_confidence_histogram(conn: &Connection) -> Result<Vec<CountRow>> {
-    let mut stmt = conn.prepare(
-        "SELECT bucket, COUNT(*)
-         FROM (
-            SELECT CASE
-                WHEN confidence < 0.25 THEN '0.00-0.24'
-                WHEN confidence < 0.50 THEN '0.25-0.49'
-                WHEN confidence < 0.75 THEN '0.50-0.74'
-                ELSE '0.75-1.00'
-            END AS bucket
-            FROM (
-                SELECT confidence FROM facts
-                UNION ALL SELECT 1.0 AS confidence FROM decisions
-                UNION ALL SELECT 1.0 AS confidence FROM tasks
-            )
-         )
-         GROUP BY bucket
-         ORDER BY bucket",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        Ok(CountRow {
-            label: row.get(0)?,
-            count: row.get(1)?,
-        })
-    })?;
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(MemhubError::from)
-}
-
 fn read_embedding_coverage(conn: &Connection) -> Result<Vec<CoverageRow>> {
     let sources = [
         ("fact", "facts"),
@@ -753,28 +719,27 @@ fn read_embedding_coverage(conn: &Connection) -> Result<Vec<CoverageRow>> {
 
 fn read_embedding_rows(conn: &Connection) -> Result<Vec<EmbeddingRow>> {
     let mut stmt = conn.prepare(
-        "SELECT 'fact' AS source_type, f.id AS source_id, f.key, f.value, f.source, f.confidence, e.vector
+        "SELECT 'fact' AS source_type, f.id AS source_id, f.key, f.value, f.source, e.vector
          FROM facts f
          JOIN embeddings e ON e.source_type = 'fact' AND e.source_id = f.id AND e.model_name = ?1
          UNION ALL
-         SELECT 'decision' AS source_type, d.id AS source_id, d.title, d.rationale, d.source, 1.0, e.vector
+         SELECT 'decision' AS source_type, d.id AS source_id, d.title, d.rationale, d.source, e.vector
          FROM decisions d
          JOIN embeddings e ON e.source_type = 'decision' AND e.source_id = d.id AND e.model_name = ?1
          UNION ALL
-         SELECT 'task' AS source_type, t.id AS source_id, t.title, COALESCE(t.notes, ''), '', 1.0, e.vector
+         SELECT 'task' AS source_type, t.id AS source_id, t.title, COALESCE(t.notes, ''), '', e.vector
          FROM tasks t
          JOIN embeddings e ON e.source_type = 'task' AND e.source_id = t.id AND e.model_name = ?1
          ORDER BY source_type, source_id",
     )?;
     let rows = stmt.query_map(params![EMBEDDING_MODEL_NAME], |row| {
-        let blob: Vec<u8> = row.get(6)?;
+        let blob: Vec<u8> = row.get(5)?;
         Ok(EmbeddingRow {
             source_type: row.get(0)?,
             source_id: row.get(1)?,
             title: row.get(2)?,
             body: row.get(3)?,
             source: row.get(4)?,
-            confidence: row.get(5)?,
             vector: decode_vector(&blob),
         })
     })?;
@@ -1120,5 +1085,49 @@ mod tests {
         // recall ts 10:06 is after both turns → flushed onto last turn.
         assert_eq!(payload.points[1].counterfactual, 480 + 900);
         assert!(payload.has_recall_signal);
+    }
+
+    #[test]
+    fn audit_and_embeddings_payloads_omit_confidence() {
+        // Regression guard for issue #54: the stored `confidence` column is
+        // always 1.0 and must not leak into either dashboard surface that
+        // used to report it (the Audit histogram and the embeddings scatter).
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::commands::init::run(temp.path()).expect("init");
+        crate::commands::fact::add(temp.path(), "k", "v", "user", "cli:user").expect("add fact");
+
+        let ctx = db::open_project(temp.path()).expect("open project");
+        let fact_id: i64 = ctx
+            .conn
+            .query_row("SELECT id FROM facts WHERE key = 'k'", [], |r| r.get(0))
+            .expect("fact id");
+
+        let vector: Vec<f32> = (0..8).map(|i| i as f32 * 0.01).collect();
+        let mut blob = Vec::with_capacity(vector.len() * 4);
+        for v in &vector {
+            blob.extend_from_slice(&v.to_le_bytes());
+        }
+        ctx.conn
+            .execute(
+                "INSERT INTO embeddings(project_id, source_type, source_id, model_name, dimension, vector, content_hash)
+                 VALUES (1, 'fact', ?1, ?2, 8, ?3, 'hash')",
+                params![fact_id, EMBEDDING_MODEL_NAME, blob],
+            )
+            .expect("insert embedding");
+
+        let audit = read_audit(temp.path()).expect("read_audit");
+        let audit_json = serde_json::to_string(&audit).expect("serialize audit");
+        assert!(
+            !audit_json.contains("confidence"),
+            "audit payload must not mention confidence: {audit_json}"
+        );
+
+        let embeddings = read_embeddings(temp.path()).expect("read_embeddings");
+        assert_eq!(embeddings.points.len(), 1);
+        let embeddings_json = serde_json::to_string(&embeddings).expect("serialize embeddings");
+        assert!(
+            !embeddings_json.contains("confidence"),
+            "embeddings payload must not mention confidence: {embeddings_json}"
+        );
     }
 }
