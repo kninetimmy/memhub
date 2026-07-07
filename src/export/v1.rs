@@ -45,6 +45,12 @@ pub struct Fact {
     pub source: String,
     pub verified_at: Option<String>,
     pub created_at: String,
+    /// Added in migration 0018 (Wave 3 L3). `#[serde(default)]` keeps
+    /// exports written before facts could be superseded importable cleanly
+    /// as `None`. Mirrors `Decision::superseded_by` so a superseded fact's
+    /// demote-with-link survives cross-machine transfer, not just decisions.
+    #[serde(default)]
+    pub superseded_by: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

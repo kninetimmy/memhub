@@ -81,6 +81,11 @@ pub struct RecallHit {
     pub fts_score: f64,
     pub vector_score: f64,
     pub stale: bool,
+    /// `Some(new_id)` when this hit was superseded by another row of the
+    /// same source type (Wave 3 L3). The hit is kept and demoted (via
+    /// `scoring.superseded_penalty`), not excluded — this tag lets the
+    /// caller see the replacement id. Only facts/decisions can carry it.
+    pub superseded_by: Option<i64>,
     pub source: String,
     pub created_at: String,
     /// Cross-encoder relevance score. Some(score) when the re-ranker ran
@@ -555,6 +560,7 @@ fn finalize(
             fts_score: hit.fts_score,
             vector_score: hit.vector_score,
             stale: hit.stale,
+            superseded_by: hit.superseded_by,
             source: hit.source,
             created_at: hit.created_at,
             rerank_score: hit.rerank_score,
@@ -626,6 +632,10 @@ struct CandidateRow {
     summary: Option<String>,
     source: String,
     is_stale: bool,
+    /// `Some(new_id)` once hydrated for a superseded fact/decision (Wave 3
+    /// L3). Drives the `superseded_penalty` demotion in `score()` and the
+    /// `superseded_by` tag on the returned hit.
+    superseded_by: Option<i64>,
     created_at: String,
     hydrated: bool,
 }
@@ -642,6 +652,7 @@ impl CandidateRow {
             summary: None,
             source: String::new(),
             is_stale: false,
+            superseded_by: None,
             created_at: String::new(),
             hydrated: false,
         }
@@ -671,6 +682,10 @@ struct ScoredHit {
     fts_score: f64,
     vector_score: f64,
     stale: bool,
+    /// Carried from the candidate row so the returned hit can be tagged
+    /// `superseded_by: N` (Wave 3 L3). `score()` also uses it to apply
+    /// `superseded_penalty`.
+    superseded_by: Option<i64>,
     source: String,
     created_at: String,
     /// Cross-encoder relevance score, populated only when the re-ranker
@@ -950,6 +965,7 @@ fn hydrate_sources(
                 entry.summary = row.summary;
                 entry.source = row.source;
                 entry.is_stale = row.is_stale;
+                entry.superseded_by = row.superseded_by;
                 entry.created_at = row.created_at;
                 entry.hydrated = true;
             }
@@ -965,6 +981,9 @@ struct HydratedSource {
     summary: Option<String>,
     source: String,
     is_stale: bool,
+    /// `Some(new_id)` for a superseded fact/decision (Wave 3 L3); always
+    /// `None` for tasks and doc chunks, which cannot be superseded.
+    superseded_by: Option<i64>,
     created_at: String,
 }
 
@@ -982,7 +1001,8 @@ fn load_source_row(
                         WHEN verified_at IS NULL THEN 1 \
                         WHEN (julianday('now') - julianday(verified_at)) > ?2 THEN 1 \
                         ELSE 0 \
-                    END AS is_stale \
+                    END AS is_stale, \
+                    superseded_by \
                 FROM facts WHERE id = ?1",
             )?;
             let row: std::result::Result<HydratedSource, rusqlite::Error> =
@@ -992,12 +1012,14 @@ fn load_source_row(
                     let source: String = r.get(2)?;
                     let created_at: String = r.get(4)?;
                     let stale_int: i64 = r.get(5)?;
+                    let superseded_by: Option<i64> = r.get(6)?;
                     Ok(HydratedSource {
                         title: key,
                         body: value,
                         summary: None,
                         source,
                         is_stale: stale_int != 0,
+                        superseded_by,
                         created_at,
                     })
                 });
@@ -1005,7 +1027,7 @@ fn load_source_row(
         }
         SourceType::Decision => {
             let mut stmt = conn.prepare(
-                "SELECT title, rationale, source, decided_at, summary \
+                "SELECT title, rationale, source, decided_at, summary, superseded_by \
                  FROM decisions WHERE id = ?1",
             )?;
             let row: std::result::Result<HydratedSource, rusqlite::Error> =
@@ -1015,12 +1037,14 @@ fn load_source_row(
                     let source: String = r.get(2)?;
                     let decided_at: String = r.get(3)?;
                     let summary: Option<String> = r.get(4)?;
+                    let superseded_by: Option<i64> = r.get(5)?;
                     Ok(HydratedSource {
                         title,
                         body: rationale,
                         summary,
                         source,
                         is_stale: false,
+                        superseded_by,
                         created_at: decided_at,
                     })
                 });
@@ -1040,6 +1064,7 @@ fn load_source_row(
                         summary: None,
                         source: String::new(),
                         is_stale: false,
+                        superseded_by: None,
                         created_at,
                     })
                 });
@@ -1071,6 +1096,7 @@ fn load_source_row(
                         summary: None,
                         source,
                         is_stale: false,
+                        superseded_by: None,
                         created_at,
                     })
                 });
@@ -1113,13 +1139,23 @@ fn score(rows: &[CandidateRow], scoring: &RetrievalScoringConfig) -> Vec<ScoredH
                 None => 0.0,
             };
             let vector_score = c.vector_score.unwrap_or(0.0).clamp(0.0, 1.0);
-            let penalty = if c.is_stale {
+            let stale_penalty = if c.is_stale {
                 scoring.stale_penalty
             } else {
                 0.0
             };
-            let score =
-                scoring.fts_weight * fts_score + scoring.vector_weight * vector_score - penalty;
+            // Second, independent demotion signal (Wave 3 L3): a superseded
+            // row is kept and tagged but pushed down. Stacks additively with
+            // the stale penalty — a row that is both aged and replaced sinks
+            // furthest — and never excludes (demote-with-link, decision 145).
+            let superseded_penalty = if c.superseded_by.is_some() {
+                scoring.superseded_penalty
+            } else {
+                0.0
+            };
+            let score = scoring.fts_weight * fts_score + scoring.vector_weight * vector_score
+                - stale_penalty
+                - superseded_penalty;
             ScoredHit {
                 source_type: c.source_type,
                 scope: String::new(),
@@ -1131,6 +1167,7 @@ fn score(rows: &[CandidateRow], scoring: &RetrievalScoringConfig) -> Vec<ScoredH
                 fts_score,
                 vector_score,
                 stale: c.is_stale,
+                superseded_by: c.superseded_by,
                 source: c.source.clone(),
                 created_at: c.created_at.clone(),
                 rerank_score: None,
@@ -1678,6 +1715,131 @@ mod tests {
                 .any(|w| w.kind == "stale_facts_demoted"),
             "no demoted-count warning once the fact is within the horizon"
         );
+    }
+
+    // Wave 3 L3 — a superseded fact is kept, tagged with its replacement
+    // id, and demoted below the live replacement, NOT excluded (decision
+    // 145's demote-with-link). Identical values keep the two facts' BM25
+    // tied so the `superseded_penalty` is the sole ordering difference.
+    #[test]
+    fn superseded_fact_is_demoted_and_tagged_not_excluded() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let (old_id, _) = fact::add(
+            temp.path(),
+            "deploy-alpha",
+            "kubectl apply supersedeprobe now",
+            "user",
+            "cli:user",
+        )
+        .expect("old");
+        let (new_id, _) = fact::add(
+            temp.path(),
+            "deploy-bravo",
+            "kubectl apply supersedeprobe now",
+            "user",
+            "cli:user",
+        )
+        .expect("new");
+        fact::supersede(
+            temp.path(),
+            &old_id.to_string(),
+            &new_id.to_string(),
+            "cli:user",
+        )
+        .expect("supersede");
+
+        let response = recall(
+            temp.path(),
+            RecallOptions {
+                query: "supersedeprobe".to_string(),
+                mode: Some(RetrievalMode::Fts),
+                max_results: 5,
+                source_types: vec![SourceType::Fact],
+                include_stale: None,
+                accepted_only: None,
+                use_reranker: None,
+                min_rerank_score: None,
+                log_metrics: false,
+            },
+        )
+        .expect("recall");
+
+        // Present (not excluded) and tagged with the replacement id.
+        let old_hit = response
+            .results
+            .iter()
+            .find(|h| h.source_id == old_id)
+            .expect("superseded fact must still surface, demoted");
+        assert_eq!(
+            old_hit.superseded_by,
+            Some(new_id),
+            "the hit must be tagged superseded_by: N"
+        );
+        let new_hit = response
+            .results
+            .iter()
+            .find(|h| h.source_id == new_id)
+            .expect("replacement present");
+        assert_eq!(new_hit.superseded_by, None);
+        // Demoted strictly below the live replacement.
+        assert!(
+            old_hit.score < new_hit.score,
+            "superseded_penalty must lower the blended score: old={} new={}",
+            old_hit.score,
+            new_hit.score,
+        );
+        let old_rank = response.results.iter().position(|h| h.source_id == old_id);
+        let new_rank = response.results.iter().position(|h| h.source_id == new_id);
+        assert!(new_rank < old_rank, "replacement must rank above the superseded row");
+    }
+
+    // Decisions hydrate `superseded_by` too, and a superseded decision is
+    // likewise demoted-with-link rather than dropped from recall.
+    #[test]
+    fn superseded_decision_surfaces_tagged_in_recall() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let old_id = decision::add(
+            temp.path(),
+            "Retire supersededdecisionprobe approach",
+            "supersededdecisionprobe original rationale",
+            "user",
+            "cli:user",
+        )
+        .expect("old");
+        let new_id = decision::add(
+            temp.path(),
+            "Adopt supersededdecisionprobe successor",
+            "supersededdecisionprobe replacement rationale",
+            "user",
+            "cli:user",
+        )
+        .expect("new");
+        decision::supersede(temp.path(), old_id, new_id, "cli:user").expect("supersede");
+
+        let response = recall(
+            temp.path(),
+            RecallOptions {
+                query: "supersededdecisionprobe".to_string(),
+                mode: Some(RetrievalMode::Fts),
+                max_results: 5,
+                source_types: vec![SourceType::Decision],
+                include_stale: None,
+                accepted_only: None,
+                use_reranker: None,
+                min_rerank_score: None,
+                log_metrics: false,
+            },
+        )
+        .expect("recall");
+
+        let old_hit = response
+            .results
+            .iter()
+            .find(|h| h.source_id == old_id)
+            .expect("superseded decision must still surface");
+        assert_eq!(old_hit.superseded_by, Some(new_id));
     }
 
     #[test]

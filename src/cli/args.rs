@@ -734,6 +734,23 @@ pub enum FactCommand {
         #[arg(long)]
         actor: Option<String>,
     },
+    /// Mark a fact superseded by another fact — demote-with-link, no-loss
+    /// (Wave 3 L3). The old fact is NOT deleted: it stays present, is
+    /// tagged with the replacement id, penalized in recall, and annotated
+    /// in render. Both `<old>` and `--by <new>` accept a numeric id or an
+    /// exact key. Durable + user-gated (CLI only); the MCP surface can only
+    /// stage a `propose_supersede` for `memhub review accept`.
+    Supersede {
+        /// The fact being retired (numeric id or exact key).
+        old: String,
+        /// The fact that replaces it (numeric id or exact key).
+        #[arg(long = "by", value_name = "NEW")]
+        by: String,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        actor: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -831,6 +848,23 @@ pub enum DecisionCommand {
     SetSummary {
         id: i64,
         summary: String,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// Retire a decision by supersession — demote-with-link, no-loss (Wave
+    /// 3 L3, Q2: decisions retire by supersession, not age). The old
+    /// decision's status flips to 'superseded' and links to the new one;
+    /// it is NOT deleted (still rendered, still recallable but penalized)
+    /// and drops out of the active-decisions list. Durable + user-gated
+    /// (CLI only); MCP can only stage a `propose_supersede`.
+    Supersede {
+        /// The decision being retired (numeric id).
+        old: i64,
+        /// The decision that replaces it (numeric id).
+        #[arg(long = "by", value_name = "NEW")]
+        by: i64,
         #[arg(long)]
         json: bool,
         #[arg(long)]

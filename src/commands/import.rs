@@ -166,9 +166,13 @@ fn wipe_durable_tables(tx: &Transaction<'_>) -> Result<()> {
 }
 
 fn insert_facts(tx: &Transaction<'_>, rows: &[v1::Fact]) -> Result<()> {
+    // `superseded_by` is a self-referential FK; the enclosing import
+    // transaction sets `PRAGMA defer_foreign_keys = ON`, so an old fact
+    // that points at a not-yet-inserted newer fact resolves at commit
+    // (same handling decisions already rely on).
     let mut stmt = tx.prepare(
-        "INSERT INTO facts(id, project_id, key, value, confidence, source, verified_at, created_at)
-         VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO facts(id, project_id, key, value, confidence, source, verified_at, created_at, superseded_by)
+         VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
     )?;
     for fact in rows {
         stmt.execute(params![
@@ -179,6 +183,7 @@ fn insert_facts(tx: &Transaction<'_>, rows: &[v1::Fact]) -> Result<()> {
             fact.source,
             fact.verified_at,
             fact.created_at,
+            fact.superseded_by,
         ])?;
     }
     Ok(())

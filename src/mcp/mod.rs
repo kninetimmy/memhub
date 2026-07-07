@@ -226,6 +226,35 @@ impl MemhubServer {
         }))
     }
 
+    async fn propose_supersede_impl(
+        &self,
+        Parameters(params): Parameters<ProposeSupersedeParams>,
+        actor: ClientIdentity,
+        provenance_json: String,
+    ) -> std::result::Result<Json<ProposeSupersedeToolResponse>, McpError> {
+        let id = commands::pending_write::propose_supersede(
+            &self.start,
+            &params.target_kind,
+            &params.old,
+            &params.new,
+            &params.rationale,
+            &actor.normalized,
+            &actor.raw,
+            &provenance_json,
+        )
+        .map_err(map_tool_error)?;
+
+        Ok(Json(ProposeSupersedeToolResponse {
+            id,
+            status: "pending".to_string(),
+            actor: actor.normalized,
+            actor_raw: actor.raw,
+            target_kind: params.target_kind,
+            old: params.old,
+            new: params.new,
+        }))
+    }
+
     async fn task_add_impl(
         &self,
         Parameters(params): Parameters<TaskAddParams>,
@@ -596,6 +625,21 @@ impl MemhubServer {
     }
 
     #[tool(
+        name = "propose_supersede",
+        description = "Stage a proposed SUPERSESSION — retire an outdated fact or decision by linking it to the row that replaces it — into pending_writes for human review. This NEVER writes durably: the demote-with-link (the old row is kept, tagged, and penalized in recall, never deleted) happens only when the user runs `memhub review accept`. Set target_kind to \"fact\" or \"decision\"; `old` and `new` identify the retired row and its replacement (fact: numeric id or exact key; decision: numeric id). Reach for this when you find a durable fact/decision that a newer one has clearly replaced — you are proposing the retirement, not performing it (untrusted-writer guardrail)."
+    )]
+    async fn propose_supersede(
+        &self,
+        params: Parameters<ProposeSupersedeParams>,
+        request_context: RequestContext<RoleServer>,
+    ) -> std::result::Result<Json<ProposeSupersedeToolResponse>, McpError> {
+        let actor = current_client_identity(&request_context);
+        let provenance_json = current_pending_write_provenance(&request_context);
+        self.propose_supersede_impl(params, actor, provenance_json)
+            .await
+    }
+
+    #[tool(
         name = "log_session_note",
         description = "Record a free-form session note. Notes are write-only scratch space and never promote to facts or decisions."
     )]
@@ -780,7 +824,7 @@ NEVER:
 • Grep for code by intent before `locate` has narrowed candidates. Grep is for confirming inside files `locate` returned.
 • Read PROJECT_LEDGER.md before trying `recall`. The ledger is fallback — when recall is empty or the user asks for it.
 • Re-read PROJECT.md after turn 1 unless the user asks or after `render`.
-• Write facts/decisions directly. Stage via `propose_fact` / `propose_decision`; durable on `memhub review accept`.
+• Write facts/decisions directly, or retire one yourself. Stage via `propose_fact` / `propose_decision` / `propose_supersede`; durable on `memhub review accept`.
 
 OUT OF SCOPE (use other tools):
 • External library / framework docs → your docs tool (e.g., context7) or web search.
@@ -867,6 +911,20 @@ struct ProposeDecisionParams {
     /// in the global store only on human `memhub review accept` (M9).
     #[serde(default)]
     global: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct ProposeSupersedeParams {
+    /// `"fact"` or `"decision"` — which durable table the supersession
+    /// targets.
+    target_kind: String,
+    /// The row being retired. Fact: numeric id or exact key. Decision:
+    /// numeric id. Resolved when the human accepts, not at propose time.
+    old: String,
+    /// The row that replaces it, same identifier rules as `old`.
+    new: String,
+    /// Why the old row should be retired in favor of the new one.
+    rationale: String,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -1013,6 +1071,9 @@ struct DecisionToolRecord {
     status: String,
     decided_at: String,
     source: String,
+    /// `Some(new_decision_id)` once superseded (Wave 3 L3). Paired with
+    /// `status == "superseded"`; the row is kept, not deleted.
+    superseded_by: Option<i64>,
 }
 
 impl From<Decision> for DecisionToolRecord {
@@ -1024,6 +1085,7 @@ impl From<Decision> for DecisionToolRecord {
             status: value.status,
             decided_at: value.decided_at,
             source: value.source,
+            superseded_by: value.superseded_by,
         }
     }
 }
@@ -1138,6 +1200,17 @@ struct ProposeDecisionToolResponse {
     title: String,
 }
 
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct ProposeSupersedeToolResponse {
+    id: i64,
+    status: String,
+    actor: String,
+    actor_raw: String,
+    target_kind: String,
+    old: String,
+    new: String,
+}
+
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct TaskAddParams {
     title: String,
@@ -1213,6 +1286,9 @@ struct FactToolRecord {
     verified_at: Option<String>,
     created_at: String,
     is_stale: bool,
+    /// `Some(new_fact_id)` once superseded (Wave 3 L3). The fact is kept
+    /// (demote-with-link); the link points at its replacement.
+    superseded_by: Option<i64>,
 }
 
 impl From<Fact> for FactToolRecord {
@@ -1225,6 +1301,7 @@ impl From<Fact> for FactToolRecord {
             verified_at: value.verified_at,
             created_at: value.created_at,
             is_stale: value.is_stale,
+            superseded_by: value.superseded_by,
         }
     }
 }
@@ -1297,6 +1374,10 @@ struct RecallToolHit {
     fts_score: f64,
     vector_score: f64,
     stale: bool,
+    /// `Some(new_id)` when this row was superseded by another of the same
+    /// source type (Wave 3 L3). The hit is demoted, not dropped — repo
+    /// memory stays no-loss. Only facts/decisions can carry it.
+    superseded_by: Option<i64>,
     source: String,
     created_at: String,
 }
@@ -1329,6 +1410,7 @@ impl From<RecallHit> for RecallToolHit {
             fts_score: value.fts_score,
             vector_score: value.vector_score,
             stale: value.stale,
+            superseded_by: value.superseded_by,
             source: value.source,
             created_at: value.created_at,
         }
