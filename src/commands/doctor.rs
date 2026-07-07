@@ -391,6 +391,7 @@ const KNOWN_LEAVES: &[&str] = &[
     "retrieval.scoring.fts_weight",
     "retrieval.scoring.vector_weight",
     "retrieval.scoring.stale_penalty",
+    "retrieval.scoring.superseded_penalty",
     "retrieval.scoring.min_rerank_score",
     "retrieval.scoring.doc_min_rerank_score",
     "metrics.enabled",
