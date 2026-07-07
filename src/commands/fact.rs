@@ -27,29 +27,41 @@ pub fn add_in_tx(
 ) -> Result<(i64, bool)> {
     crate::commands::validate_source(source)?;
 
-    let existing_id: Option<i64> = tx
+    // Read the prior value alongside the id so a same-key overwrite can log
+    // what it replaced (Wave 3 L5, issue #48). `fact add` on an existing key
+    // is silent last-writer-wins; without this the old value is captured
+    // nowhere and the overwrite is unrecoverable.
+    let existing: Option<(i64, String)> = tx
         .query_row(
-            "SELECT id FROM facts WHERE project_id = 1 AND key = ?1",
+            "SELECT id, value FROM facts WHERE project_id = 1 AND key = ?1",
             [key],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
 
-    let (row_id, created) = if let Some(id) = existing_id {
+    let (row_id, created, prior_value) = if let Some((id, prior)) = existing {
         tx.execute(
             "UPDATE facts
              SET value = ?1, source = ?2, confidence = 1.0, verified_at = CURRENT_TIMESTAMP
              WHERE id = ?3",
             params![value, source, id],
         )?;
-        (id, false)
+        (id, false, Some(prior))
     } else {
         tx.execute(
             "INSERT INTO facts(project_id, key, value, confidence, source, verified_at)
              VALUES (1, ?1, ?2, 1.0, ?3, CURRENT_TIMESTAMP)",
             params![key, value, source],
         )?;
-        (tx.last_insert_rowid(), true)
+        (tx.last_insert_rowid(), true, None)
+    };
+
+    // On a same-key overwrite, record the value that was replaced in
+    // writes_log.reason so the durable-but-silent overwrite stays recoverable
+    // from the log (issue #48). Fresh inserts keep the plain "fact add".
+    let reason = match &prior_value {
+        Some(prior) => format!("fact add; prior value: {prior}"),
+        None => "fact add".to_string(),
     };
 
     db::log_write(
@@ -58,7 +70,7 @@ pub fn add_in_tx(
         "facts",
         Some(row_id),
         if created { "insert" } else { "update" },
-        "fact add",
+        &reason,
     )?;
 
     let embed_text = crate::retrieval::fact_embed_text(key, value);
@@ -429,5 +441,47 @@ mod tests {
                 .superseded_by,
             None
         );
+    }
+
+    // Wave 3 L5 (issue #48) — a same-key `fact add` overwrite is silent
+    // last-writer-wins; the prior value must be recorded in writes_log.reason
+    // so the overwrite is recoverable from the log.
+    #[test]
+    fn add_logs_prior_value_on_same_key_overwrite() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        add(temp.path(), "deploy-cmd", "kubectl apply v1", "user", "cli:user").expect("v1");
+        add(temp.path(), "deploy-cmd", "kubectl apply v2", "user", "cli:user")
+            .expect("v2 overwrite");
+
+        let ctx = db::open_project(temp.path()).expect("open");
+        // The overwrite is an `update`; its reason must carry the prior value.
+        let update_reason: String = ctx
+            .conn
+            .query_row(
+                "SELECT reason FROM writes_log
+                 WHERE table_name = 'facts' AND action = 'update'
+                 ORDER BY id DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .expect("update reason");
+        assert!(
+            update_reason.contains("prior value") && update_reason.contains("kubectl apply v1"),
+            "same-key overwrite must log the prior value, got: {update_reason:?}"
+        );
+
+        // A fresh insert has no prior value and keeps the plain reason.
+        let insert_reason: String = ctx
+            .conn
+            .query_row(
+                "SELECT reason FROM writes_log
+                 WHERE table_name = 'facts' AND action = 'insert'
+                 ORDER BY id DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .expect("insert reason");
+        assert_eq!(insert_reason, "fact add");
     }
 }

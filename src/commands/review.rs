@@ -7,6 +7,7 @@ use serde_json::Value;
 use crate::commands::{decision, fact};
 use crate::db;
 use crate::models::{PendingWriteRecord, ReviewExpireSummary};
+use crate::retrieval::rerank;
 use crate::sync_md;
 use crate::{MemhubError, Result};
 
@@ -27,6 +28,27 @@ const AUTO_EXPIRE_ACTOR: &str = "review:auto_expire";
 /// config surface (and the doctor `KNOWN_LEAVES`/`BASELINE_FIELDS`
 /// upkeep that comes with one).
 pub const DONE_TASK_STALE_DAYS: i64 = 30;
+
+/// Cross-encoder relevance logit at/above which an existing durable row is
+/// treated as a contradiction candidate for the payload being accepted (Wave
+/// 3 L5, issue #48). Calibrated against the bundled ms-marco-MiniLM reranker:
+/// a genuine near-duplicate / same-subject row scores ~+5.6 (facts) to ~+9.0
+/// (decisions), while merely-related or unrelated rows sit near −10, so 2.0 —
+/// the same relevance floor `[retrieval.scoring] min_rerank_score` already
+/// uses — lands in that wide gap with margin on both sides. Because the model
+/// scores lexical+semantic *overlap*, this reliably catches restatements and
+/// near-duplicates; it is not a general contradiction classifier (a rephrased
+/// conflict that shares few tokens will not trip it). A plain constant, not a
+/// config knob: like [`DONE_TASK_STALE_DAYS`] it never feeds recall scoring,
+/// so it doesn't warrant a config surface (or the doctor baseline upkeep a
+/// knob brings). The probe is advisory — a hit only yields a single refusal.
+const CONTRADICTION_RERANK_THRESHOLD: f32 = 2.0;
+
+/// Upper bound on same-kind rows the reranked probe scores at accept time.
+/// Accept is human-gated and infrequent, but a pathologically large corpus
+/// should not make it crawl; the most recent [`PROBE_CANDIDATE_LIMIT`] rows
+/// are compared (the same-key fact signal is exact and unbounded).
+const PROBE_CANDIDATE_LIMIT: i64 = 200;
 
 pub fn list(
     start: &Path,
@@ -100,7 +122,216 @@ pub struct AcceptOutcome {
     pub durable_table: &'static str,
 }
 
-pub fn accept(start: &Path, id: i64, actor: &str) -> Result<AcceptOutcome> {
+// ---------------------------------------------------------------------
+// Accept-time contradiction probe (Wave 3 L5, issue #48). Advisory only:
+// it never mutates state and never auto-resolves — a detected conflict
+// yields ONE refusal naming the row, and the operator re-runs `review
+// accept` with `--supersede <id>` (retire the old row, reusing L3's
+// demote-with-link) or `--force` (proceed anyway; for facts the prior
+// value is logged by `fact::add_in_tx`). Reuses the existing cross-encoder
+// reranker seam rather than a new model.
+// ---------------------------------------------------------------------
+
+/// How an accepted payload collided with an existing durable row.
+#[derive(Debug, Clone, Copy)]
+enum ContradictionKind {
+    /// A fact with the same key already holds a *different* value. Accepting
+    /// silently overwrites it (last-writer-wins). `--supersede` cannot apply
+    /// (a row cannot supersede itself), so `--force` is the escape.
+    SameKey,
+    /// A *different* existing same-kind row reranked at/above
+    /// [`CONTRADICTION_RERANK_THRESHOLD`] against the incoming payload — a
+    /// near-duplicate / same-subject candidate. `--supersede <id>` (retire it
+    /// in favor of this write) or `--force` (keep both) proceeds.
+    Reranked,
+}
+
+/// A single conflicting row surfaced by [`probe_contradiction`].
+#[derive(Debug)]
+struct Contradiction {
+    kind: ContradictionKind,
+    source_id: i64,
+    /// Human label naming the conflicting row, e.g. `fact 'deploy-cmd' (#3)`.
+    label: String,
+}
+
+impl Contradiction {
+    /// The single advisory message a blocked accept returns (spec: "refuse
+    /// with a single advisory prompt naming the conflicting row"). One shot,
+    /// never a loop — the operator re-runs with a flag.
+    fn advisory(&self, pending_id: i64) -> String {
+        match self.kind {
+            ContradictionKind::SameKey => format!(
+                "accept blocked: {} already holds a different value, so accepting pending write \
+                 {pending_id} would silently overwrite it. Re-run `memhub review accept \
+                 {pending_id} --force` to overwrite anyway (the prior value is logged), or reject \
+                 this proposal.",
+                self.label
+            ),
+            ContradictionKind::Reranked => format!(
+                "accept blocked: pending write {pending_id} looks like it contradicts existing {}. \
+                 Re-run `memhub review accept {pending_id} --supersede {}` to retire that row in \
+                 favor of this write, or `--force` to keep both.",
+                self.label, self.source_id
+            ),
+        }
+    }
+}
+
+/// One existing row the reranked probe scores the incoming payload against.
+struct ProbeCandidate {
+    source_id: i64,
+    /// Reranker doc text, built with the same embed-text helpers recall uses
+    /// so the cross-encoder sees the same shape it was calibrated on.
+    text: String,
+    label: String,
+}
+
+/// Probe the incoming payload against existing durable rows for a likely
+/// contradiction. Returns the first conflict found (same-key beats reranked)
+/// or `None`. Pure read: prepares SELECTs and may run the reranker, but never
+/// writes.
+///
+/// `same_key` is `Some((key, value))` for facts (enables the exact same-key
+/// signal) and `None` for decisions. The reranked signal is gated on
+/// `use_reranker` so an operator who disabled the cross-encoder for recall is
+/// not forced to load it here; the same-key signal always runs.
+fn probe_contradiction(
+    tx: &Transaction<'_>,
+    kind: &str,
+    incoming_query: &str,
+    same_key: Option<(&str, &str)>,
+    use_reranker: bool,
+) -> Result<Option<Contradiction>> {
+    // 1. Same-key (facts): an existing, non-superseded fact with this key but
+    //    a different value. Exact and model-free — the strongest signal.
+    if let Some((key, value)) = same_key {
+        let existing: Option<(i64, String)> = tx
+            .query_row(
+                "SELECT id, value FROM facts
+                 WHERE project_id = 1 AND key = ?1 AND superseded_by IS NULL",
+                params![key],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        if let Some((existing_id, existing_value)) = existing
+            && existing_value != value
+        {
+            return Ok(Some(Contradiction {
+                kind: ContradictionKind::SameKey,
+                source_id: existing_id,
+                label: format!("fact '{key}' (#{existing_id})"),
+            }));
+        }
+    }
+
+    // 2. Reranked semantic signal over the remaining same-kind rows.
+    if !use_reranker {
+        return Ok(None);
+    }
+    let candidates = gather_probe_candidates(tx, kind, same_key.map(|(k, _)| k))?;
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+    let docs: Vec<String> = candidates.iter().map(|c| c.text.clone()).collect();
+    // `rerank` returns (input_index, score) sorted by descending relevance,
+    // so the first entry is the best-matching existing row.
+    let scored = rerank::rerank(incoming_query, &docs)?;
+    if let Some(&(idx, score)) = scored.first()
+        && score >= CONTRADICTION_RERANK_THRESHOLD
+        && let Some(candidate) = candidates.get(idx)
+    {
+        return Ok(Some(Contradiction {
+            kind: ContradictionKind::Reranked,
+            source_id: candidate.source_id,
+            label: candidate.label.clone(),
+        }));
+    }
+    Ok(None)
+}
+
+/// Gather the same-kind, non-superseded rows the reranked probe scores
+/// against, most-recent first and capped at [`PROBE_CANDIDATE_LIMIT`]. For
+/// facts, `exclude_fact_key` drops the incoming key's own row (handled by the
+/// same-key signal, and never a contradiction with itself).
+fn gather_probe_candidates(
+    tx: &Transaction<'_>,
+    kind: &str,
+    exclude_fact_key: Option<&str>,
+) -> Result<Vec<ProbeCandidate>> {
+    let mut out = Vec::new();
+    match kind {
+        "fact" => {
+            let mut stmt = tx.prepare(
+                "SELECT id, key, value FROM facts
+                 WHERE project_id = 1 AND superseded_by IS NULL
+                 ORDER BY id DESC LIMIT ?1",
+            )?;
+            let rows = stmt.query_map(params![PROBE_CANDIDATE_LIMIT], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })?;
+            for row in rows {
+                let (row_id, key, value) = row?;
+                if exclude_fact_key == Some(key.as_str()) {
+                    continue;
+                }
+                out.push(ProbeCandidate {
+                    source_id: row_id,
+                    text: crate::retrieval::fact_embed_text(&key, &value),
+                    label: format!("fact '{key}' (#{row_id})"),
+                });
+            }
+        }
+        "decision" => {
+            let mut stmt = tx.prepare(
+                "SELECT id, title, rationale, summary FROM decisions
+                 WHERE project_id = 1 AND superseded_by IS NULL AND status = 'active'
+                 ORDER BY id DESC LIMIT ?1",
+            )?;
+            let rows = stmt.query_map(params![PROBE_CANDIDATE_LIMIT], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                ))
+            })?;
+            for row in rows {
+                let (row_id, title, rationale, summary) = row?;
+                out.push(ProbeCandidate {
+                    source_id: row_id,
+                    text: crate::retrieval::decision_embed_text(
+                        &title,
+                        &rationale,
+                        summary.as_deref(),
+                    ),
+                    label: format!("decision #{row_id} '{title}'"),
+                });
+            }
+        }
+        // Only fact/decision payloads reach the probe; other kinds gather nothing.
+        _ => {}
+    }
+    Ok(out)
+}
+
+/// Accept a pending write. `supersede` (a fact id/key or a decision id) and
+/// `force` are the two escapes for the accept-time contradiction probe (issue
+/// #48): with neither, a detected conflict blocks the accept with a single
+/// advisory error; `--force` proceeds as-is; `--supersede <id>` proceeds and
+/// additionally demotes-with-link the named row (L3) in favor of this write.
+/// `--supersede` is honored whenever supplied, contradiction or not.
+pub fn accept(
+    start: &Path,
+    id: i64,
+    actor: &str,
+    supersede: Option<&str>,
+    force: bool,
+) -> Result<AcceptOutcome> {
     let mut ctx = db::open_project(start)?;
     let mode = ctx.config.retrieval.mode;
     // Cloned before the repo tx borrows ctx.conn so a global-targeted
@@ -144,6 +375,17 @@ pub fn accept(start: &Path, id: i64, actor: &str) -> Result<AcceptOutcome> {
     // returns the already-written row instead of duplicating it.
     let target_global = payload.get("target").and_then(Value::as_str) == Some("global");
 
+    // The contradiction probe and its `--supersede` link are repo-scoped
+    // (issue #48). Rather than silently ignore a `--supersede` handed to a
+    // global-targeted accept, refuse loudly so the operator isn't misled into
+    // thinking a global row was retired.
+    if target_global && supersede.is_some() {
+        return Err(MemhubError::InvalidInput(format!(
+            "pending write {id} targets global memory; --supersede at accept time is repo-scoped \
+             (Wave 3 L5). Accept it without --supersede."
+        )));
+    }
+
     let (durable_id, durable_table) = if target_global {
         write_durable_global(
             &config,
@@ -166,7 +408,29 @@ pub fn accept(start: &Path, id: i64, actor: &str) -> Result<AcceptOutcome> {
                     .get("value")
                     .and_then(Value::as_str)
                     .ok_or_else(|| missing_payload_field(id, "value"))?;
+                // Probe only when we might block — an explicit --force or
+                // --supersede is already the operator's acknowledgement.
+                if !force
+                    && supersede.is_none()
+                    && let Some(conflict) = probe_contradiction(
+                        &tx,
+                        "fact",
+                        &crate::retrieval::fact_embed_text(key, value),
+                        Some((key, value)),
+                        config.retrieval.use_reranker,
+                    )?
+                {
+                    return Err(MemhubError::InvalidInput(conflict.advisory(id)));
+                }
                 let (fact_id, _) = fact::add_in_tx(&tx, key, value, &derived_source, actor, mode)?;
+                // Honor --supersede whenever supplied: retire the named row in
+                // favor of the fact just written (L3 demote-with-link). A
+                // same-key overwrite yields the same row id, which
+                // `supersede_in_tx` rejects as self-supersede — the correct,
+                // loud outcome (use --force for a same-key overwrite).
+                if let Some(old_ident) = supersede {
+                    fact::supersede_in_tx(&tx, old_ident, &fact_id.to_string(), actor)?;
+                }
                 (fact_id, "facts")
             }
             "decision" => {
@@ -174,6 +438,22 @@ pub fn accept(start: &Path, id: i64, actor: &str) -> Result<AcceptOutcome> {
                     .get("title")
                     .and_then(Value::as_str)
                     .ok_or_else(|| missing_payload_field(id, "title"))?;
+                // Decisions have no natural key, so only the reranked signal
+                // applies (same_key = None). The cross-encoder catches
+                // near-duplicate decisions; a divergently-worded conflict may
+                // not trip it — advisory, best-effort.
+                if !force
+                    && supersede.is_none()
+                    && let Some(conflict) = probe_contradiction(
+                        &tx,
+                        "decision",
+                        &crate::retrieval::decision_embed_text(title, &pending.rationale, None),
+                        None,
+                        config.retrieval.use_reranker,
+                    )?
+                {
+                    return Err(MemhubError::InvalidInput(conflict.advisory(id)));
+                }
                 let decision_id = decision::add_with_decided_at_in_tx(
                     &tx,
                     title,
@@ -184,6 +464,18 @@ pub fn accept(start: &Path, id: i64, actor: &str) -> Result<AcceptOutcome> {
                     actor,
                     mode,
                 )?;
+                // Honor --supersede: retire the named decision (numeric id
+                // only — decisions have no natural key) in favor of the one
+                // just written (L3 demote-with-link).
+                if let Some(old_ident) = supersede {
+                    let old_id = old_ident.trim().parse::<i64>().map_err(|_| {
+                        MemhubError::InvalidInput(format!(
+                            "--supersede for a decision must be a numeric decision id, got \
+                             '{old_ident}'"
+                        ))
+                    })?;
+                    decision::supersede_in_tx(&tx, old_id, decision_id, actor)?;
+                }
                 (decision_id, "decisions")
             }
             // Staged supersession (Wave 3 L3). The agent could only
@@ -946,7 +1238,7 @@ mod tests {
             "propose_supersede must not durably mutate the fact"
         );
 
-        let outcome = super::accept(temp.path(), pid, "cli:user").expect("accept");
+        let outcome = super::accept(temp.path(), pid, "cli:user", None, false).expect("accept");
         assert_eq!(outcome.durable_table, "facts");
         assert_eq!(outcome.durable_id, old_id);
         assert_eq!(
@@ -980,7 +1272,7 @@ mod tests {
             "{}",
         )
         .expect("stage");
-        let outcome = super::accept(temp.path(), pid, "cli:user").expect("accept");
+        let outcome = super::accept(temp.path(), pid, "cli:user", None, false).expect("accept");
         assert_eq!(outcome.durable_table, "decisions");
         assert_eq!(outcome.durable_id, old_id);
 
@@ -988,6 +1280,282 @@ mod tests {
         let old = all.iter().find(|d| d.id == old_id).unwrap();
         assert_eq!(old.status, "superseded");
         assert_eq!(old.superseded_by, Some(new_id));
+    }
+
+    // -- accept-time contradiction probe (Wave 3 L5, issue #48) ---------
+
+    // Same-key signal (deterministic, model-free): an existing fact with the
+    // same key but a different value blocks the accept unless a flag is given.
+    #[test]
+    fn accept_blocks_on_same_key_fact_contradiction() {
+        use crate::commands::{fact, init, pending_write};
+        let temp = tempfile::tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        fact::add(temp.path(), "deploy-cmd", "kubectl apply v1", "user", "cli:user").expect("v1");
+        let pid = pending_write::propose_fact(
+            temp.path(),
+            "deploy-cmd",
+            "kubectl apply v2",
+            "conflicting update",
+            "codex",
+            "codex",
+            "{}",
+        )
+        .expect("propose");
+
+        let err = super::accept(temp.path(), pid, "cli:user", None, false)
+            .expect_err("same-key contradiction must block");
+        let msg = err.to_string();
+        assert!(msg.contains("deploy-cmd"), "advisory must name the row: {msg}");
+        assert!(msg.contains("--force"), "advisory must name the escape: {msg}");
+
+        // Durable value untouched, and the proposal stays pending (retryable).
+        assert_eq!(
+            fact::list(temp.path())
+                .expect("list")
+                .iter()
+                .find(|f| f.key == "deploy-cmd")
+                .unwrap()
+                .value,
+            "kubectl apply v1"
+        );
+        assert_eq!(super::show(temp.path(), pid).expect("show").status, "pending");
+    }
+
+    // The `--force` escape proceeds with the overwrite, and the prior value is
+    // recoverable from writes_log (the L5 prior-value logging).
+    #[test]
+    fn accept_same_key_fact_contradiction_proceeds_with_force() {
+        use crate::commands::{fact, init, pending_write};
+        let temp = tempfile::tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        fact::add(temp.path(), "deploy-cmd", "kubectl apply v1", "user", "cli:user").expect("v1");
+        let pid = pending_write::propose_fact(
+            temp.path(),
+            "deploy-cmd",
+            "kubectl apply v2",
+            "update",
+            "codex",
+            "codex",
+            "{}",
+        )
+        .expect("propose");
+
+        let outcome =
+            super::accept(temp.path(), pid, "cli:user", None, true).expect("force accept");
+        assert_eq!(outcome.durable_table, "facts");
+        assert_eq!(
+            fact::list(temp.path())
+                .expect("list")
+                .iter()
+                .find(|f| f.key == "deploy-cmd")
+                .unwrap()
+                .value,
+            "kubectl apply v2"
+        );
+        let ctx = db::open_project(temp.path()).expect("open");
+        let reason: String = ctx
+            .conn
+            .query_row(
+                "SELECT reason FROM writes_log
+                 WHERE table_name = 'facts' AND action = 'update' ORDER BY id DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .expect("update reason");
+        assert!(
+            reason.contains("kubectl apply v1"),
+            "prior value must be recoverable from the log: {reason}"
+        );
+    }
+
+    // Reranked signal (bundled cross-encoder): a different-key fact about the
+    // same subject blocks; `--supersede <old>` then proceeds and applies the
+    // L3 demote-with-link. Loads the reranker model.
+    #[test]
+    fn accept_blocks_on_reranked_fact_contradiction_then_supersede_links() {
+        use crate::commands::{fact, init, pending_write};
+        let temp = tempfile::tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let (old_id, _) = fact::add(
+            temp.path(),
+            "prod-db-host",
+            "db-alpha.example.com",
+            "user",
+            "cli:user",
+        )
+        .expect("existing");
+        let pid = pending_write::propose_fact(
+            temp.path(),
+            "database-host",
+            "db-beta.example.com",
+            "new host",
+            "codex",
+            "codex",
+            "{}",
+        )
+        .expect("propose");
+
+        // Block branch: reranked conflict, no flags.
+        let err = super::accept(temp.path(), pid, "cli:user", None, false)
+            .expect_err("reranked contradiction must block");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("prod-db-host"),
+            "advisory must name the conflicting row: {msg}"
+        );
+        assert!(
+            msg.contains("--supersede"),
+            "reranked advisory must offer --supersede: {msg}"
+        );
+
+        // Proceed branch: acknowledge by retiring the old row in favor of this.
+        let outcome =
+            super::accept(temp.path(), pid, "cli:user", Some(&old_id.to_string()), false)
+                .expect("supersede accept");
+        assert_eq!(outcome.durable_table, "facts");
+        let facts = fact::list(temp.path()).expect("list");
+        let new = facts
+            .iter()
+            .find(|f| f.key == "database-host")
+            .expect("new fact durable");
+        let old = facts
+            .iter()
+            .find(|f| f.id == old_id)
+            .expect("old fact still present (no-loss)");
+        assert_eq!(
+            old.superseded_by,
+            Some(new.id),
+            "old fact demoted-with-link to the new one"
+        );
+    }
+
+    // False-positive guard: an unrelated proposal must NOT be blocked — the
+    // probe is a single advisory on a real conflict, not a hard gate on every
+    // accept. Loads the reranker model.
+    #[test]
+    fn accept_unrelated_fact_proceeds_without_flags() {
+        use crate::commands::{fact, init, pending_write};
+        let temp = tempfile::tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        fact::add(temp.path(), "build-command", "cargo build", "user", "cli:user").expect("f1");
+        fact::add(temp.path(), "favorite-color", "blue", "user", "cli:user").expect("f2");
+        let pid = pending_write::propose_fact(
+            temp.path(),
+            "onboarding-url",
+            "https://wiki.example.com/onboard",
+            "reference link",
+            "codex",
+            "codex",
+            "{}",
+        )
+        .expect("propose");
+
+        let outcome = super::accept(temp.path(), pid, "cli:user", None, false)
+            .expect("an unrelated proposal must proceed");
+        assert_eq!(outcome.durable_table, "facts");
+        assert!(
+            fact::list(temp.path())
+                .expect("list")
+                .iter()
+                .any(|f| f.key == "onboarding-url")
+        );
+    }
+
+    // Reranked signal for decisions (near-duplicate). Decisions have no
+    // natural key, so only the reranked signal applies. Loads the model.
+    #[test]
+    fn accept_blocks_on_reranked_decision_contradiction() {
+        use crate::commands::{decision, init, pending_write};
+        let temp = tempfile::tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        decision::add(
+            temp.path(),
+            "Adopt Postgres as the datastore",
+            "We will run a Postgres server to hold project memory.",
+            "user",
+            "cli:user",
+        )
+        .expect("existing");
+        let pid = pending_write::propose_decision(
+            temp.path(),
+            "Adopt Postgres as the datastore",
+            "We will run a managed Postgres server to hold project memory.",
+            "codex",
+            "codex",
+            "{}",
+        )
+        .expect("propose");
+
+        let err = super::accept(temp.path(), pid, "cli:user", None, false)
+            .expect_err("near-duplicate decision must block");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Postgres"),
+            "advisory must name the conflicting decision: {msg}"
+        );
+        assert!(
+            msg.contains("--supersede"),
+            "decision advisory offers --supersede: {msg}"
+        );
+        // The blocked accept wrote nothing durable.
+        assert_eq!(decision::list(temp.path()).expect("list").len(), 1);
+    }
+
+    // `--supersede` on a decision accept applies the link deterministically
+    // (supersede present ⇒ probe skipped, so no model load).
+    #[test]
+    fn accept_decision_with_supersede_applies_link() {
+        use crate::commands::{decision, init, pending_write};
+        let temp = tempfile::tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let old_id =
+            decision::add(temp.path(), "Use JSON config", "chosen early", "user", "cli:user")
+                .expect("old");
+        let pid = pending_write::propose_decision(
+            temp.path(),
+            "Use TOML config",
+            "switch to TOML for inline comments",
+            "codex",
+            "codex",
+            "{}",
+        )
+        .expect("propose");
+
+        let outcome =
+            super::accept(temp.path(), pid, "cli:user", Some(&old_id.to_string()), false)
+                .expect("decision supersede accept");
+        assert_eq!(outcome.durable_table, "decisions");
+        let all = decision::list(temp.path()).expect("list");
+        let old = all.iter().find(|d| d.id == old_id).unwrap();
+        assert_eq!(old.status, "superseded");
+        assert_eq!(
+            old.superseded_by,
+            Some(outcome.durable_id),
+            "old decision links to the newly accepted one"
+        );
+    }
+
+    // A non-numeric --supersede for a decision fails loudly (numeric id only).
+    #[test]
+    fn accept_decision_rejects_non_numeric_supersede() {
+        use crate::commands::{decision, init, pending_write};
+        let temp = tempfile::tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        decision::add(temp.path(), "Prior", "r", "user", "cli:user").expect("prior");
+        let pid = pending_write::propose_decision(
+            temp.path(),
+            "New choice",
+            "rationale",
+            "codex",
+            "codex",
+            "{}",
+        )
+        .expect("propose");
+
+        let err = super::accept(temp.path(), pid, "cli:user", Some("not-a-number"), false)
+            .expect_err("non-numeric decision supersede must fail");
+        assert!(matches!(err, MemhubError::InvalidInput(_)));
     }
 
     // -- `review stale` (Wave 3 L4, issue #47) --------------------------

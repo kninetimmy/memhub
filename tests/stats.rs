@@ -141,7 +141,7 @@ fn stats_review_rate_reflects_pending_writes() {
             )
             .expect("pending id")
     };
-    review::accept(temp.path(), pending_id, "cli:user").expect("accept");
+    review::accept(temp.path(), pending_id, "cli:user", None, false).expect("accept");
 
     let summary = stats::run(temp.path(), stats::StatsWindow::Days(30)).expect("stats");
     assert_eq!(summary.pending_created_in_window, 2);

@@ -323,7 +323,7 @@ fn review_accept_embeds_fact_in_hybrid_mode() {
     )
     .expect("propose pending fact");
 
-    let outcome = review::accept(temp.path(), pending_id, "cli:user").expect("accept");
+    let outcome = review::accept(temp.path(), pending_id, "cli:user", None, false).expect("accept");
     let fact_id = outcome.durable_id;
 
     let ctx = db::open_project(temp.path()).expect("open project");

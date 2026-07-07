@@ -1166,9 +1166,12 @@ pub fn run(cli: Cli) -> Result<()> {
                 id,
                 json: as_json,
                 actor,
+                supersede,
+                force,
             } => {
                 let actor = resolve_actor(actor.as_deref())?;
-                let outcome = commands::review::accept(&cwd, id, &actor)?;
+                let outcome =
+                    commands::review::accept(&cwd, id, &actor, supersede.as_deref(), force)?;
                 if as_json {
                     let payload = json!({
                         "pending_id": outcome.pending_id,

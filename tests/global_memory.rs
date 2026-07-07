@@ -186,7 +186,7 @@ fn machine_global_memory_end_to_end() {
         global::status(repo_b.path()).expect("status b2").fact_count,
         2
     );
-    review::accept(repo_b.path(), pid, "cli:user").expect("accept");
+    review::accept(repo_b.path(), pid, "cli:user", None, false).expect("accept");
     assert_eq!(
         global::status(repo_b.path()).expect("status b3").fact_count,
         3,
@@ -220,7 +220,7 @@ fn machine_global_memory_end_to_end() {
     let dec_before = global::status(repo_b.path())
         .expect("status b dec0")
         .decision_count;
-    review::accept(repo_b.path(), dpid, "cli:user").expect("accept global decision");
+    review::accept(repo_b.path(), dpid, "cli:user", None, false).expect("accept global decision");
     let dec_after = global::status(repo_b.path())
         .expect("status b dec1")
         .decision_count;
@@ -244,7 +244,7 @@ fn machine_global_memory_end_to_end() {
 
     // Re-accept. The marker is detected, so no second durable row is
     // written, and the repo-side flip now succeeds.
-    review::accept(repo_b.path(), dpid, "cli:user").expect("replayed accept must succeed");
+    review::accept(repo_b.path(), dpid, "cli:user", None, false).expect("replayed accept must succeed");
     assert_eq!(
         global::status(repo_b.path())
             .expect("status b dec2")
