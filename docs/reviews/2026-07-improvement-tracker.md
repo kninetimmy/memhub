@@ -22,7 +22,7 @@ numbers. Default-off config additions must keep an untouched install byte-identi
 | 0 | Fix-now defects | 17 / 17 | — (complete) |
 | 1 | Loud states (doctor/status/integrity) | 5 / 5 | Q35 ✓ (complete) |
 | 2 | Session-start token diet | 7 / 7 | Q21–Q25 ✓ · Q41 ✓ (complete) |
-| 3 | Staleness / lifecycle | 2 / 7 | Q1–Q6 ✓ (Batch 1 done) |
+| 3 | Staleness / lifecycle | 5 / 7 | Q1–Q6 ✓ (L1–L4 done) |
 | 4 | Retrieval performance | 0 / 12 | Q17–Q19, Q24, Q40 |
 | 5 | Upgrade / GC hardening | 0 / 8 | Q12–Q16 |
 | 6 | Wrap-up policy / verbosity | 0 / 6 | Q7–Q11 |
@@ -74,15 +74,27 @@ issues before execution. IDs are `A#` to keep them distinct from the review's fi
   genuinely needed. **Open decision (yours — load-bearing, gates the schema design):** how far up
   the spectrum. Effort: (a) small · (b) large · (c) very large.
 
-- [ ] **A4 — Optional hosted-LLM reranker (Haiku) with local fallback.** Let a user who has
-  Anthropic API usage opt into using **Haiku as the recall reranker**, falling back to the bundled
-  local cross-encoder (ms-marco-MiniLM) when usage is unavailable or offline. **Scope correction (load-bearing):**
+- [ ] **A4 — Optional hosted-LLM reranker (per-agent provider) with local fallback.** Let a user who has
+  hosted-LLM API access opt into using **a hosted LLM as the recall reranker** (Anthropic Haiku under
+  Claude, an OpenAI fast tier under Codex, an OpenCode-configured provider under OpenCode), falling back
+  to the bundled local cross-encoder (ms-marco-MiniLM) whenever the hosted call is unavailable or offline. **Scope correction (load-bearing):**
   this applies to the **rerank/judgment stage only** — the BGE-small *embedding* step cannot use Haiku
   (Anthropic exposes no embeddings endpoint; a hosted embedding option would mean a separate provider —
   Voyage / OpenAI / Cohere / Gemini — plus full-corpus re-embedding + a vector-dimension migration, a
   much larger change with weaker payoff). The rerank stage slots into memhub's existing two-stage
-  reranker seam (the `use_reranker` knob), so a `[retrieval] reranker = "local" | "haiku"` toggle is
-  architecturally natural. **Upside:** an LLM understands query intent better than a small cross-encoder
+  reranker seam (the `use_reranker` knob), so a `[retrieval] reranker = "local" | "hosted"` toggle is
+  architecturally natural. **Cross-agent generalization (added 2026-07-06 — the load-bearing broadening):
+  the hosted reranker must NOT be Anthropic/Claude-only.** memhub is a shared tool called from all three
+  agents, and the feature has to behave identically under Codex and OpenCode. Design it as a *provider
+  abstraction*, not a Haiku special-case: one `HostedReranker` trait behind the existing `use_reranker`
+  seam, with backends `{anthropic (Haiku), openai (a fast/cheap GPT tier for Codex), opencode
+  (provider-agnostic — follow OpenCode's configured provider, or an explicit memhub setting)}`. The
+  default provider is auto-selected from the **detected calling client** (reuse the existing
+  `normalize_client_name` mapping — memhub already knows whether Claude / Codex / OpenCode invoked it,
+  per F15/P7), overridable via `[retrieval] reranker_provider`. Every backend degrades to the bundled
+  local cross-encoder; all backends default-off; local stays the shipped default everywhere. *(Exact
+  model IDs per provider — e.g. which OpenAI small model best mirrors Haiku — are a research item; do
+  not hardcode a guess.)* **Upside:** an LLM understands query intent better than a small cross-encoder
   → smarter relevance, and it overlaps the contradiction/staleness judgment in Wave 3 L5. **Tensions
   (all load-bearing):** (1) collides with the offline-first / "no cloud service or daemon" security
   invariant → must be strictly opt-in with local fallback as default, and it is a **PRD-level decision**,
@@ -92,11 +104,24 @@ issues before execution. IDs are `A#` to keep them distinct from the review's fi
   assumes deterministic local ranking; an LLM reranker drifts across model updates even at temperature 0,
   which cuts against the eval-gated culture. **Leaning:** bounded escalation, not a wholesale swap —
   local FTS+BGE stays the always-on fast path; Haiku reranks only a small top-slice, or on explicit
-  request / hard queries, capping latency, cost, and eval-drift. **New dep:** an HTTP client
-  (flag-before-add) + a PRD amendment. **Open decision (yours):** pursue at all? if so — escalation
-  policy (always / top-slice / on-request) and default-off confirmed. Effort: med (rerank-only) · large
-  (only if a hosted *embedding* option is ever added). *(Captured 2026-07-06 from a design conversation;
-  needs its own scoping pass → plan gate → issues before execution.)*
+  request / hard queries, capping latency, cost, and eval-drift. **Added cross-agent tensions:**
+  (5) **credentials** — memhub would need its own per-provider API key (Anthropic / OpenAI / …) read from
+  env or `[retrieval]` config, **never committed**; a missing/invalid key must degrade to local, not error
+  the recall (fail-*safe-to-local*, since local ranking is the secure default — distinct from the general
+  fail-closed rule); (6) **determinism now spans N providers** — each hosted backend drifts independently
+  across model updates, so the hermetic golden regime (N28) must stay pinned to the local reranker and
+  hosted backends are excluded from the gate (or get a separate, explicitly-opt-in, non-hermetic eval).
+  **New dep:** one HTTP client (flag-before-add) + a PRD amendment (this is a PRD-level, provider-neutral
+  decision, not a mere config toggle). **Open decisions (yours):** (a) pursue at all? (b) provider-selection
+  model — auto-by-calling-client vs explicit config (leaning: auto-detect with override); (c) OpenCode —
+  first-class provider vs "bring-your-own configured provider"; (d) escalation policy (always / top-slice /
+  on-request) and default-off confirmed for every backend. **Effort:** med (rerank-only, one provider) ·
+  med-large (all three agent providers + provider abstraction + credential handling) · large (only if a
+  hosted *embedding* option is ever added). **Path note:** the per-provider API integration may need
+  research, or can be built from inside the target agent itself (e.g. implement/verify the Codex/OpenAI
+  backend from within Codex) if doing it from Claude Code proves impractical. *(Captured 2026-07-06 from a
+  design conversation; broadened to cross-agent 2026-07-06. Needs its own scoping pass → plan gate →
+  issues before execution.)*
 
 ---
 
@@ -250,16 +275,28 @@ Four PRs: **PR-A text/docs** and **PR-B safe code** (no decisions), **PR #17**
 ## Wave 3 — Lifecycle  (gating: Q1–Q6 ✓ — resolved 2026-07-06 as decision 145)
 
 Decomposed into 9 issues (#41–49): L1–L6 + Q5/Q6 + N28 (L7 declined). **Batch 1 done**
-2026-07-06 — main green at `cea07ff` (638 tests); Batch 2 = L2 (#45) → L3 → L4/L5 → L6.
+2026-07-06 — main green at `cea07ff` (638 tests); Batch 2: L2 (#57) ✓ → L3 (#59) ✓ → L4 (#60) ✓ → L5 (unblocked) → L6 (last).
 
 - [x] L1 `memhub fact verify` (no add-upsert side effects) + wrap-up per-item step —
   touches `verified_at` only, off the MCP surface; per-item re-verify across all 3 agents.
   — 2026-07-06, PR #51 / cea07ff (issue #41).
-- [ ] L2 un-silence staleness: `[retrieval] fact_stale_after_days` + demote/flag — **in progress (issue #45, opus)**
-- [ ] L3 wire supersession (migration 0018 `facts.superseded_by`; verbs; hydrate/score/render) — blocked by L2 (#46)
-- [ ] L4 `memhub review stale` audit queue — blocked by L3 (#47)
-- [ ] L5 accept-time contradiction probe — blocked by L3 (#48)
-- [ ] L6 optional age decay (default-off) — eval-gated, last — blocked (#49)
+- [x] L2 un-silence staleness: `[retrieval] fact_stale_after_days` + demote/flag stale facts
+  (not silent exclusion; default flipped, `stale_facts_demoted` count surfaced).
+  — 2026-07-06, PR #57 / 8c5bf2e (issue #45).
+- [x] L3 wire supersession: migration 0018 (`facts.superseded_by` + `pending_writes.kind` CHECK
+  +'supersede'), `fact/decision supersede` verbs, demote-with-link recall (`superseded_penalty`
+  =0.4, stacks additively with stale_penalty) + render annotation, staged MCP `propose_supersede`
+  (durable only on `review accept`). N28 held Recall@3=100%. Full-suite pre-flight caught + fixed a
+  doctor false-warn on the new config key (`KNOWN_LEAVES` + range-check/`BASELINE_FIELDS` parity
+  with stale_penalty). — 2026-07-06/07, PR #59 / 648f275 (issue #46).
+- [x] L4 `memhub review stale` audit queue — strictly read-only union of 4 lifecycle signals
+  (stale facts @ L2 config horizon w/ superseded excluded · aged done tasks · expired pending
+  writes · doc hash-drift), each row naming the existing fix verb; `status` gains a stale-queue
+  count via the same `stale()` call so the two can't disagree; `--json` as `{"review_stale":{...}}`
+  (Q29); read-only invariant proven by a before/after rowcount+writes_log snapshot test. Full-suite
+  pre-flight 671 green. — 2026-07-07, PR #60 / 3a87254 (issue #47).
+- [ ] L5 accept-time contradiction probe — **unblocked** (L3 merged); tier:opus (#48)
+- [ ] L6 optional age decay (default-off) — eval-gated, last; L3 dep cleared (#49)
 - [-] L7 hard archival — **recommend against / defer** (per review)
 - [x] rider: N28 hermetic retrieval golden fixture — `tests/retrieval_golden_hermetic.rs`
   drives the compiled binary against a seeded tempdir; baseline Recall@3 = 100% (the L2/L3/L6
@@ -267,7 +304,8 @@ Decomposed into 9 issues (#41–49): L1–L6 + Q5/Q6 + N28 (L7 declined). **Batc
 
 **Q5/Q6 also shipped this batch** (their own issues, tracked as decisions below):
 - [x] Q5 retire the vestigial always-1.0 confidence surface field from CLI/render/MCP —
-  dashboard-viz leftover parked as #54. — 2026-07-06, PR #52 / ef4a3e7 (issue #42).
+  2026-07-06, PR #52 / ef4a3e7 (issue #42). The parked viz-dashboard leftover (#54) retired
+  2026-07-07, PR #58 / 732d20b.
 - [x] Q6 automatic pending-write expiry at `open_project` — best-effort single autocommit
   side effect reusing the manual `review expire` core. — 2026-07-06, PR #50 / 66d3b5f (issue #43).
 - Hotfix #55 / 79ef76c fixed a #50 `export_import` back-compat regression (auto-expiry expired
