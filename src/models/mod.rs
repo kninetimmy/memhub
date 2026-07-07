@@ -292,6 +292,12 @@ pub struct StatusSummary {
     pub pending_writes: i64,
     pub writes_logged: i64,
     pub deny_patterns: usize,
+    /// Count of items in the `memhub review stale` audit queue (Wave 3
+    /// L4, issue #47) — facts near the staleness horizon, done tasks
+    /// aged past threshold, expired pending writes, and docs whose
+    /// on-disk hash has drifted from `documents.content_hash`. Read-only
+    /// visibility only; `status` never acts on this count itself.
+    pub stale_queue: i64,
     pub k9_detected: bool,
     pub k9_enabled: bool,
     pub k9_agent_docs_path: String,

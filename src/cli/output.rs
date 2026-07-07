@@ -6,6 +6,7 @@ use crate::commands::doctor::{Check, DoctorReport, Group, Status};
 use crate::code_index::locate::LocateResponse;
 use crate::commands;
 use crate::commands::import::ImportSummary;
+use crate::commands::review::{StaleCategory, StaleReport};
 use crate::config::RetrievalMode;
 use crate::models::{
     InitResult, NarrativeEntry, NarrativeKind, PendingWriteRecord, StatsSummary, StatusSummary,
@@ -830,6 +831,7 @@ pub(crate) fn status_summary_to_json(s: &StatusSummary) -> serde_json::Value {
         "pending_writes": s.pending_writes,
         "writes_logged": s.writes_logged,
         "deny_patterns": s.deny_patterns,
+        "stale_queue": s.stale_queue,
         "k9_detected": s.k9_detected,
         "k9_enabled": s.k9_enabled,
         "k9_agent_docs_path": s.k9_agent_docs_path,
@@ -1128,5 +1130,77 @@ pub(crate) fn print_audit_md_report_human(r: &AuditMdReport) {
         "Summary: {} finding(s) → exit {}",
         r.findings.len(),
         r.exit_code
+    );
+}
+
+/// `{"review_stale": {...}}` — the wrapped noun-keyed shape (Q29),
+/// matching `doctor`/`audit_md`'s own siblings. `counts.total` is
+/// redundant with `items.len()` for a script that only wants "is the
+/// queue empty?" without counting the array — `items` itself is capped
+/// per category (`review::DEFAULT_LIST_LIMIT`) while `counts` is not, so
+/// the two can differ on a large backlog; `counts` is the authoritative
+/// number for `status`'s own one-line summary.
+pub(crate) fn review_stale_report_to_json(r: &StaleReport) -> serde_json::Value {
+    json!({
+        "counts": {
+            "fact_near_horizon": r.counts.fact_near_horizon,
+            "done_task_aged": r.counts.done_task_aged,
+            "pending_expired": r.counts.pending_expired,
+            "doc_hash_drift": r.counts.doc_hash_drift,
+            "total": r.counts.total(),
+        },
+        "items": r.items.iter().map(|item| json!({
+            "category": item.category.as_str(),
+            "id": item.source_id,
+            "message": item.message,
+            "verb": item.verb,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn stale_category_heading(category: StaleCategory) -> &'static str {
+    match category {
+        StaleCategory::FactNearHorizon => "Facts near staleness horizon",
+        StaleCategory::DoneTaskAged => "Done tasks aged out",
+        StaleCategory::PendingExpired => "Expired pending writes",
+        StaleCategory::DocHashDrift => "Docs drifted from on-disk file",
+    }
+}
+
+pub(crate) fn print_review_stale_report_human(r: &StaleReport) {
+    println!("memhub review stale");
+    println!();
+
+    if r.items.is_empty() {
+        println!("Stale queue is empty — nothing needs attention.");
+        return;
+    }
+
+    const CATEGORY_ORDER: &[StaleCategory] = &[
+        StaleCategory::FactNearHorizon,
+        StaleCategory::DoneTaskAged,
+        StaleCategory::PendingExpired,
+        StaleCategory::DocHashDrift,
+    ];
+    for &category in CATEGORY_ORDER {
+        let in_category: Vec<_> = r.items.iter().filter(|i| i.category == category).collect();
+        if in_category.is_empty() {
+            continue;
+        }
+        println!("{} ({})", stale_category_heading(category), in_category.len());
+        for item in in_category {
+            println!("  #{} {}", item.source_id, item.message);
+            println!("      fix: {}", item.verb);
+        }
+        println!();
+    }
+
+    println!(
+        "Summary: {} item(s) — {} fact(s), {} task(s), {} pending write(s), {} doc(s)",
+        r.counts.total(),
+        r.counts.fact_near_horizon,
+        r.counts.done_task_aged,
+        r.counts.pending_expired,
+        r.counts.doc_hash_drift,
     );
 }

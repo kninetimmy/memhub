@@ -686,6 +686,15 @@ pub enum ReviewCommand {
         #[arg(long, default_value_t = 30)]
         older_than_days: i64,
     },
+    /// Read-only lifecycle audit queue (Wave 3 L4): facts near the
+    /// staleness horizon, done tasks aged past threshold, expired
+    /// pending writes, and docs whose on-disk hash no longer matches
+    /// `documents.content_hash`. Mutates nothing — each row only
+    /// suggests the existing verb that addresses it.
+    Stale {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

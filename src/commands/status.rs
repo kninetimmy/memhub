@@ -4,6 +4,7 @@ use crate::Result;
 use crate::commands::doctor;
 use crate::commands::fact;
 use crate::commands::integrations;
+use crate::commands::review;
 use crate::db;
 use crate::models::StatusSummary;
 
@@ -36,6 +37,11 @@ pub fn run(start: &Path) -> Result<StatusSummary> {
     )?;
     let writes_logged: i64 =
         conn.query_row("SELECT COUNT(*) FROM writes_log", [], |row| row.get(0))?;
+    // Wave 3 L4 (issue #47): one-line visibility into the read-only
+    // `memhub review stale` audit queue. Reuses that command's exact
+    // computation (`review::count_stale_queue`) rather than a second
+    // implementation, so the two counts can never silently disagree.
+    let stale_queue = review::count_stale_queue(start)?;
 
     let deny_patterns = ctx.config.deny_list.patterns.len();
     let k9_state = integrations::k9_state(&ctx.paths.repo_root, &ctx.config.integrations);
@@ -62,6 +68,7 @@ pub fn run(start: &Path) -> Result<StatusSummary> {
         pending_writes,
         writes_logged,
         deny_patterns,
+        stale_queue,
         k9_detected: k9_state.detected,
         k9_enabled: k9_state.enabled,
         k9_agent_docs_path: k9_state.agent_docs_path,
@@ -134,5 +141,38 @@ mod tests {
             .find(|c| c.id == "k9_coexistence")
             .expect("k9_coexistence check present");
         assert_eq!(k9.status, doctor::Status::Skipped);
+    }
+
+    // Wave 3 L4 (issue #47): `status` gains a one-line stale-queue count,
+    // reusing `review::count_stale_queue` rather than a second tally.
+    #[test]
+    fn run_reports_zero_stale_queue_on_a_clean_repo() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+
+        let summary = run(temp.path()).expect("status");
+        assert_eq!(summary.stale_queue, 0);
+    }
+
+    #[test]
+    fn run_stale_queue_matches_review_count_stale_queue() {
+        use crate::commands::{fact, review};
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+
+        let (id, _) = fact::add(temp.path(), "k", "v", "user", "cli:user").expect("fact");
+        let ctx = db::open_project(temp.path()).expect("open");
+        ctx.conn
+            .execute(
+                "UPDATE facts SET verified_at = datetime('now', '-400 days') WHERE id = ?1",
+                rusqlite::params![id],
+            )
+            .expect("backdate");
+        drop(ctx);
+
+        let summary = run(temp.path()).expect("status");
+        let direct = review::count_stale_queue(temp.path()).expect("count");
+        assert_eq!(summary.stale_queue, direct);
+        assert_eq!(summary.stale_queue, 1);
     }
 }
