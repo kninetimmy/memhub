@@ -18,7 +18,8 @@ use output::{
     pending_write_record_to_json, print_audit_md_report_human, print_code_status,
     print_doctor_report_human, print_eval_summary, print_index_status, print_init_result,
     print_locate, print_locate_eval_summary, print_metrics_status_human, print_recall_human,
-    print_stats_human, print_stats_json, print_status_checks_human, recall_response_to_json,
+    print_review_stale_report_human, print_stats_human, print_stats_json,
+    print_status_checks_human, recall_response_to_json, review_stale_report_to_json,
     status_checks_to_json, status_summary_to_json,
 };
 use serde_json::json;
@@ -234,6 +235,9 @@ pub fn run(cli: Cli) -> Result<()> {
                 println!("Pending writes: {}", summary.pending_writes);
                 println!("Writes logged: {}", summary.writes_logged);
                 println!("Deny patterns: {}", summary.deny_patterns);
+                // Wave 3 L4 (issue #47): one-line pointer at the
+                // read-only `memhub review stale` audit queue.
+                println!("Stale queue: {}", summary.stale_queue);
                 // Subsystem-state lines (issue #22): schema, render
                 // freshness, retrieval mode, embeddings, sync (when
                 // enabled), metrics (when enabled), and K9 — K9 only
@@ -1203,6 +1207,14 @@ pub fn run(cli: Cli) -> Result<()> {
                     "Expired {} pending write(s) older than {} day(s)",
                     summary.expired, summary.older_than_days
                 );
+            }
+            ReviewCommand::Stale { json: as_json } => {
+                let report = commands::review::stale(&cwd)?;
+                if as_json {
+                    println!("{}", json!({ "review_stale": review_stale_report_to_json(&report) }));
+                } else {
+                    print_review_stale_report_human(&report);
+                }
             }
         },
         TopLevelCommand::Integrations { command } => match command {

@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
@@ -17,6 +18,15 @@ pub const DEFAULT_EXPIRY_DAYS: i64 = 30;
 /// `memhub review expire` command's `cli:user` so the two are
 /// distinguishable in the log (Wave 3 Q6).
 const AUTO_EXPIRE_ACTOR: &str = "review:auto_expire";
+
+/// Cutoff (in days, by `tasks.updated_at`) for the "done tasks older
+/// than N" category in `memhub review stale` (Wave 3 L4, issue #47). A
+/// plain constant rather than a config knob: L4's own cost estimate was
+/// "one command, no migration" — unlike `fact_stale_after_days` this
+/// number never feeds recall scoring, so it does not warrant a new
+/// config surface (and the doctor `KNOWN_LEAVES`/`BASELINE_FIELDS`
+/// upkeep that comes with one).
+pub const DONE_TASK_STALE_DAYS: i64 = 30;
 
 pub fn list(
     start: &Path,
@@ -315,6 +325,321 @@ pub fn auto_expire_best_effort(conn: &Connection) {
     }
 }
 
+// ---------------------------------------------------------------------
+// `memhub review stale` — read-only lifecycle audit queue (Wave 3 L4,
+// issue #47; review §2 L4). Unions four signals, each row naming the
+// existing verb a human would reach for. Strictly read-only: every
+// query below is a SELECT, and reading a file off disk to hash it is
+// not a database write either — nothing here touches `writes_log` or
+// any table. `status` reuses this exact computation
+// (`count_stale_queue`) for its one-line count so the two can never
+// silently disagree.
+// ---------------------------------------------------------------------
+
+/// One of the four categories `stale` unions. Presence in the queue is
+/// itself the signal — unlike `doctor::Status` there is no "ok" case to
+/// report, so this is a plain tag rather than a severity grading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StaleCategory {
+    /// Fact at/over the recall-demotion horizon
+    /// (`[retrieval] fact_stale_after_days`) and not already superseded.
+    FactNearHorizon,
+    /// Done task whose `updated_at` is older than [`DONE_TASK_STALE_DAYS`].
+    DoneTaskAged,
+    /// Pending write sitting at `status = 'expired'`.
+    PendingExpired,
+    /// Ingested document whose on-disk file no longer hashes to the
+    /// `documents.content_hash` recorded at ingest time.
+    DocHashDrift,
+}
+
+impl StaleCategory {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::FactNearHorizon => "fact_near_horizon",
+            Self::DoneTaskAged => "done_task_aged",
+            Self::PendingExpired => "pending_expired",
+            Self::DocHashDrift => "doc_hash_drift",
+        }
+    }
+}
+
+/// One flagged row. `verb` is plain text naming the existing CLI
+/// invocation a human could run next — the queue only ever *suggests*;
+/// building a [`StaleItem`] never itself mutates anything.
+///
+/// [`StaleCategory::DoneTaskAged`] and [`StaleCategory::PendingExpired`]
+/// have no verb that reverses the flagged state (this CLI has no
+/// task-archive or pending-write "un-expire" verb) — their `verb` names
+/// the closest existing *inspect* verb instead of overclaiming a fix.
+/// [`StaleCategory::FactNearHorizon`] and [`StaleCategory::DocHashDrift`]
+/// do name a genuine fix.
+#[derive(Debug, Clone)]
+pub struct StaleItem {
+    pub category: StaleCategory,
+    pub source_id: i64,
+    pub message: String,
+    pub verb: String,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct StaleCounts {
+    pub fact_near_horizon: usize,
+    pub done_task_aged: usize,
+    pub pending_expired: usize,
+    pub doc_hash_drift: usize,
+}
+
+impl StaleCounts {
+    pub fn total(&self) -> usize {
+        self.fact_near_horizon + self.done_task_aged + self.pending_expired + self.doc_hash_drift
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StaleReport {
+    pub items: Vec<StaleItem>,
+    pub counts: StaleCounts,
+}
+
+/// `memhub review stale` (Wave 3 L4, issue #47): a strictly read-only
+/// audit queue unioning four lifecycle signals, pull-based (never
+/// nags — nothing here schedules or prompts anything, it only answers
+/// when asked). Opens the project read-side only; every query below is
+/// a SELECT and nothing commits a transaction or calls `db::log_write`.
+pub fn stale(start: &Path) -> Result<StaleReport> {
+    let ctx = db::open_project(start)?;
+    let conn = &ctx.conn;
+    let horizon_days = ctx.config.retrieval.fact_stale_after_days;
+
+    let (fact_count, mut items) = stale_facts(conn, horizon_days)?;
+    let (task_count, task_items) = stale_done_tasks(conn)?;
+    let (pending_count, pending_items) = expired_pending_writes(conn)?;
+    let (doc_count, doc_items) = drifted_documents(conn)?;
+
+    items.extend(task_items);
+    items.extend(pending_items);
+    items.extend(doc_items);
+
+    Ok(StaleReport {
+        items,
+        counts: StaleCounts {
+            fact_near_horizon: fact_count,
+            done_task_aged: task_count,
+            pending_expired: pending_count,
+            doc_hash_drift: doc_count,
+        },
+    })
+}
+
+/// Count-only convenience for `status`'s one-line stale-queue summary —
+/// the exact same computation as [`stale`], so the two surfaces can
+/// never silently drift apart.
+pub fn count_stale_queue(start: &Path) -> Result<i64> {
+    Ok(stale(start)?.counts.total() as i64)
+}
+
+/// Facts at/over the L2 recall-demotion horizon
+/// (`[retrieval] fact_stale_after_days`) — the identical predicate
+/// `retrieval::recall`'s hydrate path applies (issue #47 grounding:
+/// "reuse that horizon logic; don't reinvent it"), deliberately NOT the
+/// fixed `models::FACT_STALE_AFTER_DAYS` constant that `fact::list` /
+/// `fact::count_stale` use for the non-recall hygiene surfaces. The two
+/// horizons default to the same 90 days but are independently
+/// configurable by design (see `config/mod.rs`'s
+/// `DEFAULT_FACT_STALE_AFTER_DAYS` doc comment); this queue intentionally
+/// tracks the recall-facing one. Already-superseded facts are excluded —
+/// L3 gave them their own lifecycle signal, and re-verifying a fact that
+/// is meant to be replaced is not the fix.
+fn stale_facts(conn: &Connection, horizon_days: i64) -> Result<(usize, Vec<StaleItem>)> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM facts
+         WHERE project_id = 1 AND superseded_by IS NULL
+           AND (verified_at IS NULL
+                OR (julianday('now') - julianday(verified_at)) > ?1)",
+        params![horizon_days],
+        |row| row.get(0),
+    )?;
+
+    let mut stmt = conn.prepare(
+        "SELECT id, key, verified_at FROM facts
+         WHERE project_id = 1 AND superseded_by IS NULL
+           AND (verified_at IS NULL
+                OR (julianday('now') - julianday(verified_at)) > ?1)
+         ORDER BY (verified_at IS NULL) DESC, verified_at ASC
+         LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![horizon_days, DEFAULT_LIST_LIMIT as i64], |row| {
+        let id: i64 = row.get(0)?;
+        let key: String = row.get(1)?;
+        let verified_at: Option<String> = row.get(2)?;
+        Ok((id, key, verified_at))
+    })?;
+
+    let mut items = Vec::new();
+    for row in rows {
+        let (id, key, verified_at) = row?;
+        let age_desc = match &verified_at {
+            Some(ts) => format!("last verified {ts}"),
+            None => "never verified".to_string(),
+        };
+        items.push(StaleItem {
+            category: StaleCategory::FactNearHorizon,
+            source_id: id,
+            message: format!(
+                "fact '{key}' (#{id}) is past the {horizon_days}-day staleness horizon \
+                 ({age_desc})"
+            ),
+            verb: format!("memhub fact verify {key}"),
+        });
+    }
+    Ok((count as usize, items))
+}
+
+/// Done tasks whose `updated_at` (set when `commands::task::done`
+/// transitions status) is older than [`DONE_TASK_STALE_DAYS`].
+fn stale_done_tasks(conn: &Connection) -> Result<(usize, Vec<StaleItem>)> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM tasks
+         WHERE project_id = 1 AND status = 'done'
+           AND (julianday('now') - julianday(updated_at)) > ?1",
+        params![DONE_TASK_STALE_DAYS],
+        |row| row.get(0),
+    )?;
+
+    let mut stmt = conn.prepare(
+        "SELECT id, title, updated_at FROM tasks
+         WHERE project_id = 1 AND status = 'done'
+           AND (julianday('now') - julianday(updated_at)) > ?1
+         ORDER BY updated_at ASC
+         LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(
+        params![DONE_TASK_STALE_DAYS, DEFAULT_LIST_LIMIT as i64],
+        |row| {
+            let id: i64 = row.get(0)?;
+            let title: String = row.get(1)?;
+            let updated_at: String = row.get(2)?;
+            Ok((id, title, updated_at))
+        },
+    )?;
+
+    let mut items = Vec::new();
+    for row in rows {
+        let (id, title, updated_at) = row?;
+        items.push(StaleItem {
+            category: StaleCategory::DoneTaskAged,
+            source_id: id,
+            message: format!(
+                "task #{id} '{title}' done since {updated_at} (> {DONE_TASK_STALE_DAYS} days)"
+            ),
+            // No archive/un-done verb exists; name the closest existing
+            // inspect verb instead (see StaleItem doc comment).
+            verb: "memhub task list --status done".to_string(),
+        });
+    }
+    Ok((count as usize, items))
+}
+
+/// Pending writes sitting at `status = 'expired'`. Automatic expiry
+/// (Wave 3 Q6) flips this silently as a side effect of every DB open,
+/// so short of this queue a human never sees what quietly fell through.
+fn expired_pending_writes(conn: &Connection) -> Result<(usize, Vec<StaleItem>)> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pending_writes WHERE project_id = 1 AND status = 'expired'",
+        [],
+        |row| row.get(0),
+    )?;
+
+    let mut stmt = conn.prepare(
+        "SELECT id, kind, reviewed_at FROM pending_writes
+         WHERE project_id = 1 AND status = 'expired'
+         ORDER BY reviewed_at DESC, id DESC
+         LIMIT ?1",
+    )?;
+    let rows = stmt.query_map(params![DEFAULT_LIST_LIMIT as i64], |row| {
+        let id: i64 = row.get(0)?;
+        let kind: String = row.get(1)?;
+        let reviewed_at: Option<String> = row.get(2)?;
+        Ok((id, kind, reviewed_at))
+    })?;
+
+    let mut items = Vec::new();
+    for row in rows {
+        let (id, kind, reviewed_at) = row?;
+        let when = reviewed_at.map(|ts| format!(" at {ts}")).unwrap_or_default();
+        items.push(StaleItem {
+            category: StaleCategory::PendingExpired,
+            source_id: id,
+            message: format!("pending write #{id} (kind={kind}) expired{when}"),
+            // No verb un-expires a row; name the inspect verb instead
+            // (see StaleItem doc comment).
+            verb: format!("memhub review show {id}"),
+        });
+    }
+    Ok((count as usize, items))
+}
+
+/// Ingested documents whose on-disk file no longer hashes to the
+/// `content_hash` recorded at ingest time — edited or deleted since.
+/// A missing or unreadable file is itself a drift finding rather than a
+/// propagated error: surfacing exactly that is this category's job, not
+/// a failure of this command.
+fn drifted_documents(conn: &Connection) -> Result<(usize, Vec<StaleItem>)> {
+    let mut stmt = conn.prepare(
+        "SELECT id, path, content_hash FROM documents WHERE project_id = 1 ORDER BY id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let id: i64 = row.get(0)?;
+        let path: String = row.get(1)?;
+        let content_hash: String = row.get(2)?;
+        Ok((id, path, content_hash))
+    })?;
+
+    let mut items = Vec::new();
+    for row in rows {
+        let (id, path, content_hash) = row?;
+        let drift_message = match fs::read_to_string(&path) {
+            Ok(content) if sha256_hex(&content) == content_hash => None,
+            Ok(_) => Some(format!("document #{id} at {path} has changed since ingest")),
+            Err(err) => Some(format!(
+                "document #{id} at {path} is unreadable on disk: {err}"
+            )),
+        };
+        if let Some(message) = drift_message {
+            items.push(StaleItem {
+                category: StaleCategory::DocHashDrift,
+                source_id: id,
+                message,
+                verb: format!("memhub doc add {path}"),
+            });
+        }
+    }
+    let count = items.len();
+    items.truncate(DEFAULT_LIST_LIMIT);
+    Ok((count, items))
+}
+
+/// Same SHA-256 hex digest `commands::doc::prepare_doc` computed at
+/// ingest time, recomputed here to detect drift. Duplicated rather than
+/// imported (matching this codebase's existing per-module copies in
+/// `doc.rs`, `index.rs`, `code_index/mod.rs`, `retrieval/persist.rs`,
+/// `retrieval/recall.rs`, `metrics/recall_proxy.rs`) rather than adding
+/// a new shared-utility surface for one 12-line helper.
+fn sha256_hex(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(text.as_bytes());
+    let digest = hasher.finalize();
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(digest.len() * 2);
+    for b in digest {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    out
+}
+
 /// Shared expiry core: mark `pending` rows older than `older_than_days`
 /// as `expired`, logging one `writes_log` row under `actor` iff
 /// anything actually changed. This is the ONLY copy of the expiry SQL —
@@ -563,7 +888,7 @@ fn derive_source_from_pending_actor(actor: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::derive_source_from_pending_actor;
+    use super::*;
 
     #[test]
     fn derive_source_handles_user_and_unknown() {
@@ -663,5 +988,297 @@ mod tests {
         let old = all.iter().find(|d| d.id == old_id).unwrap();
         assert_eq!(old.status, "superseded");
         assert_eq!(old.superseded_by, Some(new_id));
+    }
+
+    // -- `review stale` (Wave 3 L4, issue #47) --------------------------
+
+    #[test]
+    fn stale_flags_facts_using_the_configured_horizon_not_the_fixed_constant() {
+        use crate::commands::init;
+        use crate::config::ProjectConfig;
+        let temp = tempfile::tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+
+        let (id, _) = fact::add(temp.path(), "k", "v", "user", "cli:user").expect("fact");
+        // 20 days old: under the fixed 90-day `models::FACT_STALE_AFTER_DAYS`,
+        // so this must come from the config knob, not that constant.
+        let ctx = db::open_project(temp.path()).expect("open");
+        ctx.conn
+            .execute(
+                "UPDATE facts SET verified_at = datetime('now', '-20 days') WHERE id = ?1",
+                params![id],
+            )
+            .expect("backdate");
+        drop(ctx);
+
+        let report = super::stale(temp.path()).expect("stale before narrowing horizon");
+        assert_eq!(
+            report.counts.fact_near_horizon, 0,
+            "20 days old must not be flagged at the default 90-day horizon"
+        );
+
+        let paths = db::discover_paths(temp.path()).expect("discover");
+        let mut cfg = ProjectConfig::load(&paths.config_path).expect("load config");
+        cfg.retrieval.fact_stale_after_days = 10;
+        cfg.save(&paths.config_path).expect("save config");
+
+        let report = super::stale(temp.path()).expect("stale after narrowing horizon");
+        assert_eq!(report.counts.fact_near_horizon, 1);
+        assert_eq!(
+            report.items[0].category,
+            super::StaleCategory::FactNearHorizon
+        );
+        assert_eq!(report.items[0].verb, "memhub fact verify k");
+    }
+
+    #[test]
+    fn stale_excludes_superseded_facts_from_the_fact_category() {
+        use crate::commands::init;
+        let temp = tempfile::tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+
+        let (old_id, _) = fact::add(temp.path(), "old", "v", "user", "cli:user").expect("old");
+        let (new_id, _) = fact::add(temp.path(), "new", "v2", "user", "cli:user").expect("new");
+        let ctx = db::open_project(temp.path()).expect("open");
+        ctx.conn
+            .execute(
+                "UPDATE facts SET verified_at = datetime('now', '-400 days') WHERE id = ?1",
+                params![old_id],
+            )
+            .expect("backdate");
+        drop(ctx);
+        fact::supersede(
+            temp.path(),
+            &old_id.to_string(),
+            &new_id.to_string(),
+            "cli:user",
+        )
+        .expect("supersede");
+
+        let report = super::stale(temp.path()).expect("stale");
+        assert_eq!(
+            report.counts.fact_near_horizon, 0,
+            "a superseded fact must not double-surface in the near-horizon category: {:#?}",
+            report.items
+        );
+    }
+
+    #[test]
+    fn stale_flags_only_done_tasks_older_than_the_threshold() {
+        use crate::commands::{init, task};
+        let temp = tempfile::tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+
+        let old_done = task::add(temp.path(), "old done task", None, "cli:user").expect("add");
+        task::done(temp.path(), old_done, "cli:user").expect("done");
+        let fresh_done =
+            task::add(temp.path(), "fresh done task", None, "cli:user").expect("add");
+        task::done(temp.path(), fresh_done, "cli:user").expect("done");
+        let old_open = task::add(temp.path(), "old open task", None, "cli:user").expect("add");
+
+        let ctx = db::open_project(temp.path()).expect("open");
+        ctx.conn
+            .execute(
+                "UPDATE tasks SET updated_at = datetime('now', '-40 days') WHERE id IN (?1, ?2)",
+                params![old_done, old_open],
+            )
+            .expect("backdate");
+        drop(ctx);
+
+        let report = super::stale(temp.path()).expect("stale");
+        assert_eq!(report.counts.done_task_aged, 1, "{:#?}", report.items);
+        let item = report
+            .items
+            .iter()
+            .find(|i| i.category == super::StaleCategory::DoneTaskAged)
+            .expect("done task item present");
+        assert_eq!(item.source_id, old_done);
+        assert_eq!(item.verb, "memhub task list --status done");
+    }
+
+    #[test]
+    fn stale_flags_only_expired_pending_writes() {
+        use crate::commands::{init, pending_write};
+        let temp = tempfile::tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+
+        let expired_id =
+            pending_write::propose_fact(temp.path(), "k", "v", "r", "codex", "codex", "{}")
+                .expect("propose");
+        let still_pending =
+            pending_write::propose_fact(temp.path(), "k2", "v2", "r", "codex", "codex", "{}")
+                .expect("propose");
+
+        let ctx = db::open_project(temp.path()).expect("open");
+        ctx.conn
+            .execute(
+                "UPDATE pending_writes SET status = 'expired', reviewed_at = CURRENT_TIMESTAMP
+                 WHERE id = ?1",
+                params![expired_id],
+            )
+            .expect("mark expired");
+        drop(ctx);
+
+        let report = super::stale(temp.path()).expect("stale");
+        assert_eq!(report.counts.pending_expired, 1, "{:#?}", report.items);
+        let item = report
+            .items
+            .iter()
+            .find(|i| i.category == super::StaleCategory::PendingExpired)
+            .expect("pending item present");
+        assert_eq!(item.source_id, expired_id);
+        assert_eq!(item.verb, format!("memhub review show {expired_id}"));
+        assert!(
+            !report
+                .items
+                .iter()
+                .any(|i| i.source_id == still_pending
+                    && i.category == super::StaleCategory::PendingExpired),
+            "a still-pending row must not surface as expired"
+        );
+    }
+
+    #[test]
+    fn stale_flags_doc_hash_drift_for_edited_and_missing_files_but_not_unchanged() {
+        use crate::commands::{doc, init};
+        let temp = tempfile::tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+
+        let unchanged = temp.path().join("unchanged.md");
+        fs::write(&unchanged, "# Unchanged\n\nbody\n").expect("write");
+        doc::add(temp.path(), &unchanged, None, "cli:user").expect("ingest unchanged");
+
+        let edited = temp.path().join("edited.md");
+        fs::write(&edited, "# Edited\n\noriginal\n").expect("write");
+        doc::add(temp.path(), &edited, None, "cli:user").expect("ingest edited");
+        fs::write(&edited, "# Edited\n\nchanged after ingest\n").expect("edit after ingest");
+
+        let missing = temp.path().join("missing.md");
+        fs::write(&missing, "# Missing\n\nbody\n").expect("write");
+        doc::add(temp.path(), &missing, None, "cli:user").expect("ingest missing");
+        fs::remove_file(&missing).expect("delete after ingest");
+
+        let report = super::stale(temp.path()).expect("stale");
+        assert_eq!(
+            report.counts.doc_hash_drift, 2,
+            "exactly the edited + missing docs should drift: {:#?}",
+            report.items
+        );
+        let drifted: Vec<&str> = report
+            .items
+            .iter()
+            .filter(|i| i.category == super::StaleCategory::DocHashDrift)
+            .map(|i| i.message.as_str())
+            .collect();
+        assert!(drifted.iter().any(|m| m.contains("edited.md")));
+        assert!(drifted.iter().any(|m| m.contains("missing.md")));
+        assert!(!drifted.iter().any(|m| m.contains("unchanged.md")));
+    }
+
+    /// Builds one fixture row per category so the shared helper below can
+    /// exercise all four at once (acceptance criteria: "all four
+    /// categories surface", "each row names the verb to fix it", and the
+    /// read-only guarantee).
+    fn seed_one_of_each_category(temp: &std::path::Path) {
+        use crate::commands::{doc, pending_write, task};
+
+        let (fact_id, _) = fact::add(temp, "k", "v", "user", "cli:user").expect("fact");
+        let task_id = task::add(temp, "t", None, "cli:user").expect("task");
+        task::done(temp, task_id, "cli:user").expect("done");
+        let pending_id =
+            pending_write::propose_fact(temp, "k2", "v2", "r", "codex", "codex", "{}")
+                .expect("propose");
+        let doc_path = temp.join("d.md");
+        fs::write(&doc_path, "# D\n\nbody\n").expect("write");
+        doc::add(temp, &doc_path, None, "cli:user").expect("doc");
+
+        let ctx = db::open_project(temp).expect("open");
+        ctx.conn
+            .execute(
+                "UPDATE facts SET verified_at = datetime('now', '-400 days') WHERE id = ?1",
+                params![fact_id],
+            )
+            .expect("backdate fact");
+        ctx.conn
+            .execute(
+                "UPDATE tasks SET updated_at = datetime('now', '-40 days') WHERE id = ?1",
+                params![task_id],
+            )
+            .expect("backdate task");
+        ctx.conn
+            .execute(
+                "UPDATE pending_writes SET status = 'expired', reviewed_at = CURRENT_TIMESTAMP
+                 WHERE id = ?1",
+                params![pending_id],
+            )
+            .expect("expire pending");
+        drop(ctx);
+        fs::write(&doc_path, "# D\n\nedited after ingest\n").expect("edit doc");
+    }
+
+    #[test]
+    fn stale_every_item_names_a_non_empty_memhub_verb() {
+        use crate::commands::init;
+        let temp = tempfile::tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        seed_one_of_each_category(temp.path());
+
+        let report = super::stale(temp.path()).expect("stale");
+        assert_eq!(report.items.len(), 4, "{:#?}", report.items);
+        for item in &report.items {
+            assert!(
+                !item.verb.trim().is_empty(),
+                "every stale item must name a verb: {item:?}"
+            );
+            assert!(
+                item.verb.starts_with("memhub "),
+                "verb should be a runnable memhub invocation: {item:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn stale_is_strictly_read_only() {
+        use crate::commands::init;
+        let temp = tempfile::tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        seed_one_of_each_category(temp.path());
+
+        fn snapshot(path: &std::path::Path) -> (i64, i64, i64, i64, i64, i64) {
+            let ctx = db::open_project(path).expect("open");
+            let count =
+                |sql: &str| -> i64 { ctx.conn.query_row(sql, [], |r| r.get(0)).expect("count") };
+            (
+                count("SELECT COUNT(*) FROM facts"),
+                count("SELECT COUNT(*) FROM tasks"),
+                count("SELECT COUNT(*) FROM pending_writes"),
+                count("SELECT COUNT(*) FROM documents"),
+                count("SELECT COUNT(*) FROM writes_log"),
+                count("SELECT IFNULL(MAX(id), 0) FROM writes_log"),
+            )
+        }
+
+        let before = snapshot(temp.path());
+        let report = super::stale(temp.path()).expect("stale");
+        let after = snapshot(temp.path());
+
+        assert_eq!(
+            before, after,
+            "review stale must not add/remove rows or writes_log entries"
+        );
+        assert_eq!(report.counts.total(), 4, "{:#?}", report.items);
+    }
+
+    #[test]
+    fn count_stale_queue_matches_stale_report_total() {
+        use crate::commands::init;
+        let temp = tempfile::tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        seed_one_of_each_category(temp.path());
+
+        let total = super::count_stale_queue(temp.path()).expect("count");
+        let report = super::stale(temp.path()).expect("stale");
+        assert_eq!(total, report.counts.total() as i64);
+        assert_eq!(total, 4);
     }
 }
