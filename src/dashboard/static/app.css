@@ -390,10 +390,6 @@ main {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.grid.three {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
 .prose {
   max-height: 340px;
   overflow: auto;
@@ -900,7 +896,6 @@ tbody tr:hover td {
   }
 
   .grid.two,
-  .grid.three,
   .map-wrap,
   .overview-strip,
   .score-row {
