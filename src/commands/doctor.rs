@@ -559,6 +559,10 @@ fn check_config_types(raw: &str) -> Check {
             "retrieval.scoring.stale_penalty",
             cfg.retrieval.scoring.stale_penalty,
         ),
+        (
+            "retrieval.scoring.superseded_penalty",
+            cfg.retrieval.scoring.superseded_penalty,
+        ),
     ] {
         if !(0.0..=1.0).contains(&v) {
             problems.push(format!("{label}={v} out of range [0,1]"));
@@ -628,6 +632,7 @@ const BASELINE_FIELDS: &[&str] = &[
     "retrieval.scoring.fts_weight",
     "retrieval.scoring.vector_weight",
     "retrieval.scoring.stale_penalty",
+    "retrieval.scoring.superseded_penalty",
     "retrieval.scoring.min_rerank_score",
     "retrieval.scoring.doc_min_rerank_score",
 ];
