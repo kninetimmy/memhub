@@ -61,6 +61,17 @@ fn set_hybrid(root: &Path) {
     config.save(&config_path).expect("save config");
 }
 
+/// Enable continuous age decay (Wave 3 L6) at the given half-life on the
+/// already-seeded fixture. Applied *after* seeding on purpose: decay is a
+/// recall-time scoring knob, so it does not touch the embeddings written at
+/// seed time — only how the blended score is computed at query time.
+fn set_age_half_life(root: &Path, days: i64) {
+    let config_path = root.join(".memhub").join("config.toml");
+    let mut config = ProjectConfig::load(&config_path).expect("load config");
+    config.retrieval.scoring.age_half_life_days = days;
+    config.save(&config_path).expect("save config");
+}
+
 /// Seeds a fresh `.memhub` project whose rows satisfy every matcher in the
 /// real, shipped `tests/retrieval_golden.json` — faithfully reproducing
 /// memhub's own durable decisions (by content, not by row id, since the
@@ -453,4 +464,45 @@ fn hermetic_retrieval_safety_probe_never_leaks() {
         "gibberish probe leaked a hit against the hermetic fixture"
     );
     assert_eq!(result.totals.empty_passes, 1);
+}
+
+/// Wave 3 L6 eval sweep, ON case. With `age_half_life_days = 30` enabled on
+/// the same hermetic fixture, Recall@3 holds at 100%. The golden corpus
+/// seeds freshly-verified facts and freshly-decided decisions (age ~0), so
+/// their decay multiplier is ~1.0 and ranking is unchanged — and decisions
+/// are excluded from decay entirely (Q2 / decision 145). This documents the
+/// "limited practical effect" caveat empirically: switching decay on does
+/// not move the golden numbers because the corpus is fresh; decay only bites
+/// on genuinely aged rows (that demotion is unit-tested in
+/// `recall::tests::age_decay_demotes_an_aged_fact_when_on`). The OFF baseline
+/// is `hermetic_retrieval_recall_at_3_matches_baseline` above.
+#[test]
+fn hermetic_retrieval_age_decay_on_holds_baseline_on_fresh_corpus() {
+    let temp = tempdir().expect("tempdir");
+    seed_hermetic_corpus(temp.path());
+    set_age_half_life(temp.path(), 30);
+
+    let result = run_cli_eval(temp.path());
+
+    assert_eq!(result.totals.queries, 18, "golden query count drifted");
+    let misses: Vec<String> = result
+        .outcomes
+        .iter()
+        .filter(|o| !o.passed)
+        .map(|o| format!("{}: {}", o.id, o.failure_reason.clone().unwrap_or_default()))
+        .collect();
+    assert!(
+        misses.is_empty(),
+        "age_half_life_days=30 must not regress the fresh golden corpus; misses:\n{}",
+        misses.join("\n"),
+    );
+    assert!(
+        (result.recall_at_k - 1.0).abs() < 1e-9,
+        "expected Recall@3 = 100% with decay on (fresh corpus), got {}",
+        result.recall_at_k,
+    );
+    assert_eq!(
+        result.totals.safety_failures, 0,
+        "gibberish probe must still find zero hits with decay on"
+    );
 }

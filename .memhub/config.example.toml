@@ -133,6 +133,17 @@ stale_penalty = 0.3
 # signal, stronger than mere age, yet still a demotion, not a filter.
 # Stacks additively with stale_penalty.
 superseded_penalty = 0.4
+# Optional continuous age decay (Wave 3 L6). 0 = OFF (default): scoring is
+# byte-identical to pre-L6 memhub, no decay applied. When > 0, a candidate's
+# blended relevance is multiplied by an exponential half-life decay —
+# halving every age_half_life_days — keyed on verified_at for facts and
+# updated_at for DONE tasks. Decisions and doc chunks are excluded entirely
+# (Q2 / decision 145: decisions retire by supersession, not age), as are
+# open/blocked tasks and never-verified facts. Under the cross-encoder
+# reranker the practical effect is limited: decay mostly shifts which
+# candidates enter the rerank pool, not the final reranked order. Kept at 0
+# in this baseline so the canonical install stays byte-identical.
+age_half_life_days = 0
 # Cross-encoder relevance floor (replaces the legacy min_vector_score
 # cosine floor — see decisions 70, 71). Calibrated empirically against
 # memhub's golden set: gibberish probe scores ~+1.25, next legitimate

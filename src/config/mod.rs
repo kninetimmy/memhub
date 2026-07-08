@@ -28,6 +28,19 @@ pub const DEFAULT_STALE_PENALTY: f64 = 0.3;
 /// penalty (a row that is both stale and superseded sinks furthest) and,
 /// like the stale penalty, is a peer, independent signal in `score()`.
 pub const DEFAULT_SUPERSEDED_PENALTY: f64 = 0.4;
+/// Half-life in days for optional continuous age decay in recall scoring
+/// (Wave 3 L6). `0` is the default and means **OFF**: `score()` applies a
+/// decay multiplier of exactly `1.0`, an IEEE-754 no-op, so an untouched
+/// install scores byte-identically to pre-L6 memhub. When set `> 0`, a
+/// candidate's blended relevance is multiplied by `2^(-age_days / half_life)`
+/// — halving every `age_half_life_days` — keyed on `verified_at` for facts
+/// and `updated_at` for *done* tasks. Decisions and doc chunks are excluded
+/// entirely (Q2 / decision 145: decisions retire by supersession, not age),
+/// as are open/blocked tasks and never-verified facts. Under the
+/// cross-encoder re-ranker the practical effect is limited — decay mostly
+/// shifts which candidates enter the rerank pool, not the final reranked
+/// order (see `recall::finalize`).
+pub const DEFAULT_AGE_HALF_LIFE_DAYS: i64 = 0;
 /// Default cross-encoder score floor for hybrid-mode candidates after
 /// re-ranking. Calibrated empirically against memhub's own golden set
 /// (decision 71, task #22): the gibberish safety probe rerank-scores at
@@ -133,6 +146,14 @@ pub struct RetrievalScoringConfig {
     /// `superseded_by: N`. Defaults to `DEFAULT_SUPERSEDED_PENALTY`.
     #[serde(default = "default_superseded_penalty")]
     pub superseded_penalty: f64,
+    /// Half-life in days for optional continuous age decay (Wave 3 L6).
+    /// `0` (default) = OFF and leaves scoring byte-identical to pre-L6
+    /// memhub; `> 0` scales a candidate's blended relevance by
+    /// `2^(-age_days / age_half_life_days)`, keyed on `verified_at` (facts)
+    /// and `updated_at` (done tasks). Decisions and doc chunks are excluded
+    /// (Q2 / decision 145). See `DEFAULT_AGE_HALF_LIFE_DAYS`.
+    #[serde(default = "default_age_half_life_days")]
+    pub age_half_life_days: i64,
     /// Minimum cross-encoder relevance score for a candidate to survive
     /// the re-rank pass. MiniLM gives positive logits to relevant docs
     /// and negative logits to nonsense; a floor near 0 cleanly separates
@@ -159,6 +180,7 @@ impl Default for RetrievalScoringConfig {
             vector_weight: DEFAULT_VECTOR_WEIGHT,
             stale_penalty: DEFAULT_STALE_PENALTY,
             superseded_penalty: DEFAULT_SUPERSEDED_PENALTY,
+            age_half_life_days: DEFAULT_AGE_HALF_LIFE_DAYS,
             min_rerank_score: DEFAULT_MIN_RERANK_SCORE,
             doc_min_rerank_score: DEFAULT_DOC_MIN_RERANK_SCORE,
         }
@@ -176,6 +198,9 @@ fn default_stale_penalty() -> f64 {
 }
 fn default_superseded_penalty() -> f64 {
     DEFAULT_SUPERSEDED_PENALTY
+}
+fn default_age_half_life_days() -> i64 {
+    DEFAULT_AGE_HALF_LIFE_DAYS
 }
 fn default_min_rerank_score() -> f32 {
     DEFAULT_MIN_RERANK_SCORE

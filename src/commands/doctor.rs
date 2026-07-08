@@ -392,6 +392,7 @@ const KNOWN_LEAVES: &[&str] = &[
     "retrieval.scoring.vector_weight",
     "retrieval.scoring.stale_penalty",
     "retrieval.scoring.superseded_penalty",
+    "retrieval.scoring.age_half_life_days",
     "retrieval.scoring.min_rerank_score",
     "retrieval.scoring.doc_min_rerank_score",
     "metrics.enabled",
@@ -592,6 +593,16 @@ fn check_config_types(raw: &str) -> Check {
         ));
     }
 
+    // Age-decay half-life (Wave 3 L6): 0 = off (the default), > 0 enables
+    // decay. A negative half-life is nonsensical — it would invert the
+    // exponential into unbounded growth — so only < 0 is a violation.
+    if cfg.retrieval.scoring.age_half_life_days < 0 {
+        problems.push(format!(
+            "retrieval.scoring.age_half_life_days={} must be >= 0 (0 = off)",
+            cfg.retrieval.scoring.age_half_life_days,
+        ));
+    }
+
     if problems.is_empty() {
         Check::new(
             "config_types",
@@ -633,6 +644,7 @@ const BASELINE_FIELDS: &[&str] = &[
     "retrieval.scoring.vector_weight",
     "retrieval.scoring.stale_penalty",
     "retrieval.scoring.superseded_penalty",
+    "retrieval.scoring.age_half_life_days",
     "retrieval.scoring.min_rerank_score",
     "retrieval.scoring.doc_min_rerank_score",
 ];
