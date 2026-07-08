@@ -637,6 +637,12 @@ struct CandidateRow {
     /// `superseded_by` tag on the returned hit.
     superseded_by: Option<i64>,
     created_at: String,
+    /// Decay-eligible age in days (Wave 3 L6): `julianday('now') -
+    /// julianday(verified_at)` for facts, `... - julianday(updated_at)` for
+    /// *done* tasks. `None` for decisions, doc chunks, open/blocked tasks,
+    /// and never-verified facts — rows that carry no age and so never decay.
+    /// Drives the `age_half_life_days` multiplier in `score()`.
+    age_days: Option<f64>,
     hydrated: bool,
 }
 
@@ -654,6 +660,7 @@ impl CandidateRow {
             is_stale: false,
             superseded_by: None,
             created_at: String::new(),
+            age_days: None,
             hydrated: false,
         }
     }
@@ -967,6 +974,7 @@ fn hydrate_sources(
                 entry.is_stale = row.is_stale;
                 entry.superseded_by = row.superseded_by;
                 entry.created_at = row.created_at;
+                entry.age_days = row.age_days;
                 entry.hydrated = true;
             }
         }
@@ -985,6 +993,10 @@ struct HydratedSource {
     /// `None` for tasks and doc chunks, which cannot be superseded.
     superseded_by: Option<i64>,
     created_at: String,
+    /// Decay-eligible age in days (Wave 3 L6): `Some` only for facts (from
+    /// `verified_at`) and *done* tasks (from `updated_at`); `None` for
+    /// decisions, doc chunks, open/blocked tasks, and never-verified facts.
+    age_days: Option<f64>,
 }
 
 fn load_source_row(
@@ -1002,7 +1014,8 @@ fn load_source_row(
                         WHEN (julianday('now') - julianday(verified_at)) > ?2 THEN 1 \
                         ELSE 0 \
                     END AS is_stale, \
-                    superseded_by \
+                    superseded_by, \
+                    julianday('now') - julianday(verified_at) AS age_days \
                 FROM facts WHERE id = ?1",
             )?;
             let row: std::result::Result<HydratedSource, rusqlite::Error> =
@@ -1013,6 +1026,9 @@ fn load_source_row(
                     let created_at: String = r.get(4)?;
                     let stale_int: i64 = r.get(5)?;
                     let superseded_by: Option<i64> = r.get(6)?;
+                    // `NULL` (never-verified fact) => julianday() is NULL =>
+                    // `None` => no decay (already flagged stale + demoted).
+                    let age_days: Option<f64> = r.get(7)?;
                     Ok(HydratedSource {
                         title: key,
                         body: value,
@@ -1021,6 +1037,7 @@ fn load_source_row(
                         is_stale: stale_int != 0,
                         superseded_by,
                         created_at,
+                        age_days,
                     })
                 });
             row.optional_row().map_err(Into::into)
@@ -1046,18 +1063,31 @@ fn load_source_row(
                         is_stale: false,
                         superseded_by,
                         created_at: decided_at,
+                        // Decisions are excluded from age decay entirely (Q2 /
+                        // decision 145): standing policy retires by
+                        // supersession, not age.
+                        age_days: None,
                     })
                 });
             row.optional_row().map_err(Into::into)
         }
         SourceType::Task => {
-            let mut stmt =
-                conn.prepare("SELECT title, notes, created_at FROM tasks WHERE id = ?1")?;
+            // Age decay keys on `updated_at` for *done* tasks only (Wave 3
+            // L6); open/blocked tasks are live work and carry no decay age
+            // (`NULL` => `None`).
+            let mut stmt = conn.prepare(
+                "SELECT title, notes, created_at, \
+                    CASE WHEN status = 'done' \
+                         THEN julianday('now') - julianday(updated_at) \
+                         ELSE NULL END AS age_days \
+                 FROM tasks WHERE id = ?1",
+            )?;
             let row: std::result::Result<HydratedSource, rusqlite::Error> =
                 stmt.query_row(params![source_id], |r: &Row<'_>| {
                     let title: String = r.get(0)?;
                     let notes: Option<String> = r.get(1)?;
                     let created_at: String = r.get(2)?;
+                    let age_days: Option<f64> = r.get(3)?;
                     Ok(HydratedSource {
                         title,
                         body: notes.unwrap_or_default(),
@@ -1066,6 +1096,7 @@ fn load_source_row(
                         is_stale: false,
                         superseded_by: None,
                         created_at,
+                        age_days,
                     })
                 });
             row.optional_row().map_err(Into::into)
@@ -1098,6 +1129,8 @@ fn load_source_row(
                         is_stale: false,
                         superseded_by: None,
                         created_at,
+                        // Doc chunks are excluded from age decay (Wave 3 L6).
+                        age_days: None,
                     })
                 });
             row.optional_row().map_err(Into::into)
@@ -1153,9 +1186,23 @@ fn score(rows: &[CandidateRow], scoring: &RetrievalScoringConfig) -> Vec<ScoredH
             } else {
                 0.0
             };
-            let score = scoring.fts_weight * fts_score + scoring.vector_weight * vector_score
-                - stale_penalty
-                - superseded_penalty;
+            // Optional continuous age decay (Wave 3 L6). OFF by default
+            // (`age_half_life_days = 0` => multiplier is exactly 1.0, an
+            // IEEE-754 no-op) so an untouched install scores byte-identically
+            // to pre-L6 memhub. When enabled, the blended relevance is scaled
+            // by an exponential half-life keyed on `verified_at` (facts) /
+            // `updated_at` (done tasks); decisions and doc chunks carry no
+            // `age_days` and are never decayed (Q2 / decision 145 — decisions
+            // retire by supersession, not age). Applied as a multiplier on
+            // the positive relevance term *before* the additive penalties so
+            // decay never flips the sign of a penalized score. Under the
+            // cross-encoder re-ranker this mostly shifts which candidates
+            // enter the rerank pool rather than the final reranked order
+            // (`finalize`).
+            let age_decay = age_decay_multiplier(c.age_days, scoring.age_half_life_days);
+            let relevance =
+                scoring.fts_weight * fts_score + scoring.vector_weight * vector_score;
+            let score = relevance * age_decay - stale_penalty - superseded_penalty;
             ScoredHit {
                 source_type: c.source_type,
                 scope: String::new(),
@@ -1174,6 +1221,32 @@ fn score(rows: &[CandidateRow], scoring: &RetrievalScoringConfig) -> Vec<ScoredH
             }
         })
         .collect()
+}
+
+/// Continuous age-decay multiplier for a candidate's blended relevance
+/// (Wave 3 L6). Returns a value in `(0, 1]`.
+///
+/// `half_life_days <= 0` is the OFF state (the default, `age_half_life_days
+/// = 0`) and returns **exactly** `1.0` — multiplying the blended relevance
+/// by `1.0` is a bit-for-bit IEEE-754 no-op, which is what makes an
+/// untouched install score byte-identically to pre-L6 memhub.
+///
+/// When enabled (`> 0`), a row whose decay-eligible age is `days` old is
+/// scaled by `2^(-days / half_life)`, i.e. it halves every `half_life_days`.
+/// `age_days == None` (decisions, doc chunks, open/blocked tasks, or a fact
+/// never verified) and non-positive ages both return `1.0`: decay only ever
+/// demotes an aged row, it never boosts a fresh or timestamp-less one.
+fn age_decay_multiplier(age_days: Option<f64>, half_life_days: i64) -> f64 {
+    if half_life_days <= 0 {
+        return 1.0;
+    }
+    match age_days {
+        Some(days) if days > 0.0 => {
+            // 2^(-days / half_life) == exp(-ln2 * days / half_life).
+            (-days * std::f64::consts::LN_2 / half_life_days as f64).exp()
+        }
+        _ => 1.0,
+    }
 }
 
 fn normalize_fts(value: f64, min: f64, max: f64) -> f64 {
@@ -1792,6 +1865,113 @@ mod tests {
         let old_rank = response.results.iter().position(|h| h.source_id == old_id);
         let new_rank = response.results.iter().position(|h| h.source_id == new_id);
         assert!(new_rank < old_rank, "replacement must rank above the superseded row");
+    }
+
+    // ------------------------------------------------------------------
+    // Wave 3 L6 — optional, default-off continuous age decay.
+    // ------------------------------------------------------------------
+
+    // The load-bearing default-off guarantee: with the knob at 0 the decay
+    // multiplier is *exactly* 1.0 for every input — any age, no age, even a
+    // future timestamp — so multiplying blended relevance by it is a
+    // bit-for-bit no-op and an untouched install scores byte-identically to
+    // pre-L6 memhub. A negative half-life is treated as off too (defensive).
+    #[test]
+    fn age_decay_multiplier_is_exact_noop_when_off() {
+        assert_eq!(age_decay_multiplier(Some(3650.0), 0), 1.0);
+        assert_eq!(age_decay_multiplier(Some(0.0), 0), 1.0);
+        assert_eq!(age_decay_multiplier(Some(-10.0), 0), 1.0);
+        assert_eq!(age_decay_multiplier(None, 0), 1.0);
+        assert_eq!(age_decay_multiplier(Some(3650.0), -5), 1.0);
+    }
+
+    // When enabled, decay is a true exponential half-life: the multiplier
+    // halves every `half_life_days`. Fresh/timestamp-less/future rows never
+    // decay (and never boost above 1.0).
+    #[test]
+    fn age_decay_multiplier_halves_every_half_life_when_on() {
+        let one = age_decay_multiplier(Some(30.0), 30);
+        assert!((one - 0.5).abs() < 1e-9, "one half-life => 0.5, got {one}");
+        let two = age_decay_multiplier(Some(60.0), 30);
+        assert!((two - 0.25).abs() < 1e-9, "two half-lives => 0.25, got {two}");
+        // Fresh (age 0), decisions/docs/non-done tasks (None), and future
+        // timestamps (negative age) all stay at exactly 1.0.
+        assert_eq!(age_decay_multiplier(Some(0.0), 30), 1.0);
+        assert_eq!(age_decay_multiplier(None, 30), 1.0);
+        assert_eq!(age_decay_multiplier(Some(-5.0), 30), 1.0);
+    }
+
+    // Proven at the `score()` seam: two facts identical except age receive
+    // bit-for-bit identical blended scores when the knob is off, and that
+    // score equals the plain blended value with no decay term at all.
+    #[test]
+    fn score_is_byte_identical_when_age_decay_off() {
+        let mut fresh = CandidateRow::empty(SourceType::Fact, 1);
+        fresh.vector_score = Some(0.8);
+        fresh.age_days = Some(0.0);
+        let mut aged = CandidateRow::empty(SourceType::Fact, 2);
+        aged.vector_score = Some(0.8);
+        aged.age_days = Some(4000.0);
+
+        let scoring = RetrievalScoringConfig::default(); // age_half_life_days = 0
+        assert_eq!(scoring.age_half_life_days, 0, "default must be off");
+        let hits = score(&[fresh, aged], &scoring);
+        let fresh_bits = hits.iter().find(|h| h.source_id == 1).unwrap().score.to_bits();
+        let aged_bits = hits.iter().find(|h| h.source_id == 2).unwrap().score.to_bits();
+        assert_eq!(
+            fresh_bits, aged_bits,
+            "age must not affect scoring when the knob is 0 (byte-identical)"
+        );
+        // No fts_raw => fts_score 0.0; not stale, not superseded => no
+        // penalties. Score must equal the untouched blended relevance.
+        let expected = scoring.fts_weight * 0.0 + scoring.vector_weight * 0.8;
+        assert_eq!(fresh_bits, expected.to_bits());
+    }
+
+    // Q2 / decision 145: decisions retire by supersession, not age. A
+    // decision carries no `age_days`, so even an aggressive half-life leaves
+    // its blended score bit-for-bit unchanged.
+    #[test]
+    fn age_decay_never_touches_decisions_when_on() {
+        let mut dec = CandidateRow::empty(SourceType::Decision, 1);
+        dec.vector_score = Some(0.9);
+        dec.age_days = None; // decisions are never decay-keyed
+
+        let off = RetrievalScoringConfig::default();
+        let on = RetrievalScoringConfig {
+            age_half_life_days: 1, // aggressive decay
+            ..RetrievalScoringConfig::default()
+        };
+        let off_bits = score(std::slice::from_ref(&dec), &off)[0].score.to_bits();
+        let on_bits = score(std::slice::from_ref(&dec), &on)[0].score.to_bits();
+        assert_eq!(
+            off_bits, on_bits,
+            "decisions must be immune to age decay regardless of the knob"
+        );
+    }
+
+    // With the knob on, an aged fact is demoted below a fresh one of equal
+    // relevance — the wiring actually reaches `score()` and moves ranking.
+    #[test]
+    fn age_decay_demotes_an_aged_fact_when_on() {
+        let mut fresh = CandidateRow::empty(SourceType::Fact, 1);
+        fresh.vector_score = Some(0.8);
+        fresh.age_days = Some(0.0);
+        let mut aged = CandidateRow::empty(SourceType::Fact, 2);
+        aged.vector_score = Some(0.8);
+        aged.age_days = Some(60.0); // two 30-day half-lives => x0.25
+
+        let on = RetrievalScoringConfig {
+            age_half_life_days: 30,
+            ..RetrievalScoringConfig::default()
+        };
+        let hits = score(&[fresh, aged], &on);
+        let fresh_score = hits.iter().find(|h| h.source_id == 1).unwrap().score;
+        let aged_score = hits.iter().find(|h| h.source_id == 2).unwrap().score;
+        assert!(
+            aged_score < fresh_score,
+            "aged fact must be demoted when decay is on: fresh={fresh_score} aged={aged_score}"
+        );
     }
 
     // Decisions hydrate `superseded_by` too, and a superseded decision is
