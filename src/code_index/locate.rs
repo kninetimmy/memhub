@@ -4,9 +4,11 @@
 //! project recall fusion ([`crate::retrieval::recall`]) but over the
 //! `code_chunks` / `code_embeddings` / `code_chunks_fts` tables in
 //! `.memhub/code_index.sqlite`: FTS5 BM25 blended with brute-force cosine
-//! similarity (hybrid mode only), min-max normalized and weighted by the
-//! same `[retrieval.scoring]` knobs. There is no stale penalty — a code
-//! chunk is either present or not, never "decayed".
+//! similarity (hybrid mode only), min-max normalized and weighted by its
+//! own `[code_index]` knobs — split from recall's `[retrieval.scoring]`
+//! (R11, issue #73) so tuning one no longer silently retunes the other.
+//! There is no stale penalty — a code chunk is either present or not,
+//! never "decayed".
 //!
 //! **Lazy freshness (decision 107).** A locate first runs [`super::refresh`]
 //! so the index always reflects the working tree; the PR1 staleness engine
@@ -31,7 +33,7 @@ use std::time::Instant;
 use rusqlite::{Connection, params};
 
 use crate::Result;
-use crate::config::{ProjectConfig, RetrievalMode, RetrievalScoringConfig};
+use crate::config::{CodeIndexConfig, ProjectConfig, RetrievalMode};
 use crate::db;
 use crate::retrieval::embeddings::{EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME, embed_one};
 use crate::retrieval::util::{build_fts_match, bytes_to_vector, cosine_similarity, normalize_fts};
@@ -145,7 +147,7 @@ pub fn locate(start: &Path, options: LocateOptions) -> Result<LocateResponse> {
         ProjectConfig::default_for_repo_name(repo_name)
     };
     let mode = config.retrieval.mode;
-    let scoring = &config.retrieval.scoring;
+    let scoring = &config.code_index;
 
     let limit = if options.limit == 0 {
         DEFAULT_LOCATE_LIMIT
@@ -285,13 +287,6 @@ struct Candidate {
     path: String,
 }
 
-/// Multiplicative penalty applied to the blended fusion score for chunks
-/// under top-level test / bench / example directories. Down-weights
-/// non-implementation files so they do not out-rank implementation files
-/// in `locate` results (task 85). FTS and vector subscores are left
-/// untouched — they remain the honest per-component signals.
-const TEST_PATH_PENALTY: f64 = 0.90;
-
 /// Returns `true` when `path` is inside a top-level test / bench / example
 /// directory (`tests/`, `benches/`, or `examples/`). Paths in the index
 /// are already forward-slashed repo-relative strings.
@@ -378,9 +373,11 @@ fn new_candidate(chunk_id: i64, path: String) -> Candidate {
 }
 
 /// Min-max normalize FTS across the candidate set and blend with the
-/// clamped cosine, weighted by config. No stale penalty (code chunks don't
-/// decay). Mirrors [`crate::retrieval::recall`]'s `score`.
-fn score_candidates(candidates: &mut [Candidate], scoring: &RetrievalScoringConfig) {
+/// clamped cosine, weighted by `[code_index]` config. No stale penalty
+/// (code chunks don't decay). Mirrors [`crate::retrieval::recall`]'s
+/// `score`, but reads its own `CodeIndexConfig` rather than recall's
+/// `RetrievalScoringConfig` (R11, issue #73) — see the module doc.
+fn score_candidates(candidates: &mut [Candidate], scoring: &CodeIndexConfig) {
     let (fts_min, fts_max) =
         candidates
             .iter()
@@ -402,7 +399,7 @@ fn score_candidates(candidates: &mut [Candidate], scoring: &RetrievalScoringConf
         c.vector_score = c.cosine.unwrap_or(0.0).clamp(0.0, 1.0);
         c.score = scoring.fts_weight * c.fts_score + scoring.vector_weight * c.vector_score;
         if is_test_path(&c.path) {
-            c.score *= TEST_PATH_PENALTY;
+            c.score *= scoring.test_path_penalty;
         }
     }
 }
@@ -538,5 +535,97 @@ mod tests {
     fn cosine_identical_vectors_is_one() {
         let v = vec![1.0, 2.0, 3.0];
         assert!((cosine_similarity(&v, &v) - 1.0).abs() < 1e-9);
+    }
+
+    // -- R11 (issue #73): [code_index] split off [retrieval.scoring] ---
+
+    #[test]
+    fn code_index_config_defaults_match_pre_split_shared_values() {
+        // The old shared values were DEFAULT_FTS_WEIGHT/DEFAULT_VECTOR_WEIGHT
+        // (0.5/0.5, still recall's own defaults post-split) and the
+        // hardcoded TEST_PATH_PENALTY const (0.90, task 85). An untouched
+        // install's locate ranking must not move.
+        let cfg = CodeIndexConfig::default();
+        assert_eq!(cfg.fts_weight, crate::config::DEFAULT_FTS_WEIGHT);
+        assert_eq!(cfg.vector_weight, crate::config::DEFAULT_VECTOR_WEIGHT);
+        assert_eq!(cfg.test_path_penalty, 0.90);
+    }
+
+    #[test]
+    fn code_index_config_defaults_are_used_when_toml_omits_the_section() {
+        // Every config.toml written before this PR has no [code_index]
+        // table at all. It must still deserialize — via #[serde(default)]
+        // on both the ProjectConfig field and every CodeIndexConfig field
+        // — to the byte-identical pre-split defaults, not fail or zero out.
+        let raw = r#"
+project_name = "x"
+auto_sync_md = false
+log_level = "info"
+"#;
+        let cfg: ProjectConfig = toml::from_str(raw).expect("parse");
+        assert_eq!(cfg.code_index.fts_weight, crate::config::DEFAULT_CODE_INDEX_FTS_WEIGHT);
+        assert_eq!(
+            cfg.code_index.vector_weight,
+            crate::config::DEFAULT_CODE_INDEX_VECTOR_WEIGHT
+        );
+        assert_eq!(
+            cfg.code_index.test_path_penalty,
+            crate::config::DEFAULT_TEST_PATH_PENALTY
+        );
+    }
+
+    /// The score seam: default-config locate scoring must equal the
+    /// pre-split hardcoded formula (`0.5 * fts + 0.5 * vector`, `* 0.90`
+    /// for test paths) bit-for-bit. Data is chosen so `normalize_fts`
+    /// lands on clean fractions.
+    #[test]
+    fn score_candidates_default_config_matches_pre_split_formula() {
+        let mut candidates = vec![
+            new_candidate(1, "src/lib.rs".to_string()),
+            new_candidate(2, "tests/foo.rs".to_string()),
+        ];
+        candidates[0].fts_raw = Some(-10.0); // pos = 10.0 -> fts_score 1.0
+        candidates[0].cosine = Some(0.4);
+        candidates[1].fts_raw = Some(0.0); // pos = 0.0 -> fts_score 0.0
+        candidates[1].cosine = Some(1.0);
+
+        score_candidates(&mut candidates, &CodeIndexConfig::default());
+
+        // src/lib.rs: 0.5*1.0 + 0.5*0.4 = 0.7, no test-path penalty.
+        assert!(
+            (candidates[0].score - 0.7).abs() < 1e-9,
+            "non-test-path score: {}",
+            candidates[0].score
+        );
+        // tests/foo.rs: 0.5*0.0 + 0.5*1.0 = 0.5, times 0.90 penalty = 0.45.
+        assert!(
+            (candidates[1].score - 0.45).abs() < 1e-9,
+            "test-path score: {}",
+            candidates[1].score
+        );
+    }
+
+    /// Regression guard for the bug this issue fixes: locate must read
+    /// `[code_index]`, never `[retrieval.scoring]`. Distinctive,
+    /// asymmetric weights (1.0/0.0) make it unambiguous which config
+    /// path actually drove the score.
+    #[test]
+    fn score_candidates_uses_code_index_weights_not_retrieval_scoring() {
+        let mut candidates = vec![new_candidate(1, "src/lib.rs".to_string())];
+        candidates[0].fts_raw = Some(0.0); // single FTS hit -> fts_score 1.0
+        candidates[0].cosine = Some(0.0); // vector_score 0.0
+
+        let scoring = CodeIndexConfig {
+            fts_weight: 1.0,
+            vector_weight: 0.0,
+            test_path_penalty: 1.0,
+        };
+        score_candidates(&mut candidates, &scoring);
+
+        assert!(
+            (candidates[0].score - 1.0).abs() < 1e-9,
+            "expected fts-only score of 1.0, got {}",
+            candidates[0].score
+        );
     }
 }

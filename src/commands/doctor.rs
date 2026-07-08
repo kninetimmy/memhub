@@ -395,6 +395,9 @@ const KNOWN_LEAVES: &[&str] = &[
     "retrieval.scoring.age_half_life_days",
     "retrieval.scoring.min_rerank_score",
     "retrieval.scoring.doc_min_rerank_score",
+    "code_index.fts_weight",
+    "code_index.vector_weight",
+    "code_index.test_path_penalty",
     "metrics.enabled",
     "metrics.recall_proxy",
     "metrics.session_accounting",
@@ -421,6 +424,7 @@ const KNOWN_TABLES: &[&str] = &[
     "render",
     "retrieval",
     "retrieval.scoring",
+    "code_index",
     "metrics",
     "global",
     "sync",
@@ -564,6 +568,12 @@ fn check_config_types(raw: &str) -> Check {
             "retrieval.scoring.superseded_penalty",
             cfg.retrieval.scoring.superseded_penalty,
         ),
+        ("code_index.fts_weight", cfg.code_index.fts_weight),
+        ("code_index.vector_weight", cfg.code_index.vector_weight),
+        (
+            "code_index.test_path_penalty",
+            cfg.code_index.test_path_penalty,
+        ),
     ] {
         if !(0.0..=1.0).contains(&v) {
             problems.push(format!("{label}={v} out of range [0,1]"));
@@ -623,7 +633,7 @@ fn check_config_types(raw: &str) -> Check {
 }
 
 /// Commit-back-here fields per the header comment in
-/// `.memhub/config.example.toml` — recall behavior + security-relevant
+/// `.memhub/config.example.toml` — recall/locate behavior + security-relevant
 /// settings that should be identical on every machine. `integrations.k9.*`
 /// is listed there as a commit-back project property, so `k9.enabled` is
 /// the one `enabled` toggle included here; `metrics.enabled` and the
@@ -647,6 +657,9 @@ const BASELINE_FIELDS: &[&str] = &[
     "retrieval.scoring.age_half_life_days",
     "retrieval.scoring.min_rerank_score",
     "retrieval.scoring.doc_min_rerank_score",
+    "code_index.fts_weight",
+    "code_index.vector_weight",
+    "code_index.test_path_penalty",
 ];
 
 fn check_baseline_drift(local: &toml::Value, memhub_dir: &Path) -> Check {
@@ -1488,6 +1501,30 @@ fts_weight = 5.0
     }
 
     #[test]
+    fn config_types_catches_an_out_of_range_code_index_weight() {
+        // Doctor parity for the R11 (issue #73) [code_index] split: the
+        // new keys must get the same range validation as their
+        // [retrieval.scoring] counterparts, not read as "unknown" or
+        // silently accepted out of range.
+        let raw = r#"
+project_name = "x"
+auto_sync_md = false
+log_level = "info"
+
+[code_index]
+fts_weight = 5.0
+"#;
+        let check = check_config_types(raw);
+        assert_eq!(check.status, Status::Error);
+        assert!(
+            check
+                .detail
+                .unwrap_or_default()
+                .contains("code_index.fts_weight")
+        );
+    }
+
+    #[test]
     fn config_types_ok_on_defaults() {
         let raw = r#"
 project_name = "x"
@@ -1520,6 +1557,27 @@ made_up_nested_key = 1
         assert!(detail.contains("made_up_top_level_key"));
         assert!(detail.contains("retrieval.made_up_nested_key"));
         assert!(!detail.contains("retrieval.mode"));
+    }
+
+    #[test]
+    fn code_index_keys_are_known_not_unknown() {
+        // Doctor parity for the R11 (issue #73) [code_index] split.
+        let value: toml::Value = toml::from_str(
+            r#"
+project_name = "x"
+auto_sync_md = false
+log_level = "info"
+
+[code_index]
+fts_weight = 0.6
+vector_weight = 0.4
+test_path_penalty = 0.8
+"#,
+        )
+        .expect("parse");
+
+        let check = check_unknown_keys(&value);
+        assert_eq!(check.status, Status::Ok, "detail: {:?}", check.detail);
     }
 
     #[test]

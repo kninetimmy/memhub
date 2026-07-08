@@ -394,10 +394,11 @@ no score floor. On `tests/code_locate_golden.json` fusion now scores
 **100% Recall@3** (18/18; Recall@1 61.1%) and the reranker holds at 88.9%
 Recall@3 / 77.8% Recall@1. Task 85 (decision 123) lifted fusion past the
 reranker on the governing metric by closing the last two misses at their
-source: a 0.90 test-path down-weight so `tests/` / `benches/` / `examples/`
-chunks stop out-ranking implementation, and capturing the Rust file-level
-`//!` module doc as a chunk so a file described by its module prose is
-retrievable. This supersedes decision 122's fusion≈rerank tie — fusion now
+source: a 0.90 test-path down-weight (`[code_index] test_path_penalty`) so
+`tests/` / `benches/` / `examples/` chunks stop out-ranking implementation,
+and capturing the Rust file-level `//!` module doc as a chunk so a file
+described by its module prose is retrievable. This supersedes decision
+122's fusion≈rerank tie — fusion now
 wins Recall@3 outright and runs ~12× faster, so it stays decisively the
 default. `--rerank` remains the opt-in and still wins single-best-guess
 Recall@1 (77.8% vs 61.1%). No nonsense floor is free: a `--min-rerank-score`
@@ -410,6 +411,18 @@ the polyglot fixture eval in `tests/locate_polyglot.rs` (task 88) instead.
 Surfaces: `memhub locate` / `memhub code index|status|rm` (CLI) ·
 `memhub.locate` (MCP, read-only — clipped snippets only, never full code) ·
 `/locate` (skill).
+
+**Scoring config is independent of recall (R11, issue #73).** Locate's
+fusion weights and the test-path down-weight live under their own
+`[code_index]` table — `fts_weight`, `vector_weight`, `test_path_penalty`
+— rather than sharing `[retrieval.scoring]` with `memhub recall`. The two
+tables used to be one struct, so tuning recall's blend silently retuned
+locate's too (and vice versa); they are now separate, defaulting to the
+same numeric values (0.5 / 0.5 / 0.90) so an untouched install's ranking
+is unaffected. `[retrieval.scoring]`'s `stale_penalty` (and
+`superseded_penalty`, `age_half_life_days`, `min_rerank_score`) have no
+`[code_index]` counterpart at all — the code index has no staleness or
+supersession concept, and `--rerank` here has no score floor.
 
 **Source-scoped index (task 69).** The index is scoped to grammar-known
 source files only — the deny-list still applies on top, and vendored/
