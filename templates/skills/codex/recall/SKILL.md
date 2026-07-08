@@ -74,7 +74,7 @@ the default behavior surface across all three source types.
 
 ## Interpreting the response
 
-The bundle has the shape:
+The `memhub.recall` MCP bundle has the shape:
 
 ```json
 {
@@ -82,16 +82,13 @@ The bundle has the shape:
   "mode": "fts" | "hybrid",
   "results": [
     {
-      "rank": 1,
       "source_type": "decision",
       "source_id": 17,
       "title": "...",
       "body": "...",
-      "score": 0.91,
-      "fts_score": 0.84,
-      "vector_score": 0.92,
       "stale": false,
       "source": "user+agent:codex",
+      "rerank_score": 2.31,
       ...
     }
   ],
@@ -103,10 +100,20 @@ The bundle has the shape:
 }
 ```
 
+The CLI's `memhub recall --json` keeps the fuller diagnostic shape
+(`rank`, `score`, `fts_score`, `vector_score`, plus `rerank_score`) for
+debugging and calibration; the MCP bundle above is trimmed to what you
+need day to day (issue #72) — no `rank`/`score`/`fts_score`/
+`vector_score`, and no `confidence` field either way.
+
 - Use `title` and `body` directly — they are pulled from the durable
   source tables, not paraphrases.
-- `score` is the blended rank used for ordering. `fts_score` and
-  `vector_score` are the components, both normalized to `[0, 1]`.
+- `rerank_score` is the cross-encoder logit that decided this hit's
+  place in `results` — array order is the final rank, there is no
+  separate `rank` field on this path. `null` when the re-ranker didn't
+  run for this call (fts mode, or hybrid with the re-ranker off);
+  positive means relevant, and nonsense candidates are dropped before
+  they ever reach you (the `min_rerank_score` floor).
 - `stale = true` means a fact past the verification window or a
   decision marked superseded/draft or a task marked done. Surface
   staleness when it matters; don't quote a stale fact as current.
