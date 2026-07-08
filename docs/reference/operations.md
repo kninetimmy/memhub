@@ -380,7 +380,13 @@ so results always reflect the working tree. A warm index is near-free
 (stat-only); the first-ever index is the one expensive pass (~171s cold vs
 ~1.4s warm on memhub's tree), so `memhub code index` is the explicit
 warm-up. `locate` is therefore a read-then-write op, but writes nothing to
-`project.sqlite`.
+`project.sqlite`. `--no-refresh` (issue #67) opts out of this pass
+entirely for tight repeat-call loops on an already-warm index — no `git
+ls-files`, no per-file stat, no `git rev-parse HEAD` — trading the
+freshness guarantee for the lowest possible latency; `files_total` /
+`chunks_total` / `head` then report the last-*indexed* state, not a fresh
+recount. Stale-by-choice, explicit opt-in; default behavior (refresh every
+call) is unchanged without the flag.
 
 **Retrieval default: fusion, reranker OFF (decisions 114, 122, 123).**
 Recall is FTS BM25 + vector fusion with the cross-encoder reranker off and

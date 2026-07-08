@@ -15,6 +15,7 @@ use clap::Parser;
 use memhub::cli::{
     AuditCommand, Cli, CommandCommand, DecisionCommand, DocCommand, FactCommand, TopLevelCommand,
 };
+use memhub::code_index::locate::DEFAULT_LOCATE_LIMIT;
 
 fn parse(args: &[&str]) -> TopLevelCommand {
     let mut full = vec!["memhub"];
@@ -252,5 +253,55 @@ fn audit_md_without_flags_defaults_to_false() {
             }
         },
         other => panic!("expected Audit, got {other:?}"),
+    }
+}
+
+/// Wave 4 R5 / issue #67: `memhub locate <query> [--limit N] [--rerank]
+/// [--no-refresh] [--json]`.
+#[test]
+fn locate_flags_parse() {
+    match parse(&[
+        "locate",
+        "parse manifest",
+        "--limit",
+        "3",
+        "--rerank",
+        "--no-refresh",
+        "--json",
+    ]) {
+        TopLevelCommand::Locate {
+            query,
+            limit,
+            rerank,
+            no_refresh,
+            json,
+        } => {
+            assert_eq!(query, "parse manifest");
+            assert_eq!(limit, 3);
+            assert!(rerank);
+            assert!(no_refresh);
+            assert!(json);
+        }
+        other => panic!("expected Locate, got {other:?}"),
+    }
+}
+
+#[test]
+fn locate_without_flags_defaults() {
+    match parse(&["locate", "parse manifest"]) {
+        TopLevelCommand::Locate {
+            query,
+            limit,
+            rerank,
+            no_refresh,
+            json,
+        } => {
+            assert_eq!(query, "parse manifest");
+            assert_eq!(limit, DEFAULT_LOCATE_LIMIT);
+            assert!(!rerank);
+            assert!(!no_refresh, "--no-refresh must default to false");
+            assert!(!json);
+        }
+        other => panic!("expected Locate, got {other:?}"),
     }
 }

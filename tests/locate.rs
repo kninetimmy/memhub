@@ -75,6 +75,7 @@ fn locate_finds_symbol_by_name_fts() {
             query: "parse manifest".to_string(),
             limit: 5,
             use_reranker: false,
+            no_refresh: false,
         },
     )
     .expect("locate");
@@ -103,6 +104,7 @@ fn locate_auto_refreshes_a_never_indexed_repo() {
             query: "alpha".to_string(),
             limit: 5,
             use_reranker: false,
+            no_refresh: false,
         },
     )
     .expect("locate");
@@ -128,6 +130,7 @@ fn locate_picks_up_an_edit_via_lazy_refresh() {
             query: "renamed symbol".to_string(),
             limit: 5,
             use_reranker: false,
+            no_refresh: false,
         },
     )
     .expect("locate");
@@ -146,6 +149,7 @@ fn locate_picks_up_an_edit_via_lazy_refresh() {
             query: "original_name".to_string(),
             limit: 5,
             use_reranker: false,
+            no_refresh: false,
         },
     )
     .expect("locate old");
@@ -155,6 +159,93 @@ fn locate_picks_up_an_edit_via_lazy_refresh() {
             .all(|h| h.symbol.as_deref() != Some("original_name")),
         "stale symbol must be gone"
     );
+}
+
+/// Issue #67: `--no-refresh` is the mirror image of the test above — same
+/// warm-then-edit setup, but with the flag set the edit must NOT surface
+/// and the stale symbol must still be served. `files_total`/`chunks_total`/
+/// `head` must come straight off the index (matching the prior warm
+/// refresh), not a freshly recomputed count.
+#[test]
+fn locate_no_refresh_skips_the_freshness_pass() {
+    let temp = repo_with_files(&[("src/a.rs", "pub fn original_name() {}\n")]);
+    let root = temp.path();
+
+    // Warm the index, then edit on disk without re-indexing manually.
+    let warm = code_index::refresh(root).expect("warm");
+    fs::write(root.join("src/a.rs"), "pub fn renamed_symbol() {}\n").expect("rewrite");
+
+    let response = locate(
+        root,
+        LocateOptions {
+            query: "renamed symbol".to_string(),
+            limit: 5,
+            use_reranker: false,
+            no_refresh: true,
+        },
+    )
+    .expect("locate");
+    assert!(
+        response
+            .results
+            .iter()
+            .all(|h| h.symbol.as_deref() != Some("renamed_symbol")),
+        "no-refresh must not pick up the unindexed edit: {:?}",
+        response.results
+    );
+
+    let stale = locate(
+        root,
+        LocateOptions {
+            query: "original_name".to_string(),
+            limit: 5,
+            use_reranker: false,
+            no_refresh: true,
+        },
+    )
+    .expect("locate stale");
+    assert!(
+        stale
+            .results
+            .iter()
+            .any(|h| h.symbol.as_deref() == Some("original_name")),
+        "no-refresh should still serve the last-indexed (stale) symbol: {:?}",
+        stale.results
+    );
+    assert_eq!(stale.files_total, warm.files_total);
+    assert_eq!(stale.chunks_total, warm.chunks_total);
+    assert_eq!(stale.head, warm.head);
+}
+
+/// `--no-refresh` never *populates* the sibling DB — it skips `refresh`
+/// entirely, so on a never-indexed repo the query pool stays empty. (The
+/// DB file itself still gets bootstrapped, same as any `open_code_index`
+/// call — that side effect is unconditional and predates this flag; see
+/// `status_reports_counts_without_creating_the_index` for the command that
+/// actually guarantees no side effects.) An empty result here, not an
+/// error and not the auto-build behavior `locate_auto_refreshes_a_never_
+/// indexed_repo` covers for the default (refreshing) path.
+#[test]
+fn locate_no_refresh_on_a_never_indexed_repo_returns_no_matches() {
+    let temp = repo_with_files(&[("src/a.rs", "pub fn alpha() {}\n")]);
+    let root = temp.path();
+    assert!(!code_index_db_path(root).exists());
+
+    let response = locate(
+        root,
+        LocateOptions {
+            query: "alpha".to_string(),
+            limit: 5,
+            use_reranker: false,
+            no_refresh: true,
+        },
+    )
+    .expect("locate");
+
+    assert!(response.results.is_empty());
+    assert_eq!(response.files_total, 0);
+    assert_eq!(response.chunks_total, 0);
+    assert_eq!(response.head, None);
 }
 
 #[test]
@@ -172,6 +263,7 @@ fn locate_hybrid_blends_vector_and_returns_scores() {
             query: "compute checksum".to_string(),
             limit: 5,
             use_reranker: false,
+            no_refresh: false,
         },
     )
     .expect("locate");
@@ -195,6 +287,7 @@ fn locate_empty_query_returns_no_matches() {
             query: "   ".to_string(),
             limit: 5,
             use_reranker: false,
+            no_refresh: false,
         },
     )
     .expect("locate");

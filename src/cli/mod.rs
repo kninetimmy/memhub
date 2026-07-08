@@ -1915,12 +1915,14 @@ pub fn run(cli: Cli) -> Result<()> {
             query,
             limit,
             rerank,
+            no_refresh,
             json: as_json,
         } => {
             let opts = crate::code_index::locate::LocateOptions {
                 query,
                 limit,
                 use_reranker: rerank,
+                no_refresh,
             };
             let response = crate::code_index::locate::locate(&cwd, opts)?;
             if as_json {

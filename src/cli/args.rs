@@ -235,8 +235,9 @@ pub enum TopLevelCommand {
     },
     /// Locate code by meaning: blend FTS + vector over the sibling code
     /// index and return ranked `path:line-range` breadcrumbs with snippets
-    /// (M11). Refreshes the index to the working tree first. Read-only —
-    /// never returns full files, never edits.
+    /// (M11). Refreshes the index to the working tree first, unless
+    /// `--no-refresh` is passed. Read-only — never returns full files,
+    /// never edits.
     Locate {
         query: String,
         #[arg(long, default_value_t = code_index::locate::DEFAULT_LOCATE_LIMIT)]
@@ -247,6 +248,14 @@ pub enum TopLevelCommand {
         /// (decisions 122/123).
         #[arg(long)]
         rerank: bool,
+        /// Skip the pre-query freshness pass (`git ls-files` + per-file
+        /// stat, plus resolving `HEAD`) and query the index exactly as it
+        /// last stood. Stale-by-choice: an explicit opt-in for tight
+        /// repeat-locate loops on a warm index where sub-100ms matters
+        /// more than picking up edits since the last refresh. Default
+        /// behavior (refresh every call) is unchanged without this flag.
+        #[arg(long)]
+        no_refresh: bool,
         #[arg(long)]
         json: bool,
     },

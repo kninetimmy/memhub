@@ -58,6 +58,13 @@ never-indexed files are picked up transparently. You do not need to
 run `memhub code index` first — that is only an explicit warm-up /
 rebuild.
 
+CLI-only opt-out: `--no-refresh` skips this pass entirely (no `git
+ls-files`, no stat, no `git rev-parse HEAD`) and queries the index
+exactly as it last stood — the lowest possible latency for tight
+repeat calls, at the cost of being stale-by-choice (an edit since the
+last refresh will not be picked up). No MCP equivalent; `memhub.locate`
+always refreshes.
+
 ## Parameters
 
 - `limit=N` / `--limit N`: max results. Default 10.
@@ -66,6 +73,8 @@ rebuild.
   reranker) is the calibrated default and wins Recall@3 on memhub's
   own golden set (decisions 122/123); `--rerank` is the opt-in that
   instead wins single-best-guess Recall@1. Ignored in `fts` mode.
+- `--no-refresh` (CLI only): skip the lazy refresh — see above. Off by
+  default.
 
 ## Interpreting the response
 

@@ -495,6 +495,10 @@ pub fn run_locate(start: &Path, opts: LocateEvalOptions) -> Result<LocateEvalSum
             query: query.query.clone(),
             limit: opts.k,
             use_reranker: opts.use_reranker,
+            // Eval measures retrieval quality against a fully refreshed
+            // index, never a stale one — `--no-refresh` is a CLI-only
+            // opt-in (issue #67), not something an eval run should touch.
+            no_refresh: false,
         };
         let response = locate::locate(start, locate_opts)?;
         if resolved_mode.is_none() {

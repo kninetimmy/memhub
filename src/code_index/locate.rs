@@ -12,7 +12,11 @@
 //! so the index always reflects the working tree; the PR1 staleness engine
 //! makes that stat-only (no read, no embed) when nothing changed, so a warm
 //! index pays almost nothing. `memhub code index` is the explicit warm-up /
-//! rebuild for callers that want to pay that cost up front.
+//! rebuild for callers that want to pay that cost up front. `--no-refresh`
+//! (issue #67) opts out of that pass entirely — no `git ls-files`, no stat,
+//! no `git rev-parse HEAD` — for callers making tight repeat calls against
+//! a warm index who accept stale-by-choice results in exchange for the
+//! lowest possible latency.
 //!
 //! **Reranker off by default (PR3).** The bundled ms-marco cross-encoder is
 //! NL-trained; its fit on code is unproven until PR5 measures it. So
@@ -56,6 +60,13 @@ pub struct LocateOptions {
     /// default in PR3; ignored in fts mode (no vectors to draw a pool from
     /// — FTS order stands).
     pub use_reranker: bool,
+    /// Skip the pre-query [`super::refresh`] (issue #67): no `git
+    /// ls-files`, no per-file stat, no `git rev-parse HEAD`. Queries the
+    /// index exactly as it last stood. Stale-by-choice — an explicit
+    /// opt-in for tight repeat-locate loops on a warm index; the default
+    /// (`false`) keeps the lazy-freshness guarantee described on
+    /// [`locate`].
+    pub no_refresh: bool,
 }
 
 /// One ranked locator hit.
@@ -108,8 +119,16 @@ pub fn locate(start: &Path, options: LocateOptions) -> Result<LocateResponse> {
     let started = Instant::now();
 
     // Lazy freshness: bring the index in line with the tree first. Cheap
-    // (stat-only, no embed) when nothing changed.
-    let summary = refresh(start)?;
+    // (stat-only, no embed) when nothing changed. `--no-refresh` skips this
+    // entirely — no `git ls-files`, no per-file stat, no `git rev-parse
+    // HEAD` — trading freshness for the lowest possible warm latency
+    // (issue #67). `files_total`/`chunks_total`/`head` are then read
+    // straight off the index below instead of off this summary.
+    let summary = if options.no_refresh {
+        None
+    } else {
+        Some(refresh(start)?)
+    };
 
     // Resolve repo root + config the same decoupled way refresh does — no
     // open_project, so the code index stays independent of project.sqlite.
@@ -135,6 +154,16 @@ pub fn locate(start: &Path, options: LocateOptions) -> Result<LocateResponse> {
 
     let db_path = code_index_db_path(&repo_root);
     let conn = open_code_index(&db_path)?;
+
+    // With a refresh, its summary already carries the post-refresh counts
+    // + resolved HEAD. Without one, read the same three values straight
+    // off the index (mirrors `status()`) rather than trusting a summary
+    // that never ran — `head` here is the last-*indexed* HEAD, not a fresh
+    // `git rev-parse`, since `--no-refresh` promises no git calls.
+    let (files_total, chunks_total, head) = match &summary {
+        Some(s) => (s.files_total, s.chunks_total, s.head.clone()),
+        None => index_snapshot(&conn)?,
+    };
 
     let mut candidates = gather_candidates(&conn, &options.query, mode)?;
     let candidate_count = candidates.len();
@@ -210,11 +239,32 @@ pub fn locate(start: &Path, options: LocateOptions) -> Result<LocateResponse> {
         candidate_count,
         returned_count,
         reranked,
-        files_total: summary.files_total,
-        chunks_total: summary.chunks_total,
-        head: summary.head,
+        files_total,
+        chunks_total,
+        head,
         elapsed_ms: started.elapsed().as_millis(),
     })
+}
+
+/// Read `files_total` / `chunks_total` / last-indexed `head` straight off
+/// the index DB without touching the working tree or spawning `git`. The
+/// `--no-refresh` counterpart to the counts a [`super::RefreshSummary`]
+/// carries; mirrors [`super::status`]'s snapshot query.
+fn index_snapshot(conn: &Connection) -> Result<(usize, usize, Option<String>)> {
+    let files_total = conn.query_row("SELECT COUNT(*) FROM indexed_files", [], |r| {
+        r.get::<_, i64>(0)
+    })? as usize;
+    let chunks_total = conn.query_row("SELECT COUNT(*) FROM code_chunks", [], |r| {
+        r.get::<_, i64>(0)
+    })? as usize;
+    let head: Option<String> = conn
+        .query_row(
+            "SELECT value FROM index_meta WHERE key = 'last_head'",
+            [],
+            |r| r.get(0),
+        )
+        .ok();
+    Ok((files_total, chunks_total, head))
 }
 
 #[derive(Debug, Clone)]
