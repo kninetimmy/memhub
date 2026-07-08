@@ -2,17 +2,26 @@
 //! (decision 74, task #30): the recall→session reconciler and the
 //! retention pruner.
 //!
-//! Both run opportunistically and never on a schedule: `run_if_enabled`
-//! is called once from `db::open_project`, right after the Component B
-//! scrape has refreshed the session windows, so on every `memhub`
-//! invocation the reconciler sees the freshest `session_metrics` bounds.
-//! `prune_old` is also re-exported so the `memhub metrics status` path
-//! (task #31) can run the pruner at its own tail per decision 74.
+//! `run_if_enabled` is called once from `db::open_project`, right after
+//! the Component B scrape has refreshed the session windows, so when it
+//! actually runs the reconciler sees the freshest `session_metrics`
+//! bounds. Both jobs are unbounded-window UPDATE/DELETE passes over
+//! `recall_metrics` / `session_metrics` / `session_turn_metrics`, so
+//! since R8 (issue #68) the opportunistic call is debounced to at most
+//! once every `MAINTENANCE_DEBOUNCE_HOURS` via a persisted last-run
+//! marker (`projects.metrics_maintenance_last_run_at`, migration 0019)
+//! rather than running on every single `memhub` invocation. `reconcile`
+//! and `prune_old` are also re-exported so the explicit `memhub metrics
+//! rescan` / `status` / `prune` paths (task #31, `commands::metrics`)
+//! can call them directly at their own tail per decision 74 — those
+//! explicit, user-invoked calls bypass `run_if_enabled` (and its
+//! debounce) entirely, since an explicit ask must always run now.
 //!
 //! Like the scraper, this is gated and defensive: a no-op early return
-//! on a non-opted-in install, and any SQL failure is logged and
-//! swallowed — losing a maintenance pass must never fail an otherwise
-//! successful host command.
+//! on a non-opted-in install, and any SQL failure (including the
+//! debounce claim itself) is logged and swallowed — losing a
+//! maintenance pass must never fail an otherwise successful host
+//! command.
 //!
 //! ## Reconciler — attribution is intentionally lossy
 //!
@@ -68,15 +77,43 @@ const PRUNER_ACTOR: &str = "metrics:pruner";
 /// on every scrape, so this only ever bites imported/abandoned rows.
 const OPEN_SESSION_MAX_HOURS: i64 = 12;
 
+/// How often the opportunistic `run_if_enabled` pass may actually touch
+/// the metrics tables, in hours (R8, issue #68). Both `reconcile` and
+/// `prune_old` are unbounded-window UPDATE/DELETE passes; running them
+/// on every single `memhub` invocation (the pre-#68 behavior) buys
+/// nothing on a busy repo — the output is unchanged from a pass seconds
+/// earlier — while paying a full table scan of `recall_metrics` /
+/// `session_metrics` every time. This does not apply to the explicit
+/// `memhub metrics rescan` / `prune` paths, which always run now.
+const MAINTENANCE_DEBOUNCE_HOURS: i64 = 1;
+
 /// Opportunistic entry point, gated by the `metrics.enabled` master
 /// switch only — both maintenance jobs touch `recall_metrics`, which
 /// the recall-proxy component populates independently of the
 /// `session_accounting` sub-switch, so this must not hide behind it.
 /// Off by default, so this is a zero-cost early return on a
 /// non-opted-in install. Errors are logged, never propagated.
+///
+/// Debounced (R8, issue #68): actually running `reconcile` +
+/// `prune_old` requires first winning `claim_maintenance_run`, which
+/// only succeeds at most once every `MAINTENANCE_DEBOUNCE_HOURS`. A
+/// losing (too-recent) claim is a silent, cheap no-op — this function
+/// still runs on every `memhub` invocation, it just skips the expensive
+/// part most of the time.
 pub fn run_if_enabled(conn: &Connection, cfg: &MetricsConfig) {
     if !cfg.enabled {
         return;
+    }
+
+    match claim_maintenance_run(conn) {
+        Ok(true) => {}
+        // Debounced: another invocation within the last
+        // MAINTENANCE_DEBOUNCE_HOURS already ran this pass.
+        Ok(false) => return,
+        Err(err) => {
+            log::warn!("metrics: maintenance debounce claim failed: {err}");
+            return;
+        }
     }
 
     match reconcile(conn) {
@@ -112,6 +149,33 @@ pub fn run_if_enabled(conn: &Connection, cfg: &MetricsConfig) {
         }
         Err(err) => log::warn!("metrics: retention prune failed: {err}"),
     }
+}
+
+/// Try to claim this `memhub` invocation's opportunistic maintenance
+/// pass (R8, issue #68). Flips `projects.metrics_maintenance_last_run_at`
+/// (migration 0019) to now, but only when it is NULL (never run, or a
+/// pre-0019 DB) or older than `MAINTENANCE_DEBOUNCE_HOURS`. The check
+/// and the claim are the *same* `UPDATE ... WHERE`, so there is no
+/// separate read-then-write gap a concurrent invocation could race.
+/// Returns `Ok(true)` iff this call claimed the run — the caller should
+/// then proceed to `reconcile` + `prune_old`; `Ok(false)` means a
+/// recent-enough pass already ran and there is nothing to do.
+///
+/// `db::open_project` always upserts the `projects` row (id = 1) before
+/// this ever runs, so the `WHERE id = 1` predicate has a row to match on
+/// every real call site; only a directly-constructed test DB without
+/// that upsert would see zero rows and correctly report "not claimed".
+fn claim_maintenance_run(conn: &Connection) -> Result<bool> {
+    let claimed = conn.execute(
+        "UPDATE projects \
+         SET metrics_maintenance_last_run_at = CURRENT_TIMESTAMP \
+         WHERE id = 1 \
+           AND (metrics_maintenance_last_run_at IS NULL \
+                OR datetime(metrics_maintenance_last_run_at) < \
+                   datetime('now', ?1))",
+        params![format!("-{MAINTENANCE_DEBOUNCE_HOURS} hours")],
+    )?;
+    Ok(claimed == 1)
 }
 
 /// Fill `recall_metrics.session_id` for rows still NULL by matching the
@@ -368,5 +432,184 @@ mod tests {
             })
             .expect("count");
         assert_eq!(turns, 1);
+    }
+
+    /// R8 (issue #68), precise boundary: `claim_maintenance_run` must
+    /// flip from "claims" to "debounced" exactly around
+    /// `MAINTENANCE_DEBOUNCE_HOURS`, tested on both sides of the line —
+    /// a NULL marker (never run) claims, a 59-minute-old marker is still
+    /// within the hour and is debounced, and a 61-minute-old marker is
+    /// past it and claims again.
+    #[test]
+    fn claim_maintenance_run_gates_precisely_on_the_debounce_window() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::commands::init::run(temp.path()).expect("init");
+        let ctx = crate::db::open_project(temp.path()).expect("open");
+        let conn = &ctx.conn;
+
+        assert!(
+            claim_maintenance_run(conn).expect("claim 1"),
+            "a NULL marker (never run before) must claim"
+        );
+
+        conn.execute(
+            "UPDATE projects SET metrics_maintenance_last_run_at = \
+                datetime('now', '-59 minutes') WHERE id = 1",
+            [],
+        )
+        .expect("set fresh marker");
+        assert!(
+            !claim_maintenance_run(conn).expect("claim 2"),
+            "a 59-minute-old marker is still inside the debounce window"
+        );
+
+        conn.execute(
+            "UPDATE projects SET metrics_maintenance_last_run_at = \
+                datetime('now', '-61 minutes') WHERE id = 1",
+            [],
+        )
+        .expect("set stale marker");
+        assert!(
+            claim_maintenance_run(conn).expect("claim 3"),
+            "a 61-minute-old marker is past the debounce window and must claim again"
+        );
+    }
+
+    /// R8 (issue #68), end to end via the real entry point: the first
+    /// `run_if_enabled` call (marker NULL) must run reconcile + prune;
+    /// an immediate second call must be debounced and touch neither
+    /// table; once the marker is backdated past the window a third call
+    /// must run again. Proves the debounce gate protects BOTH jobs
+    /// together and that, whenever the pass does run, reconcile/prune
+    /// output is exactly what the always-run tests above already pin —
+    /// i.e. debouncing changes *when* maintenance runs, not what it
+    /// computes.
+    #[test]
+    fn run_if_enabled_runs_when_stale_and_skips_when_fresh() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::commands::init::run(temp.path()).expect("init");
+        let ctx = crate::db::open_project(temp.path()).expect("open");
+        let conn = &ctx.conn;
+        let cfg = MetricsConfig {
+            enabled: true,
+            ..MetricsConfig::default()
+        };
+
+        // A live session (attribution target) and a long-dead session
+        // (prune target under the default retention_days).
+        conn.execute(
+            "INSERT INTO session_metrics (session_id, agent, started_at, ended_at) \
+             VALUES \
+                ('live', 'claude-code', datetime('now','-1 hour'), NULL), \
+                ('old-1', 'claude-code', datetime('now','-999 days'), \
+                 datetime('now','-999 days'))",
+            [],
+        )
+        .expect("seed sessions");
+        conn.execute(
+            "INSERT INTO recall_metrics \
+                (ts, session_id, query_hash, bundle_tokens, ledger_tokens, \
+                 rerank_used, result_count) \
+             VALUES (datetime('now'), NULL, 'q1', 10, 100, 0, 3)",
+            [],
+        )
+        .expect("seed recall 1");
+
+        // First call: never run before -> claims, attributes the recall,
+        // and prunes the long-dead session.
+        run_if_enabled(conn, &cfg);
+        let attributed: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM recall_metrics WHERE session_id = 'live'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count attributed");
+        assert_eq!(attributed, 1, "first call must reconcile the pending recall");
+        let old_1_gone: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM session_metrics WHERE session_id = 'old-1'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count old-1");
+        assert_eq!(old_1_gone, 0, "first call must prune the long-dead session");
+
+        // New work arrives inside the debounce window: another
+        // unattributed recall and another long-dead session.
+        conn.execute(
+            "INSERT INTO recall_metrics \
+                (ts, session_id, query_hash, bundle_tokens, ledger_tokens, \
+                 rerank_used, result_count) \
+             VALUES (datetime('now'), NULL, 'q2', 10, 100, 0, 3)",
+            [],
+        )
+        .expect("seed recall 2");
+        conn.execute(
+            "INSERT INTO session_metrics (session_id, agent, started_at, ended_at) \
+             VALUES ('old-2', 'claude-code', datetime('now','-999 days'), \
+                     datetime('now','-999 days'))",
+            [],
+        )
+        .expect("seed old-2");
+
+        // Second call, immediately after: must be debounced, so neither
+        // the new recall nor the new dead session is touched.
+        run_if_enabled(conn, &cfg);
+        let unattributed: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM recall_metrics WHERE session_id IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count unattributed");
+        assert_eq!(
+            unattributed, 1,
+            "immediate second call must be debounced and skip reconcile"
+        );
+        let old_2_present: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM session_metrics WHERE session_id = 'old-2'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count old-2");
+        assert_eq!(
+            old_2_present, 1,
+            "immediate second call must be debounced and skip prune"
+        );
+
+        // Backdate the marker past the debounce window (simulate an
+        // hour passing) and call a third time: must run again and clear
+        // both the pending recall and the newly-dead session.
+        conn.execute(
+            "UPDATE projects SET metrics_maintenance_last_run_at = \
+                datetime('now', '-2 hours') WHERE id = 1",
+            [],
+        )
+        .expect("backdate marker");
+        run_if_enabled(conn, &cfg);
+        let unattributed_after: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM recall_metrics WHERE session_id IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count unattributed after");
+        assert_eq!(
+            unattributed_after, 0,
+            "once stale, the third call must reconcile the pending recall"
+        );
+        let old_2_gone: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM session_metrics WHERE session_id = 'old-2'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count old-2 after");
+        assert_eq!(
+            old_2_gone, 0,
+            "once stale, the third call must prune the newly-dead session"
+        );
     }
 }
