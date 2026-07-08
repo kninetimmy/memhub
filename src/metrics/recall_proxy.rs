@@ -13,12 +13,12 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime};
 
 use rusqlite::{Connection, params};
-use sha2::{Digest, Sha256};
 
 use crate::Result;
 use crate::config::MetricsConfig;
 use crate::metrics::tokenizer::{set_calibration_factor, tokens_of};
 use crate::retrieval::RecallResponse;
+use crate::retrieval::util::sha256_hex;
 
 /// Process-wide ledger token cache. CLI one-shots build it once per
 /// invocation; the MCP server amortizes the read across calls.
@@ -68,7 +68,7 @@ fn try_log_recall(
     query: &str,
     response: &RecallResponse,
 ) -> Result<()> {
-    let query_hash = sha256_hex(query);
+    let query_hash = sha256_hex(query.as_bytes());
     let bundle_tokens = bundle_token_estimate(response);
     let ledger_tokens = ledger_token_estimate(project_root, render_output_dir);
     let rerank_used = if response.matcher == "recall:hybrid+rerank" {
@@ -140,27 +140,14 @@ fn ledger_token_estimate(project_root: &Path, render_output_dir: &str) -> usize 
     tokens
 }
 
-fn sha256_hex(s: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(s.as_bytes());
-    let digest = hasher.finalize();
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(digest.len() * 2);
-    for b in digest {
-        out.push(HEX[(b >> 4) as usize] as char);
-        out.push(HEX[(b & 0x0f) as usize] as char);
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn sha256_is_deterministic_and_hex() {
-        let a = sha256_hex("memhub recall");
-        let b = sha256_hex("memhub recall");
+        let a = sha256_hex("memhub recall".as_bytes());
+        let b = sha256_hex("memhub recall".as_bytes());
         assert_eq!(a, b);
         assert_eq!(a.len(), 64);
         assert!(a.chars().all(|c| c.is_ascii_hexdigit()));

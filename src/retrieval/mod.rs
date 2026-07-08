@@ -9,6 +9,7 @@ pub mod embeddings;
 pub mod persist;
 pub mod recall;
 pub mod rerank;
+pub mod util;
 
 pub use embeddings::{EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME, embed_batch, embed_one};
 pub use persist::{

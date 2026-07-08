@@ -34,6 +34,7 @@ use crate::Result;
 use crate::config::{ProjectConfig, RetrievalMode, RetrievalScoringConfig};
 use crate::db;
 use crate::retrieval::embeddings::{EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME, embed_one};
+use crate::retrieval::util::{build_fts_match, bytes_to_vector, cosine_similarity, normalize_fts};
 
 use super::{code_index_db_path, open_code_index, refresh};
 
@@ -406,32 +407,6 @@ fn score_candidates(candidates: &mut [Candidate], scoring: &RetrievalScoringConf
     }
 }
 
-fn normalize_fts(value: f64, min: f64, max: f64) -> f64 {
-    if !value.is_finite() || !min.is_finite() || !max.is_finite() {
-        return 0.0;
-    }
-    if (max - min).abs() < f64::EPSILON {
-        return 1.0;
-    }
-    ((value - min) / (max - min)).clamp(0.0, 1.0)
-}
-
-/// Tokenize a free-text query into a quoted FTS5 `AND` of terms. Returns
-/// `None` when the query has no usable tokens (so the caller skips FTS).
-fn build_fts_match(query: &str) -> Option<String> {
-    let tokens: Vec<String> = query
-        .split_whitespace()
-        .map(|token| token.trim_matches(|c: char| matches!(c, '"' | '\'' | ',' | '.' | ':' | ';')))
-        .filter(|t| !t.is_empty())
-        .map(|token| format!("\"{}\"", token.replace('"', "\"\"")))
-        .collect();
-    if tokens.is_empty() {
-        None
-    } else {
-        Some(tokens.join(" AND "))
-    }
-}
-
 /// Pull `(chunk_id, embed_text)` for a slice of candidates, preserving
 /// their order so the reranker's returned indices line up.
 fn fetch_embed_texts(conn: &Connection, pool: &[Candidate]) -> Result<Vec<(i64, String)>> {
@@ -523,31 +498,6 @@ fn read_snippet(
         out.push('…');
     }
     out
-}
-
-fn bytes_to_vector(blob: &[u8]) -> Vec<f32> {
-    blob.chunks_exact(4)
-        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-        .collect()
-}
-
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
-    if a.len() != b.len() {
-        return 0.0;
-    }
-    let mut dot = 0.0f64;
-    let mut na = 0.0f64;
-    let mut nb = 0.0f64;
-    for (x, y) in a.iter().zip(b.iter()) {
-        let (xf, yf) = (*x as f64, *y as f64);
-        dot += xf * yf;
-        na += xf * xf;
-        nb += yf * yf;
-    }
-    if na <= f64::EPSILON || nb <= f64::EPSILON {
-        return 0.0;
-    }
-    dot / (na.sqrt() * nb.sqrt())
 }
 
 #[cfg(test)]

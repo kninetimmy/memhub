@@ -22,6 +22,9 @@ use crate::retrieval::persist::{
     SourceType, decision_embed_text, doc_chunk_embed_text, fact_embed_text, task_embed_text,
 };
 use crate::retrieval::rerank;
+use crate::retrieval::util::{
+    build_fts_match, bytes_to_vector, cosine_similarity, normalize_fts, sha256_hex,
+};
 use crate::{MemhubError, Result};
 
 const PER_SOURCE_FTS_LIMIT: i64 = 50;
@@ -390,7 +393,7 @@ fn gather_scored(
         // No vector-path floor — D70/D71 retired `min_vector_score` after
         // the MiniLM bundle landed. Nonsense rejection now lives in the
         // rerank-score filter applied below.
-        let vector_hits = vector_lookup(conn, &opts.source_types, query_vec, 0.0)?;
+        let vector_hits = vector_lookup(conn, &opts.source_types, query_vec)?;
         for hit in &vector_hits {
             let entry = candidates
                 .entry((hit.source_type, hit.source_id))
@@ -702,20 +705,6 @@ struct ScoredHit {
     rerank_score: Option<f32>,
 }
 
-fn build_fts_match(query: &str) -> Option<String> {
-    let tokens: Vec<String> = query
-        .split_whitespace()
-        .map(|token| token.trim_matches(|c: char| matches!(c, '"' | '\'' | ',' | '.' | ':' | ';')))
-        .filter(|t| !t.is_empty())
-        .map(|token| format!("\"{}\"", token.replace('"', "\"\"")))
-        .collect();
-    if tokens.is_empty() {
-        None
-    } else {
-        Some(tokens.join(" AND "))
-    }
-}
-
 fn fts_lookup(
     conn: &Connection,
     source_type: SourceType,
@@ -770,7 +759,6 @@ fn vector_lookup(
     conn: &Connection,
     source_types: &[SourceType],
     query_vec: &[f32],
-    min_vector_score: f64,
 ) -> Result<Vec<VectorHit>> {
     let mut stmt = conn.prepare(
         "SELECT source_type, source_id, vector \
@@ -803,7 +791,12 @@ fn vector_lookup(
         }
         let candidate_vec = bytes_to_vector(&blob);
         let cosine = cosine_similarity(query_vec, &candidate_vec);
-        if cosine < min_vector_score {
+        // The only caller always passed 0.0 here (see the call site's
+        // comment) — D70/D71 retired the configurable floor, leaving a
+        // parameter that never varied. Issue #69 inlines that dead
+        // plumbing; a negative-cosine candidate still never enters the
+        // vector path, unchanged from before.
+        if cosine < 0.0 {
             continue;
         }
         out.push(VectorHit {
@@ -848,7 +841,7 @@ fn detect_stale_candidates(
             Some(t) => t,
             None => continue,
         };
-        let current_hash = sha256_hex(&current_text);
+        let current_hash = sha256_hex(current_text.as_bytes());
         let existing: Option<String> = stmt
             .query_row(
                 params![key.0.as_str(), key.1, EMBEDDING_MODEL_NAME],
@@ -1247,60 +1240,6 @@ fn age_decay_multiplier(age_days: Option<f64>, half_life_days: i64) -> f64 {
         }
         _ => 1.0,
     }
-}
-
-fn normalize_fts(value: f64, min: f64, max: f64) -> f64 {
-    if !value.is_finite() || !min.is_finite() || !max.is_finite() {
-        return 0.0;
-    }
-    if (max - min).abs() < f64::EPSILON {
-        // Single FTS hit (or ties): treat as full strength.
-        return 1.0;
-    }
-    ((value - min) / (max - min)).clamp(0.0, 1.0)
-}
-
-fn bytes_to_vector(blob: &[u8]) -> Vec<f32> {
-    let mut out = Vec::with_capacity(blob.len() / 4);
-    for chunk in blob.chunks_exact(4) {
-        let bytes: [u8; 4] = chunk.try_into().expect("chunk is exactly 4 bytes");
-        out.push(f32::from_le_bytes(bytes));
-    }
-    out
-}
-
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
-    if a.len() != b.len() {
-        return 0.0;
-    }
-    let mut dot: f64 = 0.0;
-    let mut na: f64 = 0.0;
-    let mut nb: f64 = 0.0;
-    for (x, y) in a.iter().zip(b.iter()) {
-        let xf = *x as f64;
-        let yf = *y as f64;
-        dot += xf * yf;
-        na += xf * xf;
-        nb += yf * yf;
-    }
-    if na <= f64::EPSILON || nb <= f64::EPSILON {
-        return 0.0;
-    }
-    dot / (na.sqrt() * nb.sqrt())
-}
-
-fn sha256_hex(text: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(text.as_bytes());
-    let digest = hasher.finalize();
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(digest.len() * 2);
-    for b in digest {
-        out.push(HEX[(b >> 4) as usize] as char);
-        out.push(HEX[(b & 0x0f) as usize] as char);
-    }
-    out
 }
 
 #[cfg(test)]
