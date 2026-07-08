@@ -13,6 +13,10 @@
 #   - retrieval.use_reranker           (recall behavior)
 #   - retrieval.rerank_candidate_pool  (recall behavior)
 #   - retrieval.scoring.*              (reproducible recall)
+#   - code_index.*                     (reproducible locate ranking; split
+#                                       from retrieval.scoring.* in R11 /
+#                                       issue #73 — locate and recall no
+#                                       longer share weights)
 #   - integrations.k9.*                (project property)
 #   - render.output_dir                (project property)
 #   - metrics.enabled = false          (off by default; changes here set
@@ -125,6 +129,10 @@ include_docs_in_default = false
 [retrieval.scoring]
 fts_weight = 0.5
 vector_weight = 0.5
+# FACTS ONLY: demotion for a fact past fact_stale_after_days (see
+# include_stale_by_default above). Decisions, tasks, and doc chunks are
+# never marked stale and never pay this penalty; the code index
+# ([code_index], below) has no staleness concept at all.
 stale_penalty = 0.3
 # Blended-score demotion for a SUPERSEDED fact/decision (Wave 3 L3,
 # decision 145's demote-with-link ruling). A superseded row is never
@@ -159,6 +167,23 @@ min_rerank_score = 2.0
 # lower band than facts/decisions, so a higher floor would wrongly
 # filter relevant docs. Ignored for explicit --source-type doc.
 doc_min_rerank_score = 0.0
+
+# Code locator (memhub locate) scoring, over the separate sibling DB
+# .memhub/code_index.sqlite — split from retrieval.scoring.fts_weight /
+# vector_weight above (R11, issue #73). Locate and recall are different
+# indices over different content (code chunks vs.
+# facts/decisions/tasks/docs) that used to share those two weights, so
+# tuning one silently retuned the other. Defaults reproduce the pre-split
+# shared values (0.5/0.5) and the formerly hardcoded TEST_PATH_PENALTY
+# const (0.90, task 85) byte-for-byte. No stale/superseded/age-decay/
+# min-rerank-score knob here — a code chunk is either indexed or it
+# isn't, never decayed, and locate's optional --rerank has no score floor.
+[code_index]
+fts_weight = 0.5
+vector_weight = 0.5
+# Multiplicative down-weight for chunks under top-level tests/, benches/,
+# or examples/ directories so they don't out-rank implementation files.
+test_path_penalty = 0.90
 
 # Token accounting (decision 74). Off by default; opt in per machine
 # via `memhub metrics enable`. recall_proxy is component A (cheap,

@@ -16,8 +16,25 @@ use crate::Result;
 pub const DEFAULT_RENDER_OUTPUT_DIR: &str = ".memhub/rendered";
 
 pub const DEFAULT_RECALL_MAX_RESULTS: usize = 6;
+/// FTS weight in recall's blended fusion score (`[retrieval.scoring]
+/// fts_weight`). Recall-only as of the R11 knob split (issue #73) — the
+/// code locator's independent knob is `DEFAULT_CODE_INDEX_FTS_WEIGHT`
+/// under `[code_index]`. The two structs used to share this single
+/// constant, so tuning recall's blend silently retuned locate's too;
+/// they are now separate fields with separate (if numerically equal)
+/// defaults.
 pub const DEFAULT_FTS_WEIGHT: f64 = 0.5;
+/// Vector weight in recall's blended fusion score, hybrid mode only.
+/// Recall-only as of the R11 split — see `DEFAULT_CODE_INDEX_VECTOR_WEIGHT`.
 pub const DEFAULT_VECTOR_WEIGHT: f64 = 0.5;
+/// Blended-score demotion applied to a stale fact in recall
+/// (`include_stale_by_default` + `fact_stale_after_days`). **Facts
+/// only**: `is_stale` is computed solely from a fact's `verified_at`
+/// column (`recall::load_source_row`); decisions, tasks, and doc chunks
+/// always carry `is_stale = false` in recall and never pay this penalty.
+/// The code index (`memhub locate`, `[code_index]`) has no staleness
+/// concept at all — a chunk is either indexed or it isn't, never
+/// "decayed" — so this knob has no effect there either.
 pub const DEFAULT_STALE_PENALTY: f64 = 0.3;
 /// Blended-score demotion applied to a superseded fact/decision in recall
 /// (Wave 3 L3, decision 145's demote-with-link ruling). A superseded row is
@@ -134,10 +151,16 @@ pub enum RetrievalMode {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetrievalScoringConfig {
+    /// Recall-only; see `[code_index] fts_weight` for the independent
+    /// locate knob (R11 split, issue #73).
     #[serde(default = "default_fts_weight")]
     pub fts_weight: f64,
+    /// Recall-only; see `[code_index] vector_weight`.
     #[serde(default = "default_vector_weight")]
     pub vector_weight: f64,
+    /// Facts-only demotion — see the `DEFAULT_STALE_PENALTY` doc for why
+    /// decisions/tasks/doc chunks, and the code index entirely, never pay
+    /// it.
     #[serde(default = "default_stale_penalty")]
     pub stale_penalty: f64,
     /// Blended-score demotion for a superseded fact/decision (Wave 3 L3).
@@ -318,6 +341,67 @@ impl Default for RetrievalConfig {
     }
 }
 
+/// FTS weight in the code locator's (`memhub locate`) blended fusion
+/// score (`[code_index] fts_weight`). Split from `[retrieval.scoring]
+/// fts_weight` (R11, issue #73): locate and recall are different
+/// indices over different content — code chunks vs.
+/// facts/decisions/tasks/docs — that used to share one struct, so
+/// tuning one silently retuned the other. Same numeric value as
+/// `DEFAULT_FTS_WEIGHT` so an untouched install's locate ranking stays
+/// byte-identical across the split.
+pub const DEFAULT_CODE_INDEX_FTS_WEIGHT: f64 = 0.5;
+/// Vector (cosine) weight in locate's fusion score, hybrid mode only.
+/// Split from `[retrieval.scoring] vector_weight` — see
+/// `DEFAULT_CODE_INDEX_FTS_WEIGHT`.
+pub const DEFAULT_CODE_INDEX_VECTOR_WEIGHT: f64 = 0.5;
+/// Multiplicative down-weight applied to locate fusion scores for
+/// chunks under top-level `tests/`, `benches/`, or `examples/`
+/// directories (task 85) — keeps non-implementation files from
+/// out-ranking implementation files. Promoted from the hardcoded
+/// `TEST_PATH_PENALTY` const in `code_index::locate` to `[code_index]
+/// test_path_penalty` (R11, issue #73) with the same default (0.90) so
+/// an untouched install's locate ranking is unaffected.
+pub const DEFAULT_TEST_PATH_PENALTY: f64 = 0.90;
+
+/// Code locator (`memhub locate`) scoring knobs, independent of
+/// `[retrieval.scoring]` (R11 split, issue #73). Named `[code_index]` —
+/// a top-level sibling of `[retrieval]`, not nested under it — because
+/// the code index is a wholly separate on-disk store
+/// (`.memhub/code_index.sqlite`, decision 107) from `project.sqlite`.
+/// There is no stale/superseded/age-decay/min-rerank-score knob here: a
+/// code chunk is either present in the index or it isn't, never
+/// decayed, and locate's optional `--rerank` has no score floor (see
+/// the `code_index::locate` module doc).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeIndexConfig {
+    #[serde(default = "default_code_index_fts_weight")]
+    pub fts_weight: f64,
+    #[serde(default = "default_code_index_vector_weight")]
+    pub vector_weight: f64,
+    #[serde(default = "default_test_path_penalty")]
+    pub test_path_penalty: f64,
+}
+
+impl Default for CodeIndexConfig {
+    fn default() -> Self {
+        Self {
+            fts_weight: DEFAULT_CODE_INDEX_FTS_WEIGHT,
+            vector_weight: DEFAULT_CODE_INDEX_VECTOR_WEIGHT,
+            test_path_penalty: DEFAULT_TEST_PATH_PENALTY,
+        }
+    }
+}
+
+fn default_code_index_fts_weight() -> f64 {
+    DEFAULT_CODE_INDEX_FTS_WEIGHT
+}
+fn default_code_index_vector_weight() -> f64 {
+    DEFAULT_CODE_INDEX_VECTOR_WEIGHT
+}
+fn default_test_path_penalty() -> f64 {
+    DEFAULT_TEST_PATH_PENALTY
+}
+
 /// Opt-in token-accounting config (decision 74). Off by default;
 /// users opt in per machine via `memhub metrics enable`. Component A
 /// (recall_proxy) is local arithmetic over recall responses; component
@@ -485,6 +569,8 @@ pub struct ProjectConfig {
     #[serde(default)]
     pub retrieval: RetrievalConfig,
     #[serde(default)]
+    pub code_index: CodeIndexConfig,
+    #[serde(default)]
     pub metrics: MetricsConfig,
     #[serde(default)]
     pub global: GlobalConfig,
@@ -506,6 +592,7 @@ impl ProjectConfig {
             integrations: IntegrationsConfig::default(),
             render: RenderConfig::default(),
             retrieval: RetrievalConfig::default(),
+            code_index: CodeIndexConfig::default(),
             metrics: MetricsConfig::default(),
             global: GlobalConfig::default(),
             sync: SyncConfig::default(),
