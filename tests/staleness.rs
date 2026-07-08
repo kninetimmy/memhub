@@ -285,7 +285,7 @@ fn review_accept_produces_fresh_fact() {
     )
     .expect("propose fact");
 
-    review::accept(temp.path(), pending_id, "cli:user").expect("accept");
+    review::accept(temp.path(), pending_id, "cli:user", None, false).expect("accept");
 
     let facts = fact::list(temp.path()).expect("list facts");
     let accepted = facts

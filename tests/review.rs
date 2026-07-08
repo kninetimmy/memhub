@@ -119,7 +119,7 @@ fn review_accept_promotes_fact_and_marks_pending_accepted() {
         "Observed across recent sessions.",
     );
 
-    let outcome = review::accept(temp.path(), pending_id, "cli:user").expect("accept");
+    let outcome = review::accept(temp.path(), pending_id, "cli:user", None, false).expect("accept");
     assert_eq!(outcome.kind, "fact");
     assert_eq!(outcome.durable_table, "facts");
     assert!(outcome.durable_id > 0);
@@ -153,7 +153,7 @@ fn review_accept_preserves_opencode_source() {
         "OpenCode",
     );
 
-    review::accept(temp.path(), pending_id, "cli:user").expect("accept");
+    review::accept(temp.path(), pending_id, "cli:user", None, false).expect("accept");
 
     let facts = fact::list(temp.path()).expect("fact list");
     assert_eq!(facts.len(), 1);
@@ -171,7 +171,7 @@ fn review_accept_promotes_decision_and_indexes_fts() {
         "Sea creatures organize concurrent workloads cleanly.",
     );
 
-    let outcome = review::accept(temp.path(), pending_id, "cli:user").expect("accept decision");
+    let outcome = review::accept(temp.path(), pending_id, "cli:user", None, false).expect("accept decision");
     assert_eq!(outcome.kind, "decision");
     assert_eq!(outcome.durable_table, "decisions");
 
@@ -199,9 +199,9 @@ fn review_accept_errors_on_non_pending_row() {
         "cargo test",
         "Should be reviewed.",
     );
-    review::accept(temp.path(), pending_id, "cli:user").expect("first accept");
+    review::accept(temp.path(), pending_id, "cli:user", None, false).expect("first accept");
 
-    match review::accept(temp.path(), pending_id, "cli:user") {
+    match review::accept(temp.path(), pending_id, "cli:user", None, false) {
         Err(MemhubError::InvalidInput(message)) => {
             assert!(message.contains("already accepted"));
         }
@@ -235,7 +235,7 @@ fn review_accept_rolls_back_durable_write_when_pending_already_reviewed() {
         .expect("simulate concurrent reject");
     drop(ctx);
 
-    match review::accept(temp.path(), pending_id, "cli:user") {
+    match review::accept(temp.path(), pending_id, "cli:user", None, false) {
         Err(MemhubError::InvalidInput(message)) => {
             assert!(message.contains("already rejected"), "message: {message}");
         }

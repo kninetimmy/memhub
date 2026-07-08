@@ -672,6 +672,18 @@ pub enum ReviewCommand {
         json: bool,
         #[arg(long)]
         actor: Option<String>,
+        /// Acknowledge a detected contradiction by retiring the named row in
+        /// favor of this write (L3 demote-with-link). A fact id or key; a
+        /// numeric decision id. Also the escape when the accept-time probe
+        /// (issue #48) blocks on a reranked conflict.
+        #[arg(long)]
+        supersede: Option<String>,
+        /// Proceed even if the accept-time probe detects a contradiction
+        /// (overwrite/insert as-is; for a same-key fact the prior value is
+        /// logged to writes_log). The escape for a same-key overwrite, where
+        /// --supersede cannot apply.
+        #[arg(long)]
+        force: bool,
     },
     Reject {
         id: i64,
