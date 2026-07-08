@@ -45,7 +45,7 @@ When you write to memhub from the CLI, identify yourself so the row gets attribu
 
 See [docs/reference/memhub-prd-source-vocabulary-addendum.md](docs/reference/memhub-prd-source-vocabulary-addendum.md) for the full vocabulary (`user`, `agent:<id>`, `user+agent:<id>`, `git`, `observed`).
 
-When you write via MCP (`memhub serve` registered in `~/.codex/config.toml`), attribution is automatic — the server reads `clientInfo.name` from `initialize` and tags writes as `codex` / `codex:wrap-up` without you needing to pass anything.";
+Once `memhub serve` is registered in `~/.codex/config.toml` (a per-machine step — see README's \"Register the MCP server\"; `memhub doctor` reports current status), writes via MCP attribute automatically — the server reads `clientInfo.name` from `initialize` and tags writes as `codex` / `codex:wrap-up` without you needing to pass anything.";
 
 /// The Q41 fail-safe routing block (decision Q41, issue #30), appended after
 /// the attribution section. Claude Code receives these routing rules through
