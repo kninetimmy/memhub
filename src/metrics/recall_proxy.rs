@@ -17,7 +17,7 @@ use rusqlite::{Connection, params};
 use crate::Result;
 use crate::config::MetricsConfig;
 use crate::metrics::tokenizer::{set_calibration_factor, tokens_of};
-use crate::retrieval::RecallResponse;
+use crate::retrieval::{RecallResponse, RecallSurface};
 use crate::retrieval::util::sha256_hex;
 
 /// Process-wide ledger token cache. CLI one-shots build it once per
@@ -47,6 +47,7 @@ pub fn log_recall(
     render_output_dir: &str,
     query: &str,
     response: &RecallResponse,
+    surface: Option<RecallSurface>,
 ) {
     if !cfg.enabled || !cfg.recall_proxy {
         return;
@@ -56,7 +57,14 @@ pub fn log_recall(
     // tokenizer. Default 1.0 is an exact passthrough, so an uncalibrated
     // install logs identical numbers to a pre-calibration build.
     set_calibration_factor(cfg.calibration_factor);
-    if let Err(err) = try_log_recall(conn, project_root, render_output_dir, query, response) {
+    if let Err(err) = try_log_recall(
+        conn,
+        project_root,
+        render_output_dir,
+        query,
+        response,
+        surface,
+    ) {
         log::warn!("recall_metrics insert failed: {err}");
     }
 }
@@ -67,6 +75,7 @@ fn try_log_recall(
     render_output_dir: &str,
     query: &str,
     response: &RecallResponse,
+    surface: Option<RecallSurface>,
 ) -> Result<()> {
     let query_hash = sha256_hex(query.as_bytes());
     let bundle_tokens = bundle_token_estimate(response);
@@ -77,17 +86,24 @@ fn try_log_recall(
         0
     };
     let result_count = response.results.len() as i64;
+    // NULL for internal callers (eval sweeps, dashboard inspector, upgrade
+    // smoke check) — none of them reach here anyway since they all pass
+    // `log_metrics: false`. 'cli' / 'mcp' for the two agent-facing entry
+    // points (issue #70 / Wave 4 gate Q17).
+    let surface_str = surface.map(RecallSurface::as_str);
 
     conn.execute(
         "INSERT INTO recall_metrics \
-            (ts, session_id, query_hash, bundle_tokens, ledger_tokens, rerank_used, result_count) \
-         VALUES (CURRENT_TIMESTAMP, NULL, ?1, ?2, ?3, ?4, ?5)",
+            (ts, session_id, query_hash, bundle_tokens, ledger_tokens, rerank_used, \
+             result_count, surface) \
+         VALUES (CURRENT_TIMESTAMP, NULL, ?1, ?2, ?3, ?4, ?5, ?6)",
         params![
             query_hash,
             bundle_tokens as i64,
             ledger_tokens as i64,
             rerank_used,
             result_count,
+            surface_str,
         ],
     )?;
     Ok(())
@@ -143,6 +159,76 @@ fn ledger_token_estimate(project_root: &Path, render_output_dir: &str) -> usize 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{ProjectConfig, RetrievalMode};
+
+    /// A minimal, result-free `RecallResponse` — `log_recall` only reads
+    /// `results` (for `bundle_token_estimate`) and `matcher`, so an empty
+    /// bundle is enough to exercise the INSERT itself without dragging in
+    /// a full recall fixture.
+    fn empty_response(query: &str) -> RecallResponse {
+        RecallResponse {
+            query: query.to_string(),
+            mode: RetrievalMode::Fts,
+            results: Vec::new(),
+            candidate_count: 0,
+            returned_count: 0,
+            warnings: Vec::new(),
+            matcher: "recall:fts".to_string(),
+            elapsed_ms: 0,
+            available_docs: 0,
+        }
+    }
+
+    /// Issue #70 / Wave 4 gate Q17: `log_recall`'s `surface` argument must
+    /// land verbatim as the `recall_metrics.surface` column — `'cli'` /
+    /// `'mcp'` — so a follow-up can split latency by calling surface.
+    #[test]
+    fn log_recall_writes_the_calling_surface() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::commands::init::run(temp.path()).expect("init");
+        let cfg_path = temp.path().join(".memhub/config.toml");
+        let mut cfg = ProjectConfig::load(&cfg_path).expect("load");
+        cfg.metrics.enabled = true;
+        cfg.metrics.recall_proxy = true;
+        cfg.save(&cfg_path).expect("save");
+
+        let ctx = crate::db::open_project(temp.path()).expect("open");
+
+        log_recall(
+            &ctx.conn,
+            &ctx.config.metrics,
+            &ctx.paths.repo_root,
+            &ctx.config.render.output_dir,
+            "cli query",
+            &empty_response("cli query"),
+            Some(RecallSurface::Cli),
+        );
+        log_recall(
+            &ctx.conn,
+            &ctx.config.metrics,
+            &ctx.paths.repo_root,
+            &ctx.config.render.output_dir,
+            "mcp query",
+            &empty_response("mcp query"),
+            Some(RecallSurface::Mcp),
+        );
+
+        let mut stmt = ctx
+            .conn
+            .prepare("SELECT surface FROM recall_metrics ORDER BY id")
+            .expect("prepare");
+        let rows: Vec<Option<String>> = stmt
+            .query_map([], |r| r.get(0))
+            .expect("query")
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .expect("collect");
+
+        assert_eq!(
+            rows,
+            vec![Some("cli".to_string()), Some("mcp".to_string())],
+            "surface column must record each call's actual calling surface"
+        );
+    }
 
     #[test]
     fn sha256_is_deterministic_and_hex() {

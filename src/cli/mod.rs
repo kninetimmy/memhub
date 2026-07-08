@@ -28,7 +28,7 @@ use crate::commands;
 use crate::commands::{DEFAULT_ACTOR, validate_actor};
 use crate::models::NarrativeKind;
 use crate::retrieval;
-use crate::retrieval::RecallOptions;
+use crate::retrieval::{RecallOptions, RecallSurface};
 use crate::{MemhubError, Result};
 
 /// One-time disclosure printed the first time a global write creates
@@ -1855,6 +1855,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 use_reranker: if no_rerank { Some(false) } else { None },
                 min_rerank_score,
                 log_metrics: true,
+                surface: Some(RecallSurface::Cli),
             };
             let response = retrieval::recall(&cwd, opts)?;
             if as_json {
