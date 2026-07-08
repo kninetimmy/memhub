@@ -18,6 +18,7 @@ use crate::retrieval::embeddings::{EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME, em
 use crate::retrieval::persist::{
     SourceType, decision_embed_text, doc_chunk_embed_text, fact_embed_text, task_embed_text,
 };
+use crate::retrieval::util::{sha256_hex, vector_to_le_bytes};
 
 #[derive(Debug)]
 pub struct IndexStatusSummary {
@@ -292,7 +293,7 @@ fn upsert_batch(
     let st = source_type.as_str();
     let mut written = 0usize;
     for (id, vector, text) in rows {
-        let hash = sha256_hex(text);
+        let hash = sha256_hex(text.as_bytes());
         if current_source_hash(tx, source_type, *id)?.as_deref() != Some(hash.as_str()) {
             continue;
         }
@@ -402,7 +403,7 @@ fn embedding_matches(
     source_id: i64,
     text: &str,
 ) -> Result<bool> {
-    let expected = sha256_hex(text);
+    let expected = sha256_hex(text.as_bytes());
     let existing: Option<String> = conn
         .query_row(
             "SELECT content_hash FROM embeddings
@@ -474,29 +475,7 @@ fn current_source_hash(
             )
             .optional()?,
     };
-    Ok(text.map(|value| sha256_hex(&value)))
-}
-
-fn vector_to_le_bytes(v: &[f32]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(v.len() * 4);
-    for f in v {
-        out.extend_from_slice(&f.to_le_bytes());
-    }
-    out
-}
-
-fn sha256_hex(text: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(text.as_bytes());
-    let digest = hasher.finalize();
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(digest.len() * 2);
-    for b in digest {
-        out.push(HEX[(b >> 4) as usize] as char);
-        out.push(HEX[(b & 0x0f) as usize] as char);
-    }
-    out
+    Ok(text.map(|value| sha256_hex(value.as_bytes())))
 }
 
 #[cfg(test)]

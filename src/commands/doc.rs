@@ -24,6 +24,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use crate::Result;
 use crate::db;
 use crate::models::{DocChunk, Document};
+use crate::retrieval::util::sha256_hex;
 use crate::sync_md;
 
 /// Largest chunk body (in chars) before a section is soft-split on
@@ -71,7 +72,7 @@ fn prepare_doc(file: &Path, title: Option<&str>) -> Result<PreparedDoc> {
     let canonical = fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
     let path_str = canonical.to_string_lossy().into_owned();
     let byte_len = content.len() as i64;
-    let content_hash = sha256_hex(&content);
+    let content_hash = sha256_hex(content.as_bytes());
     let resolved_title = title
         .map(str::to_string)
         .filter(|t| !t.trim().is_empty())
@@ -660,20 +661,6 @@ fn fence_marker(trimmed: &str) -> String {
         "```"
     }
     .to_string()
-}
-
-fn sha256_hex(text: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(text.as_bytes());
-    let digest = hasher.finalize();
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(digest.len() * 2);
-    for b in digest {
-        out.push(HEX[(b >> 4) as usize] as char);
-        out.push(HEX[(b & 0x0f) as usize] as char);
-    }
-    out
 }
 
 #[cfg(test)]

@@ -8,6 +8,7 @@ use crate::commands::{decision, fact};
 use crate::db;
 use crate::models::{PendingWriteRecord, ReviewExpireSummary};
 use crate::retrieval::rerank;
+use crate::retrieval::util::sha256_hex;
 use crate::sync_md;
 use crate::{MemhubError, Result};
 
@@ -892,7 +893,7 @@ fn drifted_documents(conn: &Connection) -> Result<(usize, Vec<StaleItem>)> {
     for row in rows {
         let (id, path, content_hash) = row?;
         let drift_message = match fs::read_to_string(&path) {
-            Ok(content) if sha256_hex(&content) == content_hash => None,
+            Ok(content) if sha256_hex(content.as_bytes()) == content_hash => None,
             Ok(_) => Some(format!("document #{id} at {path} has changed since ingest")),
             Err(err) => Some(format!(
                 "document #{id} at {path} is unreadable on disk: {err}"
@@ -910,26 +911,6 @@ fn drifted_documents(conn: &Connection) -> Result<(usize, Vec<StaleItem>)> {
     let count = items.len();
     items.truncate(DEFAULT_LIST_LIMIT);
     Ok((count, items))
-}
-
-/// Same SHA-256 hex digest `commands::doc::prepare_doc` computed at
-/// ingest time, recomputed here to detect drift. Duplicated rather than
-/// imported (matching this codebase's existing per-module copies in
-/// `doc.rs`, `index.rs`, `code_index/mod.rs`, `retrieval/persist.rs`,
-/// `retrieval/recall.rs`, `metrics/recall_proxy.rs`) rather than adding
-/// a new shared-utility surface for one 12-line helper.
-fn sha256_hex(text: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(text.as_bytes());
-    let digest = hasher.finalize();
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(digest.len() * 2);
-    for b in digest {
-        out.push(HEX[(b >> 4) as usize] as char);
-        out.push(HEX[(b & 0x0f) as usize] as char);
-    }
-    out
 }
 
 /// Shared expiry core: mark `pending` rows older than `older_than_days`

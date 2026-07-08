@@ -26,12 +26,12 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use rusqlite::{Connection, Statement, Transaction, params};
-use sha2::{Digest, Sha256};
 
 use crate::Result;
 use crate::config::{PathMatcher, ProjectConfig, RetrievalMode};
 use crate::db::{self, MEMHUB_DIR};
 use crate::retrieval::embeddings::{EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME, embed_batch};
+use crate::retrieval::util::{bytes_to_vector, sha256_hex, vector_to_le_bytes};
 
 /// Filename of the sibling code-index DB inside `.memhub/`.
 pub const CODE_INDEX_DB_FILENAME: &str = "code_index.sqlite";
@@ -491,7 +491,7 @@ fn embed_missing(conn: &mut Connection) -> Result<usize> {
         })?;
         for row in rows {
             let (hash, blob) = row?;
-            cache.insert(hash, le_bytes_to_vector(&blob));
+            cache.insert(hash, bytes_to_vector(&blob));
         }
     }
 
@@ -538,24 +538,6 @@ fn embed_missing(conn: &mut Connection) -> Result<usize> {
     }
     tx.commit()?;
     Ok(missing.len())
-}
-
-/// Pack a vector as little-endian f32 bytes (matches `retrieval::persist`).
-fn vector_to_le_bytes(v: &[f32]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(v.len() * 4);
-    for f in v {
-        out.extend_from_slice(&f.to_le_bytes());
-    }
-    out
-}
-
-/// Unpack little-endian f32 bytes back into a vector. A trailing partial
-/// chunk (corrupt blob) is ignored rather than panicking.
-fn le_bytes_to_vector(bytes: &[u8]) -> Vec<f32> {
-    bytes
-        .chunks_exact(4)
-        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-        .collect()
 }
 
 fn load_existing_files(tx: &Transaction<'_>) -> Result<HashMap<String, ExistingFile>> {
@@ -664,19 +646,6 @@ fn infer_language(path: &str) -> Option<&'static str> {
         "sql" => Some("sql"),
         _ => None,
     }
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    let digest = hasher.finalize();
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(digest.len() * 2);
-    for b in digest {
-        out.push(HEX[(b >> 4) as usize] as char);
-        out.push(HEX[(b & 0x0f) as usize] as char);
-    }
-    out
 }
 
 #[cfg(test)]

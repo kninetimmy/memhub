@@ -16,12 +16,12 @@
 //! the embeddings table is fully populated.
 
 use rusqlite::{OptionalExtension, Transaction, params};
-use sha2::{Digest, Sha256};
 
 use crate::config::RetrievalMode;
 use crate::retrieval::embeddings::{
     EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME, embed_batch, embed_one,
 };
+use crate::retrieval::util::{sha256_hex, vector_to_le_bytes};
 use crate::{MemhubError, Result};
 
 /// Source row kind that an embedding refers back to.
@@ -95,7 +95,7 @@ pub fn eager_embed_in_tx(
         return Ok(());
     }
 
-    let content_hash = sha256_hex(embed_text);
+    let content_hash = sha256_hex(embed_text.as_bytes());
     let source_type_str = source_type.as_str();
 
     let existing_hash: Option<String> = tx
@@ -168,7 +168,7 @@ pub fn eager_embed_batch_in_tx(
     // only rows that actually need a new vector go into the batch call.
     let mut pending: Vec<(i64, String, String)> = Vec::with_capacity(rows.len());
     for (source_id, embed_text) in rows {
-        let content_hash = sha256_hex(&embed_text);
+        let content_hash = sha256_hex(embed_text.as_bytes());
         let existing_hash: Option<String> = tx
             .query_row(
                 "SELECT content_hash FROM embeddings
@@ -221,27 +221,6 @@ pub fn eager_embed_batch_in_tx(
     }
 
     Ok(())
-}
-
-fn sha256_hex(text: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(text.as_bytes());
-    let digest = hasher.finalize();
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(digest.len() * 2);
-    for b in digest {
-        out.push(HEX[(b >> 4) as usize] as char);
-        out.push(HEX[(b & 0x0f) as usize] as char);
-    }
-    out
-}
-
-fn vector_to_le_bytes(v: &[f32]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(v.len() * 4);
-    for f in v {
-        out.extend_from_slice(&f.to_le_bytes());
-    }
-    out
 }
 
 #[cfg(test)]
@@ -374,6 +353,6 @@ mod tests {
                 |r| r.get(0),
             )
             .expect("hash2");
-        assert_eq!(hash2, sha256_hex("beta text CHANGED"));
+        assert_eq!(hash2, sha256_hex("beta text CHANGED".as_bytes()));
     }
 }
