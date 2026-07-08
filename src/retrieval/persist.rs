@@ -19,7 +19,9 @@ use rusqlite::{OptionalExtension, Transaction, params};
 use sha2::{Digest, Sha256};
 
 use crate::config::RetrievalMode;
-use crate::retrieval::embeddings::{EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME, embed_one};
+use crate::retrieval::embeddings::{
+    EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME, embed_batch, embed_one,
+};
 use crate::{MemhubError, Result};
 
 /// Source row kind that an embedding refers back to.
@@ -141,6 +143,86 @@ pub fn eager_embed_in_tx(
     Ok(())
 }
 
+/// Batched counterpart to [`eager_embed_in_tx`] for callers that insert many
+/// rows of the same `source_type` in one transaction (currently doc-chunk
+/// ingest, see `commands::doc::insert_chunks`). Same semantics row for
+/// row — mode-gated no-op, unchanged-content-hash rows skipped, DELETE then
+/// INSERT the vector — but every row still needing an embedding is sent to
+/// the model in a single [`embed_batch`] call instead of one model call per
+/// row, which is where the per-chunk cost actually lives (batching amortizes
+/// ONNX inference overhead; the SQLite hash-check stays per-row because it's
+/// cheap and lets an unchanged row skip embedding entirely).
+pub fn eager_embed_batch_in_tx(
+    tx: &Transaction<'_>,
+    mode: RetrievalMode,
+    source_type: SourceType,
+    rows: Vec<(i64, String)>,
+) -> Result<()> {
+    if mode != RetrievalMode::Hybrid || rows.is_empty() {
+        return Ok(());
+    }
+
+    let source_type_str = source_type.as_str();
+
+    // Same skip-if-unchanged check as the single-row path, run up front so
+    // only rows that actually need a new vector go into the batch call.
+    let mut pending: Vec<(i64, String, String)> = Vec::with_capacity(rows.len());
+    for (source_id, embed_text) in rows {
+        let content_hash = sha256_hex(&embed_text);
+        let existing_hash: Option<String> = tx
+            .query_row(
+                "SELECT content_hash FROM embeddings
+                 WHERE source_type = ?1 AND source_id = ?2 AND model_name = ?3",
+                params![source_type_str, source_id, EMBEDDING_MODEL_NAME],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if existing_hash.as_deref() == Some(content_hash.as_str()) {
+            continue;
+        }
+        pending.push((source_id, embed_text, content_hash));
+    }
+
+    if pending.is_empty() {
+        return Ok(());
+    }
+
+    let texts: Vec<&str> = pending.iter().map(|(_, t, _)| t.as_str()).collect();
+    let vectors = embed_batch(&texts)?;
+
+    for ((source_id, _, content_hash), vector) in pending.iter().zip(vectors) {
+        if vector.len() != EMBEDDING_DIMENSION {
+            return Err(MemhubError::Embedding(format!(
+                "expected {EMBEDDING_DIMENSION}-dim vector, got {}",
+                vector.len()
+            )));
+        }
+        let blob = vector_to_le_bytes(&vector);
+
+        tx.execute(
+            "DELETE FROM embeddings
+             WHERE source_type = ?1 AND source_id = ?2 AND model_name = ?3",
+            params![source_type_str, source_id, EMBEDDING_MODEL_NAME],
+        )?;
+        tx.execute(
+            "INSERT INTO embeddings(
+                project_id, source_type, source_id, model_name,
+                dimension, vector, content_hash
+            ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                source_type_str,
+                source_id,
+                EMBEDDING_MODEL_NAME,
+                EMBEDDING_DIMENSION as i64,
+                blob,
+                content_hash,
+            ],
+        )?;
+    }
+
+    Ok(())
+}
+
 fn sha256_hex(text: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(text.as_bytes());
@@ -194,5 +276,104 @@ mod tests {
         // force a spurious re-embed across every machine.
         assert_eq!(decision_embed_text("T", "R", Some("")), "T\n\nR");
         assert_eq!(decision_embed_text("T", "R", Some("   \n  ")), "T\n\nR");
+    }
+
+    // eager_embed_batch_in_tx has no real FK on embeddings.source_id (see
+    // migration 0014's comment — the key is the polymorphic (source_type,
+    // source_id) pair), so these unit tests exercise it directly against
+    // synthetic source_ids rather than needing real doc_chunks rows.
+
+    #[test]
+    fn eager_embed_batch_in_tx_is_noop_outside_hybrid_mode() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::commands::init::run(temp.path()).expect("init");
+        let mut ctx = crate::db::open_project(temp.path()).expect("open");
+        let tx = ctx.conn.transaction().expect("tx");
+
+        eager_embed_batch_in_tx(
+            &tx,
+            RetrievalMode::Fts,
+            SourceType::DocChunk,
+            vec![(1, "some text".to_string())],
+        )
+        .expect("noop");
+
+        let count: i64 = tx
+            .query_row("SELECT COUNT(*) FROM embeddings", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(count, 0, "Fts mode must never write an embedding row");
+    }
+
+    #[test]
+    fn eager_embed_batch_in_tx_skips_unchanged_and_reembeds_changed() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::commands::init::run(temp.path()).expect("init");
+        let mut ctx = crate::db::open_project(temp.path()).expect("open");
+        let tx = ctx.conn.transaction().expect("tx");
+
+        eager_embed_batch_in_tx(
+            &tx,
+            RetrievalMode::Hybrid,
+            SourceType::DocChunk,
+            vec![(1, "alpha text".to_string()), (2, "beta text".to_string())],
+        )
+        .expect("first batch");
+        let count: i64 = tx
+            .query_row("SELECT COUNT(*) FROM embeddings", [], |r| r.get(0))
+            .expect("count after first batch");
+        assert_eq!(count, 2);
+        let hash1: String = tx
+            .query_row(
+                "SELECT content_hash FROM embeddings
+                 WHERE source_type = 'doc_chunk' AND source_id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .expect("hash1");
+
+        // Row 1 unchanged, row 2 changed, plus a brand new row 3 in the
+        // same batch call — must skip 1, re-embed 2, insert 3.
+        eager_embed_batch_in_tx(
+            &tx,
+            RetrievalMode::Hybrid,
+            SourceType::DocChunk,
+            vec![
+                (1, "alpha text".to_string()),
+                (2, "beta text CHANGED".to_string()),
+                (3, "gamma text".to_string()),
+            ],
+        )
+        .expect("second batch");
+
+        let count: i64 = tx
+            .query_row("SELECT COUNT(*) FROM embeddings", [], |r| r.get(0))
+            .expect("count after second batch");
+        assert_eq!(
+            count, 3,
+            "row 1 skip + row 2 update + row 3 insert => 3 total rows"
+        );
+
+        let hash1_again: String = tx
+            .query_row(
+                "SELECT content_hash FROM embeddings
+                 WHERE source_type = 'doc_chunk' AND source_id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .expect("hash1 again");
+        assert_eq!(
+            hash1, hash1_again,
+            "unchanged row must be skipped, not re-embedded"
+        );
+
+        let hash2: String = tx
+            .query_row(
+                "SELECT content_hash FROM embeddings
+                 WHERE source_type = 'doc_chunk' AND source_id = 2",
+                [],
+                |r| r.get(0),
+            )
+            .expect("hash2");
+        assert_eq!(hash2, sha256_hex("beta text CHANGED"));
     }
 }

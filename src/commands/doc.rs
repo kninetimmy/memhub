@@ -275,6 +275,11 @@ fn insert_chunks(
     chunks: &[(String, String)],
     mode: crate::config::RetrievalMode,
 ) -> Result<()> {
+    // Insert every chunk row first, collecting (chunk_id, embed_text) pairs,
+    // then hand the whole batch to eager_embed_batch_in_tx so the embedding
+    // model runs once for the document instead of once per chunk (issue
+    // #66) — same pattern as index::rebuild's per-source-type batching.
+    let mut embed_rows: Vec<(i64, String)> = Vec::with_capacity(chunks.len());
     for (ord, (heading_path, body)) in chunks.iter().enumerate() {
         tx.execute(
             "INSERT INTO doc_chunks(project_id, doc_id, ord, heading_path, body)
@@ -282,16 +287,17 @@ fn insert_chunks(
             params![doc_id, ord as i64, heading_path, body],
         )?;
         let chunk_id = tx.last_insert_rowid();
-        let embed_text = crate::retrieval::doc_chunk_embed_text(heading_path, body);
-        crate::retrieval::eager_embed_in_tx(
-            tx,
-            mode,
-            crate::retrieval::SourceType::DocChunk,
+        embed_rows.push((
             chunk_id,
-            &embed_text,
-        )?;
+            crate::retrieval::doc_chunk_embed_text(heading_path, body),
+        ));
     }
-    Ok(())
+    crate::retrieval::eager_embed_batch_in_tx(
+        tx,
+        mode,
+        crate::retrieval::SourceType::DocChunk,
+        embed_rows,
+    )
 }
 
 fn list_in_conn(conn: &Connection) -> Result<Vec<Document>> {
@@ -810,5 +816,86 @@ mod tests {
             !remove(temp.path(), &added.doc_id.to_string(), "cli:user").expect("rm again"),
             "second remove finds nothing"
         );
+    }
+
+    #[test]
+    fn batched_chunk_embeddings_match_solo_embed_and_stay_in_order() {
+        // Issue #66: insert_chunks now embeds every chunk of a document in
+        // one embed_batch call instead of one embed_one call per chunk.
+        // hybrid_reingest_and_remove_leave_no_orphan_embeddings already
+        // proves the *count* of embeddings matches the chunk count; this
+        // test proves the *values* are unchanged and correctly associated
+        // per chunk (not swapped/shuffled by the batch pass), by comparing
+        // each stored vector against an independent solo embed_one() of
+        // that same chunk's text.
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let cfg_path = temp.path().join(".memhub/config.toml");
+        let mut cfg = crate::config::ProjectConfig::load(&cfg_path).expect("load cfg");
+        cfg.retrieval.mode = crate::config::RetrievalMode::Hybrid;
+        cfg.save(&cfg_path).expect("save cfg");
+
+        let doc = temp.path().join("spec.md");
+        fs::write(
+            &doc,
+            "# Spec\n\n## Alpha\n\nfirst distinct chunk body\n\n\
+             ## Beta\n\nsecond distinct chunk body\n\n\
+             ## Gamma\n\nthird distinct chunk body\n",
+        )
+        .expect("write");
+        let added = add(temp.path(), &doc, None, "cli:user").expect("add");
+        assert!(added.chunk_count >= 3);
+
+        let ctx = db::open_project(temp.path()).expect("open");
+        let mut stmt = ctx
+            .conn
+            .prepare(
+                "SELECT id, heading_path, body FROM doc_chunks
+                 WHERE doc_id = ?1 ORDER BY ord",
+            )
+            .expect("prepare");
+        let chunks: Vec<(i64, String, String)> = stmt
+            .query_map(params![added.doc_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .expect("query")
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .expect("collect");
+        assert!(chunks.len() >= 3);
+
+        for (chunk_id, heading_path, body) in &chunks {
+            let blob: Vec<u8> = ctx
+                .conn
+                .query_row(
+                    "SELECT vector FROM embeddings
+                     WHERE source_type = 'doc_chunk' AND source_id = ?1",
+                    params![chunk_id],
+                    |r| r.get(0),
+                )
+                .expect("stored embedding");
+            let stored: Vec<f32> = blob
+                .chunks_exact(4)
+                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .collect();
+
+            let expected =
+                crate::retrieval::embed_one(&crate::retrieval::doc_chunk_embed_text(
+                    heading_path,
+                    body,
+                ))
+                .expect("solo embed");
+
+            assert_eq!(stored.len(), expected.len());
+            let max_delta = stored
+                .iter()
+                .zip(&expected)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0_f32, f32::max);
+            assert!(
+                max_delta < 1e-3,
+                "batched embedding for chunk {chunk_id} ({heading_path}) diverged \
+                 from solo embed (max delta {max_delta})"
+            );
+        }
     }
 }
