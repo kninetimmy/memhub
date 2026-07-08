@@ -27,7 +27,28 @@ use crate::models::{
 };
 use crate::retrieval::{self, RecallHit, RecallOptions, RecallResponse, RecallWarning, SourceType};
 
+/// Warm the bundled embed + rerank ONNX models: one `embed_one` plus a
+/// tiny one-doc rerank. Called on a background thread from `serve` so the
+/// first real recall/locate call doesn't pay the ~2-3s cold session-init
+/// cost; never panics — a failure is logged and otherwise ignored
+/// (issue #71).
+fn warm_models() {
+    if let Err(err) = retrieval::embed_one("memhub mcp warm-up") {
+        log::warn!("mcp warm-up: embedding model failed to load: {err}");
+        return;
+    }
+    if let Err(err) =
+        retrieval::rerank::rerank("memhub mcp warm-up", &["memhub mcp warm-up".to_string()])
+    {
+        log::warn!("mcp warm-up: reranker model failed to load: {err}");
+    }
+}
+
 pub fn serve(start: &Path) -> crate::Result<()> {
+    // Independent of the tokio runtime below, so it never delays or
+    // blocks serve startup.
+    std::thread::spawn(warm_models);
+
     let server = MemhubServer::new(start.to_path_buf());
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -2083,6 +2104,19 @@ mod tests {
     use rusqlite::params;
     use serde_json::Value;
     use tempfile::tempdir;
+
+    #[test]
+    fn warm_models_completes_without_panicking() {
+        // Exercises the exact call `serve` spawns on a background thread
+        // (issue #71): one embed_one + a tiny one-doc rerank. Both models
+        // are bundled, so this should succeed and leave the embedding
+        // model's lazily-initialized handle ready for reuse.
+        warm_models();
+        assert!(
+            retrieval::embed_one("post warm-up sanity check").is_ok(),
+            "embedding model should be warm and reusable after warm_models()"
+        );
+    }
 
     #[test]
     fn mcp_status_reads_project_summary() {
