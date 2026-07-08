@@ -427,6 +427,10 @@ impl MemhubServer {
                 query: params.query,
                 limit: params.limit.unwrap_or(0),
                 use_reranker: params.rerank.unwrap_or(false),
+                // `--no-refresh` is a CLI-only opt-in for tight repeat-call
+                // loops (issue #67); the MCP tool always keeps the
+                // lazy-freshness guarantee.
+                no_refresh: false,
             },
         )
         .map_err(map_tool_error)?;

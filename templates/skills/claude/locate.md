@@ -54,6 +54,15 @@ never-indexed file is picked up transparently on the next call. You do
 not need to run `memhub code index` first — that command is only an
 explicit up-front warm-up / rebuild.
 
+CLI-only opt-out: `--no-refresh` skips this pass entirely (no `git
+ls-files`, no stat, no `git rev-parse HEAD`) and queries the index
+exactly as it last stood, for the lowest possible latency on tight
+repeat calls against a warm index. This is **stale-by-choice** — an
+edit since the last refresh will not be picked up — so only reach for
+it in a tight loop where you already know the index is warm and
+current-enough; the default (no flag) is right otherwise. There is no
+MCP equivalent; `memhub.locate` always refreshes.
+
 ## Parameters
 
 - `limit=N` / `--limit N`: max results. Default 10.
@@ -65,6 +74,8 @@ explicit up-front warm-up / rebuild.
   Pass it when the user wants the single best guess rather than a
   fuller candidate set. Ignored in `fts` mode (no embedding pool to
   reorder).
+- `--no-refresh` (CLI only, no `memhub.locate` equivalent): skip the
+  lazy refresh — see above. Off by default.
 
 ## Interpreting the response
 
