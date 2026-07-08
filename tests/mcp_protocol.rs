@@ -174,6 +174,24 @@ fn recall_tool_call_round_trips_through_mcp() {
             .contains("stage"),
         "unexpected top hit: {top}",
     );
+
+    // R6 (issue #72): the MCP recall bundle is a trimmed subset of the
+    // CLI's diagnostic `--json` shape. `rank`/`score`/`fts_score`/
+    // `vector_score`/`confidence` must never appear on the wire here;
+    // `rerank_score` must — present (even as `null` when the re-ranker
+    // didn't run, as in this fts-mode call) rather than omitted, so
+    // callers can rely on the key existing.
+    let hit_obj = top.as_object().expect("recall hit is a JSON object");
+    for dropped in ["rank", "score", "fts_score", "vector_score", "confidence"] {
+        assert!(
+            !hit_obj.contains_key(dropped),
+            "MCP recall hit still carries dropped field `{dropped}`: {top}",
+        );
+    }
+    assert!(
+        hit_obj.contains_key("rerank_score"),
+        "MCP recall hit is missing `rerank_score`: {top}",
+    );
 }
 
 // Tiny helper to keep the spawn loop terminating on timeout. Avoid pulling

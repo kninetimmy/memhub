@@ -1386,7 +1386,6 @@ struct RecallToolResponse {
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 struct RecallToolHit {
-    rank: i64,
     source_type: String,
     /// `"repo"` or `"global"` (M9). Repo-local always wins on
     /// conflict; a `"global"` hit may be overridden by repo memory.
@@ -1394,9 +1393,6 @@ struct RecallToolHit {
     source_id: i64,
     title: String,
     body: String,
-    score: f64,
-    fts_score: f64,
-    vector_score: f64,
     stale: bool,
     /// `Some(new_id)` when this row was superseded by another of the same
     /// source type (Wave 3 L3). The hit is demoted, not dropped — repo
@@ -1404,6 +1400,13 @@ struct RecallToolHit {
     superseded_by: Option<i64>,
     source: String,
     created_at: String,
+    /// Cross-encoder relevance logit that decided this hit's place in
+    /// `results` (array order is final rank; there is no separate rank
+    /// field on this path). `Some` when the re-ranker ran for this query
+    /// (hybrid mode + re-ranker enabled), `None` otherwise — the raw
+    /// fusion/FTS/vector scores are diagnostic-only and not surfaced here
+    /// (issue #72; see `memhub recall --json` for the full breakdown).
+    rerank_score: Option<f32>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -1424,19 +1427,16 @@ struct RecallToolProvenance {
 impl From<RecallHit> for RecallToolHit {
     fn from(value: RecallHit) -> Self {
         Self {
-            rank: usize_to_i64(value.rank),
             source_type: value.source_type,
             scope: value.scope,
             source_id: value.source_id,
             title: value.title,
             body: value.body,
-            score: value.score,
-            fts_score: value.fts_score,
-            vector_score: value.vector_score,
             stale: value.stale,
             superseded_by: value.superseded_by,
             source: value.source,
             created_at: value.created_at,
+            rerank_score: value.rerank_score,
         }
     }
 }
