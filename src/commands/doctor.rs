@@ -1827,6 +1827,24 @@ made_up_nested_key = 1
         assert_eq!(check.status, Status::Ok);
     }
 
+    /// Exact shape committed to this repo's own `opencode.json` (issue
+    /// #65 R2): array-form `command`, plus `type`/`enabled` siblings the
+    /// presence-only checker must still see past to find `memhub`.
+    #[test]
+    fn mcp_opencode_ok_via_committed_opencode_json_shape() {
+        let temp = tempdir().expect("tempdir");
+        let home = empty_home();
+        fs::create_dir_all(home.path().join(".config").join("opencode")).expect("mkdir");
+        fs::write(
+            temp.path().join("opencode.json"),
+            r#"{"mcp": {"memhub": {"type": "local", "command": ["memhub", "serve"], "enabled": true}}}"#,
+        )
+        .expect("write");
+
+        let check = check_mcp_opencode(temp.path(), Some(home.path()));
+        assert_eq!(check.status, Status::Ok);
+    }
+
     // -- Sync freshness (P4) ------------------------------------------------------
 
     #[test]

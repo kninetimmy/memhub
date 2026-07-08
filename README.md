@@ -185,6 +185,13 @@ Please install memhub for me, then turn on hybrid recall.
        command = "memhub"
        args = ["serve"]
 
+   Codex has no repo-scoped MCP config, so also confirm this repo is
+   trusted — accept Codex's own trust prompt the first time you run it
+   here, or add a `[projects.<absolute-repo-path>]` table by hand with
+   `trust_level = "trusted"`. Without a trust entry Codex runs this repo
+   under its untrusted-project approval/sandbox posture and the
+   MCP-first skill instructions won't reliably fire.
+
 5. Copy the user-level skills so /wrap-up, /catch-up, /check-init,
    /init-project, /recall, /locate, /reindex, /eval-recall, /doc, /metrics, /viz,
    /global, /audit-md, and /upgrade all work:
@@ -360,7 +367,11 @@ mkdir -p ~/.config/opencode/skills ~/.config/opencode/commands
 cp -R ~/src/memhub/templates/skills/opencode/* ~/.config/opencode/skills/
 cp ~/src/memhub/templates/commands/opencode/*.md ~/.config/opencode/commands/
 
-# 5. MCP for Codex — append to ~/.codex/config.toml:
+# 5. MCP for Codex — append to ~/.codex/config.toml (Codex has no repo
+#    scope, so this is a per-machine step, and it also needs this repo
+#    trusted or the MCP-first skill instructions won't reliably fire —
+#    accept Codex's trust prompt on first run here, or add
+#    [projects.<abs-repo-path>] with trust_level = "trusted" by hand):
 #   [mcp_servers.memhub]
 #   command = "memhub"
 #   args = ["serve"]
@@ -791,6 +802,7 @@ include_docs_in_default = false  # auto-flips on first `doc add --global`
 **Claude Code**
 
 - Reads `CLAUDE.md` at session start.
+- MCP server registered repo-scoped via the committed [`.mcp.json`](.mcp.json) — nothing to set up per machine.
 - User-level slash commands at `~/.claude/commands/`: `/wrap-up`, `/catch-up`, `/check-init`, `/init-project`, `/recall`, `/locate`, `/reindex`, `/eval-recall`, `/doc`, `/metrics`, `/viz`, `/global`, `/upgrade`.
 - Skill writes are attributed `actor=claude:wrap-up`, `source=user+agent:claude-code`.
 
@@ -798,7 +810,7 @@ include_docs_in_default = false  # auto-flips on first `doc add --global`
 
 - Reads `AGENTS.md` at session start (same role as `CLAUDE.md`).
 - User-level skills at `~/.codex/skills/`: same set as above.
-- MCP server registered in `~/.codex/config.toml` as `[mcp_servers.memhub]`. Codex's MCP client identifies as `codex`; memhub auto-attributes writes accordingly.
+- Codex has no repo-scoped MCP config, so registration is a one-time **per-machine** step in `~/.codex/config.toml` — see [Register the MCP server](#register-the-mcp-server). Codex's MCP client identifies as `codex`; memhub auto-attributes writes accordingly once registered.
 - Skill writes are attributed `actor=codex:wrap-up`, `source=user+agent:codex`.
 
 **OpenCode CLI**
@@ -806,7 +818,7 @@ include_docs_in_default = false  # auto-flips on first `doc add --global`
 - Reads `AGENTS.md` at session start (same role as Codex).
 - User-level skills at `~/.config/opencode/skills/`: same set as above.
 - User-level slash-command wrappers at `~/.config/opencode/commands/`: same command names as above.
-- MCP server registered in `~/.config/opencode/opencode.json` as `mcp.memhub`. OpenCode's MCP client identifies as `opencode`; memhub auto-attributes writes accordingly.
+- MCP server registered repo-scoped via the `mcp.memhub` block in the tracked `opencode.json` — nothing to set up per machine. OpenCode's MCP client identifies as `opencode`; memhub auto-attributes writes accordingly.
 - Skill writes are attributed `actor=opencode:wrap-up`, `source=user+agent:opencode`.
 
 **All three at once**
@@ -844,6 +856,31 @@ When you accept a pending MCP proposal via `memhub review accept`, the durable r
 - **Write (direct):** `task_add`, `task_done`, `record_command`, `log_session_note`, `render`
 - **Write (staged for review):** `propose_fact`, `propose_decision` — both take an optional `global` flag; a `global=true` proposal stages in the repo's `pending_writes` and only becomes durable in `~/.memhub/global.sqlite` on human `memhub review accept`. (`doc_add` has no `global` parameter.) The global path is never agent-automatic.
 - **Cross-machine sync (M10):** `sync_status`, `sync_snapshot`, `sync_check`, `sync_commit`, `sync_adopt` — all default the target to the canonical `<drive_subpath>/memhub/<project_id>` folder. `sync_adopt` is gated: without `confirm=true` it returns the would-change verdict and changes nothing (the one destructive op). See [Sync across your machines](#sync-across-your-machines-google-drive).
+
+#### Register the MCP server
+
+This repo ships repo-scoped registration for the two CLIs that support it — nothing to do:
+
+- **Claude Code** — committed [`.mcp.json`](.mcp.json) at the repo root (`mcpServers.memhub`).
+- **OpenCode** — the `mcp.memhub` block in the tracked [`opencode.json`](opencode.json).
+
+**Codex** has no repo scope, so it's a one-time **per-machine** step — append to `~/.codex/config.toml` (not committed):
+
+```toml
+[mcp_servers.memhub]
+command = "memhub"
+args = ["serve"]
+
+# Trust entry, keyed by this repo's absolute path (a TOML literal
+# string avoids escaping backslashes on Windows):
+[projects.'C:\absolute\path\to\this\repo']
+trust_level = "trusted"
+# macOS/Linux: [projects."/absolute/path/to/this/repo"]
+```
+
+The `[projects.*]` table has to be re-added on every machine (and after a repo move/rename). Without a trust entry Codex runs the repo under its untrusted-project approval/sandbox posture and the MCP-first skill instructions won't reliably fire — if you've already accepted Codex's own trust prompt for this folder, that entry already exists; check before appending a duplicate `[projects.*]` table.
+
+Run `memhub doctor` (or `memhub doctor --json`) any time to confirm registration status per CLI — it reports a `mcp_registration_claude` / `mcp_registration_codex` / `mcp_registration_opencode` check for each.
 
 ### Token accounting
 

@@ -597,7 +597,7 @@ impl MemhubServer {
 
     #[tool(
         name = "propose_fact",
-        description = "Stage a proposed fact — a durable, user-confirmable truth about this repo such as a build/test/run command, a toolchain version, or a standing constraint — into pending_writes for human review. Agent-authored facts are NEVER durable until the user runs `memhub review accept`. Reach for this when you have inferred something worth persisting beyond the session, not for a transient observation or a to-do."
+        description = "Stage a proposed fact — a durable, user-confirmable truth about this repo (a build/test/run command, a toolchain version, a standing constraint) — into pending_writes for human review. NEVER durable until the user runs `memhub review accept`. Use when you've inferred something worth persisting beyond the session, not for a transient observation or a to-do."
     )]
     async fn propose_fact(
         &self,
@@ -611,7 +611,7 @@ impl MemhubServer {
 
     #[tool(
         name = "propose_decision",
-        description = "Stage a proposed decision — a durable record of a choice and the rationale behind it (what was decided and WHY) — into pending_writes for human review. Agent-authored decisions are NEVER durable until the user runs `memhub review accept`. Reach for this to capture an architectural or design decision worth preserving; an optional `summary` paraphrase improves later plain-English recall."
+        description = "Stage a proposed decision — a durable record of a choice and the rationale behind it (what was decided and WHY) — into pending_writes for human review. NEVER durable until the user runs `memhub review accept`. Use to capture an architectural or design decision worth preserving."
     )]
     async fn propose_decision(
         &self,
@@ -626,7 +626,7 @@ impl MemhubServer {
 
     #[tool(
         name = "propose_supersede",
-        description = "Stage a proposed SUPERSESSION — retire an outdated fact or decision by linking it to the row that replaces it — into pending_writes for human review. This NEVER writes durably: the demote-with-link (the old row is kept, tagged, and penalized in recall, never deleted) happens only when the user runs `memhub review accept`. Set target_kind to \"fact\" or \"decision\"; `old` and `new` identify the retired row and its replacement (fact: numeric id or exact key; decision: numeric id). Reach for this when you find a durable fact/decision that a newer one has clearly replaced — you are proposing the retirement, not performing it (untrusted-writer guardrail)."
+        description = "Stage a proposed SUPERSESSION — retire an outdated fact or decision by linking it to the row that replaces it — into pending_writes for human review. NEVER writes durably: the demote-with-link (the old row is kept, tagged, and penalized in recall, never deleted) happens only when the user runs `memhub review accept`. Set target_kind to \"fact\" or \"decision\"; `old` and `new` identify the retired row and its replacement (fact: numeric id or exact key; decision: numeric id). Use when you find a durable fact/decision that a newer one has clearly replaced — you are proposing the retirement, not performing it (untrusted-writer guardrail)."
     )]
     async fn propose_supersede(
         &self,
@@ -654,7 +654,7 @@ impl MemhubServer {
 
     #[tool(
         name = "task_add",
-        description = "Create a task directly in the durable tasks table — a concrete future to-do or follow-up for this repo. Tasks are intent, not truth claims, so this is a direct write with no review gate; the user prunes. Reach for this to record work to be done later, not to assert that something is already true (that is propose_fact) or to capture why a choice was made (propose_decision)."
+        description = "Create a task directly in the durable tasks table — a concrete future to-do or follow-up for this repo. Tasks are intent, not truth claims: a direct write with no review gate; the user prunes. Use to record work to be done later, not to assert that something is already true (propose_fact) or to capture why a choice was made (propose_decision)."
     )]
     async fn task_add(
         &self,
@@ -750,7 +750,7 @@ impl MemhubServer {
 
     #[tool(
         name = "sync_status",
-        description = "Cross-machine Drive sync (M10): show enablement, the Drive-folder project id, the resolved remote dir (<drive_subpath>/memhub/<project_id>), the local logical version, and the last-sync marker. No Drive comparison. memhub stays offline; the synced folder (Google Drive for Desktop) is the transport."
+        description = "Cross-machine Drive sync: show enablement, the Drive-folder project id, the resolved remote dir (<drive_subpath>/memhub/<project_id>), the local logical version, and the last-sync marker. No Drive comparison. memhub stays offline; the synced folder (Google Drive for Desktop) is the transport."
     )]
     async fn sync_status(&self) -> std::result::Result<Json<SyncStatusToolResponse>, McpError> {
         self.sync_status_impl().await
@@ -758,7 +758,7 @@ impl MemhubServer {
 
     #[tool(
         name = "sync_snapshot",
-        description = "Cross-machine Drive sync (M10): write a consistent single-file DB snapshot + manifest into the synced Drive folder. With the OS-synced-folder transport this IS the push — follow with sync_commit to record the baseline. Refuses when the remote is drive-ahead of or diverged from local (it would clobber newer state) — pull first, or pass `force=true` for last-writer-wins. Defaults the target to <drive_subpath>/memhub/<project_id>; pass `remote` to override. Requires `memhub sync enable` for this repo."
+        description = "Write a consistent single-file DB snapshot + manifest into the synced Drive folder — the push; follow with sync_commit to record the baseline. Refuses when the remote is drive-ahead of or diverged from local (would clobber newer state) — pull first, or pass `force=true` for last-writer-wins. Defaults to the configured remote dir; pass `remote` to override. Requires `memhub sync enable` for this repo."
     )]
     async fn sync_snapshot(
         &self,
@@ -769,7 +769,7 @@ impl MemhubServer {
 
     #[tool(
         name = "sync_check",
-        description = "Cross-machine Drive sync (M10): compare the local DB against the Drive snapshot and report the fast-forward verdict (up-to-date / local-ahead / drive-ahead / diverged / no-remote). Reads only the manifest, never the multi-MB snapshot. Surface `project_id_mismatch` and `schema_blocks_adopt` to the user — both block a safe adopt. Defaults to <drive_subpath>/memhub/<project_id>; pass `remote` to override."
+        description = "Compare the local DB against the Drive snapshot and report the fast-forward verdict (up-to-date / local-ahead / drive-ahead / diverged / no-remote). Reads only the manifest, never the multi-MB snapshot. Surface `project_id_mismatch` and `schema_blocks_adopt` to the user — both block a safe adopt. Defaults to the configured remote dir; pass `remote` to override."
     )]
     async fn sync_check(
         &self,
@@ -780,7 +780,7 @@ impl MemhubServer {
 
     #[tool(
         name = "sync_adopt",
-        description = "Cross-machine Drive sync (M10): replace the local DB with the Drive snapshot (the pull). DESTRUCTIVE and lossy on a diverged history. Gated: without `confirm=true` it returns the would-change verdict and refuses — surface that to the user and only re-call with confirm=true after they approve. Hard refusals regardless of confirm: project-id mismatch, a snapshot schema newer than this binary (run `memhub upgrade`), or a checksum that disagrees with the manifest. Defaults to <drive_subpath>/memhub/<project_id>; pass `remote` to override."
+        description = "Replace the local DB with the Drive snapshot (the pull). DESTRUCTIVE and lossy on a diverged history. Gated: without `confirm=true` it returns the would-change verdict and refuses — surface that to the user and only re-call with confirm=true after they approve. Hard refusals regardless of confirm: project-id mismatch, a snapshot schema newer than this binary (run `memhub upgrade`), or a checksum that disagrees with the manifest. Defaults to the configured remote dir; pass `remote` to override."
     )]
     async fn sync_adopt(
         &self,
@@ -791,7 +791,7 @@ impl MemhubServer {
 
     #[tool(
         name = "sync_commit",
-        description = "Cross-machine Drive sync (M10): record that the local DB now equals the just-pushed snapshot, so the next sync_check reads up-to-date. Call after sync_snapshot. Defaults to <drive_subpath>/memhub/<project_id>; pass `remote` to override."
+        description = "Record that the local DB now equals the just-pushed snapshot, so the next sync_check reads up-to-date. Call after sync_snapshot. Defaults to the configured remote dir; pass `remote` to override."
     )]
     async fn sync_commit(
         &self,
@@ -893,11 +893,10 @@ struct ProposeFactParams {
     key: String,
     value: String,
     rationale: String,
-    /// Propose this fact for the machine-global store instead of the
-    /// repo. Still staged: it lands in the repo's pending_writes and
-    /// becomes durable in `~/.memhub/global.sqlite` only on human
-    /// `memhub review accept`. The agent can never write global
-    /// directly (M9).
+    /// Propose for the machine-global store instead of this repo. Still
+    /// staged in pending_writes; durable in `~/.memhub/global.sqlite`
+    /// only after human `memhub review accept` — the agent never writes
+    /// global directly.
     #[serde(default)]
     global: bool,
 }
@@ -906,9 +905,9 @@ struct ProposeFactParams {
 struct ProposeDecisionParams {
     title: String,
     rationale: String,
-    /// Propose this decision for the machine-global store instead of
-    /// the repo. Staged exactly like a repo proposal; becomes durable
-    /// in the global store only on human `memhub review accept` (M9).
+    /// Propose for the machine-global store instead of this repo,
+    /// staged the same way; durable only after human
+    /// `memhub review accept`.
     #[serde(default)]
     global: bool,
 }

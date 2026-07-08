@@ -1,5 +1,12 @@
 {
   "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "memhub": {
+      "type": "local",
+      "command": ["memhub", "serve"],
+      "enabled": true
+    }
+  },
   "command": {
     "audit-md": {
       "description": "Audit CLAUDE.md/AGENTS.md for drift and bloat",

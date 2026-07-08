@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "memhub": {
+      "command": "memhub",
+      "args": ["serve"]
+    }
+  }
+}
