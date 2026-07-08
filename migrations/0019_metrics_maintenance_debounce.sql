@@ -1,0 +1,25 @@
+-- Migration 0019: debounce marker for metrics reconcile/prune (issue #68).
+--
+-- `maintenance::run_if_enabled` (decision 74, task #30) ran the
+-- recall->session reconciler and the retention pruner unconditionally
+-- on EVERY `memhub` invocation via `db::open_project` -- two
+-- unbounded-window UPDATE/DELETE passes over recall_metrics /
+-- session_metrics / session_turn_metrics on every single command, not
+-- just the ones that actually changed anything. This column is the
+-- persisted "last actually ran" marker `run_if_enabled` checks so that
+-- opportunistic path only executes at most once per hour; a stale mark
+-- (or NULL, e.g. a pre-0019 DB) lets it run again.
+--
+-- Lives on `projects` because that table is already the per-DB
+-- singleton row (`id = 1` CHECK) -- the same "one machine-local marker"
+-- shape as `known_projects.last_seen` in the upgrade registry. It is
+-- machine-local, opportunistic bookkeeping, not durable memory: NOT
+-- part of `memhub export` (see `export::v1`'s explicit column list),
+-- exactly like `known_projects` and `global_accept_markers`.
+--
+-- Explicit, user-invoked paths (`memhub metrics rescan` / `prune`) are
+-- NOT gated by this marker -- an explicit ask always runs now (see
+-- `commands::metrics`); only the opportunistic per-open pass is
+-- debounced.
+
+ALTER TABLE projects ADD COLUMN metrics_maintenance_last_run_at TEXT;
