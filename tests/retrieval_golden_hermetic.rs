@@ -28,6 +28,32 @@
 //! self-hosted calibration/dogfood signal, per N28's explicit guidance to
 //! "keep the live-DB run as calibration, not the gate."
 //!
+//! ## Wave 4 R10 (issue #74): doc-chunk + global-store sections
+//!
+//! `tests/retrieval_golden.json` also carries `doc-*` and `global-*`
+//! queries covering the two ranking paths this file's original scope
+//! didn't touch: doc-chunk recall (opt-in, gated by the doc floor) and
+//! the machine-global-store cross-DB merge (M9). Both are seeded here
+//! too, so the *entire* golden file — base, doc-, global-, semantic- —
+//! runs against this one hermetic fixture:
+//!   - Doc chunk: [`seed_hermetic_corpus`] ingests one doc via `doc::add`
+//!     straight into the fixture repo — purely repo-local, no extra
+//!     plumbing needed.
+//!   - Global store: [`seed_global_store`] builds an ordinary throwaway
+//!     project (same `fact::add` / `decision::add` calls as the repo
+//!     fixture) and relocates its `project.sqlite` to
+//!     `<home>/.memhub/global.sqlite` — that file is "structurally
+//!     identical to a repo DB" (see `db::mod.rs`), so a freshly-migrated
+//!     repo DB is already a valid global store once relocated. This
+//!     sidesteps `db::home_dir()`'s `HOME`/`USERPROFILE` env-var lookup
+//!     entirely for seeding, so — unlike `tests/global_memory.rs`, which
+//!     confines its own env-var override to a single `#[test]` to avoid
+//!     racing sibling tests in that binary — the three `#[test]`
+//!     functions below stay independently parallel-safe. The one place
+//!     `HOME`/`USERPROFILE` must point at `home` is the compiled-binary
+//!     eval subprocess in [`run_cli_eval`], and a `Command::env()` is
+//!     scoped to that one child process only.
+//!
 //! ## Regenerating the fixture
 //!
 //! There is no persisted fixture DB to regenerate — by design, mirroring
@@ -35,14 +61,16 @@
 //! `decision::add` / `task::add` calls in [`seed_hermetic_corpus`] below,
 //! rebuilt from scratch into a fresh tempdir every time this test runs. When
 //! `tests/retrieval_golden.json` legitimately changes (a query is added,
-//! reworded, or retargeted), update [`seed_hermetic_corpus`] so its rows
-//! satisfy the new/changed matchers, update the query-count drift guards
-//! in this file, then `cargo test --test retrieval_golden_hermetic`.
+//! reworded, or retargeted), update [`seed_hermetic_corpus`] (and, for a
+//! `global-*` query, [`seed_global_store`]) so its rows satisfy the
+//! new/changed matchers, update the query-count drift guards in this file,
+//! then `cargo test --test retrieval_golden_hermetic`.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use memhub::commands::{decision, fact, init, task};
+use memhub::commands::{decision, doc, fact, init, task};
 use memhub::config::{ProjectConfig, RetrievalMode};
 use serde::Deserialize;
 use tempfile::tempdir;
@@ -340,9 +368,99 @@ fn seed_hermetic_corpus(root: &Path) {
     )
     .expect("task pr6-eval-harness");
 
+    // -- doc chunk (Wave 4 R10, issue #74) ---------------------------------
+    // (doc-code-style-error-handling / semantic-doc-code-style-error-
+    // handling.) Reuses the exact "Rust Code Style Guide" / "Error
+    // Handling" content already empirically calibrated against the doc
+    // floor in `recall::tests::doc_default_recall_floor_routes_by_task_
+    // relevance` (on-topic ~= +1.6, off-topic ~= -11 per that test's own
+    // comment) instead of re-guessing a new doc's calibration from
+    // scratch, and picked for its topic (Rust error-handling / naming
+    // conventions) being clearly disjoint from every decision above —
+    // no accidental competition for a top-3 slot on an unrelated query.
+    // `doc::add` auto-flips `include_docs_in_default` on (decision 90),
+    // so this chunk enters the *default*, unfiltered bundle every query
+    // in the golden file runs against, exactly like a real repo's first
+    // doc add.
+    let doc_file = root.join("code-style-guide.md");
+    fs::write(
+        &doc_file,
+        "# Rust Code Style Guide\n\n\
+         ## Error Handling\n\n\
+         New fallible functions return `crate::Result<T>`. Never call \
+         `unwrap()` outside tests. Convert an IO failure with `map_err` \
+         into `MemhubError::InvalidInput` and propagate it upward with \
+         the `?` operator so the caller decides how to recover.\n\n\
+         ## Naming\n\n\
+         Functions are snake_case verbs; modules are nouns. Avoid \
+         abbreviations in any public API signature.\n",
+    )
+    .expect("write code style doc");
+    doc::add(root, &doc_file, None, "cli:user").expect("ingest code style doc");
+
     // Deliberately nothing here mentions "zxqv" or similar gibberish — the
     // shipped golden's one `kind: empty` safety probe
     // (`negative-nonsense-tokens`) must find zero hits against this corpus.
+}
+
+/// Flip `[global] enabled` on the fixture repo so recall merges the
+/// machine-global store [`seed_global_store`] builds (M9, Wave 4 R10 /
+/// issue #74). Must be `true` for the golden's `global-*` queries to have
+/// anything to find; harmless to set before the store exists —
+/// `open_global_if_exists` just returns `None` until it does.
+fn set_global_enabled(root: &Path, enabled: bool) {
+    let config_path = root.join(".memhub").join("config.toml");
+    let mut config = ProjectConfig::load(&config_path).expect("load config");
+    config.global.enabled = enabled;
+    config.save(&config_path).expect("save config");
+}
+
+/// Build the machine-global store's content (Wave 4 R10, issue #74):
+/// seed an ordinary throwaway project with the same `fact::add` /
+/// `decision::add` calls [`seed_hermetic_corpus`] uses, then relocate its
+/// `project.sqlite` to `<home>/.memhub/global.sqlite`. See this file's
+/// top doc comment for why this sidesteps `db::home_dir()` entirely for
+/// seeding, and why that matters for this file's three parallel tests.
+///
+/// Every row here is content that exists ONLY in the global store —
+/// never duplicated in `seed_hermetic_corpus`'s repo fixture — so a
+/// golden match can only come from `retrieval::recall`'s cross-DB global
+/// merge, not a repo-side row of the same text.
+fn seed_global_store(home: &Path) {
+    let scratch = tempdir().expect("global-store scratch tempdir");
+    init::run(scratch.path()).expect("init global-store scratch");
+    set_hybrid(scratch.path());
+
+    // (global-fact-git-signing-key)
+    fact::add(
+        scratch.path(),
+        "global-git-signing-key",
+        "Sign every commit on this machine with GPG key 4F2C9B1E, \
+         regardless of which repo it is in",
+        "user",
+        "cli:user",
+    )
+    .expect("seed global fact");
+
+    // (semantic-global-decision-editor-indent)
+    decision::add(
+        scratch.path(),
+        "Machine-wide editor default: 2-space indent for every repo",
+        "Applies across every project on this machine regardless of a \
+         given repo's own style guide; promoted to global scope so it \
+         never needs to be re-declared per repo.",
+        "user+agent:claude-code",
+        "cli:user",
+    )
+    .expect("seed global decision");
+
+    let global_dir = home.join(".memhub");
+    fs::create_dir_all(&global_dir).expect("create home .memhub dir");
+    fs::copy(
+        scratch.path().join(".memhub").join("project.sqlite"),
+        global_dir.join("global.sqlite"),
+    )
+    .expect("relocate scratch DB to global.sqlite");
 }
 
 /// Absolute path to the real, shipped golden set — not a private copy, so
@@ -376,16 +494,27 @@ struct EvalCliOutcome {
 struct EvalCliResult {
     totals: EvalCliTotals,
     recall_at_k: f64,
+    /// Report-only warm-latency metric (Wave 4 R10, issue #74). Not
+    /// asserted against any threshold anywhere in this file — deserialized
+    /// so `hermetic_retrieval_recall_at_3_matches_baseline` can prove the
+    /// CLI actually surfaces it end to end (non-negative sanity check only).
+    warm_latency_p50_ms: f64,
     outcomes: Vec<EvalCliOutcome>,
 }
 
 /// Drives the actual compiled `memhub` binary — `memhub eval retrieval
 /// --golden <real-golden> --mode hybrid --json` — with `cwd` set to the
-/// seeded fixture, so this exercises the literal CLI surface an agent or
-/// `/eval-recall` would invoke, not just the library function it wraps.
-fn run_cli_eval(root: &Path) -> EvalCliResult {
+/// seeded repo fixture and `HOME`/`USERPROFILE` pointed at `home` (so the
+/// `global-*` queries resolve `~/.memhub/global.sqlite` to the store
+/// [`seed_global_store`] built there, not this machine's real one). This
+/// exercises the literal CLI surface an agent or `/eval-recall` would
+/// invoke, not just the library function it wraps. The env override is
+/// scoped to this one child process — see this file's top doc comment.
+fn run_cli_eval(root: &Path, home: &Path) -> EvalCliResult {
     let out = Command::new(env!("CARGO_BIN_EXE_memhub"))
         .current_dir(root)
+        .env("HOME", home)
+        .env("USERPROFILE", home)
         .arg("eval")
         .arg("retrieval")
         .arg("--golden")
@@ -417,15 +546,19 @@ fn run_cli_eval(root: &Path) -> EvalCliResult {
 #[test]
 fn hermetic_retrieval_recall_at_3_matches_baseline() {
     let temp = tempdir().expect("tempdir");
+    let home = tempdir().expect("home tempdir");
     seed_hermetic_corpus(temp.path());
+    seed_global_store(home.path());
+    set_global_enabled(temp.path(), true);
 
-    let result = run_cli_eval(temp.path());
+    let result = run_cli_eval(temp.path(), home.path());
 
     // Drift guard: catches the golden file changing shape out from under
     // this fixture (mirrors `shipped_golden_file_parses_cleanly` in
     // tests/m8_retrieval_eval.rs, but against a live run, not just parsing).
-    assert_eq!(result.totals.queries, 18, "golden query count drifted");
-    assert_eq!(result.totals.match_queries, 17);
+    // 22 = the original 18 (issue #44) + 4 doc-/global- queries (issue #74).
+    assert_eq!(result.totals.queries, 22, "golden query count drifted");
+    assert_eq!(result.totals.match_queries, 21);
     assert_eq!(result.totals.empty_queries, 1);
 
     let misses: Vec<String> = result
@@ -445,6 +578,13 @@ fn hermetic_retrieval_recall_at_3_matches_baseline() {
         "expected Recall@3 = 100% on the curated fixture, got {}",
         result.recall_at_k,
     );
+    // Report-only metric (issue #74) — proves it reaches the CLI JSON
+    // shape end to end, without asserting any threshold on it.
+    assert!(
+        result.warm_latency_p50_ms >= 0.0,
+        "warm_latency_p50_ms must be a non-negative reported metric, got {}",
+        result.warm_latency_p50_ms,
+    );
 }
 
 /// Isolates the safety-probe contract: the gibberish query must never leak
@@ -454,9 +594,12 @@ fn hermetic_retrieval_recall_at_3_matches_baseline() {
 #[test]
 fn hermetic_retrieval_safety_probe_never_leaks() {
     let temp = tempdir().expect("tempdir");
+    let home = tempdir().expect("home tempdir");
     seed_hermetic_corpus(temp.path());
+    seed_global_store(home.path());
+    set_global_enabled(temp.path(), true);
 
-    let result = run_cli_eval(temp.path());
+    let result = run_cli_eval(temp.path(), home.path());
 
     assert_eq!(result.totals.empty_queries, 1);
     assert_eq!(
@@ -479,12 +622,15 @@ fn hermetic_retrieval_safety_probe_never_leaks() {
 #[test]
 fn hermetic_retrieval_age_decay_on_holds_baseline_on_fresh_corpus() {
     let temp = tempdir().expect("tempdir");
+    let home = tempdir().expect("home tempdir");
     seed_hermetic_corpus(temp.path());
+    seed_global_store(home.path());
+    set_global_enabled(temp.path(), true);
     set_age_half_life(temp.path(), 30);
 
-    let result = run_cli_eval(temp.path());
+    let result = run_cli_eval(temp.path(), home.path());
 
-    assert_eq!(result.totals.queries, 18, "golden query count drifted");
+    assert_eq!(result.totals.queries, 22, "golden query count drifted");
     let misses: Vec<String> = result
         .outcomes
         .iter()
