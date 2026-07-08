@@ -22,7 +22,7 @@ numbers. Default-off config additions must keep an untouched install byte-identi
 | 0 | Fix-now defects | 17 / 17 | — (complete) |
 | 1 | Loud states (doctor/status/integrity) | 5 / 5 | Q35 ✓ (complete) |
 | 2 | Session-start token diet | 7 / 7 | Q21–Q25 ✓ · Q41 ✓ (complete) |
-| 3 | Staleness / lifecycle | 5 / 7 | Q1–Q6 ✓ (L1–L4 done) |
+| 3 | Staleness / lifecycle | 7 / 7 | Q1–Q6 ✓ (complete) |
 | 4 | Retrieval performance | 0 / 12 | Q17–Q19, Q24, Q40 |
 | 5 | Upgrade / GC hardening | 0 / 8 | Q12–Q16 |
 | 6 | Wrap-up policy / verbosity | 0 / 6 | Q7–Q11 |
@@ -274,8 +274,10 @@ Four PRs: **PR-A text/docs** and **PR-B safe code** (no decisions), **PR #17**
 
 ## Wave 3 — Lifecycle  (gating: Q1–Q6 ✓ — resolved 2026-07-06 as decision 145)
 
-Decomposed into 9 issues (#41–49): L1–L6 + Q5/Q6 + N28 (L7 declined). **Batch 1 done**
-2026-07-06 — main green at `cea07ff` (638 tests); Batch 2: L2 (#57) ✓ → L3 (#59) ✓ → L4 (#60) ✓ → L5 (unblocked) → L6 (last).
+Decomposed into 9 issues (#41–49): L1–L6 + Q5/Q6 + N28 (L7 declined). **WAVE COMPLETE**
+2026-07-07 — main green at `a28ffd2`. Batch 1 done 2026-07-06 (`cea07ff`, 638 tests);
+Batch 2: L2 (#57) ✓ → L3 (#59) ✓ → L4 (#60) ✓ → L5 (#62) ✓ → L6 (#63) ✓. Every merge
+pre-flighted with a throwaway local merge + full suite before the canonical squash.
 
 - [x] L1 `memhub fact verify` (no add-upsert side effects) + wrap-up per-item step —
   touches `verified_at` only, off the MCP surface; per-item re-verify across all 3 agents.
@@ -295,8 +297,19 @@ Decomposed into 9 issues (#41–49): L1–L6 + Q5/Q6 + N28 (L7 declined). **Batc
   count via the same `stale()` call so the two can't disagree; `--json` as `{"review_stale":{...}}`
   (Q29); read-only invariant proven by a before/after rowcount+writes_log snapshot test. Full-suite
   pre-flight 671 green. — 2026-07-07, PR #60 / 3a87254 (issue #47).
-- [ ] L5 accept-time contradiction probe — **unblocked** (L3 merged); tier:opus (#48)
-- [ ] L6 optional age decay (default-off) — eval-gated, last; L3 dep cleared (#49)
+- [x] L5 accept-time contradiction probe — MCP `review accept` compares an incoming fact/decision
+  against the current durable value and logs a `prior_value` on change (advisory probe, not a hard
+  block; agents stay untrusted writers). tier:opus. Full-suite pre-flight 679 green. **Decision 147:
+  the 2.0 rerank threshold must be re-verified on any reranker swap (A4/R7).**
+  — 2026-07-07, PR #62 / 27a9033 (issue #48).
+- [x] L6 optional age decay (default-off) — `[retrieval.scoring] age_half_life_days = 0` (0 = off);
+  when >0, multiplies blended relevance by `2^(-age_days/half_life)` keyed on `verified_at` (facts) /
+  `updated_at` (done tasks); **decisions + doc chunks excluded** (Q2/decision 145). Default-off is a
+  bit-for-bit no-op (multiplier exactly 1.0) — untouched install byte-identical, proven at multiplier,
+  `score()` seam (`.to_bits()`), and eval. doctor parity on all 3 surfaces. Eval sweep (N28 hermetic):
+  OFF 100%, ON(=30) 100% on the fresh golden corpus (decay bites only on genuinely aged rows —
+  demotion unit-proven). Full-suite pre-flight 415 lib + all integration green. eval-gated, last item.
+  — 2026-07-07, PR #63 / a28ffd2 (issue #49).
 - [-] L7 hard archival — **recommend against / defer** (per review)
 - [x] rider: N28 hermetic retrieval golden fixture — `tests/retrieval_golden_hermetic.rs`
   drives the compiled binary against a seeded tempdir; baseline Recall@3 = 100% (the L2/L3/L6
