@@ -125,6 +125,7 @@ pub fn run_retrieval(start: &Path, opts: EvalOptions) -> Result<EvalSummary> {
             // of recall_metrics so the dashboard's numbers reflect
             // actual agent + user activity.
             log_metrics: false,
+            surface: None,
         };
         let response = retrieval::recall(start, recall_opts)?;
         if resolved_mode.is_none() {

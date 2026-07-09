@@ -110,6 +110,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0019_metrics_maintenance_debounce",
         include_str!("../../migrations/0019_metrics_maintenance_debounce.sql"),
     ),
+    (
+        "0020_recall_metrics_surface",
+        include_str!("../../migrations/0020_recall_metrics_surface.sql"),
+    ),
 ];
 
 pub fn apply_all(conn: &mut Connection) -> Result<Vec<String>> {
@@ -226,5 +230,26 @@ mod tests {
             )
             .expect("pragma decisions");
         assert_eq!(decisions_has, 1, "decisions.superseded_by must exist");
+    }
+
+    /// Migration 0020 (issue #70 / gate Q17) adds the recall-surface tag
+    /// column to `recall_metrics`. Additive `ALTER TABLE ADD COLUMN`, so
+    /// a fresh DB simply has the column, nullable; replay safety is
+    /// already covered by `idempotent_reapply_is_a_noop`.
+    #[test]
+    fn migration_0020_adds_recall_metrics_surface_column() {
+        let mut conn = Connection::open_in_memory().expect("open");
+        apply_all(&mut conn).expect("apply");
+        let has_surface: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('recall_metrics') WHERE name = 'surface'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("pragma recall_metrics");
+        assert_eq!(
+            has_surface, 1,
+            "recall_metrics.surface must exist after 0020"
+        );
     }
 }

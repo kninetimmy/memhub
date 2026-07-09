@@ -32,6 +32,7 @@ fn fts_recall(path: &std::path::Path, query: &str) -> RecallResponse {
             use_reranker: None,
             min_rerank_score: None,
             log_metrics: false,
+            surface: None,
         },
     )
     .expect("recall")
