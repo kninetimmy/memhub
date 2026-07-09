@@ -21,6 +21,16 @@
 #   - render.output_dir                (project property)
 #   - metrics.enabled = false          (off by default; changes here set
 #                                       the canonical install default)
+#   - gc.prune_superseded_incremental  (Wave 5 U5a; off by default —
+#                                       changes here set the canonical
+#                                       install default)
+#   - gc.prune_large_thirdparty        (Wave 5 U5b; off by default —
+#                                       changes here set the canonical
+#                                       install default)
+#   - gc.delete_stale_backups          (Wave 5 U8; off = report-only,
+#                                       gc's long-standing default
+#                                       posture — changes here set the
+#                                       canonical install default)
 #   - doc.allowed_dirs                 (MCP doc_add path-confinement
 #                                       allowlist; security boundary,
 #                                       canonical baseline is EMPTY. An
@@ -272,3 +282,24 @@ allowed_dirs = []
 # yourself. Per-machine: do NOT commit a real path back into this example.
 [audit]
 user_md_path = ""
+
+# Wave 5 gc hardening (July 2026 improvement review, U5/U8 — decision
+# Q12/Q16). All three are off/report-only by default so `memhub gc`
+# stays byte-identical to pre-Wave-5 behavior for these classes unless
+# explicitly opted in. There is no CLI flag for any of these; they are
+# deliberate, persisted per-repo policy, not one-off switches.
+# prune_superseded_incremental (U5a): also prune superseded
+# target/<profile>/incremental/memhub-* session dirs — excluded by a
+# shipped decision whose "no comparable disk win" rationale no longer
+# holds, but reversing it stays an explicit opt-in. prune_large_thirdparty
+# (U5b): also prune large (>=100 MB/hash) multi-hash third-party deps/
+# artifacts (e.g. ort_sys) — narrowly opt-in and size-gated, not a
+# blanket "third-party is fair game" flip. delete_stale_backups (U8):
+# actually delete .memhub/backups/{rendered,markdown} files beyond the
+# newest 20 (report-only otherwise); never applies to the legacy
+# project.sqlite.k9-bootstrap-backup, which is only ever reported, or
+# to backups/sync/, which is already single-slot.
+[gc]
+prune_superseded_incremental = false
+prune_large_thirdparty = false
+delete_stale_backups = false

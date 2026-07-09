@@ -146,6 +146,16 @@ pub const DEFAULT_GLOBAL_INCLUDE_DOCS_IN_DEFAULT: bool = false;
 /// `docs/reference/memhub-prd-addendum-m10-drive-sync.md`.
 pub const DEFAULT_SYNC_ENABLED: bool = false;
 
+/// Wave 5 gc hardening (U5/U8, decision Q12/Q16). All off by default —
+/// `memhub gc`'s output for these classes is byte-identical to
+/// pre-Wave-5 memhub until a repo explicitly opts in here. There is
+/// deliberately no CLI flag for any of these: they are persisted,
+/// per-repo policy choices, not one-off command-line switches. See
+/// `commands::gc` for what each flag does.
+pub const DEFAULT_GC_PRUNE_SUPERSEDED_INCREMENTAL: bool = false;
+pub const DEFAULT_GC_PRUNE_LARGE_THIRDPARTY: bool = false;
+pub const DEFAULT_GC_DELETE_STALE_BACKUPS: bool = false;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RetrievalMode {
@@ -288,6 +298,15 @@ fn default_global_include_docs_in_default() -> bool {
 }
 fn default_sync_enabled() -> bool {
     DEFAULT_SYNC_ENABLED
+}
+fn default_gc_prune_superseded_incremental() -> bool {
+    DEFAULT_GC_PRUNE_SUPERSEDED_INCREMENTAL
+}
+fn default_gc_prune_large_thirdparty() -> bool {
+    DEFAULT_GC_PRUNE_LARGE_THIRDPARTY
+}
+fn default_gc_delete_stale_backups() -> bool {
+    DEFAULT_GC_DELETE_STALE_BACKUPS
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -562,6 +581,47 @@ pub struct AuditConfig {
     pub user_md_path: String,
 }
 
+/// Opt-in gc hardening (Wave 5, U5/U8 — decision Q12/Q16). Every field
+/// defaults to `false`/report-only so an untouched `.memhub/config.toml`
+/// (or one with no `[gc]` section at all) behaves byte-identically to
+/// pre-Wave-5 memhub. See `commands::gc` for what each flag actually
+/// does; there is no CLI equivalent by design — these are deliberate,
+/// persisted per-repo opt-ins, not one-off command-line switches.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GcConfig {
+    /// U5(a): also prune superseded `target/<profile>/incremental/
+    /// memhub-*` session dirs (decision Q12). Off by default — the
+    /// original "no comparable disk win" rationale for excluding
+    /// `incremental/` no longer holds, but reversing a shipped
+    /// exclusion stays an explicit, narrow opt-in rather than a
+    /// unilateral default flip.
+    #[serde(default = "default_gc_prune_superseded_incremental")]
+    pub prune_superseded_incremental: bool,
+    /// U5(b): also prune large (>= 100 MB per hash) multi-hash
+    /// third-party `deps/` artifacts, e.g. `ort_sys` (decision Q12).
+    /// Narrowly opt-in and size-gated — see `commands::gc`'s
+    /// `LARGE_THIRDPARTY_THRESHOLD_BYTES`.
+    #[serde(default = "default_gc_prune_large_thirdparty")]
+    pub prune_large_thirdparty: bool,
+    /// U8: actually delete `.memhub/backups/{rendered,markdown}` files
+    /// beyond the newest 20 (decision Q16). Off = report-only, gc's
+    /// long-standing default posture. Never applies to the legacy
+    /// `project.sqlite.k9-bootstrap-backup`, which is only ever
+    /// reported, nor to `backups/sync/`, which is already single-slot.
+    #[serde(default = "default_gc_delete_stale_backups")]
+    pub delete_stale_backups: bool,
+}
+
+impl Default for GcConfig {
+    fn default() -> Self {
+        Self {
+            prune_superseded_incremental: DEFAULT_GC_PRUNE_SUPERSEDED_INCREMENTAL,
+            prune_large_thirdparty: DEFAULT_GC_PRUNE_LARGE_THIRDPARTY,
+            delete_stale_backups: DEFAULT_GC_DELETE_STALE_BACKUPS,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectConfig {
     pub project_name: String,
@@ -587,6 +647,8 @@ pub struct ProjectConfig {
     pub doc: DocConfig,
     #[serde(default)]
     pub audit: AuditConfig,
+    #[serde(default)]
+    pub gc: GcConfig,
 }
 
 impl ProjectConfig {
@@ -605,6 +667,7 @@ impl ProjectConfig {
             sync: SyncConfig::default(),
             doc: DocConfig::default(),
             audit: AuditConfig::default(),
+            gc: GcConfig::default(),
         }
     }
 
