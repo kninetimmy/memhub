@@ -16,7 +16,8 @@ use crate::config::RetrievalMode;
 use crate::db;
 use crate::retrieval::embeddings::{EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME, embed_batch};
 use crate::retrieval::persist::{
-    SourceType, decision_embed_text, doc_chunk_embed_text, fact_embed_text, task_embed_text,
+    SourceType, decision_embed_text, doc_chunk_embed_text, fact_embed_text, note_embed_text,
+    task_embed_text,
 };
 use crate::retrieval::util::{sha256_hex, vector_to_le_bytes};
 
@@ -32,6 +33,8 @@ pub struct IndexStatusSummary {
     pub tasks_embedded: i64,
     pub doc_chunks_total: i64,
     pub doc_chunks_embedded: i64,
+    pub notes_total: i64,
+    pub notes_embedded: i64,
     pub total_embeddings: i64,
     pub missing_count: i64,
     pub stale_ratio: f64,
@@ -44,6 +47,7 @@ pub struct RebuildSummary {
     pub decisions: usize,
     pub tasks: usize,
     pub doc_chunks: usize,
+    pub notes: usize,
     pub deleted: usize,
     pub elapsed_ms: u128,
 }
@@ -57,11 +61,13 @@ pub fn status(start: &Path) -> Result<IndexStatusSummary> {
     let decisions_total = rows.decisions.len() as i64;
     let tasks_total = rows.tasks.len() as i64;
     let doc_chunks_total = rows.doc_chunks.len() as i64;
+    let notes_total = rows.notes.len() as i64;
 
     let facts_embedded = count_current_fact_embeddings(conn, &rows.facts)?;
     let decisions_embedded = count_current_decision_embeddings(conn, &rows.decisions)?;
     let tasks_embedded = count_current_task_embeddings(conn, &rows.tasks)?;
     let doc_chunks_embedded = count_current_doc_chunk_embeddings(conn, &rows.doc_chunks)?;
+    let notes_embedded = count_current_note_embeddings(conn, &rows.notes)?;
 
     let total_embeddings: i64 = conn.query_row(
         "SELECT COUNT(*) FROM embeddings WHERE model_name = ?1",
@@ -69,8 +75,13 @@ pub fn status(start: &Path) -> Result<IndexStatusSummary> {
         |row| row.get(0),
     )?;
 
-    let source_rows = facts_total + decisions_total + tasks_total + doc_chunks_total;
-    let current_rows = facts_embedded + decisions_embedded + tasks_embedded + doc_chunks_embedded;
+    let source_rows =
+        facts_total + decisions_total + tasks_total + doc_chunks_total + notes_total;
+    let current_rows = facts_embedded
+        + decisions_embedded
+        + tasks_embedded
+        + doc_chunks_embedded
+        + notes_embedded;
     let missing_count = (source_rows - current_rows).max(0);
     let stale_ratio = if source_rows == 0 {
         0.0
@@ -89,6 +100,8 @@ pub fn status(start: &Path) -> Result<IndexStatusSummary> {
         tasks_embedded,
         doc_chunks_total,
         doc_chunks_embedded,
+        notes_total,
+        notes_embedded,
         total_embeddings,
         missing_count,
         stale_ratio,
@@ -110,6 +123,7 @@ pub fn rebuild(start: &Path, actor: &str) -> Result<RebuildSummary> {
     let mut decisions_vectors: Vec<(i64, Vec<f32>, String)> = Vec::new();
     let mut tasks_vectors: Vec<(i64, Vec<f32>, String)> = Vec::new();
     let mut doc_chunks_vectors: Vec<(i64, Vec<f32>, String)> = Vec::new();
+    let mut notes_vectors: Vec<(i64, Vec<f32>, String)> = Vec::new();
 
     if !rows.facts.is_empty() {
         let texts: Vec<String> = rows
@@ -159,6 +173,13 @@ pub fn rebuild(start: &Path, actor: &str) -> Result<RebuildSummary> {
             doc_chunks_vectors.push((*id, vector, text));
         }
     }
+    if !rows.notes.is_empty() {
+        let texts: Vec<String> = rows.notes.iter().map(|(_, t)| note_embed_text(t)).collect();
+        let vectors = embed_batch(&texts)?;
+        for ((id, _), (text, vector)) in rows.notes.iter().zip(texts.into_iter().zip(vectors)) {
+            notes_vectors.push((*id, vector, text));
+        }
+    }
 
     // Single transaction: prune orphaned active-model rows, then UPSERT
     // vectors only when the source row still matches the snapshot that was
@@ -172,6 +193,7 @@ pub fn rebuild(start: &Path, actor: &str) -> Result<RebuildSummary> {
     let decisions_written = upsert_batch(&tx, SourceType::Decision, &decisions_vectors)?;
     let tasks_written = upsert_batch(&tx, SourceType::Task, &tasks_vectors)?;
     let doc_chunks_written = upsert_batch(&tx, SourceType::DocChunk, &doc_chunks_vectors)?;
+    let notes_written = upsert_batch(&tx, SourceType::Note, &notes_vectors)?;
 
     db::log_write(
         &tx,
@@ -180,12 +202,13 @@ pub fn rebuild(start: &Path, actor: &str) -> Result<RebuildSummary> {
         None,
         "rebuild",
         &format!(
-            "index rebuild: model={} facts={} decisions={} tasks={} doc_chunks={}",
+            "index rebuild: model={} facts={} decisions={} tasks={} doc_chunks={} notes={}",
             EMBEDDING_MODEL_NAME,
             facts_written,
             decisions_written,
             tasks_written,
             doc_chunks_written,
+            notes_written,
         ),
     )?;
     tx.commit()?;
@@ -196,6 +219,7 @@ pub fn rebuild(start: &Path, actor: &str) -> Result<RebuildSummary> {
         decisions: decisions_written,
         tasks: tasks_written,
         doc_chunks: doc_chunks_written,
+        notes: notes_written,
         deleted,
         elapsed_ms: started.elapsed().as_millis(),
     })
@@ -206,6 +230,7 @@ struct CollectedRows {
     decisions: Vec<(i64, String, String, Option<String>)>,
     tasks: Vec<(i64, String, Option<String>)>,
     doc_chunks: Vec<(i64, String, String)>,
+    notes: Vec<(i64, String)>,
 }
 
 fn collect_source_rows(conn: &Connection) -> Result<CollectedRows> {
@@ -263,11 +288,21 @@ fn collect_source_rows(conn: &Connection) -> Result<CollectedRows> {
         doc_chunks.push(row?);
     }
 
+    let mut notes = Vec::new();
+    let mut stmt = conn.prepare("SELECT id, text FROM session_notes ORDER BY id")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        notes.push(row?);
+    }
+
     Ok(CollectedRows {
         facts,
         decisions,
         tasks,
         doc_chunks,
+        notes,
     })
 }
 
@@ -341,6 +376,13 @@ fn delete_orphan_embeddings(tx: &rusqlite::Transaction<'_>) -> Result<usize> {
            AND NOT EXISTS (SELECT 1 FROM doc_chunks WHERE doc_chunks.id = embeddings.source_id)",
         params![EMBEDDING_MODEL_NAME],
     )?;
+    deleted += tx.execute(
+        "DELETE FROM embeddings
+         WHERE model_name = ?1
+           AND source_type = 'note'
+           AND NOT EXISTS (SELECT 1 FROM session_notes WHERE session_notes.id = embeddings.source_id)",
+        params![EMBEDDING_MODEL_NAME],
+    )?;
     Ok(deleted)
 }
 
@@ -391,6 +433,17 @@ fn count_current_doc_chunk_embeddings(
     for (id, heading_path, body) in rows {
         let text = doc_chunk_embed_text(heading_path, body);
         if embedding_matches(conn, SourceType::DocChunk, *id, &text)? {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+fn count_current_note_embeddings(conn: &Connection, rows: &[(i64, String)]) -> Result<i64> {
+    let mut count = 0;
+    for (id, text) in rows {
+        let text = note_embed_text(text);
+        if embedding_matches(conn, SourceType::Note, *id, &text)? {
             count += 1;
         }
     }
@@ -474,6 +527,18 @@ fn current_source_hash(
                 },
             )
             .optional()?,
+        // Mirrors the DocChunk arm above: notes carry no title-analog
+        // column, so the embed text is just the note body.
+        SourceType::Note => tx
+            .query_row(
+                "SELECT text FROM session_notes WHERE id = ?1",
+                params![source_id],
+                |row| {
+                    let text: String = row.get(0)?;
+                    Ok(note_embed_text(&text))
+                },
+            )
+            .optional()?,
     };
     Ok(text.map(|value| sha256_hex(value.as_bytes())))
 }
@@ -481,10 +546,17 @@ fn current_source_hash(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::{decision, fact, init, task};
+    use crate::commands::{decision, fact, init, session_note, task};
     use crate::config::{ProjectConfig, RetrievalMode};
     use rusqlite::params;
     use tempfile::tempdir;
+
+    fn switch_to_hybrid(repo_root: &std::path::Path) {
+        let config_path = repo_root.join(".memhub").join("config.toml");
+        let mut cfg = ProjectConfig::load(&config_path).expect("load config");
+        cfg.retrieval.mode = RetrievalMode::Hybrid;
+        cfg.save(&config_path).expect("save config");
+    }
 
     #[test]
     fn status_reports_zero_coverage_under_fts_mode() {
@@ -551,6 +623,87 @@ mod tests {
         assert_eq!(after.decisions_embedded, 1);
         assert_eq!(after.tasks_embedded, 1);
         assert_eq!(after.missing_count, 0);
+    }
+
+    /// Fix for the review on issue #98's PR: a note logged before hybrid
+    /// mode was on (or before migration 0022 existed at all) has no
+    /// embedding. `index rebuild` must be able to backfill it — the
+    /// documented remedy for a `stale_embeddings` warning — not silently
+    /// skip notes forever.
+    #[test]
+    fn rebuild_backfills_missing_note_embedding() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        // Logged under the default fts mode: no eager embedding is written.
+        session_note::add(
+            temp.path(),
+            "Pre-hybrid scratch note with no embedding yet.",
+            "claude-code",
+            "claude-code:log_session_note",
+        )
+        .expect("session note");
+
+        switch_to_hybrid(temp.path());
+
+        let before = status(temp.path()).expect("status before rebuild");
+        assert_eq!(before.notes_total, 1);
+        assert_eq!(
+            before.notes_embedded, 0,
+            "note predates hybrid mode and must show as missing coverage"
+        );
+
+        let summary = rebuild(temp.path(), "cli:user").expect("rebuild");
+        assert_eq!(summary.notes, 1, "rebuild must backfill the missing note");
+
+        let after = status(temp.path()).expect("status after rebuild");
+        assert_eq!(after.notes_embedded, 1);
+        assert_eq!(
+            after.missing_count, 0,
+            "rebuild must clear the note from missing coverage"
+        );
+    }
+
+    /// Companion to the backfill test: a note that already has a live
+    /// eager-embedded vector (written by `session_note::add` in hybrid
+    /// mode) must survive `rebuild`'s orphan-deletion pass —
+    /// `delete_orphan_embeddings`'s `note` branch must key off
+    /// `session_notes`, not delete every note embedding indiscriminately.
+    #[test]
+    fn rebuild_does_not_orphan_delete_live_note_embedding() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        switch_to_hybrid(temp.path());
+
+        let note = session_note::add(
+            temp.path(),
+            "Hybrid-mode note, eager-embedded on write.",
+            "claude-code",
+            "claude-code:log_session_note",
+        )
+        .expect("session note");
+
+        let count_note_embeddings = |temp_path: &std::path::Path| -> i64 {
+            let ctx = db::open_project(temp_path).expect("open");
+            ctx.conn
+                .query_row(
+                    "SELECT COUNT(*) FROM embeddings WHERE source_type = 'note' AND source_id = ?1",
+                    params![note.id],
+                    |r| r.get(0),
+                )
+                .expect("count note embeddings")
+        };
+        assert_eq!(count_note_embeddings(temp.path()), 1, "eager-embedded on add");
+
+        let summary = rebuild(temp.path(), "cli:user").expect("rebuild");
+        assert_eq!(
+            summary.notes, 1,
+            "rebuild re-confirms the still-current note embedding"
+        );
+        assert_eq!(
+            count_note_embeddings(temp.path()),
+            1,
+            "live note embedding must survive delete_orphan_embeddings, not be dropped"
+        );
     }
 
     #[test]

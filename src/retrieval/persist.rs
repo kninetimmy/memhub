@@ -31,6 +31,7 @@ pub enum SourceType {
     Decision,
     Task,
     DocChunk,
+    Note,
 }
 
 impl SourceType {
@@ -40,6 +41,7 @@ impl SourceType {
             SourceType::Decision => "decision",
             SourceType::Task => "task",
             SourceType::DocChunk => "doc_chunk",
+            SourceType::Note => "note",
         }
     }
 }
@@ -81,6 +83,15 @@ pub fn doc_chunk_embed_text(heading_path: &str, body: &str) -> String {
     } else {
         format!("{heading_path}\n\n{body}")
     }
+}
+
+/// Build the embed text for a session note. Notes carry only free-form
+/// `text` — no title-analog field like a doc chunk's heading_path or a
+/// fact's key — and `actor` is provenance (like `source` on facts/
+/// decisions), not content, so it stays out of the embed text the same
+/// way `source` does. The body is embedded verbatim.
+pub fn note_embed_text(text: &str) -> String {
+    text.to_string()
 }
 
 /// Eager-embed entry point. No-op when mode != Hybrid.

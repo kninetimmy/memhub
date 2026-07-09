@@ -29,6 +29,7 @@ pub fn add(start: &Path, text: &str, actor: &str, actor_raw: &str) -> Result<Ses
     }
 
     let mut ctx = db::open_project(start)?;
+    let mode = ctx.config.retrieval.mode;
     let tx = ctx.conn.transaction()?;
 
     tx.execute(
@@ -45,6 +46,15 @@ pub fn add(start: &Path, text: &str, actor: &str, actor_raw: &str) -> Result<Ses
         Some(row_id),
         "insert",
         "mcp log_session_note",
+    )?;
+
+    let embed_text = crate::retrieval::note_embed_text(trimmed_text);
+    crate::retrieval::eager_embed_in_tx(
+        &tx,
+        mode,
+        crate::retrieval::SourceType::Note,
+        row_id,
+        &embed_text,
     )?;
 
     let note = tx.query_row(

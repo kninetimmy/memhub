@@ -414,10 +414,11 @@ impl MemhubServer {
                 "decision" => source_types.push(SourceType::Decision),
                 "task" => source_types.push(SourceType::Task),
                 "doc" | "doc_chunk" => source_types.push(SourceType::DocChunk),
+                "note" => source_types.push(SourceType::Note),
                 other => {
                     return Err(McpError::invalid_params(
                         format!(
-                            "invalid source_type '{other}'; expected fact, decision, task, or doc"
+                            "invalid source_type '{other}'; expected fact, decision, task, doc, or note"
                         ),
                         None,
                     ));
@@ -671,7 +672,7 @@ impl MemhubServer {
 
     #[tool(
         name = "log_session_note",
-        description = "Record a free-form session note. Notes are write-only scratch space and never promote to facts or decisions."
+        description = "Record a free-form session note. Notes are write-only scratch space and never promote to facts or decisions; never in default recall, but retrievable with recall(source_types=[\"note\"])."
     )]
     async fn log_session_note(
         &self,
@@ -746,7 +747,7 @@ impl MemhubServer {
 
     #[tool(
         name = "recall",
-        description = "Retrieve relevant facts, decisions, and tasks via SQL+RAG hybrid recall (FTS5 + brute-force cosine when hybrid mode is configured). Read-only; prefer this over reading PROJECT_LEDGER.md mid-session. Ingested reference docs are opt-in (add one with doc_add); once added they join the default bundle when a chunk clears the relevance floor (decision 90), and source_types=[\"doc\"] scopes a query to docs alone. The response's `available_docs` counts ingested doc chunks that did NOT surface this call — when it is non-zero and the question is design/spec/architecture-flavored, consider a follow-up recall scoped to docs (use judgment; not every turn)."
+        description = "Retrieve relevant facts, decisions, and tasks via SQL+RAG hybrid recall (FTS5 + brute-force cosine when hybrid mode is configured). Read-only; prefer this over reading PROJECT_LEDGER.md mid-session. Ingested reference docs are opt-in (add one with doc_add); once added they join the default bundle when a chunk clears the relevance floor (decision 90), and source_types=[\"doc\"] scopes a query to docs alone. The response's `available_docs` counts ingested doc chunks that did NOT surface this call — when it is non-zero and the question is design/spec/architecture-flavored, consider a follow-up recall scoped to docs (use judgment; not every turn). Session notes (log_session_note) are write-only scratch and never join the default bundle at all — source_types=[\"note\"] is the only way to retrieve one."
     )]
     async fn recall(
         &self,
@@ -848,7 +849,7 @@ INTENT → TOOL (always start here; do not fall through to Grep/Read/manual scan
 • cross-machine pull/push of memhub state → sync_check, sync_snapshot, sync_adopt, sync_commit
 • session start (turn 1 ONLY) → read .memhub/rendered/PROJECT.md once
 
-OTHER (direct, use when explicitly needed): status, search, list_tasks, list_decisions, list_facts, list_pending_writes, get_command, render (regenerate PROJECT.md), sync_status, log_session_note (write-only scratch).
+OTHER (direct, use when explicitly needed): status, search, list_tasks, list_decisions, list_facts, list_pending_writes, get_command, render (regenerate PROJECT.md), sync_status, log_session_note (write-only scratch; recall(source_types=["note"]) retrieves it explicitly, never in default recall).
 
 NEVER:
 • Grep for code by intent before `locate` has narrowed candidates. Grep is for confirming inside files `locate` returned.
