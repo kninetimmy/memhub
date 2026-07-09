@@ -8,13 +8,18 @@
 //     5c38ec7c405ec4b44b94cc5a9bb96e735b38267a.
 //
 //   * ms-marco-MiniLM-L-6-v2 — cross-encoder re-ranker bundled by the
-//     task-#21 work. ~91 MB. Source: Xenova/ms-marco-MiniLM-L-6-v2@main
-//     (an ONNX export of cross-encoder/ms-marco-MiniLM-L-6-v2). Selected
-//     over BGE-reranker-v2-m3 in the bake-off (decisions 68–70): +17.7pp
-//     Recall@1 over baseline, 15× faster than BGE-v2-m3, no keyword
-//     regressions.
+//     task-#21 work. ~22 MB (int8-quantized `model_int8.onnx`; issue #75
+//     / Q18, decision 148 — was ~91 MB fp32). Source:
+//     Xenova/ms-marco-MiniLM-L-6-v2@main (an ONNX export of
+//     cross-encoder/ms-marco-MiniLM-L-6-v2). Selected over BGE-reranker-
+//     v2-m3 in the bake-off (decisions 68–70): +17.7pp Recall@1 over
+//     baseline, 15× faster than BGE-v2-m3, no keyword regressions.
+//     BAAI publishes no quantized bge-small ONNX (verified against the
+//     HF repo file tree), so the bi-encoder stays fp32 — only the
+//     re-ranker is int8 here (partial adoption, issue #75).
 //
-// On a clean build this downloads ~218 MB total from Hugging Face. On
+// On a clean build this downloads ~150 MB total from Hugging Face (was
+// ~218 MB before the int8 re-ranker swap). On
 // rebuilds the staged files are reused if their SHA256 matches the
 // pinned value. All hashes were computed locally over the downloaded
 // bytes (or, for BGE-small's model.onnx, match the x-linked-etag
@@ -89,10 +94,18 @@ const RERANKER: ModelBundle = ModelBundle {
     local_dir: "ms-marco-MiniLM-L-6-v2",
     base_url: "https://huggingface.co/Xenova/ms-marco-MiniLM-L-6-v2/resolve/main",
     files: &[
+        // int8-quantized cross-encoder (issue #75 / Q18, decision 148).
+        // Xenova publishes several quant variants under onnx/;
+        // `model_int8.onnx` is the QInt8 dynamic quantization (91 MB fp32
+        // -> 22 MB). Staged under the same local name `model.onnx` so
+        // rerank.rs's include_bytes! is unchanged. The SHA-256 is the HF
+        // LFS oid (x-linked-etag) for the pinned file, read from the repo
+        // file tree and re-verified over the downloaded bytes by
+        // ensure_file below.
         ModelFile {
-            remote_path: "onnx/model.onnx",
+            remote_path: "onnx/model_int8.onnx",
             local_name: "model.onnx",
-            sha256: "c623d0bcb99f4622beb413eaef00cfbe5db20df9f1dd982da4b4f26022881870",
+            sha256: "a13ec391ca99f49886694e12d3e800521f36d4267d7d448c34421c541a2baf50",
         },
         // tokenizer.json and special_tokens_map.json are byte-identical to
         // BGE-small's (shared BERT WordPiece vocab); SHAs match accordingly.

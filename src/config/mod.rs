@@ -64,6 +64,10 @@ pub const DEFAULT_AGE_HALF_LIFE_DAYS: i64 = 0;
 /// ~+1.25; the next legitimate match drops out at 2.5. 2.0 sits in the
 /// middle of the safe band [1.5, 2.4]. Gives parity with the retired
 /// `min_vector_score = 0.7` floor on R@3 and safety probe pass.
+/// Re-verified under the int8-quantized reranker (issue #75 / Q18): on
+/// the hermetic golden set the lowest legit match shifted 2.46 -> 2.33
+/// (still clears 2.0) and the gibberish ceiling -8.65 -> -8.82, so 2.0
+/// stays inside the safe band and Recall@3 holds at 100%. Left unchanged.
 pub const DEFAULT_MIN_RERANK_SCORE: f32 = 2.0;
 /// Cross-encoder floor a doc chunk must clear to enter the *default*
 /// recall bundle when `include_docs_in_default` is on (decision
@@ -79,6 +83,9 @@ pub const DEFAULT_MIN_RERANK_SCORE: f32 = 2.0;
 /// scores, not a high threshold. Only consulted for chunks that
 /// entered via the default-inclusion path; explicit
 /// `--source-type doc` keeps the normal `min_rerank_score`.
+/// Re-verified under the int8-quantized reranker (issue #75): the
+/// on-topic semantic doc reranked 1.20 -> 1.61 and off-topic chunks
+/// stayed near −11, so 0.0 holds with even more headroom. Unchanged.
 pub const DEFAULT_DOC_MIN_RERANK_SCORE: f32 = 0.0;
 pub const DEFAULT_ACCEPTED_ONLY: bool = false;
 /// Default stale-fact handling in recall. `true` = keep aged facts in the
