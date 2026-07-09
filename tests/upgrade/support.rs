@@ -40,6 +40,52 @@
 //! without itself mutating `HOME`) can still run concurrently with each
 //! other; only a writer excludes everyone (readers and other writers alike)
 //! for the — brief — duration of its override.
+//!
+//! ## Reader-trigger closure — when a NEW test needs `env_read_lock()`
+//!
+//! `db::home_dir()` is resolved, in-process, by every function below —
+//! directly or by calling something else in this list. If a test in this
+//! harness calls ANY of these (or a `commands::*` function not listed here
+//! that itself calls `open_project`/`init::run`/one of these — the command
+//! surface keeps growing, so treat "does it take a repo `Path` and touch
+//! `db`/`commands`" as the default-unsafe assumption, not this list as
+//! exhaustive-forever), it needs `env_read_lock()` (or `env_lock()` if it
+//! also mutates `HOME`/`USERPROFILE`/`MEMHUB_REGISTRY_TMP_OK` itself):
+//!
+//! - `db::home_dir`, `db::global_db_path`, `db::global_store_exists`
+//! - `db::discover_paths`, `db::open_project`, `db::open_global`
+//! - `db::registry::{record_open_best_effort, register, list_known}`
+//! - `commands::init::run` — **not obviously part of this closure**: it
+//!   calls `sync_md::sync_project` as its last step, which calls
+//!   `db::open_project` as ITS first line. (`db::init_project` alone, the
+//!   part of `init::run` that actually creates `.memhub/`, is clean in
+//!   isolation — the exposure is entirely from the trailing sync call, but
+//!   `init::run` cannot be called without it.) This was the second missed
+//!   spot in this harness's env-race fix: almost every test in this binary
+//!   calls `init::run` to set up its fixture, so this one entry covers most
+//!   of the closure's practical reach.
+//! - `commands::audit_md::run`, `commands::upgrade::check_audit_md`
+//! - `commands::global::{begin_write, enable, status}`
+//! - `commands::status::run`
+//! - `commands::integrations::{enable_k9, disable_k9}`
+//! - `commands::pending_write::{insert_pending_write, propose_fact, ...}`
+//! - `commands::upgrade::{sync_skills, verify_global, verify_last,
+//!   write_last_upgrade, cargo_bin_path, local_bin_shadow, abbrev,
+//!   detect_codex_sessions_dir, detect_claude_transcripts_dir}`
+//! - `commands::sync::expand_home`, `commands::doctor::run`
+//!
+//! Genuinely outside the closure (no lock needed) is a short, specific
+//! list, not a default: `db::ProjectPaths::for_repo_root` (pure path join),
+//! `ProjectConfig::load`/`::save` (plain `fs`+`toml`, no path resolution),
+//! `db::init_project` **called on its own** (it never is, in this harness),
+//! any `memhub::*` function whose signature takes no repo `Path` at all
+//! (e.g. `agents_md::generate_agents_md`, `managed_block::parse_managed_block`
+//! — pure string transforms), raw `std::fs`/`tempfile` calls on a path the
+//! test already has in hand, and spawning the compiled binary as a child
+//! process (`std::process::Command`) — a child gets its own independent
+//! snapshot of the environment at spawn time, in a separate address space,
+//! so nothing it does in-process can race the parent test's threads,
+//! however deep into this closure the *child's own* execution goes.
 use std::env;
 use std::ffi::OsString;
 use std::sync::{OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};

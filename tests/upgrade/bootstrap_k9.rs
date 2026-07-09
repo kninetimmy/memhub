@@ -33,13 +33,13 @@ fn write_agent_docs(repo: &Path, decisions: &str, backlog: &str) {
     }
 }
 
-// `count()` calls `db::open_project`, which calls `db::discover_paths`,
-// which resolves `db::home_dir()` unconditionally as its first line (Wave 5
-// U4, issue #90) — so every test that calls `count()` takes
-// `support::env_read_lock()` for the whole test, guarding against a
-// concurrent writer test's `HOME`/`USERPROFILE` override elsewhere in this
-// shared harness binary. See `upgrade/support.rs`. Tests that never call
-// `count()` (pure subprocess + stderr/exit-code checks) don't need it.
+// `count()` calls `db::open_project` directly, and every test in this file
+// ALSO calls `init::run`, which reaches `db::home_dir()` transitively via
+// its trailing `sync_md::sync_project` -> `db::open_project` call — neither
+// is safe to call without `support::env_read_lock()` in this shared harness
+// binary (Wave 5 U4, issue #90; see `upgrade/support.rs`'s reader-trigger
+// closure doc for the full picture — this comment previously claimed
+// `init::run`-only tests didn't need it, which was wrong).
 fn count(repo: &Path, sql: &str) -> i64 {
     let ctx = db::open_project(repo).expect("open project");
     ctx.conn
@@ -181,6 +181,11 @@ fn bootstrap_k9_refuses_on_non_empty_db() {
 
 #[test]
 fn bootstrap_k9_refuses_when_k9_disabled() {
+    // `init::run` itself reaches `db::home_dir()` via its trailing
+    // `sync_md::sync_project` -> `db::open_project` call — see
+    // `upgrade/support.rs`'s reader-trigger closure.
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
@@ -246,6 +251,11 @@ Body without a date.
 
 #[test]
 fn bootstrap_k9_refuses_when_no_source_files() {
+    // `init::run` itself reaches `db::home_dir()` via its trailing
+    // `sync_md::sync_project` -> `db::open_project` call — see
+    // `upgrade/support.rs`'s reader-trigger closure.
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     let dir = temp.path().join("agent_docs");
     fs::create_dir_all(&dir).unwrap();
