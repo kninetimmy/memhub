@@ -413,6 +413,9 @@ const KNOWN_LEAVES: &[&str] = &[
     "sync.drive_subpath",
     "doc.allowed_dirs",
     "audit.user_md_path",
+    "gc.prune_superseded_incremental",
+    "gc.prune_large_thirdparty",
+    "gc.delete_stale_backups",
 ];
 
 /// Intermediate table paths (never themselves reported as unknown; a
@@ -430,6 +433,7 @@ const KNOWN_TABLES: &[&str] = &[
     "sync",
     "doc",
     "audit",
+    "gc",
 ];
 
 fn check_config(config_path: &Path, memhub_dir: &Path) -> Vec<Check> {
@@ -1572,6 +1576,27 @@ log_level = "info"
 fts_weight = 0.6
 vector_weight = 0.4
 test_path_penalty = 0.8
+"#,
+        )
+        .expect("parse");
+
+        let check = check_unknown_keys(&value);
+        assert_eq!(check.status, Status::Ok, "detail: {:?}", check.detail);
+    }
+
+    #[test]
+    fn gc_keys_are_known_not_unknown() {
+        // Doctor parity for the Wave 5 U5/U8 `[gc]` section.
+        let value: toml::Value = toml::from_str(
+            r#"
+project_name = "x"
+auto_sync_md = false
+log_level = "info"
+
+[gc]
+prune_superseded_incremental = true
+prune_large_thirdparty = false
+delete_stale_backups = false
 "#,
         )
         .expect("parse");
