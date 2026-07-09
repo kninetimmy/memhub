@@ -141,6 +141,7 @@ pub fn run_retrieval(start: &Path, opts: EvalOptions) -> Result<EvalSummary> {
                 use_reranker: opts.use_reranker,
                 min_rerank_score: opts.min_rerank_score,
                 log_metrics: false,
+                surface: None,
             },
         );
     }
