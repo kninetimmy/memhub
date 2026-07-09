@@ -34,6 +34,18 @@ fn run_cli_expecting_success(repo: &Path, args: &[&str]) -> Value {
     })
 }
 
+// `last_writes_log_row` (below) and `memhub::commands::pending_write::
+// propose_fact` (called directly, in-process, by several tests) both reach
+// `db::open_project`, which calls `db::discover_paths`, which resolves
+// `db::home_dir()` unconditionally as its first line (Wave 5 U4, issue #90).
+// Every test that calls either one takes `support::env_read_lock()` for the
+// whole test, guarding against a concurrent writer test's `HOME`/
+// `USERPROFILE` override elsewhere in this shared harness binary — see
+// `upgrade/support.rs`. Tests that only spawn the CLI as a subprocess
+// (`run_cli`/`run_cli_expecting_success`) and never call an in-process
+// library function that reaches this chain don't need it: a child process
+// gets its own independent snapshot of the environment at spawn time, so it
+// can't race the parent test process's threads.
 fn last_writes_log_row(repo: &Path) -> (String, String, String) {
     let ctx = db::open_project(repo).expect("open project");
     ctx.conn
@@ -56,6 +68,8 @@ fn write_k9_marker(repo: &Path) {
 
 #[test]
 fn fact_add_json_emits_contract_shape() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
@@ -120,6 +134,8 @@ fn fact_add_json_marks_upsert_as_not_created() {
 
 #[test]
 fn decision_add_json_emits_contract_shape() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
@@ -181,6 +197,8 @@ fn task_add_and_done_json_round_trip() {
 
 #[test]
 fn review_accept_json_emits_contract_shape() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
@@ -225,6 +243,8 @@ fn review_accept_json_emits_contract_shape() {
 
 #[test]
 fn review_reject_json_emits_contract_shape() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
@@ -320,6 +340,8 @@ fn check_k9_exits_nonzero_when_not_initialized() {
 
 #[test]
 fn review_list_json_emits_contract_shape() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
@@ -365,6 +387,8 @@ fn review_list_json_emits_contract_shape() {
 
 #[test]
 fn review_list_json_filters_by_status() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
@@ -408,6 +432,8 @@ fn review_list_json_filters_by_status() {
 
 #[test]
 fn review_show_json_emits_contract_shape() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 

@@ -6,6 +6,18 @@ use memhub::config::ProjectConfig;
 use memhub::db;
 use tempfile::tempdir;
 
+// `integrations::enable_k9`, `integrations::disable_k9`, and `status::run`
+// all call `db::open_project` as their first fallible step, which calls
+// `db::discover_paths`, which resolves `db::home_dir()` unconditionally as
+// its first line (Wave 5 U4, issue #90). Every test that calls any of the
+// three takes `support::env_read_lock()` for the whole test, guarding
+// against a concurrent writer test's `HOME`/`USERPROFILE` override
+// elsewhere in this shared harness binary — see `upgrade/support.rs`. The
+// tests that only call `init::run` + the local `read_config` helper (which
+// bottoms out in `ProjectConfig::load`/`fs::read_to_string` and
+// `db::ProjectPaths::for_repo_root`, neither of which touches `home_dir`)
+// don't need it.
+
 fn write_k9_marker(repo_root: &Path) {
     let dir = repo_root.join("agent_docs");
     fs::create_dir_all(&dir).expect("create agent_docs");
@@ -65,6 +77,8 @@ fn init_on_existing_config_leaves_integrations_alone() {
 
 #[test]
 fn enable_k9_requires_detection_without_force() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
@@ -79,6 +93,8 @@ fn enable_k9_requires_detection_without_force() {
 
 #[test]
 fn enable_k9_succeeds_when_detected() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     write_k9_marker(temp.path());
     init::run(temp.path()).expect("init");
@@ -96,6 +112,8 @@ fn enable_k9_succeeds_when_detected() {
 
 #[test]
 fn enable_k9_with_force_writes_section_even_when_undetected() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
@@ -110,6 +128,8 @@ fn enable_k9_with_force_writes_section_even_when_undetected() {
 
 #[test]
 fn enable_k9_respects_custom_agent_docs_path() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     write_k9_marker_at(temp.path(), "docs/k9");
     init::run(temp.path()).expect("init");
@@ -126,6 +146,8 @@ fn enable_k9_respects_custom_agent_docs_path() {
 
 #[test]
 fn disable_k9_keeps_section_but_flips_enabled() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     write_k9_marker(temp.path());
     init::run(temp.path()).expect("init");
@@ -142,6 +164,8 @@ fn disable_k9_keeps_section_but_flips_enabled() {
 
 #[test]
 fn disable_k9_errors_when_not_configured() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
@@ -152,6 +176,8 @@ fn disable_k9_errors_when_not_configured() {
 
 #[test]
 fn status_surfaces_drift_when_enabled_but_marker_missing() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     write_k9_marker(temp.path());
     init::run(temp.path()).expect("init");
@@ -168,6 +194,8 @@ fn status_surfaces_drift_when_enabled_but_marker_missing() {
 
 #[test]
 fn status_surfaces_available_hint_when_detected_but_not_enabled() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     // No marker at init time; section never gets written.
     init::run(temp.path()).expect("init");
@@ -183,6 +211,8 @@ fn status_surfaces_available_hint_when_detected_but_not_enabled() {
 
 #[test]
 fn status_returns_no_drift_in_clean_states() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 

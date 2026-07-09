@@ -33,6 +33,13 @@ fn write_agent_docs(repo: &Path, decisions: &str, backlog: &str) {
     }
 }
 
+// `count()` calls `db::open_project`, which calls `db::discover_paths`,
+// which resolves `db::home_dir()` unconditionally as its first line (Wave 5
+// U4, issue #90) — so every test that calls `count()` takes
+// `support::env_read_lock()` for the whole test, guarding against a
+// concurrent writer test's `HOME`/`USERPROFILE` override elsewhere in this
+// shared harness binary. See `upgrade/support.rs`. Tests that never call
+// `count()` (pure subprocess + stderr/exit-code checks) don't need it.
 fn count(repo: &Path, sql: &str) -> i64 {
     let ctx = db::open_project(repo).expect("open project");
     ctx.conn
@@ -75,6 +82,8 @@ const SAMPLE_BACKLOG: &str = "\
 
 #[test]
 fn bootstrap_k9_happy_path_writes_rows() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     write_agent_docs(temp.path(), SAMPLE_DECISIONS, SAMPLE_BACKLOG);
     init::run(temp.path()).expect("init");
@@ -114,6 +123,8 @@ fn bootstrap_k9_happy_path_writes_rows() {
 
 #[test]
 fn bootstrap_k9_dry_run_writes_nothing() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     write_agent_docs(temp.path(), SAMPLE_DECISIONS, SAMPLE_BACKLOG);
     init::run(temp.path()).expect("init");
@@ -136,6 +147,8 @@ fn bootstrap_k9_dry_run_writes_nothing() {
 
 #[test]
 fn bootstrap_k9_refuses_on_non_empty_db() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     write_agent_docs(temp.path(), SAMPLE_DECISIONS, SAMPLE_BACKLOG);
     init::run(temp.path()).expect("init");
@@ -183,6 +196,8 @@ fn bootstrap_k9_refuses_when_k9_disabled() {
 
 #[test]
 fn bootstrap_k9_preserves_em_dash_dated_decided_at() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     let decisions = "\
 # Project Decisions
