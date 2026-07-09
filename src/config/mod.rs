@@ -651,14 +651,19 @@ pub enum WrapUpVerbosity {
     /// memhub's original `/wrap-up` flow, unchanged: state, decisions,
     /// backlog changes, facts, pending-write triage, a short session
     /// note, opportunistic architecture drift, and stale-fact
-    /// re-verify candidates. See
-    /// `templates/skills/{claude,codex}/wrap-up.md`.
+    /// re-verify candidates. See `templates/skills/claude/wrap-up.md`,
+    /// `templates/skills/codex/wrap-up/SKILL.md`, and
+    /// `templates/skills/opencode/wrap-up/`.
     #[default]
     Standard,
-    /// `standard`, with decision/fact summaries, the architecture-drift
-    /// check, and pending-write triage promoted from conditional to
-    /// mandatory, plus a richer (not two-to-four-sentence) session
-    /// note.
+    /// `standard`, with the decision `--summary` field (decision 72's
+    /// natural-language paraphrase) promoted from optional to
+    /// mandatory whenever a decision is drafted, plus the
+    /// architecture-drift check and pending-write triage promoted from
+    /// conditional to always-run, and a richer (not two-to-four-
+    /// sentence) session note. Facts have no `--summary` field to
+    /// promote (decision 72 is decisions-only); the fact item is
+    /// unchanged from `standard`.
     Full,
     /// `full` + a named transcript-archive step. The archiver itself is
     /// tracked separately (issue #96 / W3); this level only needs to

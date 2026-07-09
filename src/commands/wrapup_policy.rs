@@ -1,17 +1,24 @@
 //! `memhub wrapup-policy` (Wave 6 W1+W2, issue #95): a read-only command
 //! that renders the full `/wrap-up` policy text for this repo's resolved
 //! `[wrap_up] verbosity` level from one canonical Rust source, instead of
-//! every agent re-deriving it by eye from `templates/skills/*/wrap-up.md`.
+//! every agent re-deriving it by eye from `templates/skills/claude/wrap-up.md`,
+//! `templates/skills/codex/wrap-up/SKILL.md`, and
+//! `templates/skills/opencode/wrap-up/`.
 //! No DB is opened — verbosity is a config-only value, same as
 //! `audit_md::run` — and this command never writes anything.
 //!
-//! Level semantics (Q10/W2) are ported faithfully from the existing
-//! `templates/skills/{claude,codex}/wrap-up.md` flow, not reinvented —
-//! see [`crate::config::WrapUpVerbosity`] for the short summary and
+//! Level semantics (Q10/W2) are ported faithfully from the wrap-up flow
+//! in those three skill files, not reinvented — see
+//! [`crate::config::WrapUpVerbosity`] for the short summary and
 //! [`render_instructions`] below for the full text:
 //!   - `minimal`    — `state set` + task closures only.
 //!   - `standard`   — today's eight-item flow, unchanged.
-//!   - `full`       — standard, with four items promoted to mandatory.
+//!   - `full`       — standard, with the decision `--summary` field
+//!                    (decision 72) promoted to mandatory whenever a
+//!                    decision is drafted, plus pending-write triage
+//!                    and the architecture-drift check promoted to
+//!                    always-run. Facts have no `--summary` field to
+//!                    promote (decision 72 is decisions-only).
 //!   - `transcript` — full + a named transcript-archive step. The
 //!                    archiver itself is issue #96 (W3); this level
 //!                    only needs the step to exist in the policy text,
@@ -97,9 +104,11 @@ fn level_summary(level: WrapUpVerbosity) -> &'static str {
              architecture drift, and stale-fact re-verify candidates."
         }
         WrapUpVerbosity::Full => {
-            "Full is standard with decision/fact summaries, the architecture-drift check, \
-             and pending-write triage promoted from conditional to mandatory, plus a \
-             richer session note."
+            "Full is standard with the decision --summary field (decision 72's \
+             natural-language paraphrase) promoted from optional to mandatory whenever a \
+             decision is drafted, the architecture-drift check and pending-write triage \
+             promoted from conditional to always-run, and a richer session note. Facts \
+             have no --summary field to promote and are unchanged from standard."
         }
         WrapUpVerbosity::Transcript => {
             "Transcript is full plus a named transcript-archive step. The archiver itself \
@@ -204,9 +213,10 @@ own (memhub's original flow, unchanged):
    exploratory.
 7. Architecture drift -- touch only if a real architectural shift occurred (new
    subsystem, schema change, invariant change); default is no arch update.
-8. Stale-fact re-verify candidates -- up to 5 facts ordered oldest-first by
-   `verified_at`, each presented as its own accept/reject item, never a single grouped
-   prompt.
+8. Stale-fact re-verify candidates -- run `memhub fact list --json` and pick up to 5
+   facts ordered oldest-first by `verified_at` (null sorts as oldest), preferring rows
+   already flagged `is_stale`. Skip this draft entirely if there are none. Present each
+   as its own accept/reject item, never a single grouped prompt.
 
 "
         .to_string(),
@@ -214,7 +224,10 @@ own (memhub's original flow, unchanged):
             "\
 ## Draft assembly
 
-The same eight items as `standard`, with four promoted from conditional to mandatory:
+The same eight items as `standard`. The decision `--summary` field is promoted from
+optional to mandatory whenever a decision is drafted (facts have no `--summary` field
+to promote), and pending-write triage plus the architecture-drift check are promoted
+from conditional to always-run:
 
 {}",
             MANDATORY_EIGHT_ITEMS
@@ -223,7 +236,7 @@ The same eight items as `standard`, with four promoted from conditional to manda
             "\
 ## Draft assembly
 
-The same eight items as `full` (four of them mandatory), plus a ninth:
+The same eight items as `full`, plus a ninth:
 
 {}9. Transcript archive. Archive this session's agent transcript after the DB writes and
    render below succeed. The archiver itself is tracked separately (issue #96 / W3) --
@@ -237,17 +250,24 @@ The same eight items as `full` (four of them mandatory), plus a ninth:
 }
 
 /// The `standard` eight-item list, fully spelled out (not
-/// cross-referenced), with items 5-7 promoted to mandatory per `full`'s
-/// semantics. Shared by `full` and `transcript` so the mandatory
-/// wording can never drift between the two levels that both carry it.
+/// cross-referenced), with item 2 gaining a mandatory `--summary`
+/// requirement (decision 72; decisions only -- facts have no
+/// `--summary` field, see item 4) and items 5-7 promoted to
+/// always-run/mandatory per `full`'s semantics. Shared by `full` and
+/// `transcript` so the wording can never drift between the two levels
+/// that both carry it.
 const MANDATORY_EIGHT_ITEMS: &str = "\
 1. New `state` body -- currently building / next up / open questions, kept tight (under
    ~100 lines).
 2. New decisions -- architectural / workflow / contract decisions locked this session,
-   each title + rationale.
+   each title + rationale. MANDATORY when any are drafted: also include `--summary`
+   (decision 72's natural-language paraphrase that lifts recall). Still skip this item
+   entirely when there is nothing to record -- mandatory applies to what you draft, not
+   to inventing decisions.
 3. Backlog changes -- new tasks discovered, status changes on existing tasks.
 4. New facts -- build / test / run commands or other durable key-value records,
-   skipping anything already recorded with the same value.
+   skipping anything already recorded with the same value. Facts have no `--summary`
+   field (decision 72 is decisions-only), so this item is unchanged from `standard`.
 5. Pending-write triage -- MANDATORY: always run this pass and report its outcome, even
    'queue empty, nothing to triage' -- never silently skip it because it looked empty.
 6. Session-summary note -- MANDATORY and richer: a fuller account of what shipped than
@@ -256,9 +276,10 @@ const MANDATORY_EIGHT_ITEMS: &str = "\
 7. Architecture drift -- MANDATORY CHECK: explicitly assess and report whether a real
    architectural shift occurred every time. The conclusion may still be 'no drift', but
    it must be stated, not assumed by omission.
-8. Stale-fact re-verify candidates -- up to 5 facts ordered oldest-first by
-   `verified_at`, each presented as its own accept/reject item, never a single grouped
-   prompt.
+8. Stale-fact re-verify candidates -- run `memhub fact list --json` and pick up to 5
+   facts ordered oldest-first by `verified_at` (null sorts as oldest), preferring rows
+   already flagged `is_stale`. Skip this draft entirely if there are none. Present each
+   as its own accept/reject item, never a single grouped prompt.
 
 ";
 
@@ -312,8 +333,9 @@ durable; re-running wrap-up later picks up the rest.
         WrapUpVerbosity::Full | WrapUpVerbosity::Transcript => {
             s.push_str(
                 "At this level, step 2 (pending-write triage) always runs and is reported \
-                 even when the queue is empty, and step 6 (session summary) carries the \
-                 richer note from draft assembly.\n\n",
+                 even when the queue is empty, step 3 (decisions) must include --summary \
+                 for anything drafted (facts have no --summary field), and step 6 (session \
+                 summary) carries the richer note from draft assembly.\n\n",
             );
         }
         WrapUpVerbosity::Standard => {}

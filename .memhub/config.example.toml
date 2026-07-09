@@ -319,10 +319,14 @@ delete_stale_backups = false
 # Wrap-up policy verbosity (Wave 6 W1, issue #95 / decision Q7). Governs
 # how much `/wrap-up` drafts and writes: minimal (state + task closures
 # only — the turn-1 continuity floor), standard (today's full flow,
-# unchanged — see templates/skills/{claude,codex}/wrap-up.md), full
-# (standard with decision/fact summaries, the architecture-drift check,
-# and pending-write triage promoted from conditional to mandatory, plus
-# a richer session note), or transcript (full + a named transcript-
+# unchanged — see templates/skills/claude/wrap-up.md,
+# templates/skills/codex/wrap-up/SKILL.md, and
+# templates/skills/opencode/wrap-up/), full (standard with the decision
+# --summary field promoted from optional to mandatory whenever a
+# decision is drafted — decision 72's paraphrase; facts have no
+# --summary field to promote — plus the architecture-drift check and
+# pending-write triage promoted from conditional to always-run, and a
+# richer session note), or transcript (full + a named transcript-
 # archive step; the archiver itself is issue #96 / W3). Run `memhub
 # wrapup-policy` to render the full instruction text for the resolved
 # level. Canonical baseline is "standard" — a machine may raise this
