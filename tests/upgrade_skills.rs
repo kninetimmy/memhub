@@ -81,7 +81,7 @@ fn skill_resync_additive_idempotent_and_conservative() {
     }
 
     // --- 1. Neither agent dir exists => skipped, NOT created ----------
-    let reports = sync_skills(repo, false);
+    let reports = sync_skills(repo, false).agents;
     let claude = find(&reports, "claude");
     let codex = find(&reports, "codex");
     let opencode_skills = find(&reports, "opencode-skills");
@@ -134,7 +134,7 @@ fn skill_resync_additive_idempotent_and_conservative() {
     // A user's own skill in the shared dir must survive (additive only).
     std::fs::write(claude_dir.join("user-own.md"), b"keep me").expect("seed user skill");
 
-    let reports = sync_skills(repo, false);
+    let reports = sync_skills(repo, false).agents;
     let claude = find(&reports, "claude");
     let codex = find(&reports, "codex");
     let opencode_skills = find(&reports, "opencode-skills");
@@ -183,7 +183,7 @@ fn skill_resync_additive_idempotent_and_conservative() {
     );
 
     // --- 3. Idempotent re-run: same result, no error -----------------
-    let reports = sync_skills(repo, false);
+    let reports = sync_skills(repo, false).agents;
     assert_eq!(find(&reports, "claude").status, SkillSyncStatus::Synced);
     assert_eq!(find(&reports, "claude").synced, expect_claude);
     assert_eq!(find(&reports, "codex").synced, expect_codex);
@@ -200,7 +200,7 @@ fn skill_resync_additive_idempotent_and_conservative() {
     let probe = claude_dir.join("__dry_probe__.md");
     assert!(!probe.exists());
     let before = std::fs::read_dir(&claude_dir).unwrap().count();
-    let reports = sync_skills(repo, true);
+    let reports = sync_skills(repo, true).agents;
     assert_eq!(find(&reports, "claude").status, SkillSyncStatus::Synced);
     assert_eq!(find(&reports, "claude").synced, expect_claude);
     assert_eq!(
@@ -215,7 +215,7 @@ fn skill_resync_additive_idempotent_and_conservative() {
     std::fs::create_dir_all(other.path().join(".codex")).expect("mk .codex");
     std::fs::write(other.path().join(".codex").join("skills"), b"not a dir")
         .expect("file where dir expected");
-    let reports = sync_skills(repo, false);
+    let reports = sync_skills(repo, false).agents;
     let codex = find(&reports, "codex");
     assert_eq!(codex.status, SkillSyncStatus::Skipped);
     assert!(

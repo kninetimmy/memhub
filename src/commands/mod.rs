@@ -13,6 +13,7 @@ pub mod import;
 pub mod index;
 pub mod ingest_git;
 pub mod init;
+pub mod install_manifest;
 pub mod integrations;
 pub mod metrics;
 pub mod narrative;
