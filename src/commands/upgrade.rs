@@ -40,8 +40,10 @@ use std::process::{Command, Stdio};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::commands::install_manifest::{self, InstallManifest};
 use crate::config::RetrievalMode;
 use crate::db;
+use crate::retrieval::util::sha256_hex;
 use crate::retrieval::{self, RecallOptions};
 use crate::{MemhubError, Result};
 
@@ -81,6 +83,20 @@ pub struct UpgradeArgs {
 /// this is a pure internal IPC blob, not a user knob, so it travels by
 /// env var (same spirit as the test seams).
 const SKILLS_ENV: &str = "MEMHUB_UPGRADE_SKILLS_JSON";
+
+/// Companion to `SKILLS_ENV`: the resync's orphan list (files memhub
+/// previously installed but no longer ships) crosses the same
+/// orchestrate->finish process boundary. Kept as a separate var so the
+/// existing `SKILLS_ENV` payload shape is unchanged — an older binary
+/// that never sets this simply yields "no orphans this run", which
+/// deserializes to an empty list (fail-safe, never fatal).
+const ORPHANS_ENV: &str = "MEMHUB_UPGRADE_ORPHANS_JSON";
+
+/// Set to "1" across the orchestrate->finish boundary when the resync hit
+/// the first-run (empty-manifest) case and left a pre-existing file
+/// untouched, so `--finish` renders the one-time adoption notice. Absent
+/// (e.g. an older orchestrate binary, or nothing protected) => no notice.
+const FIRSTRUN_ENV: &str = "MEMHUB_UPGRADE_RESYNC_FIRSTRUN";
 
 /// Exit code from a Windows staged handoff: the real upgrade continues in
 /// a detached staged copy, so the invoking shell can't yet know the
@@ -434,16 +450,24 @@ fn orchestrate_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
     println!("    installed -> {}", cargo_bin.display());
 
     // 2. One-time, order-independent PATH-shadow fix (closes task 39).
-    let outcome = fix_path_shadow(&cargo_bin, args.yes)?;
-    println!("==> PATH: {}", outcome.message);
+    //    Degrade an IO failure to a warning rather than aborting: the new
+    //    binary is already installed by this point, so a failed shadow
+    //    repoint must not fail the whole upgrade (U7). Same never-fatal
+    //    posture as the skill resync and registry writes below.
+    let outcome = shadow_or_warn(fix_path_shadow(&cargo_bin, args.yes));
+    if outcome.warn {
+        println!("==> PATH: warning: {}", outcome.message);
+    } else {
+        println!("==> PATH: {}", outcome.message);
+    }
 
     // 3. Resync installed agent skill wrappers from templates/ (decision
     //    97). Additive, idempotent, best-effort — never fatal. Done here
     //    in the old binary because the source repo's `templates/` must
     //    be present (already an `upgrade` precondition); the result is
     //    handed to the re-exec'd child so it renders in one table.
-    let skills = if args.no_skills {
-        vec![SkillSync::skipped_all("--no-skills")]
+    let resync = if args.no_skills {
+        ResyncReport::skipped_all("--no-skills")
     } else {
         sync_skills(cwd, false)
     };
@@ -482,8 +506,14 @@ fn orchestrate_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    if let Ok(js) = serde_json::to_string(&skills) {
+    if let Ok(js) = serde_json::to_string(&resync.agents) {
         child.env(SKILLS_ENV, js);
+    }
+    if let Ok(js) = serde_json::to_string(&resync.orphans) {
+        child.env(ORPHANS_ENV, js);
+    }
+    if resync.first_run_hint {
+        child.env(FIRSTRUN_ENV, "1");
     }
     if args.json {
         child.arg("--json");
@@ -553,8 +583,30 @@ struct InstanceReport {
     status: InstanceStatus,
 }
 
+/// Enumerate the machine-global registry's known roots, **degrading a
+/// corrupt or unreadable registry to an empty list plus a warning**
+/// instead of aborting the whole upgrade (U7). Per-repo migrate failures
+/// already never abort the others; a busted global registry gets the same
+/// posture — the source repo and any `--also` roots still upgrade, we just
+/// cannot enumerate the rest. Returning an empty list here is strictly
+/// safer than propagating: the alternative was aborting *after* the new
+/// binary was already installed.
+pub fn known_projects_or_warn(warnings: &mut Vec<String>) -> Vec<db::registry::KnownProject> {
+    match db::registry::list_known() {
+        Ok(known) => known,
+        Err(e) => {
+            warnings.push(format!(
+                "registry unreadable ({e}); continuing with the source repo \
+                 and any --also roots only"
+            ));
+            Vec::new()
+        }
+    }
+}
+
 fn finish_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
     let head = db::latest_schema_version().to_string();
+    let mut warnings: Vec<String> = Vec::new();
 
     // Self-heal first: drop registry rows whose repo DB is gone
     // (deleted repos, vanished throwaway clones) so the table reflects
@@ -582,7 +634,7 @@ fn finish_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
         };
 
     push(cwd, &mut roots, &mut seen);
-    for kp in db::registry::list_known()? {
+    for kp in known_projects_or_warn(&mut warnings) {
         push(&kp.root_path, &mut roots, &mut seen);
     }
     for p in &args.also {
@@ -602,6 +654,14 @@ fn finish_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
+    // Companion payload: files memhub previously installed but no longer
+    // ships. Reported, never deleted. Absent/unparseable => no orphans.
+    let orphans: Vec<String> = std::env::var(ORPHANS_ENV)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    // First-run adoption notice flag (set by the orchestrate phase).
+    let first_run = std::env::var(FIRSTRUN_ENV).ok().as_deref() == Some("1");
 
     // Best-effort audit-md nag (Wave 2 C7, issue #33): unlike the skill
     // resync/gc above, this needs no old-vs-new-binary IPC — it's a
@@ -610,7 +670,16 @@ fn finish_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
     // binary (the same reasoning migrate + verify already run here).
     let audit_nag = check_audit_md(cwd);
 
-    emit(&reports, pruned, &skills, &audit_nag, args.json);
+    emit(
+        &reports,
+        pruned,
+        &skills,
+        &orphans,
+        &warnings,
+        first_run,
+        &audit_nag,
+        args.json,
+    );
 
     let failed: Vec<&str> = reports
         .iter()
@@ -826,13 +895,80 @@ fn smoke(root: &Path) -> Result<()> {
 // PATH-shadow fix (order-independent; closes task 39)
 // ---------------------------------------------------------------------
 
+/// The mechanism `relink` actually used. Symlinks are preferred, but on
+/// Windows they need privilege, so a copy is the honest fallback — and the
+/// message must say "copy", not lie and claim "symlink" (U6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LinkKind {
+    Symlink,
+    Copy,
+}
+
+impl LinkKind {
+    fn word(self) -> &'static str {
+        match self {
+            LinkKind::Symlink => "symlink",
+            LinkKind::Copy => "copy",
+        }
+    }
+}
+
 struct ShadowOutcome {
     message: String,
+    /// True when this outcome is a degraded IO failure (U7) surfaced as a
+    /// warning rather than a successful result. The upgrade continues.
+    warn: bool,
 }
 
 impl ShadowOutcome {
     fn msg(s: impl Into<String>) -> Self {
-        Self { message: s.into() }
+        Self {
+            message: s.into(),
+            warn: false,
+        }
+    }
+
+    fn warn(s: impl Into<String>) -> Self {
+        Self {
+            message: s.into(),
+            warn: true,
+        }
+    }
+}
+
+/// `relink` succeeded — describe replacing a stale copied binary, naming
+/// the **actual** mechanism used (task 39 fix + U6 honesty).
+fn stale_replaced_msg(cargo_bin: &Path, kind: LinkKind) -> String {
+    format!(
+        "replaced stale ~/.local/bin/memhub with {} -> {} (task 39 fixed)",
+        kind.word(),
+        cargo_bin.display()
+    )
+}
+
+/// `relink` succeeded — describe repointing an existing symlink, naming
+/// the mechanism actually used (a Windows fallback repoint is a copy).
+fn repointed_msg(cargo_bin: &Path, kind: LinkKind) -> String {
+    format!(
+        "repointed ~/.local/bin/memhub -> {} ({})",
+        cargo_bin.display(),
+        kind.word()
+    )
+}
+
+/// Degrade a PATH-shadow fix failure to a warning outcome (U7). The new
+/// binary is already installed before the shadow step runs, so an IO
+/// failure here must be reported, not aborted. Pure `Result ->
+/// ShadowOutcome` so the degrade is unit-testable without provoking a real
+/// filesystem error.
+fn shadow_or_warn(res: Result<ShadowOutcome>) -> ShadowOutcome {
+    match res {
+        Ok(outcome) => outcome,
+        Err(e) => ShadowOutcome::warn(format!(
+            "shadow fix skipped ({e}); the new binary is installed — if \
+             ~/.local/bin/memhub shadows it, repoint it manually: \
+             ln -sf ~/.cargo/bin/memhub ~/.local/bin/memhub"
+        )),
     }
 }
 
@@ -883,11 +1019,8 @@ fn fix_path_shadow(cargo_bin: &Path, yes: bool) -> Result<ShadowOutcome> {
                 shadow.display()
             )));
         }
-        relink(cargo_bin, &shadow)?;
-        return Ok(ShadowOutcome::msg(format!(
-            "repointed ~/.local/bin/memhub -> {}",
-            cargo_bin.display()
-        )));
+        let kind = relink(cargo_bin, &shadow)?;
+        return Ok(ShadowOutcome::msg(repointed_msg(cargo_bin, kind)));
     }
 
     // Regular file: the stale-binary shadow (task 39 root cause).
@@ -905,14 +1038,15 @@ fn fix_path_shadow(cargo_bin: &Path, yes: bool) -> Result<ShadowOutcome> {
             shadow.display()
         )));
     }
-    relink(cargo_bin, &shadow)?;
-    Ok(ShadowOutcome::msg(format!(
-        "replaced stale ~/.local/bin/memhub with symlink -> {} (task 39 fixed)",
-        cargo_bin.display()
-    )))
+    let kind = relink(cargo_bin, &shadow)?;
+    Ok(ShadowOutcome::msg(stale_replaced_msg(cargo_bin, kind)))
 }
 
-fn relink(cargo_bin: &Path, shadow: &Path) -> Result<()> {
+/// Point `shadow` at `cargo_bin`, returning the **mechanism actually
+/// used** so the caller reports the truth (U6). Prefers a symlink; on
+/// Windows, where symlinks need privilege, falls back to a copy — and says
+/// so, instead of the old code's flat (often false) "symlink" claim.
+fn relink(cargo_bin: &Path, shadow: &Path) -> Result<LinkKind> {
     if let Some(parent) = shadow.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -920,16 +1054,20 @@ fn relink(cargo_bin: &Path, shadow: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         std::os::unix::fs::symlink(cargo_bin, shadow)?;
+        Ok(LinkKind::Symlink)
     }
     #[cfg(windows)]
     {
-        if std::os::windows::fs::symlink_file(cargo_bin, shadow).is_err() {
-            // Symlinks need privilege on Windows; a copy is the boring
-            // fallback (re-run `memhub upgrade` after each install).
-            std::fs::copy(cargo_bin, shadow)?;
+        match std::os::windows::fs::symlink_file(cargo_bin, shadow) {
+            Ok(()) => Ok(LinkKind::Symlink),
+            Err(_) => {
+                // Symlinks need privilege on Windows; a copy is the boring
+                // fallback (re-run `memhub upgrade` after each install).
+                std::fs::copy(cargo_bin, shadow)?;
+                Ok(LinkKind::Copy)
+            }
         }
     }
-    Ok(())
 }
 
 fn confirm(prompt: &str, yes: bool) -> bool {
@@ -956,9 +1094,10 @@ fn confirm(prompt: &str, yes: bool) -> bool {
 
 fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()> {
     let head = db::latest_schema_version().to_string();
+    let mut warnings: Vec<String> = Vec::new();
 
     let mut roots: Vec<PathBuf> = vec![cwd.to_path_buf()];
-    for kp in db::registry::list_known()? {
+    for kp in known_projects_or_warn(&mut warnings) {
         roots.push(kp.root_path);
     }
     roots.extend(args.also.iter().cloned());
@@ -1004,8 +1143,8 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
 
     let would_prune = db::registry::dead_roots().map(|d| d.len()).unwrap_or(0);
     let shadow_state = describe_shadow(cargo_bin)?;
-    let skills = if args.no_skills {
-        vec![SkillSync::skipped_all("--no-skills")]
+    let resync = if args.no_skills {
+        ResyncReport::skipped_all("--no-skills")
     } else {
         sync_skills(cwd, true)
     };
@@ -1034,7 +1173,14 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
                     "schema": global_preview.0,
                     "verdict": global_preview.1,
                 },
-                "skills": skills,
+                "skills": resync.agents,
+                // Resync orphans (U6): files memhub installed before but no
+                // longer ships. Reported, never deleted.
+                "resync_orphans": resync.orphans,
+                // Degrade warnings (U7), e.g. a corrupt registry.
+                "warnings": warnings,
+                // First-run adoption notice (U6).
+                "resync_first_run_notice": resync.first_run_hint,
                 // Additive field (issue #33): same shape as the real
                 // (non-dry) upgrade JSON's "audit_md" field.
                 "audit_md": audit_nag,
@@ -1072,11 +1218,20 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
         global_preview.0.as_deref().unwrap_or("(none)"),
         global_preview.1
     );
-    for s in &skills {
+    for s in &resync.agents {
         println!("  skills:       {}", s.dry_line());
+    }
+    for orphan in &resync.orphans {
+        println!("  orphan:       {orphan} (no longer shipped; left in place)");
+    }
+    if resync.first_run_hint {
+        print_first_run_notice();
     }
     if let Some(line) = audit_nag.nag_line(true) {
         println!("  audit md:     {line}");
+    }
+    for w in &warnings {
+        println!("  warning:      {w}");
     }
     if args.no_gc {
         println!("  target gc:    skipped (--no-gc)");
@@ -1121,10 +1276,14 @@ fn describe_shadow(cargo_bin: &Path) -> Result<String> {
 // Output
 // ---------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn emit(
     reports: &[InstanceReport],
     pruned: usize,
     skills: &[SkillSync],
+    orphans: &[String],
+    warnings: &[String],
+    first_run: bool,
     audit: &AuditNag,
     as_json: bool,
 ) {
@@ -1152,6 +1311,17 @@ fn emit(
                 "total": total,
                 "pruned": pruned,
                 "skills": skills,
+                // Resync orphans (U6): files memhub installed before but no
+                // longer ships. Reported, never deleted.
+                "resync_orphans": orphans,
+                // Degrade warnings (U7): recoverable problems that did NOT
+                // abort the upgrade (e.g. a corrupt registry, a shadow-fix
+                // IO error).
+                "warnings": warnings,
+                // First-run adoption notice (U6): true when memhub left a
+                // pre-existing, unverifiable file untouched on an empty
+                // manifest.
+                "resync_first_run_notice": first_run,
                 // Additive field (issue #33): the audit-md nag result.
                 // Always present, `status` distinguishes clean/findings/warn.
                 "audit_md": audit,
@@ -1184,10 +1354,34 @@ fn emit(
     for s in skills {
         println!("  skills: {}", s.line());
     }
+    for orphan in orphans {
+        println!("  orphan: {orphan} (no longer shipped; left in place)");
+    }
+    if first_run {
+        print_first_run_notice();
+    }
     if let Some(line) = audit.nag_line(false) {
         println!("  audit md: {line}");
     }
+    for w in warnings {
+        println!("  warning: {w}");
+    }
     println!("  {ready}/{total} instances ready");
+}
+
+/// One-time notice (U6, REQUIRED 1b) shown when the first resync consults
+/// an empty manifest and leaves a pre-existing, unverifiable file
+/// untouched. Explains why and how to adopt a file the user DOES want
+/// memhub to manage.
+fn print_first_run_notice() {
+    println!(
+        "  note: some pre-existing skill/command files could not be verified as \
+         memhub-written and were left untouched."
+    );
+    println!(
+        "        to let memhub manage one, delete it and re-run `memhub upgrade` \
+         (it will reinstall + record it)."
+    );
 }
 
 fn status_word(s: &InstanceStatus) -> &'static str {
@@ -1231,6 +1425,12 @@ pub struct SkillSync {
     pub status: SkillSyncStatus,
     /// Skill or command units copied.
     pub synced: usize,
+    /// Units left untouched because they are the user's own file, not one
+    /// memhub wrote (install-manifest ownership check, U6). `serde(default)`
+    /// so a payload from an older orchestrate binary that predates this
+    /// field still deserializes in the freshly installed `--finish` child.
+    #[serde(default)]
+    pub protected: usize,
     /// Skip reason or warning text.
     pub detail: Option<String>,
 }
@@ -1242,6 +1442,7 @@ impl SkillSync {
             target: String::new(),
             status: SkillSyncStatus::Skipped,
             synced: 0,
+            protected: 0,
             detail: Some(reason.to_string()),
         }
     }
@@ -1259,8 +1460,20 @@ impl SkillSync {
 
     fn render(&self, dry: bool) -> String {
         let tail = match self.status {
-            SkillSyncStatus::Synced if dry => format!("would sync {}", self.synced),
-            SkillSyncStatus::Synced => format!("synced {}", self.synced),
+            SkillSyncStatus::Synced => {
+                let base = if dry {
+                    format!("would sync {}", self.synced)
+                } else {
+                    format!("synced {}", self.synced)
+                };
+                // Surface WHY files were left untouched (e.g. "2 left
+                // untouched (pre-existing, unverified owner)"), not a bare
+                // "2 protected" the user cannot act on.
+                match &self.detail {
+                    Some(d) => format!("{base}; {d}"),
+                    None => base,
+                }
+            }
             SkillSyncStatus::Skipped => match &self.detail {
                 Some(d) => format!("skipped ({d})"),
                 None => "skipped".to_string(),
@@ -1274,6 +1487,34 @@ impl SkillSync {
             format!("{:<8} {tail}", self.agent)
         } else {
             format!("{:<8} {:<22} {tail}", self.agent, self.target)
+        }
+    }
+}
+
+/// The full result of a skill/command resync: the per-agent rows plus the
+/// cross-agent orphan list — files memhub installed on a previous run but
+/// no longer ships. Orphans are **reported, never deleted** (U6): a stale
+/// slash-command is harmless, but deleting the user's file would not be.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ResyncReport {
+    pub agents: Vec<SkillSync>,
+    /// `$HOME`-abbreviated paths of orphaned installs, sorted.
+    pub orphans: Vec<String>,
+    /// True on the first resync that consults an empty manifest AND leaves
+    /// at least one pre-existing file untouched (U6, REQUIRED 1b). The
+    /// caller surfaces a one-time notice explaining the remedy (delete the
+    /// file + re-run) so a memhub-written-but-unprovable file is not
+    /// silently frozen at its old version forever.
+    #[serde(default)]
+    pub first_run_hint: bool,
+}
+
+impl ResyncReport {
+    fn skipped_all(reason: &str) -> Self {
+        ResyncReport {
+            agents: vec![SkillSync::skipped_all(reason)],
+            orphans: Vec::new(),
+            first_run_hint: false,
         }
     }
 }
@@ -1298,78 +1539,242 @@ enum CopyKind {
 /// while an orphan is just a stale slash-command, not a correctness bug.
 ///
 /// `dry` stats and counts but performs no filesystem mutation.
-pub fn sync_skills(source_repo: &Path, dry: bool) -> Vec<SkillSync> {
+pub fn sync_skills(source_repo: &Path, dry: bool) -> ResyncReport {
     let home = match db::home_dir() {
         Ok(h) => h,
         Err(e) => {
-            return vec![SkillSync {
-                agent: "(all)".to_string(),
-                target: String::new(),
-                status: SkillSyncStatus::Warn,
-                synced: 0,
-                detail: Some(format!("cannot resolve home dir: {e}")),
-            }];
+            return ResyncReport {
+                agents: vec![SkillSync {
+                    agent: "(all)".to_string(),
+                    target: String::new(),
+                    status: SkillSyncStatus::Warn,
+                    synced: 0,
+                    protected: 0,
+                    detail: Some(format!("cannot resolve home dir: {e}")),
+                }],
+                orphans: Vec::new(),
+                first_run_hint: false,
+            };
         }
     };
+
+    // Load the ownership manifest ONCE. Absent/corrupt => empty => every
+    // pre-existing target reads as user-owned => nothing is overwritten.
+    let manifest = InstallManifest::load();
+
     let skills_root = source_repo.join("templates").join("skills");
     let commands_root = source_repo.join("templates").join("commands");
-    vec![
-        sync_one(
-            "claude",
-            &skills_root.join("claude"),
-            &home.join(".claude").join("commands"),
-            CopyKind::FlatMd,
-            dry,
+
+    // Install targets are declared up front so each outcome can be paired
+    // with its target dir — needed to carry a manifest slice forward when
+    // an agent's source could not be read this run (see below).
+    let claude_target = home.join(".claude").join("commands");
+    let codex_target = home.join(".codex").join("skills");
+    let oc_skills_target = home.join(".config").join("opencode").join("skills");
+    let oc_commands_target = home.join(".config").join("opencode").join("commands");
+    let outcomes: Vec<(AgentOutcome, PathBuf)> = vec![
+        (
+            sync_one(
+                "claude",
+                &skills_root.join("claude"),
+                &claude_target,
+                CopyKind::FlatMd,
+                dry,
+                &manifest,
+            ),
+            claude_target.clone(),
         ),
-        sync_one(
-            "codex",
-            &skills_root.join("codex"),
-            &home.join(".codex").join("skills"),
-            CopyKind::DirPerSkill,
-            dry,
+        (
+            sync_one(
+                "codex",
+                &skills_root.join("codex"),
+                &codex_target,
+                CopyKind::DirPerSkill,
+                dry,
+                &manifest,
+            ),
+            codex_target.clone(),
         ),
-        sync_one(
-            "opencode-skills",
-            &skills_root.join("opencode"),
-            &home.join(".config").join("opencode").join("skills"),
-            CopyKind::DirPerSkill,
-            dry,
+        (
+            sync_one(
+                "opencode-skills",
+                &skills_root.join("opencode"),
+                &oc_skills_target,
+                CopyKind::DirPerSkill,
+                dry,
+                &manifest,
+            ),
+            oc_skills_target.clone(),
         ),
-        sync_one(
-            "opencode-commands",
-            &commands_root.join("opencode"),
-            &home.join(".config").join("opencode").join("commands"),
-            CopyKind::FlatMd,
-            dry,
+        (
+            sync_one(
+                "opencode-commands",
+                &commands_root.join("opencode"),
+                &oc_commands_target,
+                CopyKind::FlatMd,
+                dry,
+                &manifest,
+            ),
+            oc_commands_target.clone(),
         ),
-    ]
+    ];
+
+    // Rebuild the manifest from what memhub owns *this* run, and record
+    // every target path we ship (owned or not) so orphan detection can
+    // tell "no longer shipped" from "shipped but the user's".
+    let mut next = InstallManifest::default();
+    let mut shipped: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    // Target dirs whose source we could NOT read this run (transient IO):
+    // we make no claims about them — their manifest slice is carried
+    // forward untouched and nothing under them is orphaned.
+    let mut carried_prefixes: Vec<PathBuf> = Vec::new();
+    let mut agents = Vec::with_capacity(outcomes.len());
+    for (outcome, target_dir) in outcomes {
+        if outcome.enumerated {
+            for (key, owned) in outcome.shipped {
+                shipped.insert(key.clone());
+                if let Some(hash) = owned {
+                    next.record(key, hash);
+                }
+            }
+        } else {
+            // Source unreadable this run: a transient error must never cede
+            // ownership. Without this, every still-owned file for this agent
+            // would look orphaned and be dropped from `next`, so next run it
+            // reads as user-owned and memhub silently stops updating it.
+            carried_prefixes.push(target_dir);
+        }
+        agents.push(outcome.report);
+    }
+
+    // Carry the existing manifest slice forward for every un-enumerated
+    // agent, so its ownership survives the transient failure.
+    for key in manifest.keys() {
+        if under_any(key, &carried_prefixes) {
+            if let Some(hash) = manifest.recorded(key) {
+                next.record(key.clone(), hash.to_string());
+            }
+        }
+    }
+
+    // Orphans: paths memhub recorded before but no longer ships, still on
+    // disk — EXCLUDING anything under a carried (un-enumerated) prefix,
+    // which we make no claims about this run. Reported here, NEVER deleted.
+    let mut orphans: Vec<String> = manifest
+        .keys()
+        .filter(|k| !shipped.contains(k.as_str()))
+        .filter(|k| !under_any(k, &carried_prefixes))
+        .filter(|k| Path::new(k).exists())
+        .map(|k| abbrev(Path::new(k)))
+        .collect();
+    orphans.sort();
+
+    // First-run notice (REQUIRED 1b): the first time memhub consults an
+    // empty manifest and leaves at least one pre-existing file untouched,
+    // flag it so the caller can explain the remedy — otherwise a
+    // memhub-written-but-unprovable file stays frozen with nothing said.
+    let protected_total: usize = agents.iter().map(|a| a.protected).sum();
+    let first_run_hint = manifest.is_empty() && protected_total > 0;
+
+    // Persist the refreshed ownership record. Best-effort and never fatal
+    // (same posture as the registry write): a failure just means memhub
+    // conservatively re-derives ownership next run. Only write when memhub
+    // actually owns something, so a machine with no agent dirs set up does
+    // not get `~/.memhub/` created for an empty manifest.
+    if !dry && !next.is_empty() {
+        if let Err(e) = next.save() {
+            log::debug!("install manifest save skipped: {e}");
+        }
+    }
+
+    ResyncReport {
+        agents,
+        orphans,
+        first_run_hint,
+    }
 }
 
-fn sync_one(agent: &str, src: &Path, target: &Path, kind: CopyKind, dry: bool) -> SkillSync {
+/// True when `key` (a target path string) lives under any of `prefixes`.
+/// The four install targets are distinct, non-nested dirs, so this cleanly
+/// partitions manifest entries by owning agent.
+fn under_any(key: &str, prefixes: &[PathBuf]) -> bool {
+    let p = Path::new(key);
+    prefixes.iter().any(|prefix| p.starts_with(prefix))
+}
+
+/// One agent's resync result: the human-facing row plus, for the manifest
+/// and orphan bookkeeping, every target path this agent ships this run.
+/// `Some(hash)` => memhub owns it (goes in the refreshed manifest); `None`
+/// => shipped but left to the user (or failed) — tracked only so it is not
+/// mistaken for an orphan.
+struct AgentOutcome {
+    report: SkillSync,
+    shipped: Vec<(String, Option<String>)>,
+    /// True when memhub could authoritatively enumerate what this agent
+    /// ships this run (its source dir was read). False when the source read
+    /// FAILED — in which case `shipped` is empty but says nothing, so the
+    /// caller must carry the manifest slice forward rather than orphaning it.
+    enumerated: bool,
+}
+
+/// What a resync did with one leaf file.
+enum FileAction {
+    /// Installed or updated (or, in dry mode, would be).
+    Wrote,
+    /// Owned and already byte-identical — recorded, no write.
+    AlreadyCurrent,
+    /// Left untouched: the user's own file, not memhub's.
+    Protected,
+    /// IO failure reading the template or writing the target.
+    Failed(String),
+}
+
+/// Outcome of one install unit (a flat `*.md` file, or a whole skill dir).
+enum UnitStatus {
+    Synced,
+    Protected,
+    Failed(String),
+}
+
+fn sync_one(
+    agent: &str,
+    src: &Path,
+    target: &Path,
+    kind: CopyKind,
+    dry: bool,
+    manifest: &InstallManifest,
+) -> AgentOutcome {
     let label = abbrev(target);
-    let mk = |status: SkillSyncStatus, synced: usize, detail: Option<String>| SkillSync {
-        agent: agent.to_string(),
-        target: label.clone(),
-        status,
-        synced,
-        detail,
+    let skip = |status: SkillSyncStatus, detail: Option<String>, enumerated: bool| AgentOutcome {
+        report: SkillSync {
+            agent: agent.to_string(),
+            target: label.clone(),
+            status,
+            synced: 0,
+            protected: 0,
+            detail,
+        },
+        shipped: Vec::new(),
+        enumerated,
     };
 
     // Only sync an agent dir the user actually set up. A missing dir or
-    // a non-dir at that path is a clean skip — never created.
+    // a non-dir at that path is a clean skip — never created. These ARE
+    // authoritative (`enumerated: true`): the target is genuinely gone, so
+    // there is nothing to carry forward.
     match std::fs::symlink_metadata(target) {
         Err(_) => {
-            return mk(
+            return skip(
                 SkillSyncStatus::Skipped,
-                0,
                 Some("agent dir absent (not set up)".to_string()),
+                true,
             );
         }
         Ok(m) if !m.is_dir() => {
-            return mk(
+            return skip(
                 SkillSyncStatus::Skipped,
-                0,
                 Some("path exists but is not a directory".to_string()),
+                true,
             );
         }
         Ok(_) => {}
@@ -1378,56 +1783,63 @@ fn sync_one(agent: &str, src: &Path, target: &Path, kind: CopyKind, dry: bool) -
     let entries = match std::fs::read_dir(src) {
         Ok(e) => e,
         Err(e) => {
-            // Precondition is that templates/ exists in the source repo;
-            // surface rather than silently report 0.
-            return mk(
+            // Source unreadable: NOT authoritative (`enumerated: false`).
+            // Possibly transient, so the caller must carry this agent's
+            // manifest slice forward instead of orphaning still-owned files.
+            return skip(
                 SkillSyncStatus::Warn,
-                0,
                 Some(format!("templates unreadable at {}: {e}", src.display())),
+                false,
             );
         }
     };
 
     let mut synced = 0usize;
+    let mut protected = 0usize;
     let mut errors: Vec<String> = Vec::new();
+    let mut shipped: Vec<(String, Option<String>)> = Vec::new();
     for entry in entries.flatten() {
         let from = entry.path();
         let name = entry.file_name();
-        match kind {
+        let (status, leaves) = match kind {
             CopyKind::FlatMd => {
                 if from.extension().and_then(|e| e.to_str()) != Some("md") {
                     continue;
                 }
-                if !entry.path().is_file() {
+                if !from.is_file() {
                     continue;
                 }
-                let to = target.join(&name);
-                if dry {
-                    synced += 1;
-                } else if let Err(e) = std::fs::copy(&from, &to) {
-                    errors.push(format!("{}: {e}", name.to_string_lossy()));
-                } else {
-                    synced += 1;
-                }
+                sync_unit_flat(&from, &target.join(&name), manifest, dry)
             }
             CopyKind::DirPerSkill => {
-                if !entry.path().is_dir() {
+                if !from.is_dir() {
                     continue;
                 }
-                let to = target.join(&name);
-                if dry {
-                    synced += 1;
-                } else if let Err(e) = copy_dir_recursive(&from, &to) {
-                    errors.push(format!("{}: {e}", name.to_string_lossy()));
-                } else {
-                    synced += 1;
-                }
+                sync_unit_dir(&from, &target.join(&name), manifest, dry)
             }
+        };
+        shipped.extend(leaves);
+        match status {
+            UnitStatus::Synced => synced += 1,
+            UnitStatus::Protected => protected += 1,
+            UnitStatus::Failed(e) => errors.push(e),
         }
     }
 
-    if errors.is_empty() {
-        mk(SkillSyncStatus::Synced, synced, None)
+    let report = if errors.is_empty() {
+        // Neutral wording: a protected file may be memhub's own that memhub
+        // simply cannot PROVE it wrote (no manifest entry). "the user's own"
+        // would be literally false in that case (REQUIRED 1c).
+        let detail = (protected > 0)
+            .then(|| format!("{protected} left untouched (pre-existing, unverified owner)"));
+        SkillSync {
+            agent: agent.to_string(),
+            target: label,
+            status: SkillSyncStatus::Synced,
+            synced,
+            protected,
+            detail,
+        }
     } else {
         let shown: Vec<&String> = errors.iter().take(3).collect();
         let more = errors.len().saturating_sub(shown.len());
@@ -1444,23 +1856,166 @@ fn sync_one(agent: &str, src: &Path, target: &Path, kind: CopyKind, dry: bool) -
         if more > 0 {
             detail.push_str(&format!("; +{more} more"));
         }
-        mk(SkillSyncStatus::Warn, synced, Some(detail))
+        if protected > 0 {
+            detail.push_str(&format!("; {protected} left untouched (unverified owner)"));
+        }
+        SkillSync {
+            agent: agent.to_string(),
+            target: label,
+            status: SkillSyncStatus::Warn,
+            synced,
+            protected,
+            detail: Some(detail),
+        }
+    };
+
+    AgentOutcome {
+        report,
+        shipped,
+        enumerated: true,
     }
 }
 
-fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let from = entry.path();
-        let to = dst.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
-            copy_dir_recursive(&from, &to)?;
-        } else {
-            std::fs::copy(&from, &to)?;
+/// A flat `*.md` install unit is exactly one file.
+fn sync_unit_flat(
+    from: &Path,
+    to: &Path,
+    manifest: &InstallManifest,
+    dry: bool,
+) -> (UnitStatus, Vec<(String, Option<String>)>) {
+    let key = to.to_string_lossy().to_string();
+    let (action, owned) = install_one_file(from, to, manifest, dry);
+    let status = match &action {
+        FileAction::Wrote | FileAction::AlreadyCurrent => UnitStatus::Synced,
+        FileAction::Protected => UnitStatus::Protected,
+        FileAction::Failed(e) => UnitStatus::Failed(format!("{}: {e}", leaf_label(to))),
+    };
+    (status, vec![(key, owned)])
+}
+
+/// A skill-dir install unit: apply the ownership check to every leaf file
+/// so a user's own file *inside* an otherwise-memhub skill dir is still
+/// protected. The unit is "protected" if any leaf is the user's, "failed"
+/// if any leaf errors, otherwise "synced".
+fn sync_unit_dir(
+    from: &Path,
+    to: &Path,
+    manifest: &InstallManifest,
+    dry: bool,
+) -> (UnitStatus, Vec<(String, Option<String>)>) {
+    let mut leaves: Vec<PathBuf> = Vec::new();
+    collect_leaves(from, Path::new(""), &mut leaves);
+
+    let mut shipped: Vec<(String, Option<String>)> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+    let mut any_protected = false;
+    for leaf in &leaves {
+        let dst = to.join(leaf);
+        let key = dst.to_string_lossy().to_string();
+        let (action, owned) = install_one_file(&from.join(leaf), &dst, manifest, dry);
+        match &action {
+            FileAction::Wrote | FileAction::AlreadyCurrent => {}
+            FileAction::Protected => any_protected = true,
+            FileAction::Failed(e) => errors.push(format!("{}: {e}", leaf.display())),
+        }
+        shipped.push((key, owned));
+    }
+
+    let status = if !errors.is_empty() {
+        let shown: Vec<&String> = errors.iter().take(3).collect();
+        let more = errors.len().saturating_sub(shown.len());
+        let mut d = shown
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join("; ");
+        if more > 0 {
+            d.push_str(&format!("; +{more} more"));
+        }
+        UnitStatus::Failed(d)
+    } else if any_protected {
+        UnitStatus::Protected
+    } else {
+        UnitStatus::Synced
+    };
+    (status, shipped)
+}
+
+/// Apply one template file to its target under the install-manifest
+/// ownership rules (U6). Returns the action taken and, when memhub owns
+/// the result, the content hash to record in the refreshed manifest.
+///
+/// This is where the "ours vs the user's file" boundary is enforced at the
+/// filesystem: an absent file installs; a present file is (over)written
+/// ONLY when `install_manifest::decide` proves it is memhub's; anything
+/// else is left exactly as the user has it.
+fn install_one_file(
+    from: &Path,
+    to: &Path,
+    manifest: &InstallManifest,
+    dry: bool,
+) -> (FileAction, Option<String>) {
+    let key = to.to_string_lossy().to_string();
+    let template = match std::fs::read(from) {
+        Ok(b) => b,
+        Err(e) => return (FileAction::Failed(format!("read template: {e}")), None),
+    };
+    // Distinguish "absent" (safe to install) from "present but unreadable"
+    // (fail-safe: cannot prove it is ours, so treat it as the user's).
+    let on_disk: Option<Vec<u8>> = match std::fs::symlink_metadata(to) {
+        Err(_) => None,
+        Ok(_) => match std::fs::read(to) {
+            Ok(b) => Some(b),
+            Err(_) => return (FileAction::Protected, None),
+        },
+    };
+    let template_hash = sha256_hex(&template);
+    match install_manifest::decide(manifest.recorded(&key), on_disk.as_deref(), &template) {
+        install_manifest::Decision::UserOwned => (FileAction::Protected, None),
+        install_manifest::Decision::AlreadyCurrent => {
+            (FileAction::AlreadyCurrent, Some(template_hash))
+        }
+        install_manifest::Decision::Install | install_manifest::Decision::Update => {
+            if dry {
+                return (FileAction::Wrote, Some(template_hash));
+            }
+            if let Some(parent) = to.parent() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    return (FileAction::Failed(format!("mkdir: {e}")), None);
+                }
+            }
+            match std::fs::write(to, &template) {
+                Ok(()) => (FileAction::Wrote, Some(template_hash)),
+                Err(e) => (FileAction::Failed(e.to_string()), None),
+            }
         }
     }
-    Ok(())
+}
+
+/// Collect every leaf file under `root`, as paths relative to `root`.
+fn collect_leaves(root: &Path, rel: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(root.join(rel)) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let child = if rel.as_os_str().is_empty() {
+            PathBuf::from(&name)
+        } else {
+            rel.join(&name)
+        };
+        match entry.file_type() {
+            Ok(ft) if ft.is_dir() => collect_leaves(root, &child, out),
+            Ok(_) => out.push(child),
+            Err(_) => {}
+        }
+    }
+}
+
+fn leaf_label(p: &Path) -> String {
+    p.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| p.to_string_lossy().to_string())
 }
 
 // ---------------------------------------------------------------------
@@ -1788,5 +2343,113 @@ mod tests {
         let pa: Vec<_> = primary.get_args().map(|s| s.to_os_string()).collect();
         let fa: Vec<_> = fallback.get_args().map(|s| s.to_os_string()).collect();
         assert_eq!(pa, fa, "primary and fallback staged argv diverged");
+    }
+
+    // --- U6: relink mechanism honesty --------------------------------
+
+    #[test]
+    fn link_kind_word_is_honest() {
+        assert_eq!(LinkKind::Symlink.word(), "symlink");
+        assert_eq!(LinkKind::Copy.word(), "copy");
+    }
+
+    #[test]
+    fn stale_replace_message_names_the_real_mechanism() {
+        // The exact bug being fixed: the copy fallback used to print
+        // "symlink". The message must now match reality.
+        let bin = Path::new("/home/u/.cargo/bin/memhub");
+        assert!(
+            stale_replaced_msg(bin, LinkKind::Symlink).contains("with symlink"),
+            "a real symlink should say symlink"
+        );
+        let copied = stale_replaced_msg(bin, LinkKind::Copy);
+        assert!(copied.contains("with copy"), "{copied}");
+        assert!(
+            !copied.contains("symlink"),
+            "a copy fallback must NOT claim symlink: {copied}"
+        );
+    }
+
+    #[test]
+    fn repoint_message_names_the_real_mechanism() {
+        let bin = Path::new("/home/u/.cargo/bin/memhub");
+        assert!(repointed_msg(bin, LinkKind::Symlink).contains("(symlink)"));
+        let copied = repointed_msg(bin, LinkKind::Copy);
+        assert!(copied.contains("(copy)"), "{copied}");
+        assert!(!copied.contains("symlink"), "{copied}");
+    }
+
+    #[test]
+    fn relink_returns_the_mechanism_it_used() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cargo_bin = dir.path().join("memhub-bin");
+        std::fs::write(&cargo_bin, b"#!/bin/sh\n").expect("write bin");
+        // Parent dir intentionally does not exist yet: relink must create it.
+        let shadow = dir.path().join("nested").join("memhub");
+        let kind = relink(&cargo_bin, &shadow).expect("relink");
+        assert!(shadow.exists(), "relink must create the shadow at {shadow:?}");
+        #[cfg(unix)]
+        assert_eq!(kind, LinkKind::Symlink, "unix always symlinks");
+        // On Windows the result is Symlink or Copy depending on privilege;
+        // either way relink reports what it actually did.
+        let _ = kind;
+    }
+
+    // --- U7: PATH-shadow IO error degrades, never aborts -------------
+
+    #[test]
+    fn shadow_or_warn_degrades_errors_to_a_warning() {
+        let degraded = shadow_or_warn(Err(MemhubError::InvalidInput("disk full".to_string())));
+        assert!(degraded.warn, "an error must produce a warn outcome, not abort");
+        assert!(
+            degraded.message.contains("skipped") && degraded.message.contains("disk full"),
+            "the warning must explain what was skipped and why: {}",
+            degraded.message
+        );
+    }
+
+    #[test]
+    fn shadow_or_warn_passes_success_through() {
+        let ok = shadow_or_warn(Ok(ShadowOutcome::msg("all good")));
+        assert!(!ok.warn);
+        assert_eq!(ok.message, "all good");
+    }
+
+    // --- U6: protected reporting is loud and honest (REQUIRED 1a/1c) --
+
+    #[test]
+    fn synced_row_surfaces_protected_detail() {
+        let s = SkillSync {
+            agent: "claude".to_string(),
+            target: "~/.claude/commands".to_string(),
+            status: SkillSyncStatus::Synced,
+            synced: 10,
+            protected: 2,
+            detail: Some("2 left untouched (pre-existing, unverified owner)".to_string()),
+        };
+        let line = s.line();
+        assert!(line.contains("synced 10"), "{line}");
+        assert!(
+            line.contains("left untouched") && line.contains("unverified owner"),
+            "a protected summary must explain itself: {line}"
+        );
+        assert!(
+            !line.contains("the user's own"),
+            "must not claim ownership it cannot prove: {line}"
+        );
+    }
+
+    #[test]
+    fn synced_row_without_protected_stays_terse() {
+        let s = SkillSync {
+            agent: "claude".to_string(),
+            target: "~/.claude/commands".to_string(),
+            status: SkillSyncStatus::Synced,
+            synced: 11,
+            protected: 0,
+            detail: None,
+        };
+        assert!(s.line().contains("synced 11"));
+        assert!(!s.line().contains("untouched"));
     }
 }
