@@ -402,6 +402,10 @@ pub(crate) fn eval_summary_to_json(summary: &commands::eval::EvalSummary) -> ser
         },
         "recall_at_k": summary.recall_at_k,
         "elapsed_ms": summary.elapsed_ms,
+        // Report-only (Wave 4 R10, issue #74): median per-query latency
+        // after a throwaway warm-up call, never a pass/fail gate. See
+        // `EvalSummary::warm_latency_p50_ms` for why "warm".
+        "warm_latency_p50_ms": summary.warm_latency_p50_ms,
         "outcomes": outcomes,
     })
 }
@@ -413,10 +417,11 @@ pub(crate) fn print_eval_summary(summary: &commands::eval::EvalSummary) {
         summary.total_queries,
     );
     println!(
-        "Mode: {}  |  K: {}  |  Elapsed: {} ms",
+        "Mode: {}  |  K: {}  |  Elapsed: {} ms  |  Warm p50: {:.1} ms",
         recall_mode_label(summary.mode),
         summary.k,
         summary.elapsed_ms,
+        summary.warm_latency_p50_ms,
     );
     println!(
         "Recall@{k}: {passes}/{total} = {pct:.1}%",

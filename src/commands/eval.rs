@@ -98,6 +98,16 @@ pub struct EvalSummary {
     pub safety_failures: usize,
     pub outcomes: Vec<QueryOutcome>,
     pub elapsed_ms: u128,
+    /// Median (p50) of each golden query's own `RecallResponse.elapsed_ms`
+    /// in this run, in milliseconds (Wave 4 R10, issue #74). "Warm"
+    /// because a throwaway warm-up call (below, outside this timer) has
+    /// already forced the embed + rerank ONNX models to load — the first
+    /// call to either in this process pays a ~1-2s cold-start cost (see
+    /// `retrieval::rerank`'s module doc) that would otherwise dominate the
+    /// sample as a single outsized outlier. Report-only: unlike
+    /// `recall_at_k`, nothing here fails the eval run — it exists so a
+    /// 10x latency regression is visible without a hard threshold to tune.
+    pub warm_latency_p50_ms: f64,
 }
 
 pub fn run_retrieval(start: &Path, opts: EvalOptions) -> Result<EvalSummary> {
@@ -107,9 +117,39 @@ pub fn run_retrieval(start: &Path, opts: EvalOptions) -> Result<EvalSummary> {
         ));
     }
     let golden = load_golden(&opts.golden_path)?;
+
+    // Warm-up: one throwaway recall call, timed separately (outside
+    // `started` below) and never scored, so the one-time ONNX cold-start
+    // cost lands outside the per-query latency sample instead of
+    // skewing it. Reuses the first `match`-kind query's own text so it
+    // exercises the same embed+rerank path real queries do; recall()
+    // only touches the ONNX models when the resolved mode is hybrid, so
+    // this is a cheap no-op for an fts-mode run. Skipped (harmlessly) if
+    // the golden file has no match query — `load_golden` already
+    // guarantees at least one query, but not necessarily one of kind
+    // match.
+    if let Some(warm_query) = golden.queries.iter().find(|q| q.kind == GoldenKind::Match) {
+        let _ = retrieval::recall(
+            start,
+            RecallOptions {
+                query: warm_query.query.clone(),
+                mode: opts.mode,
+                max_results: opts.k,
+                source_types: Vec::new(),
+                include_stale: None,
+                accepted_only: None,
+                use_reranker: opts.use_reranker,
+                min_rerank_score: opts.min_rerank_score,
+                log_metrics: false,
+                surface: None,
+            },
+        );
+    }
+
     let started = Instant::now();
     let mut outcomes = Vec::with_capacity(golden.queries.len());
     let mut resolved_mode = opts.mode;
+    let mut latencies_ms: Vec<u128> = Vec::with_capacity(golden.queries.len());
 
     for query in &golden.queries {
         let recall_opts = RecallOptions {
@@ -131,10 +171,12 @@ pub fn run_retrieval(start: &Path, opts: EvalOptions) -> Result<EvalSummary> {
         if resolved_mode.is_none() {
             resolved_mode = Some(response.mode);
         }
+        latencies_ms.push(response.elapsed_ms);
         outcomes.push(evaluate_query(query, &response, opts.k));
     }
 
     let mode = resolved_mode.unwrap_or(RetrievalMode::Fts);
+    let warm_latency_p50_ms = median_ms(&latencies_ms);
     let summary = summarize(
         &golden,
         opts.k,
@@ -142,8 +184,28 @@ pub fn run_retrieval(start: &Path, opts: EvalOptions) -> Result<EvalSummary> {
         opts.golden_path.clone(),
         outcomes,
         started,
+        warm_latency_p50_ms,
     );
     Ok(summary)
+}
+
+/// Median (p50) of a set of millisecond latencies. `0.0` for an empty
+/// slice — never hit by `run_retrieval` in practice (`load_golden`
+/// rejects a golden file with zero queries), kept total rather than
+/// `Option` so callers don't have to unwrap a value that always exists
+/// on the real call path.
+fn median_ms(values: &[u128]) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    let mid = sorted.len() / 2;
+    if sorted.len() % 2 == 1 {
+        sorted[mid] as f64
+    } else {
+        (sorted[mid - 1] as f64 + sorted[mid] as f64) / 2.0
+    }
 }
 
 pub fn load_golden(path: &Path) -> Result<GoldenFile> {
@@ -188,10 +250,13 @@ fn validate_query(q: &GoldenQuery) -> Result<()> {
     }
     if let Some(st) = q.source_type.as_deref() {
         match st {
-            "fact" | "decision" | "task" => {}
+            // `doc_chunk` added Wave 4 R10 (issue #74) so the golden set
+            // can pin doc-chunk hits to source type, same as the other
+            // three durable rows.
+            "fact" | "decision" | "task" | "doc_chunk" => {}
             other => {
                 return Err(MemhubError::InvalidInput(format!(
-                    "golden query `{}` has unknown source_type `{}` (expected fact|decision|task)",
+                    "golden query `{}` has unknown source_type `{}` (expected fact|decision|task|doc_chunk)",
                     q.id, other
                 )));
             }
@@ -339,6 +404,7 @@ fn summarize(
     golden_path: PathBuf,
     outcomes: Vec<QueryOutcome>,
     started: Instant,
+    warm_latency_p50_ms: f64,
 ) -> EvalSummary {
     let total_queries = golden.queries.len();
     let mut match_queries = 0usize;
@@ -382,6 +448,7 @@ fn summarize(
         safety_failures,
         outcomes,
         elapsed_ms: started.elapsed().as_millis(),
+        warm_latency_p50_ms,
     }
 }
 
@@ -1059,6 +1126,7 @@ mod tests {
             PathBuf::from("x.json"),
             outcomes,
             Instant::now(),
+            12.5,
         );
         assert_eq!(summary.total_queries, 3);
         assert_eq!(summary.match_queries, 2);
@@ -1067,6 +1135,32 @@ mod tests {
         assert_eq!(summary.empty_passes, 0);
         assert_eq!(summary.safety_failures, 1);
         assert!((summary.recall_at_k - 0.5).abs() < 1e-9);
+        assert!((summary.warm_latency_p50_ms - 12.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn median_ms_empty_is_zero() {
+        assert_eq!(median_ms(&[]), 0.0);
+    }
+
+    #[test]
+    fn median_ms_odd_count_is_middle_value() {
+        assert!((median_ms(&[30, 10, 20]) - 20.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn median_ms_even_count_averages_middle_two() {
+        assert!((median_ms(&[10, 20, 30, 40]) - 25.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn median_ms_is_robust_to_a_single_cold_start_outlier() {
+        // The scenario this metric exists for: one huge cold-start sample
+        // among many warm ones should barely move the median, unlike a
+        // mean which the outlier would dominate.
+        let mut latencies = vec![5u128; 17];
+        latencies.push(2000);
+        assert!((median_ms(&latencies) - 5.0).abs() < 1e-9);
     }
 
     // --- locate harness (M11 PR5) ---------------------------------------

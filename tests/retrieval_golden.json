@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "M8 retrieval golden set. Recall@K acceptance for `memhub eval retrieval`. Matchers run case-insensitive substring checks against the recall hit's title and body, so queries survive row-ID shifts and minor wording tweaks. `kind: match` queries contribute to Recall@K; `kind: empty` queries are safety probes that must return zero results. Two query styles are mixed: keyword-style (3-6 specific terms, ids without a prefix) that play well with FTS5's AND-of-tokens matcher, and `semantic-` prefixed queries written as natural-language sentences that intentionally avoid the durable surface vocabulary — added for re-ranker bake-off (task #20) so headroom exists above the keyword baseline.",
+  "description": "M8 retrieval golden set. Recall@K acceptance for `memhub eval retrieval`. Matchers run case-insensitive substring checks against the recall hit's title and body, so queries survive row-ID shifts and minor wording tweaks. `kind: match` queries contribute to Recall@K; `kind: empty` queries are safety probes that must return zero results. Two query styles are mixed: keyword-style (3-6 specific terms, ids without a prefix) that play well with FTS5's AND-of-tokens matcher, and `semantic-` prefixed queries written as natural-language sentences that intentionally avoid the durable surface vocabulary — added for re-ranker bake-off (task #20) so headroom exists above the keyword baseline. `doc-` prefixed queries (Wave 4 R10, issue #74) target the doc-chunk ranking path (source_type doc_chunk, gated by the doc floor / include_docs_in_default); `global-` prefixed queries target the machine-global-store ranking path (M9 cross-DB merge, scope=global) — both previously zero-coverage. Every id in this file (base, doc-, global-, semantic-) runs against ONE seeded, hermetic fixture in `tests/retrieval_golden_hermetic.rs`, never this machine's live `.memhub/project.sqlite`.",
   "queries": [
     {
       "id": "decision-recall-readonly",
@@ -160,6 +160,42 @@
       "query": "zxqv-pure-nonsense-no-real-token-anywhere-in-this-repo",
       "kind": "empty",
       "notes": "Safety probe: gibberish must return an empty bundle, never a hallucinated guess."
+    },
+    {
+      "id": "doc-code-style-error-handling",
+      "query": "error handling convention map_err Result propagate",
+      "kind": "match",
+      "source_type": "doc_chunk",
+      "title_contains": ["Error Handling"],
+      "body_contains": ["map_err"],
+      "notes": "Wave 4 R10 (issue #74): doc-chunk ranking path, previously zero-coverage. Ingested doc auto-enables include_docs_in_default (decision 90); the chunk must clear the doc floor (doc_min_rerank_score) to reach the default bundle this query runs against."
+    },
+    {
+      "id": "semantic-doc-code-style-error-handling",
+      "query": "what is the convention for returning and propagating errors from a new function",
+      "kind": "match",
+      "source_type": "doc_chunk",
+      "title_contains": ["Error Handling"],
+      "body_contains": ["map_err"],
+      "notes": "Semantic phrasing of doc-code-style-error-handling — same chunk, natural-language query with minimal keyword overlap."
+    },
+    {
+      "id": "global-fact-git-signing-key",
+      "query": "git commit signing key GPG machine",
+      "kind": "match",
+      "source_type": "fact",
+      "title_contains": ["signing-key"],
+      "body_contains": ["GPG"],
+      "notes": "Wave 4 R10 (issue #74): global-store ranking path, previously zero-coverage. This fact exists ONLY in the machine-global store (~/.memhub/global.sqlite, M9) — a pass is only possible via the cross-DB global merge in retrieval::recall, tagged scope=global."
+    },
+    {
+      "id": "semantic-global-decision-editor-indent",
+      "query": "what is the default indentation every project on this machine should use unless overridden",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": ["indent"],
+      "body_contains": ["global scope"],
+      "notes": "Semantic phrasing of the global-store editor-indent decision — exists only in the global store, same global-blend contract as global-fact-git-signing-key."
     }
   ]
 }
