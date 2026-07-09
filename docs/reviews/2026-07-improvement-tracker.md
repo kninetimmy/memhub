@@ -23,14 +23,14 @@ numbers. Default-off config additions must keep an untouched install byte-identi
 | 1 | Loud states (doctor/status/integrity) | 5 / 5 | Q35 ✓ (complete) |
 | 2 | Session-start token diet | 7 / 7 | Q21–Q25 ✓ · Q41 ✓ (complete) |
 | 3 | Staleness / lifecycle | 7 / 7 | Q1–Q6 ✓ (complete) |
-| 4 | Retrieval performance | 0 / 12 | Q17–Q19, Q24, Q40 |
+| 4 | Retrieval performance | 12 / 12 | Q17–Q19 ✓ · Q24 ✓ · Q40 ✓ (complete) |
 | 5 | Upgrade / GC hardening | 0 / 8 | Q12–Q16 |
 | 6 | Wrap-up policy / verbosity | 0 / 6 | Q7–Q11 |
 | 7 | Cross-machine sync / metrics | 0 / 6 | Q30–Q33 |
 | 8 | CI / infra / licensing | 0 / 2 | Q37–Q38 |
 | 9 | Housekeeping | 0 / 7 | Q26–Q27, Q36 |
 
-Decisions resolved: 16 / 56 (Q1, Q2, Q3, Q4, Q5, Q6, Q21, Q22, Q23, Q24, Q25, Q29, Q32, Q35, Q39, Q41).
+Decisions resolved: 20 / 56 (Q1, Q2, Q3, Q4, Q5, Q6, Q17, Q18, Q19, Q21, Q22, Q23, Q24, Q25, Q29, Q32, Q35, Q39, Q40, Q41).
 
 ---
 
@@ -270,7 +270,8 @@ Four PRs: **PR-A text/docs** and **PR-B safe code** (no decisions), **PR #17**
   row on audit error, structurally never fails the upgrade (returns `AuditNag`, not
   `Result`). New `tests/upgrade_audit_nag.rs`. — 2026-07-06, PR #38 (issue #33).
 - [x] rider N4 keystone-phrase parity test — landed with C2. — 2026-07-06, PR #34 (issue #30).
-- [ ] rider N1 MCP description diet — deferred to Wave 4 (same PR as Q40/R2)
+- [x] rider N1 MCP description diet — landed with R2 (Wave 4), safety/gate clauses preserved
+  verbatim. — 2026-07-08, PR #79 / 4fcce57 (issue #65).
 
 ## Wave 3 — Lifecycle  (gating: Q1–Q6 ✓ — resolved 2026-07-06 as decision 145)
 
@@ -325,19 +326,67 @@ pre-flighted with a throwaway local merge + full suite before the canonical squa
   an ancient imported pending write); caught by the full-suite gate on main. Every subsequent
   merge was pre-flighted with a throwaway local merge + full suite before the canonical squash.
 
-## Wave 4 — Performance  (gating: Q17–Q19, Q24, Q40)
-- [ ] R1 pre-warm models in `mcp::serve`
-- [ ] R2 register MCP server (per Q40 all-three-CLIs)
-- [ ] R3 batch doc-chunk embedding
-- [ ] R5 `locate --no-refresh`
-- [ ] R6 MCP recall bundle trim (+ add `rerank_score`)
-- [ ] R8 debounce metrics maintenance
-- [ ] R9 consolidate retrieval helpers; delete dead `min_vector_score`
-- [ ] R10 evals: doc-chunk/global fixture sections + warm-latency p50
-- [ ] R11 knob hygiene (split locate vs recall weights; `TEST_PATH_PENALTY` config)
-- [ ] R12 record surface (CLI vs MCP) column in `recall_metrics`
-- [ ] R7 int8-quantized ONNX — **separate eval-gated experiment** (Q18)
-- [ ] R4 = F10 (tracked in Wave 0)
+## Wave 4 — Performance  (gating: Q17–Q19 ✓ · Q24 ✓ · Q40 ✓ — resolved 2026-07-08 as decision 148) — COMPLETE
+
+Executed 2026-07-08 under orchestrator mode; main green at `27c6009`. Fanned out to
+sonnet-executors (R7 to an opus-executor), batched with a throwaway local merge + full
+suite pre-flight before every canonical squash. §11 gate ruled as memhub decision 148:
+Q17 gather-then-decide via R12's surface column; Q18 run R7 as a separate eval-gated
+experiment; Q19 MCP-only bundle trim + add `rerank_score`; Q40 register `memhub serve`
+repo-scoped (committed `.mcp.json` + `opencode.json`) + per-machine Codex entry + doctor
+probe. (Q24 was already resolved = fix.)
+
+- [x] R1 pre-warm models in `mcp::serve` — background warm thread; first recall ~2–3s→~300ms,
+  can't block/crash startup. — 2026-07-08, PR #80 / 42197fe (issue #71).
+- [x] R2 register MCP server (per Q40 all-three-CLIs) — committed `.mcp.json` (Claude Code) +
+  `mcp.memhub` in tracked `opencode.json`; Codex per-machine `[mcp_servers.memhub]`+trust
+  documented and applied on the dev box (doctor reports ✔ for all three CLIs). Folded in the
+  deferred **N1** MCP-description diet + the doctor **P1** registration probe.
+  — 2026-07-08, PR #79 / 4fcce57 (issue #65).
+- [x] R3 batch doc-chunk embedding — `eager_embed_batch_in_tx` (one `embed_batch` vs N
+  `embed_one`); values byte-identical (test proves batched==solo, <1e-3); N28 100%.
+  — 2026-07-08, PR #76 / e3be99e (issue #66).
+- [x] R5 `locate --no-refresh` — CLI-only flag skips the git-ls-files+stat freshness pass;
+  MCP/eval call sites pinned `no_refresh:false`. — 2026-07-08, PR #78 / a6f7711 (issue #67).
+- [x] R6 MCP recall bundle trim (+ add `rerank_score`) — Q19 MCP-only: drop
+  rank/score/fts_score/vector_score (grep confirmed no `confidence` on that struct), add
+  `rerank_score`; CLI `--json` full diagnostic shape kept; recall skills grepped+updated.
+  N28 100%. — 2026-07-08, PR #82 / 6441a8e (issue #72).
+- [x] R8 debounce metrics maintenance — migration **0019** marker + atomic hourly
+  `claim_maintenance_run`; explicit `metrics rescan`/`prune` paths unaffected.
+  — 2026-07-08, PR #77 / 363c518 (issue #68).
+- [x] R9 consolidate retrieval helpers; delete dead `min_vector_score` — new `retrieval::util`
+  (ground-truthing found+collapsed **7** byte-identical `sha256_hex` copies, not 4; canonical
+  takes `&[u8]` for the code-index raw-bytes caller); inlined the always-0.0 vector floor.
+  Net −123 lines; N28 100%. — 2026-07-08, PR #81 / 8f25568 (issue #69).
+- [x] R10 evals: doc-chunk/global fixture sections + warm-latency p50 — 4 fixture-seeded golden
+  queries (2 doc-chunk, 2 global-store), hermetic base per N28, report-only warm p50 (~165ms)
+  in `eval --json`. Combined Recall@3 100% (21/21 match + 1 empty). — 2026-07-08, PR #85 /
+  9e451ac (issue #74). *(Integration fixup: R12's new `surface` field folded into R10's new
+  warm-up `RecallOptions` before merge — a clean text-merge that failed to compile, caught by
+  the full-suite pre-flight the executors' targeted runs couldn't see.)*
+- [x] R11 knob hygiene (split locate vs recall weights; `TEST_PATH_PENALTY` config) — new
+  `[code_index]` config section (fts/vector weights + `test_path_penalty`) split off from
+  `retrieval.scoring`; defaults byte-identical (score-seam proof); new keys registered in
+  doctor `KNOWN_LEAVES`/range-checks/`BASELINE_FIELDS` (no false-warn regression);
+  `stale_penalty` documented facts-only. N28 100%. — 2026-07-08, PR #83 / 7ed9fcc (issue #73).
+- [x] R12 record surface (CLI vs MCP) column in `recall_metrics` — migration **0020** (additive
+  `surface`), `RecallSurface{Cli,Mcp}` threaded through `RecallOptions`→`log_recall`, populated
+  CLI→Cli / MCP→Mcp. Answers Q17 with data. — 2026-07-08, PR #84 / 3460faf (issue #70).
+- [x] R7 int8-quantized ONNX — **separate eval-gated experiment** (Q18) — **ACCEPTED**: reranker
+  swapped to the same `Xenova/ms-marco-MiniLM-L-6-v2` repo's `model_int8.onnx` (same weights,
+  Apache-2.0, SHA-pinned + re-verified at build). Recall@3 **0pp movement** (100% every section);
+  decision-147's 2.0 rerank threshold + doc 0.0 + contradiction 2.0 all re-verified and **held**
+  (comment-only, no value edits). Binary **273→205 MB (−25%)** — *partial* adoption: BAAI
+  publishes **no int8 bge-small ONNX** (verified vs the HF file tree), so the bi-encoder stays
+  fp32 and the ~90 MB Q18 headline isn't reachable without a bi-encoder publisher change.
+  — 2026-07-08, PR #86 / 27c6009 (issue #75).
+- [x] R4 = F10 (done in Wave 0) — embed-cache early-return reorder. — 2026-07-05, PR-B.
+
+**Still open (deferred, not a Wave 4 blocker):** the **Q41 spike** — whether the compact
+AGENTS.md routing block can shrink now that R2 registers the MCP server in all three CLIs and
+the routing instructions actually fire. Kept as an orchestrator judgment call; not executed
+this wave.
 
 ## Wave 5 — Upgrade / GC  (gating: Q12–Q16)
 - [ ] U2 extend gc to `build/memhub-*` OUT_DIRs + `examples/` hashes
@@ -385,10 +434,10 @@ Resolve per wave. Recommendations are in the review; mark here when the user rul
 **Lifecycle:** [x] Q1 [x] Q2 [x] Q3 [x] Q4 [x] Q5 [x] Q6 *(all resolved 2026-07-06 as memhub decision 145 — Wave 3 gate: Q1 demote+flag stale facts, not silent exclusion; Q2–Q4 supersession/audit/contradiction lifecycle; Q5 retire always-1.0 confidence (PR #52); Q6 auto pending-write expiry (PR #50))*
 **Wrap-up:** [ ] Q7 [ ] Q8 [ ] Q9 [ ] Q10 [ ] Q11
 **Upgrade/GC:** [ ] Q12 [ ] Q13 [ ] Q14 [ ] Q15 [ ] Q16
-**Retrieval:** [ ] Q17 [ ] Q18 [ ] Q19 [ ] Q20
+**Retrieval:** [x] Q17 [x] Q18 [x] Q19 [ ] Q20 *(Q17–Q19 resolved 2026-07-08 as memhub decision 148 — Wave 4 gate: Q17 gather-then-decide via R12's CLI/MCP surface column (PR #84); Q18 run R7 int8 as a separate eval-gated experiment, accepted at 0pp Recall@3 movement (PR #86); Q19 MCP-only recall bundle trim + add `rerank_score`, CLI `--json` keeps full shape (PR #82). Q20 (37% empty-recall question) still deferred until R12 data accrues.)*
 **CLAUDE.md:** [x] Q21 [x] Q22 [x] Q23 [x] Q24 [x] Q25 *(all resolved 2026-07-06 — Wave 2 gate: Q21 generate AGENTS.md from CLAUDE.md (derived, content-equal parity); Q22 accept ~2,500-tok target + inline {Guardrails, Session Continuity, Delegation, stale-embeddings gate, sync_adopt gate}; Q23 implement versioned managed block; Q24 fix — register `memhub serve` (confirmed registered in 0 CLIs; work lands Wave 4/Q40); Q25 opt-in `[audit] user_md_path`)*
 **Surfaces:** [ ] Q26 [ ] Q27 [ ] Q28 [x] Q29 *(resolved 2026-07-05 — wrapped noun-keyed objects; `doc ls` migrated; PR #18)*
 **Cross-machine:** [ ] Q30 [ ] Q31 [x] Q32 *(resolved — decision 134; Mac lineage not adopted, ported as Windows 128–133)* [ ] Q33
 **DB:** [ ] Q34 [x] Q35 *(resolved 2026-07-05 — `synchronous = NORMAL` alongside WAL across all DB surfaces; memhub decision 140 / review D5)* [ ] Q36
 **Infra:** [ ] Q37 [ ] Q38 [x] Q39 *(resolved 2026-07-05 — repo-root + `[doc] allowed_dirs` allowlist for MCP `doc_add`; PR #17)*
-**Parity/free-form:** [ ] Q40 [x] Q41 *(resolved 2026-07-06 — adopt fail-safe: keep a ~10-line compact routing block in AGENTS.md for Codex/OpenCode, trim CLAUDE.md's verbose routing; the per-CLI instructions-delivery spike is deferred to Wave 4)* [ ] Q42 [ ] Q43 [ ] Q44 [ ] Q45 [ ] Q46 [ ] Q47 [ ] Q48 [ ] Q49 [ ] Q50 [ ] Q51 [ ] Q52 [ ] Q53 [ ] Q54 [ ] Q55 [ ] Q56
+**Parity/free-form:** [x] Q40 *(resolved 2026-07-08 as decision 148 — Wave 4: register `memhub serve` in all three CLIs, repo-scoped where supported — committed `.mcp.json` (Claude Code) + `mcp.memhub` in tracked `opencode.json` + per-machine `[mcp_servers.memhub]`/trust in `~/.codex/config.toml` for Codex + a per-CLI registration probe in doctor; PR #79)* [x] Q41 *(resolved 2026-07-06 — adopt fail-safe: keep a ~10-line compact routing block in AGENTS.md for Codex/OpenCode, trim CLAUDE.md's verbose routing; the per-CLI instructions-delivery spike is deferred — see Wave 4's still-open note)* [ ] Q42 [ ] Q43 [ ] Q44 [ ] Q45 [ ] Q46 [ ] Q47 [ ] Q48 [ ] Q49 [ ] Q50 [ ] Q51 [ ] Q52 [ ] Q53 [ ] Q54 [ ] Q55 [ ] Q56
