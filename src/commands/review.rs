@@ -413,6 +413,11 @@ pub fn accept(
                     .get("value")
                     .and_then(Value::as_str)
                     .ok_or_else(|| missing_payload_field(id, "value"))?;
+                // Optional, unenforced tag staged by `propose_fact` (issue
+                // #97); absent from every payload written before this
+                // field existed, which `Value::as_str` on a missing key
+                // already treats as `None`.
+                let kind = payload.get("kind").and_then(Value::as_str);
                 // Probe only when we might block — an explicit --force or
                 // --supersede is already the operator's acknowledgement.
                 if !force
@@ -427,7 +432,8 @@ pub fn accept(
                 {
                     return Err(MemhubError::InvalidInput(conflict.advisory(id)));
                 }
-                let (fact_id, _) = fact::add_in_tx(&tx, key, value, &derived_source, actor, mode)?;
+                let (fact_id, _) =
+                    fact::add_with_kind_in_tx(&tx, key, value, kind, &derived_source, actor, mode)?;
                 // Honor --supersede whenever supplied: retire the named row in
                 // favor of the fact just written (L3 demote-with-link). A
                 // same-key overwrite yields the same row id, which
@@ -1086,7 +1092,12 @@ fn write_durable_global(
                 .get("value")
                 .and_then(Value::as_str)
                 .ok_or_else(|| missing_payload_field(pending_id, "value"))?;
-            let (fact_id, _) = fact::add_in_tx(&gtx, key, value, derived_source, actor, mode)?;
+            // Optional, unenforced tag staged by `propose_fact` (issue
+            // #97). Named `fact_kind` to avoid shadowing this function's
+            // own `kind: &str` pending-write-kind parameter.
+            let fact_kind = payload.get("kind").and_then(Value::as_str);
+            let (fact_id, _) =
+                fact::add_with_kind_in_tx(&gtx, key, value, fact_kind, derived_source, actor, mode)?;
             (fact_id, "facts")
         }
         "decision" => {

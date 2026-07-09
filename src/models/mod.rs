@@ -26,6 +26,12 @@ pub struct Fact {
     /// stays present, is tagged with the replacement id, and recall
     /// penalizes it. `None` for an active fact.
     pub superseded_by: Option<i64>,
+    /// Optional lightweight tag for the writing agent (Wave 6 W4, migration
+    /// 0021): suggested vocabulary is `gotcha | env | preference | command
+    /// | constraint`, but deliberately unenforced -- any non-empty string is
+    /// legal, no CHECK constraint. `None` for an untagged fact, which is
+    /// every fact written before this column existed.
+    pub kind: Option<String>,
 }
 
 #[derive(Debug)]

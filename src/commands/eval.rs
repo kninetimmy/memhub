@@ -876,6 +876,7 @@ mod tests {
             source: "user".to_string(),
             created_at: "2026-05-13".to_string(),
             rerank_score: None,
+            kind: None,
         }
     }
 

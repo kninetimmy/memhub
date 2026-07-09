@@ -1,0 +1,22 @@
+-- Migration 0021: optional, nullable `kind` tag on facts (Wave 6 W4,
+-- issue #97).
+--
+-- A lightweight checklist for the writing agent, not a new table ("tune,
+-- don't multiply"). `kind` classifies what sort of fact a row is —
+-- suggested vocabulary surfaced in `--help` and the fact-writing skill:
+-- gotcha | env | preference | command | constraint — but this is
+-- deliberately NOT enforced: no CHECK constraint, so untagged (NULL) and
+-- unknown-but-nonempty values both stay legal forever. That keeps the
+-- column forward-compatible with vocabulary the agent invents before the
+-- schema catches up, mirroring how `source` is writer-enforced, not
+-- schema-enforced (decision 39).
+--
+-- Additive and replay-safe: a plain `ALTER TABLE ... ADD COLUMN`, the same
+-- safe shape as 0017/0019/0020. Existing rows get NULL (untagged, the only
+-- state that existed before this column), so an untagged corpus's recall
+-- output and rendered PROJECT_LEDGER.md stay byte-identical to pre-0021
+-- memhub — proven at the `score()` seam and the render/JSON seams, not
+-- just asserted here. `db::migrations::apply_all`'s `schema_migrations`
+-- version ledger (not the SQL) owns exactly-once application.
+
+ALTER TABLE facts ADD COLUMN kind TEXT;

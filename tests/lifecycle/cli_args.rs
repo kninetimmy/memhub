@@ -89,6 +89,33 @@ fn init_from_backup_combines_with_json() {
     }
 }
 
+/// Wave 6 W4 / issue #97: `memhub fact add <key> <value> [--kind <k>]`.
+#[test]
+fn fact_add_kind_flag_parses() {
+    match parse(&["fact", "add", "my-key", "my-value", "--kind", "gotcha"]) {
+        TopLevelCommand::Fact { command } => match command {
+            FactCommand::Add { key, value, kind, .. } => {
+                assert_eq!(key, "my-key");
+                assert_eq!(value, "my-value");
+                assert_eq!(kind.as_deref(), Some("gotcha"));
+            }
+            other => panic!("expected FactCommand::Add, got {other:?}"),
+        },
+        other => panic!("expected Fact, got {other:?}"),
+    }
+}
+
+#[test]
+fn fact_add_without_kind_defaults_to_none() {
+    match parse(&["fact", "add", "my-key", "my-value"]) {
+        TopLevelCommand::Fact { command } => match command {
+            FactCommand::Add { kind, .. } => assert!(kind.is_none()),
+            other => panic!("expected FactCommand::Add, got {other:?}"),
+        },
+        other => panic!("expected Fact, got {other:?}"),
+    }
+}
+
 #[test]
 fn fact_list_json_flag_parses() {
     match parse(&["fact", "list", "--json"]) {

@@ -8,10 +8,29 @@ use crate::models::{FACT_STALE_AFTER_DAYS, Fact};
 use crate::sync_md;
 
 pub fn add(start: &Path, key: &str, value: &str, source: &str, actor: &str) -> Result<(i64, bool)> {
+    add_with_kind(start, key, value, None, source, actor)
+}
+
+/// As [`add`], but also sets the optional `kind` tag (Wave 6 W4, issue
+/// #97) -- a lightweight, unenforced classifier for the writing agent
+/// (suggested vocabulary: `gotcha | env | preference | command |
+/// constraint`, but any non-empty string is legal). `kind: None` behaves
+/// identically to [`add`], including on a same-key overwrite: `kind`
+/// follows the same last-writer-wins rule Wave 3 L5 already documented for
+/// `value`/`source`, so re-adding an existing key without `--kind` clears
+/// a previously-set tag rather than silently preserving it.
+pub fn add_with_kind(
+    start: &Path,
+    key: &str,
+    value: &str,
+    kind: Option<&str>,
+    source: &str,
+    actor: &str,
+) -> Result<(i64, bool)> {
     let mut ctx = db::open_project(start)?;
     let mode = ctx.config.retrieval.mode;
     let tx = ctx.conn.transaction()?;
-    let outcome = add_in_tx(&tx, key, value, source, actor, mode)?;
+    let outcome = add_with_kind_in_tx(&tx, key, value, kind, source, actor, mode)?;
     tx.commit()?;
     sync_md::sync_if_enabled(start)?;
     Ok(outcome)
@@ -25,7 +44,22 @@ pub fn add_in_tx(
     actor: &str,
     mode: crate::config::RetrievalMode,
 ) -> Result<(i64, bool)> {
+    add_with_kind_in_tx(tx, key, value, None, source, actor, mode)
+}
+
+/// As [`add_in_tx`], but also sets the optional `kind` tag. See
+/// [`add_with_kind`] for the overwrite semantics.
+pub fn add_with_kind_in_tx(
+    tx: &Transaction<'_>,
+    key: &str,
+    value: &str,
+    kind: Option<&str>,
+    source: &str,
+    actor: &str,
+    mode: crate::config::RetrievalMode,
+) -> Result<(i64, bool)> {
     crate::commands::validate_source(source)?;
+    let kind_value = normalize_kind(kind);
 
     // Read the prior value alongside the id so a same-key overwrite can log
     // what it replaced (Wave 3 L5, issue #48). `fact add` on an existing key
@@ -42,16 +76,16 @@ pub fn add_in_tx(
     let (row_id, created, prior_value) = if let Some((id, prior)) = existing {
         tx.execute(
             "UPDATE facts
-             SET value = ?1, source = ?2, confidence = 1.0, verified_at = CURRENT_TIMESTAMP
-             WHERE id = ?3",
-            params![value, source, id],
+             SET value = ?1, source = ?2, confidence = 1.0, verified_at = CURRENT_TIMESTAMP, kind = ?3
+             WHERE id = ?4",
+            params![value, source, kind_value, id],
         )?;
         (id, false, Some(prior))
     } else {
         tx.execute(
-            "INSERT INTO facts(project_id, key, value, confidence, source, verified_at)
-             VALUES (1, ?1, ?2, 1.0, ?3, CURRENT_TIMESTAMP)",
-            params![key, value, source],
+            "INSERT INTO facts(project_id, key, value, confidence, source, verified_at, kind)
+             VALUES (1, ?1, ?2, 1.0, ?3, CURRENT_TIMESTAMP, ?4)",
+            params![key, value, source, kind_value],
         )?;
         (tx.last_insert_rowid(), true, None)
     };
@@ -85,6 +119,18 @@ pub fn add_in_tx(
     Ok((row_id, created))
 }
 
+/// Normalize a `--kind` value: whitespace-only collapses to `None`
+/// (untagged), anything else is stored verbatim -- mirrors
+/// `decision::normalize_summary`. No vocabulary check: migration 0021
+/// carries no CHECK constraint, so any non-empty string is a legal tag
+/// (issue #97).
+fn normalize_kind(kind: Option<&str>) -> Option<String> {
+    match kind {
+        Some(k) if !k.trim().is_empty() => Some(k.to_string()),
+        _ => None,
+    }
+}
+
 #[derive(Debug)]
 pub struct GlobalFactOutcome {
     pub id: i64,
@@ -103,9 +149,21 @@ pub fn add_global(
     source: &str,
     actor: &str,
 ) -> Result<GlobalFactOutcome> {
+    add_global_with_kind(start, key, value, None, source, actor)
+}
+
+/// As [`add_global`], but also sets the optional `kind` tag (issue #97).
+pub fn add_global_with_kind(
+    start: &Path,
+    key: &str,
+    value: &str,
+    kind: Option<&str>,
+    source: &str,
+    actor: &str,
+) -> Result<GlobalFactOutcome> {
     let mut gw = crate::commands::global::begin_write(start)?;
     let tx = gw.ctx.conn.transaction()?;
-    let (id, created) = add_in_tx(&tx, key, value, source, actor, gw.mode)?;
+    let (id, created) = add_with_kind_in_tx(&tx, key, value, kind, source, actor, gw.mode)?;
     tx.commit()?;
     Ok(GlobalFactOutcome {
         id,
@@ -227,7 +285,8 @@ pub fn list(start: &Path) -> Result<Vec<Fact>> {
                     WHEN (julianday('now') - julianday(verified_at)) > ?1 THEN 1
                     ELSE 0
                 END AS is_stale,
-                superseded_by
+                superseded_by,
+                kind
          FROM facts
          ORDER BY key ASC",
     )?;
@@ -243,6 +302,7 @@ pub fn list(start: &Path) -> Result<Vec<Fact>> {
             created_at: row.get(5)?,
             is_stale: is_stale_int != 0,
             superseded_by: row.get(7)?,
+            kind: row.get(8)?,
         })
     })?;
 
@@ -484,4 +544,117 @@ mod tests {
             .expect("insert reason");
         assert_eq!(insert_reason, "fact add");
     }
+
+    // -- Wave 6 W4 (issue #97) — optional `kind` tag on facts -------------
+
+    #[test]
+    fn add_without_kind_leaves_it_untagged() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        add(temp.path(), "build-command", "cargo build", "user", "cli:user").expect("fact");
+
+        let fact = list(temp.path()).expect("list").into_iter().next().unwrap();
+        assert_eq!(fact.kind, None, "plain `add` must leave kind untagged");
+    }
+
+    #[test]
+    fn add_with_kind_persists_the_tag() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        add_with_kind(
+            temp.path(),
+            "deploy-cmd",
+            "kubectl apply",
+            Some("command"),
+            "user",
+            "cli:user",
+        )
+        .expect("fact");
+
+        let fact = list(temp.path()).expect("list").into_iter().next().unwrap();
+        assert_eq!(fact.kind.as_deref(), Some("command"));
+    }
+
+    // Migration 0021 carries no CHECK constraint on purpose (issue #97):
+    // any non-empty string is a legal tag, not just the suggested
+    // vocabulary (gotcha | env | preference | command | constraint).
+    #[test]
+    fn add_with_kind_accepts_any_nonempty_string_unenforced() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        add_with_kind(
+            temp.path(),
+            "k",
+            "v",
+            Some("not-in-the-suggested-vocab"),
+            "user",
+            "cli:user",
+        )
+        .expect("unknown-but-nonempty kind must be accepted");
+
+        let fact = list(temp.path()).expect("list").into_iter().next().unwrap();
+        assert_eq!(fact.kind.as_deref(), Some("not-in-the-suggested-vocab"));
+    }
+
+    // Whitespace-only `--kind` normalizes to untagged, mirroring
+    // `decision::normalize_summary`'s treatment of an empty summary.
+    #[test]
+    fn add_with_kind_normalizes_whitespace_only_to_none() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        add_with_kind(temp.path(), "k", "v", Some("   "), "user", "cli:user").expect("fact");
+
+        let fact = list(temp.path()).expect("list").into_iter().next().unwrap();
+        assert_eq!(fact.kind, None);
+    }
+
+    // `kind` follows the same last-writer-wins overwrite rule Wave 3 L5
+    // already documents for `value`/`source`: a same-key `add_with_kind`
+    // replaces the tag, and omitting `--kind` on a subsequent overwrite
+    // clears it (consistent with every other overwritten field, not a
+    // special sticky case).
+    #[test]
+    fn add_with_kind_overwrite_follows_last_writer_wins() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        add_with_kind(
+            temp.path(),
+            "deploy-cmd",
+            "kubectl apply v1",
+            Some("command"),
+            "user",
+            "cli:user",
+        )
+        .expect("v1");
+        add_with_kind(
+            temp.path(),
+            "deploy-cmd",
+            "kubectl apply v2",
+            Some("gotcha"),
+            "user",
+            "cli:user",
+        )
+        .expect("v2 retag");
+
+        let fact = list(temp.path()).expect("list").into_iter().next().unwrap();
+        assert_eq!(fact.kind.as_deref(), Some("gotcha"));
+
+        // Re-adding without --kind clears the tag (None overwrites, same
+        // as every other field on a same-key `add`).
+        add(temp.path(), "deploy-cmd", "kubectl apply v3", "user", "cli:user").expect("v3");
+        let fact = list(temp.path()).expect("list").into_iter().next().unwrap();
+        assert_eq!(fact.kind, None);
+    }
+
+    // `add_global_with_kind` is intentionally not covered by its own
+    // round-trip test here: like the pre-existing (also untested at this
+    // level) `add_global`, it is a thin wrapper around
+    // `add_with_kind_in_tx` -- the SQL and normalization already proven
+    // above -- over `commands::global::begin_write`. A real round-trip
+    // would resolve `~/.memhub/global.sqlite` via `$HOME`/`%USERPROFILE%`;
+    // `tests/upgrade/global_memory.rs` is the one place in this codebase
+    // that safely confines that env-var override to a single test to avoid
+    // racing sibling tests (see its module doc), and duplicating that
+    // machinery here for a five-line wrapper is not worth the added
+    // fixture risk.
 }

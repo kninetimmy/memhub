@@ -725,6 +725,12 @@ pub enum FactCommand {
         value: String,
         #[arg(long, default_value = "user")]
         source: String,
+        /// Optional lightweight tag for the writing agent (issue #97).
+        /// Purely additive and unenforced -- any non-empty string is
+        /// accepted, no CHECK constraint. Suggested vocabulary: gotcha,
+        /// env, preference, command, constraint.
+        #[arg(long)]
+        kind: Option<String>,
         /// Write to the machine-global store instead of this repo's
         /// DB. Requires `memhub global enable` in this repo (M9).
         #[arg(long)]

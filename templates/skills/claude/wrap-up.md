@@ -93,7 +93,9 @@ rejected on its own:
 
 4. **New facts.** Build / test / run commands or other durable
    key-value records that surfaced. Skip anything that's already in
-   the facts table with the same value.
+   the facts table with the same value. Tag with `--kind` when the fact
+   clearly fits one of: `gotcha`, `env`, `preference`, `command`,
+   `constraint` — optional, skip it if nothing fits.
 
 5. **Pending-write triage.** For each row from step 4 of the read
    window, propose accept or reject with a one-line reason.
@@ -147,8 +149,8 @@ memhub decision add "<title>" --rationale "<rationale>" --source user+agent:clau
 memhub task add "<title>" --notes "<notes>" --json --actor claude:wrap-up
 memhub task done <id> --json --actor claude:wrap-up
 
-# 5. New facts
-memhub fact add "<key>" "<value>" --source user+agent:claude-code --json --actor claude:wrap-up
+# 5. New facts (--kind is optional: gotcha | env | preference | command | constraint)
+memhub fact add "<key>" "<value>" [--kind <kind>] --source user+agent:claude-code --json --actor claude:wrap-up
 
 # 6. Session summary (always, unless I rejected it)
 memhub note add "<two-to-four-sentence summary>" --json --actor claude:wrap-up

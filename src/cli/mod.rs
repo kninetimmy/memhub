@@ -352,13 +352,21 @@ pub fn run(cli: Cli) -> Result<()> {
                 key,
                 value,
                 source,
+                kind,
                 global,
                 json: as_json,
                 actor,
             } => {
                 let actor = resolve_actor(actor.as_deref())?;
                 if global {
-                    let r = commands::fact::add_global(&cwd, &key, &value, &source, &actor)?;
+                    let r = commands::fact::add_global_with_kind(
+                        &cwd,
+                        &key,
+                        &value,
+                        kind.as_deref(),
+                        &source,
+                        &actor,
+                    )?;
                     if as_json {
                         println!(
                             "{}",
@@ -367,6 +375,7 @@ pub fn run(cli: Cli) -> Result<()> {
                                 "key": key,
                                 "value": value,
                                 "source": source,
+                                "kind": kind,
                                 "created": r.created,
                                 "scope": "global",
                                 "store_created": r.store_created,
@@ -383,13 +392,21 @@ pub fn run(cli: Cli) -> Result<()> {
                         );
                     }
                 } else {
-                    let (id, created) = commands::fact::add(&cwd, &key, &value, &source, &actor)?;
+                    let (id, created) = commands::fact::add_with_kind(
+                        &cwd,
+                        &key,
+                        &value,
+                        kind.as_deref(),
+                        &source,
+                        &actor,
+                    )?;
                     if as_json {
                         let payload = json!({
                             "id": id,
                             "key": key,
                             "value": value,
                             "source": source,
+                            "kind": kind,
                             "created": created,
                         });
                         println!("{payload}");

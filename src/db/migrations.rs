@@ -114,6 +114,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0020_recall_metrics_surface",
         include_str!("../../migrations/0020_recall_metrics_surface.sql"),
     ),
+    (
+        "0021_fact_kind",
+        include_str!("../../migrations/0021_fact_kind.sql"),
+    ),
 ];
 
 pub fn apply_all(conn: &mut Connection) -> Result<Vec<String>> {
@@ -251,5 +255,23 @@ mod tests {
             has_surface, 1,
             "recall_metrics.surface must exist after 0020"
         );
+    }
+
+    /// Migration 0021 (Wave 6 W4, issue #97) adds the optional `kind` tag
+    /// to `facts`. Additive `ALTER TABLE ADD COLUMN`, no CHECK constraint
+    /// (deliberately unenforced vocabulary); replay safety is already
+    /// covered by `idempotent_reapply_is_a_noop`.
+    #[test]
+    fn migration_0021_adds_facts_kind_column() {
+        let mut conn = Connection::open_in_memory().expect("open");
+        apply_all(&mut conn).expect("apply");
+        let has_kind: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('facts') WHERE name = 'kind'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("pragma facts");
+        assert_eq!(has_kind, 1, "facts.kind must exist after 0021");
     }
 }

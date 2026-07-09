@@ -179,6 +179,7 @@ fn machine_global_memory_end_to_end() {
         "delta-key",
         "delta-value",
         "machine-wide policy",
+        None, // kind
         true, // global
         "codex",
         "openai-codex",
