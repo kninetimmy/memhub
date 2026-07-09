@@ -1,10 +1,12 @@
 //! U7: `memhub upgrade` degrades instead of aborting on a corrupt registry.
 //!
-//! Single test binary (overrides `HOME` to redirect
-//! `~/.memhub/global.sqlite` into a tempdir), matching
-//! `upgrade_registry.rs`'s discipline — a corrupt registry read used to
-//! propagate via `?` and abort the whole `--finish` phase *after* the new
-//! binary was already installed. It must now degrade to a warning and a
+//! Overrides `HOME` to redirect `~/.memhub/global.sqlite` into a tempdir,
+//! matching `upgrade_registry.rs`'s discipline (both take
+//! `support::env_lock()` for the whole test — see `upgrade/support.rs`,
+//! Wave 5 U4 issue #90 — to stay isolated from sibling tests in this
+//! shared harness binary). A corrupt registry read used to propagate via
+//! `?` and abort the whole `--finish` phase *after* the new binary was
+//! already installed. It must now degrade to a warning and a
 //! source-repo-only continuation.
 
 use memhub::commands::upgrade::known_projects_or_warn;
@@ -12,8 +14,10 @@ use tempfile::tempdir;
 
 #[test]
 fn corrupt_registry_degrades_to_source_repo_only_plus_warning() {
+    // Held for the whole test (see module header and `upgrade/support.rs`).
+    let _env_guard = crate::support::env_lock();
+
     let home = tempdir().expect("home");
-    // SAFETY: single-test binary; no other thread reads HOME concurrently.
     unsafe {
         std::env::set_var("HOME", home.path());
         std::env::remove_var("USERPROFILE");

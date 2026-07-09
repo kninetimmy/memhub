@@ -9,9 +9,9 @@
 //! store. Discovery must instead fall through to the safe
 //! `NotInitialized` error.
 //!
-//! Single test / own `HOME` override so the env mutation cannot race
-//! other tests (separate integration-test binaries are separate
-//! processes).
+//! Overrides `HOME` (process-global), so it takes `support::env_lock()`
+//! for the whole test — see `upgrade/support.rs` (Wave 5 U4, issue #90) —
+//! to stay isolated from sibling tests in this shared harness binary.
 //!
 //! Unix-only. The test isolates discovery by pointing `HOME` at a
 //! throwaway `tempfile::tempdir()` and walking up from a non-repo dir
@@ -36,8 +36,10 @@ use memhub::db::{discover_paths, open_global, open_project};
 
 #[test]
 fn global_store_dir_is_never_discovered_as_a_repo_project() {
+    // Held for the whole test (see module header and `upgrade/support.rs`).
+    let _env_guard = crate::support::env_lock();
+
     let home = tempfile::tempdir().expect("home tempdir");
-    // SAFETY: single-test binary; no other thread reads HOME concurrently.
     // Unix-gated (see module header), so HOME is the only home-resolution
     // input `db::home_dir` consults here.
     unsafe {

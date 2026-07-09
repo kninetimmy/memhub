@@ -7,8 +7,11 @@
 //!    it — instead of dropping it (which would freeze the file at its old
 //!    version forever, silently).
 //!
-//! Single test binary (overrides HOME), matching the other `upgrade_*` tests.
-//! A *second*, successful agent (opencode-commands) is set up on purpose: it
+//! Overrides HOME, matching the other `upgrade_*` tests — takes
+//! `support::env_lock()` for the whole test (see `upgrade/support.rs`,
+//! Wave 5 U4 issue #90) to stay isolated from sibling tests in this shared
+//! harness binary. A *second*, successful agent (opencode-commands) is set
+//! up on purpose: it
 //! makes the rebuilt manifest non-empty so `save()` actually runs — the exact
 //! condition under which the pre-fix code would have DROPPED the failed
 //! agent's still-owned entries.
@@ -27,8 +30,10 @@ fn write(path: &Path, contents: &[u8]) {
 
 #[test]
 fn transient_source_failure_preserves_ownership_and_first_run_is_flagged() {
+    // Held for the whole test (see module header and `upgrade/support.rs`).
+    let _env_guard = crate::support::env_lock();
+
     let home = tempdir().expect("home");
-    // SAFETY: single-test binary; no other thread reads HOME concurrently.
     unsafe {
         std::env::set_var("HOME", home.path());
         std::env::remove_var("USERPROFILE");

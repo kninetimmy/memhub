@@ -1,9 +1,10 @@
 //! M9 machine-global memory end-to-end.
 //!
 //! All assertions live in ONE test so the `HOME` override (which
-//! redirects `~/.memhub/global.sqlite` into a tempdir) cannot race
-//! other tests in this binary. Other integration-test binaries run as
-//! separate processes and are unaffected.
+//! redirects `~/.memhub/global.sqlite` into a tempdir) stays in one
+//! place. It takes `support::env_lock()` for the whole test — see
+//! `upgrade/support.rs` (Wave 5 U4, issue #90) — to stay isolated from
+//! sibling tests in this shared harness binary.
 
 use memhub::commands::{doc, fact, global, init, pending_write, review};
 use memhub::config::RetrievalMode;
@@ -35,8 +36,10 @@ fn has_scope(resp: &memhub::retrieval::RecallResponse, scope: &str) -> bool {
 
 #[test]
 fn machine_global_memory_end_to_end() {
+    // Held for the whole test (see module header and `upgrade/support.rs`).
+    let _env_guard = crate::support::env_lock();
+
     let home = tempdir().expect("home tempdir");
-    // SAFETY: single-test binary; no other thread reads HOME concurrently.
     unsafe {
         std::env::set_var("HOME", home.path());
         // macOS/Linux read HOME first, but clear USERPROFILE so the

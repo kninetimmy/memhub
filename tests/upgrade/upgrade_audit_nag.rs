@@ -16,10 +16,20 @@
 //!    upgrade caller to trip over — this is the structural guarantee
 //!    that an audit failure can never fail the upgrade path.
 //!
-//! Neither test touches `HOME` (unlike `tests/upgrade_registry.rs` /
-//! `tests/upgrade_skills.rs`): `check_audit_md` is read-only and never
-//! opens a DB, so there is nothing here that needs the global-store
-//! isolation those files use for their own, unrelated reasons.
+//! Neither test overrides `HOME` itself (unlike `upgrade_registry.rs` /
+//! `upgrade_skills.rs`) and `check_audit_md` is read-only and never opens
+//! a DB — but it does call `commands::audit_md::run`, which calls
+//! `db::discover_paths`, which resolves `db::home_dir()` **unconditionally
+//! as its first line**, before any ancestor-walk short-circuit — so the
+//! `var_os` read always happens here, on every call, regardless of what
+//! the walk goes on to do with it. Both tests therefore take
+//! `support::env_read_lock()` for the whole test — see
+//! `upgrade/support.rs` (Wave 5 U4, issue #90) — so a sibling writer
+//! test's `HOME`/`USERPROFILE` override in this shared harness binary can
+//! never race that read (a reader/reader overlap between these two tests
+//! is fine and allowed). Neither test itself mutates `HOME`, so
+//! `env_read_lock()` — not the exclusive `env_lock()` the writer tests
+//! use — is the correct guard here.
 
 use std::fs;
 
@@ -44,6 +54,9 @@ const CLEAN_CLAUDE_MD: &str = "# memhub\n\n\
 
 #[test]
 fn nag_line_appears_on_a_drifted_fixture_and_is_silent_when_clean() {
+    // Held for the whole test (see module header and `upgrade/support.rs`).
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
@@ -95,6 +108,12 @@ fn nag_line_appears_on_a_drifted_fixture_and_is_silent_when_clean() {
 
 #[test]
 fn audit_error_degrades_to_a_warn_row_not_a_failure() {
+    // Held for the whole test (see module header and `upgrade/support.rs`):
+    // this is the one that actually walks past its own (nonexistent)
+    // project dir up to real ancestors, so it is genuinely outcome-sensitive
+    // to a racing `HOME` override — but the read-lock is required either way.
+    let _env_guard = crate::support::env_read_lock();
+
     // A tempdir with no `.memhub` anywhere in its ancestry (deliberately
     // no `init::run` here): `audit md`'s own `db::discover_paths` call
     // fails with `NotInitialized`. `check_audit_md` must not propagate

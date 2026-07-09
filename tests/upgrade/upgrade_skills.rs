@@ -10,8 +10,10 @@
 //! 4. A path that exists but is not a directory is skipped, not
 //!    clobbered.
 //!
-//! All assertions live in ONE test so the `HOME` override cannot race
-//! other tests in this binary.
+//! All assertions live in ONE test so the `HOME` override stays in one
+//! place. It takes `support::env_lock()` for the whole test — see
+//! `upgrade/support.rs` (Wave 5 U4, issue #90) — to stay isolated from
+//! sibling tests in this shared harness binary.
 
 use std::path::Path;
 
@@ -60,6 +62,10 @@ fn count_opencode_command_templates(repo: &Path) -> usize {
 
 #[test]
 fn skill_resync_additive_idempotent_and_conservative() {
+    // Held for the whole test, across both HOME overrides below (see module
+    // header and `upgrade/support.rs`).
+    let _env_guard = crate::support::env_lock();
+
     let repo = Path::new(env!("CARGO_MANIFEST_DIR"));
     let expect_claude = count_claude_templates(repo);
     let expect_codex = count_codex_templates(repo);
@@ -74,7 +80,6 @@ fn skill_resync_additive_idempotent_and_conservative() {
     );
 
     let home = tempdir().expect("home tempdir");
-    // SAFETY: single-test binary; no other thread reads HOME concurrently.
     unsafe {
         std::env::set_var("HOME", home.path());
         std::env::remove_var("USERPROFILE");

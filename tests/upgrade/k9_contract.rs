@@ -34,6 +34,24 @@ fn run_cli_expecting_success(repo: &Path, args: &[&str]) -> Value {
     })
 }
 
+// `last_writes_log_row` (below) and `memhub::commands::pending_write::
+// propose_fact` (called directly, in-process, by several tests) both reach
+// `db::open_project` directly. `memhub::commands::init::run` — called by
+// every test in this file except `check_k9_exits_nonzero_when_not_initialized`
+// — ALSO reaches it transitively, via its trailing `sync_md::sync_project`
+// call. All three resolve `db::home_dir()` unconditionally, in-process
+// (Wave 5 U4, issue #90; see `upgrade/support.rs`'s reader-trigger closure
+// doc). Every test that calls `init::run`, `last_writes_log_row`, or
+// `propose_fact` takes `support::env_read_lock()` for the whole test,
+// guarding against a concurrent writer test's `HOME`/`USERPROFILE` override
+// elsewhere in this shared harness binary. `run_cli`/`run_cli_expecting_success`
+// themselves don't need it — a spawned child process gets its own
+// independent snapshot of the environment at spawn time, so nothing it
+// does in-process can race the parent test's threads — but that only makes
+// a WHOLE test safe if it also never calls `init::run` or one of the two
+// above in-process, which is why `check_k9_exits_nonzero_when_not_initialized`
+// (the one test here with no setup at all — it deliberately runs against a
+// directory with no project) is the sole exception in this file.
 fn last_writes_log_row(repo: &Path) -> (String, String, String) {
     let ctx = db::open_project(repo).expect("open project");
     ctx.conn
@@ -56,6 +74,8 @@ fn write_k9_marker(repo: &Path) {
 
 #[test]
 fn fact_add_json_emits_contract_shape() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
@@ -86,6 +106,8 @@ fn fact_add_json_emits_contract_shape() {
 
 #[test]
 fn fact_add_json_marks_upsert_as_not_created() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
@@ -120,6 +142,8 @@ fn fact_add_json_marks_upsert_as_not_created() {
 
 #[test]
 fn decision_add_json_emits_contract_shape() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
@@ -147,6 +171,8 @@ fn decision_add_json_emits_contract_shape() {
 
 #[test]
 fn task_add_and_done_json_round_trip() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
@@ -181,6 +207,8 @@ fn task_add_and_done_json_round_trip() {
 
 #[test]
 fn review_accept_json_emits_contract_shape() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
@@ -225,6 +253,8 @@ fn review_accept_json_emits_contract_shape() {
 
 #[test]
 fn review_reject_json_emits_contract_shape() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
@@ -268,6 +298,8 @@ fn review_reject_json_emits_contract_shape() {
 
 #[test]
 fn check_k9_exits_zero_when_enabled() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     write_k9_marker(temp.path());
     init::run(temp.path()).expect("init");
@@ -287,6 +319,8 @@ fn check_k9_exits_zero_when_enabled() {
 
 #[test]
 fn check_k9_exits_nonzero_when_section_missing() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
@@ -297,6 +331,8 @@ fn check_k9_exits_nonzero_when_section_missing() {
 
 #[test]
 fn check_k9_exits_nonzero_when_disabled() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     write_k9_marker(temp.path());
     init::run(temp.path()).expect("init");
@@ -320,6 +356,8 @@ fn check_k9_exits_nonzero_when_not_initialized() {
 
 #[test]
 fn review_list_json_emits_contract_shape() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
@@ -365,6 +403,8 @@ fn review_list_json_emits_contract_shape() {
 
 #[test]
 fn review_list_json_filters_by_status() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
@@ -408,6 +448,8 @@ fn review_list_json_filters_by_status() {
 
 #[test]
 fn review_show_json_emits_contract_shape() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
@@ -452,6 +494,8 @@ fn review_show_json_emits_contract_shape() {
 
 #[test]
 fn review_show_json_missing_id_exits_nonzero() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
@@ -466,6 +510,8 @@ fn review_show_json_missing_id_exits_nonzero() {
 
 #[test]
 fn actor_validation_rejects_empty_and_overlong_values() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 

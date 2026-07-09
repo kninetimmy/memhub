@@ -2,6 +2,12 @@ use memhub::commands::init;
 use memhub::db;
 use tempfile::tempdir;
 
+// Every test below calls `db::open_project`, which calls `db::discover_paths`,
+// which resolves `db::home_dir()` unconditionally as its first line (Wave 5
+// U4, issue #90) — so each takes `support::env_read_lock()` for the whole
+// test, guarding against a concurrent writer test's `HOME`/`USERPROFILE`
+// override elsewhere in this shared harness binary. See `upgrade/support.rs`.
+
 /// A clean clone on a new machine has no `.memhub/` and no DB. The first
 /// `memhub` call must bring the schema up to the head version on its own
 /// — no manual `migrate` step. This locks in the cross-machine claim in
@@ -9,6 +15,8 @@ use tempfile::tempdir;
 /// would be caught here instead of in production.
 #[test]
 fn fresh_init_applies_all_migrations_to_head() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init succeeds");
 
@@ -50,6 +58,8 @@ fn fresh_init_applies_all_migrations_to_head() {
 /// newest.
 #[test]
 fn open_project_reapplies_a_missing_migration_row() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init succeeds");
 
@@ -86,6 +96,8 @@ fn open_project_reapplies_a_missing_migration_row() {
 /// duplicate row here.
 #[test]
 fn open_project_is_idempotent_against_an_already_migrated_db() {
+    let _env_guard = crate::support::env_read_lock();
+
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init succeeds");
 

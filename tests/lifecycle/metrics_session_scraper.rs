@@ -17,7 +17,11 @@ use memhub::config::ProjectConfig;
 use memhub::db;
 use tempfile::tempdir;
 
-const FIXTURE: &str = include_str!("fixtures/claude_session_sample.jsonl");
+// Wave 5 U4 (issue #90): this file moved from `tests/` to `tests/lifecycle/`
+// when the standalone `tests/*.rs` binaries were folded into shared harness
+// binaries, so the fixture (still at `tests/fixtures/`, untouched) is now one
+// level further up.
+const FIXTURE: &str = include_str!("../fixtures/claude_session_sample.jsonl");
 
 struct Row {
     agent: String,
