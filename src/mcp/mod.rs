@@ -546,6 +546,47 @@ impl MemhubServer {
         let summary = commands::sync::commit(&self.start, &remote).map_err(map_tool_error)?;
         Ok(Json(SyncCommitToolResponse::from(summary)))
     }
+
+    async fn archive_transcript_impl(
+        &self,
+        Parameters(params): Parameters<ArchiveTranscriptParams>,
+    ) -> std::result::Result<Json<ArchiveTranscriptToolResponse>, McpError> {
+        let agent = match params.agent.trim().to_ascii_lowercase().as_str() {
+            "claude" | "claude-code" => commands::transcript::Agent::Claude,
+            "codex" => commands::transcript::Agent::Codex,
+            other => {
+                return Err(McpError::invalid_params(
+                    format!("unknown agent '{other}'; expected 'claude' or 'codex'"),
+                    None,
+                ));
+            }
+        };
+
+        // Unredacted-archive gate. MCP is non-interactive, so `confirm=true`
+        // is the only way through — the fail-closed default (mirroring
+        // sync_adopt) returns the warning + refusal so the agent surfaces it
+        // to the user before any copy is made.
+        if !params.confirm.unwrap_or(false) {
+            return Ok(Json(ArchiveTranscriptToolResponse {
+                archived: false,
+                reason: Some(format!(
+                    "{} Re-call with confirm=true after the user approves.",
+                    commands::transcript::UNREDACTED_WARNING
+                )),
+                session_id: None,
+                agent: None,
+                archive_path: None,
+                source_bytes: None,
+                archive_bytes: None,
+                replaced_existing: None,
+                pruned: None,
+            }));
+        }
+
+        let report = commands::transcript::archive(&self.start, agent, &params.session_id, true)
+            .map_err(map_tool_error)?;
+        Ok(Json(ArchiveTranscriptToolResponse::from(report)))
+    }
 }
 
 #[tool_router(router = tool_router)]
@@ -829,6 +870,17 @@ impl MemhubServer {
         params: Parameters<SyncRemoteParams>,
     ) -> std::result::Result<Json<SyncCommitToolResponse>, McpError> {
         self.sync_commit_impl(params).await
+    }
+
+    #[tool(
+        name = "archive_transcript",
+        description = "Archive a session's RAW agent transcript to local disk (the `transcript` wrap-up level, issue #96). Copies the session JSONL into gitignored .memhub/transcripts/<date>-<session-id>.jsonl.zst with a pointer row. The archive is UNREDACTED and may contain secrets, so this is GATED: without `confirm=true` it refuses and returns the warning — surface it and only re-call with confirm=true after the user approves. Transcripts are never embedded, never in recall, and excluded from export/import. `agent` is `claude` or `codex`; `session_id` is the transcript file stem (Claude) or `codex:<uuid>` (Codex)."
+    )]
+    async fn archive_transcript(
+        &self,
+        params: Parameters<ArchiveTranscriptParams>,
+    ) -> std::result::Result<Json<ArchiveTranscriptToolResponse>, McpError> {
+        self.archive_transcript_impl(params).await
     }
 }
 
@@ -1787,6 +1839,51 @@ impl From<commands::sync::CommitSummary> for SyncCommitToolResponse {
         Self {
             project_id: s.project_id,
             baseline: s.baseline.into(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
+struct ArchiveTranscriptParams {
+    /// `claude` or `codex` — selects the transcript directory + session-id
+    /// convention.
+    agent: String,
+    /// Session id to archive. Claude: the transcript file stem (session
+    /// UUID). Codex: `codex:<uuid>` (a bare uuid is accepted and
+    /// prefixed).
+    session_id: String,
+    /// Must be `true` to archive the UNREDACTED transcript. Without it the
+    /// tool refuses and returns the secret warning.
+    confirm: Option<bool>,
+}
+
+/// Archive result. `archived=false` is the confirm-gate refusal (carries
+/// the warning in `reason`); `archived=true` carries the archive summary.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct ArchiveTranscriptToolResponse {
+    archived: bool,
+    reason: Option<String>,
+    session_id: Option<String>,
+    agent: Option<String>,
+    archive_path: Option<String>,
+    source_bytes: Option<i64>,
+    archive_bytes: Option<i64>,
+    replaced_existing: Option<bool>,
+    pruned: Option<i64>,
+}
+
+impl From<commands::transcript::ArchiveReport> for ArchiveTranscriptToolResponse {
+    fn from(r: commands::transcript::ArchiveReport) -> Self {
+        Self {
+            archived: true,
+            reason: None,
+            session_id: Some(r.session_id),
+            agent: Some(r.agent.to_string()),
+            archive_path: Some(r.archive_path.display().to_string()),
+            source_bytes: Some(r.source_bytes as i64),
+            archive_bytes: Some(r.archive_bytes as i64),
+            replaced_existing: Some(r.replaced_existing),
+            pruned: Some(r.pruned as i64),
         }
     }
 }
@@ -3129,6 +3226,57 @@ mod tests {
         assert!(resp.0.reason.is_some(), "refusal carries a reason");
         // No snapshot in the drive folder yet → verdict is no-remote.
         assert_eq!(resp.0.verdict.as_deref(), Some("no-remote"));
+    }
+
+    #[test]
+    fn mcp_archive_transcript_refuses_without_confirm() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+
+        let server = MemhubServer::new(temp.path().to_path_buf());
+        let resp = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(server.archive_transcript_impl(Parameters(ArchiveTranscriptParams {
+                agent: "claude".to_string(),
+                session_id: "whatever".to_string(),
+                confirm: None,
+            })))
+            .expect("archive_transcript");
+
+        // Fail closed: no archive without confirm=true, and the refusal
+        // carries the unredacted-secret warning.
+        assert!(!resp.0.archived, "must refuse without confirm=true");
+        let reason = resp.0.reason.expect("refusal carries a reason");
+        assert!(reason.contains("UNREDACTED"), "reason: {reason}");
+        assert!(resp.0.archive_path.is_none());
+
+        // Nothing was written to the DB.
+        let ctx = db::open_project(temp.path()).expect("open");
+        let count: i64 = ctx
+            .conn
+            .query_row("SELECT COUNT(*) FROM session_transcripts", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn mcp_archive_transcript_rejects_an_unknown_agent() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+
+        let server = MemhubServer::new(temp.path().to_path_buf());
+        let result = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(server.archive_transcript_impl(Parameters(ArchiveTranscriptParams {
+                agent: "emacs".to_string(),
+                session_id: "x".to_string(),
+                confirm: Some(true),
+            })));
+        assert!(result.is_err(), "unknown agent must be an invalid-params error");
     }
 
     fn doc_add_actor() -> ClientIdentity {

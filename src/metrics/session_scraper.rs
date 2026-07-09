@@ -47,7 +47,7 @@
 
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
@@ -60,6 +60,94 @@ const CLAUDE_AGENT: &str = "claude-code";
 const SCRAPER_ACTOR: &str = "metrics:claude-scraper";
 const CODEX_AGENT: &str = "codex";
 const CODEX_SCRAPER_ACTOR: &str = "metrics:codex-scraper";
+
+// ---------------------------------------------------------------------
+// Session-id mapping + file resolution (single source of truth).
+//
+// The scraper maps transcript file -> session id; the transcript archiver
+// (`commands::transcript`, issue #96) needs the inverse (session id ->
+// file) but MUST NOT re-derive its own path/id convention. These shared
+// helpers keep exactly one definition of "how a session id relates to its
+// file" for both directions and both agents (Claude + Codex).
+// ---------------------------------------------------------------------
+
+/// Claude Code names each session file `<session-id>.jsonl`, so the file
+/// stem *is* the stable per-session key. Returns `None` for a file with
+/// no usable stem.
+pub fn claude_session_id_from_path(path: &Path) -> Option<String> {
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// Codex rollout files are named
+/// `rollout-YYYY-MM-DDTHH-MM-SS-<UUID>.jsonl`, where the UUID is the last
+/// five hyphen-delimited groups of the stem. The scraper keys these as
+/// `codex:<UUID>` so a Codex session can never collide with a Claude
+/// session UUID (decision 77). Returns `None` when the stem has too few
+/// hyphen groups to carry a UUID.
+pub fn codex_session_id_from_path(path: &Path) -> Option<String> {
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())?;
+    let parts: Vec<&str> = stem.split('-').collect();
+    if parts.len() < 5 {
+        return None;
+    }
+    let uuid = parts[parts.len() - 5..].join("-");
+    Some(format!("codex:{uuid}"))
+}
+
+/// Resolve the source JSONL for a Claude `session_id` under `dir`, using
+/// the scraper's own `<session-id>.jsonl` naming. `None` if it does not
+/// exist. Reused by the archiver — do not re-derive the path elsewhere.
+pub fn find_claude_transcript(dir: &Path, session_id: &str) -> Option<PathBuf> {
+    let candidate = dir.join(format!("{session_id}.jsonl"));
+    candidate.is_file().then_some(candidate)
+}
+
+/// Resolve the source JSONL for a Codex `session_id` (the `codex:<uuid>`
+/// form) by walking `<dir>/YYYY/MM/DD/*.jsonl` — the same three-level tree
+/// the scraper reads — and returning the first file whose derived id
+/// matches. `None` if no such file exists. Reused by the archiver.
+pub fn find_codex_transcript(dir: &Path, session_id: &str) -> Option<PathBuf> {
+    for l1 in read_subdirs(dir) {
+        for l2 in read_subdirs(&l1) {
+            for l3 in read_subdirs(&l2) {
+                let files = match fs::read_dir(&l3) {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
+                for entry in files.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                        continue;
+                    }
+                    if codex_session_id_from_path(&path).as_deref() == Some(session_id) {
+                        return Some(path);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Immediate subdirectories of `dir`, ignoring unreadable entries and a
+/// missing directory. Helper for the Codex tree walk above.
+fn read_subdirs(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Ok(entries) = fs::read_dir(dir) {
+        for e in entries.flatten() {
+            if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                out.push(e.path());
+            }
+        }
+    }
+    out
+}
 
 /// Opportunistic entry point. Gated by the `metrics.enabled` master
 /// switch and the `metrics.session_accounting` sub-switch; both off by
@@ -204,19 +292,18 @@ fn scrape_codex_dir(conn: &Connection, dir: &Path, repo_root: &Path) -> Result<(
 ///   `last_token_usage.reasoning_output_tokens`  → rolled into output_tokens
 ///   cache_creation_tokens                       → always 0 (no Codex equivalent)
 fn scrape_codex_file(conn: &Connection, path: &Path, canonical_root: &Path) -> Result<()> {
-    // Extract UUID from stem: "rollout-YYYY-MM-DDTHH-MM-SS-<UUID>" where
-    // UUID is always the last 5 hyphen-delimited groups.
-    let stem = match path.file_stem().and_then(|s| s.to_str()) {
-        Some(s) if !s.is_empty() => s.to_string(),
-        _ => return Ok(()),
+    // Session id: `codex:<UUID>` where the UUID is the last 5
+    // hyphen-delimited groups of the stem (shared with the archiver).
+    let session_id = match codex_session_id_from_path(path) {
+        Some(id) => id,
+        None => {
+            log::debug!(
+                "metrics: codex stem has too few hyphen parts, skipping: {}",
+                path.display()
+            );
+            return Ok(());
+        }
     };
-    let parts: Vec<&str> = stem.split('-').collect();
-    if parts.len() < 5 {
-        log::debug!("metrics: codex stem has too few hyphen parts, skipping: {stem}");
-        return Ok(());
-    }
-    let uuid = parts[parts.len() - 5..].join("-");
-    let session_id = format!("codex:{uuid}");
 
     let file_len = fs::metadata(path)?.len();
 
@@ -517,10 +604,11 @@ fn scrape_claude_file(conn: &Connection, path: &Path) -> Result<()> {
     // Claude Code names the file `<session-id>.jsonl`; the stem is the
     // stable per-session key (the in-line `sessionId` is expected to
     // match and is treated as a cross-check, not the key, so we can
-    // resolve the resume offset before reading a single byte).
-    let session_id = match path.file_stem().and_then(|s| s.to_str()) {
-        Some(s) if !s.is_empty() => s.to_string(),
-        _ => {
+    // resolve the resume offset before reading a single byte). Shared
+    // with the archiver via `claude_session_id_from_path`.
+    let session_id = match claude_session_id_from_path(path) {
+        Some(id) => id,
+        None => {
             log::debug!(
                 "metrics: session file with no usable stem: {}",
                 path.display()
@@ -1087,5 +1175,64 @@ mod tests {
             .expect("turn query");
         assert_eq!(count, 1, "old turn rows must be cleared on shrink");
         assert_eq!(sum_in, 9, "only the rewritten content counts");
+    }
+
+    // -- shared session-id mapping + file resolution (archiver reuse) ------
+
+    #[test]
+    fn claude_session_id_is_the_file_stem() {
+        assert_eq!(
+            claude_session_id_from_path(Path::new("/x/abc-123.jsonl")).as_deref(),
+            Some("abc-123")
+        );
+        // A path with no file name at all → None.
+        assert_eq!(claude_session_id_from_path(Path::new("")), None);
+    }
+
+    #[test]
+    fn codex_session_id_prefixes_and_takes_last_five_hyphen_groups() {
+        let path =
+            Path::new("/x/2026/07/09/rollout-2026-07-09T10-00-00-11111111-2222-3333-4444-555555555555.jsonl");
+        assert_eq!(
+            codex_session_id_from_path(path).as_deref(),
+            Some("codex:11111111-2222-3333-4444-555555555555")
+        );
+        // Too few hyphen groups to carry a UUID → None (the scraper skips).
+        assert_eq!(
+            codex_session_id_from_path(Path::new("/x/rollout-a-b.jsonl")),
+            None
+        );
+    }
+
+    #[test]
+    fn find_claude_transcript_resolves_by_stem_and_matches_the_scraper() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let dir = temp.path();
+        let file = dir.join("sess-XYZ.jsonl");
+        std::fs::write(&file, "{}\n").expect("write");
+
+        let resolved = find_claude_transcript(dir, "sess-XYZ").expect("resolved");
+        assert_eq!(resolved, file);
+        // The scraper's forward mapping agrees with the id we resolved by.
+        assert_eq!(
+            claude_session_id_from_path(&resolved).as_deref(),
+            Some("sess-XYZ")
+        );
+        assert!(find_claude_transcript(dir, "nope").is_none());
+    }
+
+    #[test]
+    fn find_codex_transcript_walks_the_dated_tree() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let day = temp.path().join("2026").join("07").join("09");
+        std::fs::create_dir_all(&day).expect("mkdirs");
+        let uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let file = day.join(format!("rollout-2026-07-09T10-00-00-{uuid}.jsonl"));
+        std::fs::write(&file, "{}\n").expect("write");
+
+        let resolved =
+            find_codex_transcript(temp.path(), &format!("codex:{uuid}")).expect("resolved");
+        assert_eq!(resolved, file);
+        assert!(find_codex_transcript(temp.path(), "codex:not-here").is_none());
     }
 }

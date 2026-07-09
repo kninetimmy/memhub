@@ -27,6 +27,7 @@ pub mod status;
 pub mod sync;
 pub mod sync_md;
 pub mod task;
+pub mod transcript;
 pub mod upgrade;
 pub mod wrapup_policy;
 

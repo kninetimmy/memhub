@@ -417,6 +417,7 @@ const KNOWN_LEAVES: &[&str] = &[
     "gc.prune_large_thirdparty",
     "gc.delete_stale_backups",
     "wrap_up.verbosity",
+    "wrap_up.transcript_retention_days",
 ];
 
 /// Intermediate table paths (never themselves reported as unknown; a
@@ -619,6 +620,20 @@ fn check_config_types(raw: &str) -> Check {
         ));
     }
 
+    // Transcript-archive retention (Wave 6 W3, issue #96): a u32 day count
+    // where 0 = keep forever (pruning disabled). Negatives / non-integers
+    // already fail the ProjectConfig parse above; the only reachable
+    // violation is a horizon so large it is almost certainly a fat-finger
+    // (see MAX_WRAP_UP_TRANSCRIPT_RETENTION_DAYS). Matches the sanity-band
+    // posture of the fact_stale_after_days / age_half_life_days guards.
+    if cfg.wrap_up.transcript_retention_days > crate::config::MAX_WRAP_UP_TRANSCRIPT_RETENTION_DAYS {
+        problems.push(format!(
+            "wrap_up.transcript_retention_days={} exceeds the sane maximum {} (0 = keep forever)",
+            cfg.wrap_up.transcript_retention_days,
+            crate::config::MAX_WRAP_UP_TRANSCRIPT_RETENTION_DAYS,
+        ));
+    }
+
     if problems.is_empty() {
         Check::new(
             "config_types",
@@ -652,6 +667,12 @@ fn check_config_types(raw: &str) -> Check {
 /// legitimately raise locally — most notably to `transcript`, an
 /// explicitly sanctioned per-machine opt-in — so treating any local
 /// divergence as drift would warn on exactly the behavior Q7 permits.
+/// `wrap_up.transcript_retention_days` (Wave 6 W3, issue #96) is the
+/// opposite case and IS included below: the retention horizon is a
+/// repo-wide policy value seeded in the tracked example, not a
+/// per-machine toggle, so a local change to it is legitimate drift to
+/// surface — even though the `transcript` verbosity that activates it is
+/// itself a per-machine opt-in.
 const BASELINE_FIELDS: &[&str] = &[
     "deny_list.patterns",
     "render.output_dir",
@@ -671,6 +692,7 @@ const BASELINE_FIELDS: &[&str] = &[
     "code_index.fts_weight",
     "code_index.vector_weight",
     "code_index.test_path_penalty",
+    "wrap_up.transcript_retention_days",
 ];
 
 fn check_baseline_drift(local: &toml::Value, memhub_dir: &Path) -> Check {
@@ -1668,6 +1690,87 @@ verbosity = "full"
 
         let check = check_baseline_drift(&local, temp.path());
         assert_eq!(check.status, Status::Ok, "{:?}", check.detail);
+    }
+
+    #[test]
+    fn transcript_retention_days_is_a_known_key() {
+        // Doctor parity for the Wave 6 W3 `[wrap_up]` retention knob
+        // (issue #96): the new leaf must not read as an unknown key.
+        let value: toml::Value = toml::from_str(
+            r#"
+project_name = "x"
+auto_sync_md = false
+log_level = "info"
+
+[wrap_up]
+verbosity = "transcript"
+transcript_retention_days = 30
+"#,
+        )
+        .expect("parse");
+
+        let check = check_unknown_keys(&value);
+        assert_eq!(check.status, Status::Ok, "detail: {:?}", check.detail);
+    }
+
+    #[test]
+    fn config_types_flags_an_absurd_transcript_retention_horizon() {
+        // 0 = keep forever (valid); a sane finite horizon is valid; only a
+        // value past the fat-finger ceiling is a range violation.
+        let raw = r#"
+project_name = "x"
+auto_sync_md = false
+log_level = "info"
+
+[wrap_up]
+transcript_retention_days = 99999999
+"#;
+        let check = check_config_types(raw);
+        assert_eq!(check.status, Status::Error, "{}", check.message);
+        assert!(
+            check
+                .detail
+                .unwrap_or_default()
+                .contains("wrap_up.transcript_retention_days")
+        );
+    }
+
+    #[test]
+    fn config_types_accepts_zero_and_normal_transcript_retention() {
+        for days in ["0", "1", "90", "3650"] {
+            let raw = format!(
+                "project_name = \"x\"\nauto_sync_md = false\nlog_level = \"info\"\n\
+                 [wrap_up]\ntranscript_retention_days = {days}\n"
+            );
+            let check = check_config_types(&raw);
+            assert_eq!(check.status, Status::Ok, "days={days}: {}", check.message);
+        }
+    }
+
+    #[test]
+    fn transcript_retention_days_is_baseline_drift_checked() {
+        // Unlike verbosity, the retention horizon IS a repo baseline: a
+        // local value differing from the tracked example is real drift.
+        let local: toml::Value =
+            toml::from_str("[wrap_up]\ntranscript_retention_days = 7\n").expect("local");
+        let example: toml::Value =
+            toml::from_str("[wrap_up]\ntranscript_retention_days = 90\n").expect("example");
+
+        let temp = tempdir().expect("tempdir");
+        fs::write(
+            temp.path().join(db::CONFIG_EXAMPLE_FILENAME),
+            toml::to_string(&example).unwrap(),
+        )
+        .expect("write example");
+
+        let check = check_baseline_drift(&local, temp.path());
+        assert_eq!(check.status, Status::Warn);
+        assert!(
+            check
+                .detail
+                .unwrap_or_default()
+                .contains("wrap_up.transcript_retention_days")
+        );
     }
 
     #[test]

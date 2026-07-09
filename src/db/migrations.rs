@@ -122,6 +122,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0022_source_type_note",
         include_str!("../../migrations/0022_source_type_note.sql"),
     ),
+    // Wave 6 W3 (issue #96): session-transcript archive pointer table.
+    // Number 0023 was pre-assigned so it could land after the sibling
+    // Wave 6 migrations 0021/0022 (issues #97/#98) regardless of merge
+    // order. Kept in numeric order so `latest_version()` stays 0023.
+    (
+        "0023_session_transcripts",
+        include_str!("../../migrations/0023_session_transcripts.sql"),
+    ),
 ];
 
 pub fn apply_all(conn: &mut Connection) -> Result<Vec<String>> {
@@ -325,5 +333,47 @@ mod tests {
             )
             .expect("pragma facts");
         assert_eq!(has_kind, 1, "facts.kind must exist after 0021");
+    }
+
+    /// Migration 0023 (Wave 6 W3, issue #96) creates the
+    /// `session_transcripts` pointer table via `CREATE TABLE IF NOT
+    /// EXISTS`. A fresh DB simply has the table with its full column set;
+    /// replay safety is covered by `idempotent_reapply_is_a_noop`.
+    #[test]
+    fn migration_0023_creates_session_transcripts_table() {
+        let mut conn = Connection::open_in_memory().expect("open");
+        apply_all(&mut conn).expect("apply");
+
+        let table_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master \
+                 WHERE type = 'table' AND name = 'session_transcripts'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("query sqlite_master");
+        assert_eq!(table_exists, 1, "session_transcripts must exist after 0023");
+
+        // Pin the pointer-row columns so a later schema edit that drops or
+        // renames one is caught here, not at an archive-time INSERT.
+        for col in [
+            "session_id",
+            "agent",
+            "source_path",
+            "archive_path",
+            "source_bytes",
+            "archive_bytes",
+            "created_at",
+        ] {
+            let has: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('session_transcripts') \
+                     WHERE name = ?1",
+                    [col],
+                    |r| r.get(0),
+                )
+                .expect("pragma session_transcripts");
+            assert_eq!(has, 1, "session_transcripts.{col} must exist after 0023");
+        }
     }
 }

@@ -280,6 +280,57 @@ pub enum TopLevelCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Archive a session's RAW transcript into
+    /// `.memhub/transcripts/<date>-<session-id>.jsonl.zst` with a pointer
+    /// row (Wave 6 W3, issue #96). Per-machine opt-in behind `[wrap_up]
+    /// verbosity = "transcript"`. The archive is UNREDACTED, so archiving
+    /// requires an explicit `--yes` and refuses on a non-TTY without it.
+    /// Transcripts are never embedded, recalled, or exported.
+    Transcript {
+        #[command(subcommand)]
+        command: TranscriptCommand,
+    },
+}
+
+/// Agent selector for `memhub transcript archive` — picks the transcript
+/// directory + session-id convention (Claude file-stem ids vs Codex
+/// `codex:<uuid>` ids), reusing the metrics scraper's mapping.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum TranscriptAgentArg {
+    Claude,
+    Codex,
+}
+
+impl TranscriptAgentArg {
+    pub fn to_agent(self) -> commands::transcript::Agent {
+        match self {
+            TranscriptAgentArg::Claude => commands::transcript::Agent::Claude,
+            TranscriptAgentArg::Codex => commands::transcript::Agent::Codex,
+        }
+    }
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TranscriptCommand {
+    /// Copy the session JSONL to a compressed archive under `.memhub/`.
+    Archive {
+        /// Which agent's transcript directory + session-id convention to
+        /// use.
+        #[arg(long, value_enum, value_name = "AGENT")]
+        agent: TranscriptAgentArg,
+        /// Session id to archive. Claude: the transcript file stem (the
+        /// session UUID). Codex: `codex:<uuid>` (a bare uuid is accepted
+        /// and prefixed).
+        #[arg(long, value_name = "ID")]
+        session_id: String,
+        /// Required to actually archive — the copy is UNREDACTED. Without
+        /// it, memhub prompts on an interactive terminal and refuses
+        /// (fails closed) on a non-TTY.
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
