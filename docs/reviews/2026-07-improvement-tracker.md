@@ -24,13 +24,13 @@ numbers. Default-off config additions must keep an untouched install byte-identi
 | 2 | Session-start token diet | 7 / 7 | Q21–Q25 ✓ · Q41 ✓ (complete) |
 | 3 | Staleness / lifecycle | 7 / 7 | Q1–Q6 ✓ (complete) |
 | 4 | Retrieval performance | 12 / 12 | Q17–Q19 ✓ · Q24 ✓ · Q40 ✓ (complete) |
-| 5 | Upgrade / GC hardening | 0 / 8 | Q12–Q16 |
+| 5 | Upgrade / GC hardening | 8 / 8 | Q12–Q16 ✓ (complete) |
 | 6 | Wrap-up policy / verbosity | 0 / 6 | Q7–Q11 |
 | 7 | Cross-machine sync / metrics | 0 / 6 | Q30–Q33 |
 | 8 | CI / infra / licensing | 0 / 2 | Q37–Q38 |
 | 9 | Housekeeping | 0 / 7 | Q26–Q27, Q36 |
 
-Decisions resolved: 20 / 56 (Q1, Q2, Q3, Q4, Q5, Q6, Q17, Q18, Q19, Q21, Q22, Q23, Q24, Q25, Q29, Q32, Q35, Q39, Q40, Q41).
+Decisions resolved: 25 / 56 (Q1, Q2, Q3, Q4, Q5, Q6, Q12, Q13, Q14, Q15, Q16, Q17, Q18, Q19, Q21, Q22, Q23, Q24, Q25, Q29, Q32, Q35, Q39, Q40, Q41).
 
 ---
 
@@ -388,14 +388,42 @@ AGENTS.md routing block can shrink now that R2 registers the MCP server in all t
 the routing instructions actually fire. Kept as an orchestrator judgment call; not executed
 this wave.
 
-## Wave 5 — Upgrade / GC  (gating: Q12–Q16)
-- [ ] U2 extend gc to `build/memhub-*` OUT_DIRs + `examples/` hashes
-- [ ] U3 call `sweep_stale_staging` from `gc::run`
-- [ ] U4 consolidate `tests/*.rs` into 1–3 harness binaries
-- [ ] U5 revisit two shipped gc exclusions (superseded incremental; >100MB multi-hash third-party)
-- [ ] U6 skill-resync honesty (orphan report, install manifest, symlink-fallback message)
-- [ ] U7 degrade-don't-die on corrupt registry / PATH-shadow IO error
-- [ ] U8 backups retention cap (N newest; legacy k9-bootstrap-backup prompt)
+## Wave 5 — Upgrade / GC  (gating: Q12–Q16 ✓ — resolved 2026-07-09) — COMPLETE
+
+Executed 2026-07-09 under orchestrator mode; main green at `5754ea2`. Three issues
+(#88/#89/#90) fanned out to executor subagents, each through an adversarial diff-review
+round + a throwaway-merge full-suite pre-flight before the canonical squash. §11 gate
+rulings: Q12 amend both gc exclusions behind opt-in `[gc]` config flags (default
+byte-identical); Q13 consolidate tests to 3 harnesses (accept loss of per-file
+`--test X`); Q14 already shipped by Wave 0 **F6** (staged-handoff exit 3 + `--verify-last`)
+— resolved, no new work; Q15 ship the skill-install manifest; Q16 backups retention N=20,
+report-only default.
+
+- [x] U2 extend gc to `build/memhub-*` OUT_DIRs + `examples/` hash-suffixed binaries
+  (keep-newest-per-stem). — 2026-07-09, PR #91 / 5c8c507 (issue #88).
+- [x] U3 wire `sweep_stale_staging` into `gc::run` (inter-upgrade shim leak) — faithful
+  dry-run/accounting-aware copy kept in `gc.rs` to avoid touching `upgrade.rs` during the
+  parallel batch; predicate de-dup noted as a follow-up. — 2026-07-09, PR #91 / 5c8c507 (issue #88).
+- [x] U4 consolidate the 40 `tests/*.rs` into 3 harness binaries (retrieval / upgrade /
+  lifecycle); 743 tests preserved (Q13). Exposed + fixed a real `HOME`/`USERPROFILE` data
+  race via an `RwLock` guard (`env_lock` write / `env_read_lock` shared); two review rounds
+  closed the transitive `home_dir` reader closure (incl. `init::run`→`sync_project`→
+  `open_project`), documented in `tests/upgrade/support.rs`. — 2026-07-09, PR #93 / 5754ea2 (issue #90).
+- [x] U5 amend the two shipped gc exclusions behind opt-in `[gc]` flags
+  (`prune_superseded_incremental`, `prune_large_thirdparty`); default byte-identical (Q12).
+  — 2026-07-09, PR #91 / 5c8c507 (issue #88).
+- [x] U6 skill-resync honesty: install manifest (`~/.memhub/install-manifest.json`,
+  fail-safe unknown→user-owned so a user's own file is never clobbered), orphans reported
+  never deleted, honest symlink-vs-copy message, loud first-run notice + adoption hint (Q15).
+  — 2026-07-09, PR #92 / 6a18bbf (issue #89).
+- [x] U7 degrade-don't-die: corrupt registry → source-repo-only + warning; PATH-shadow IO
+  error → warning (no abort). — 2026-07-09, PR #92 / 6a18bbf (issue #89).
+- [x] U8 backups retention cap N=20, report-only by default (`delete_stale_backups` flag);
+  legacy `project.sqlite.k9-bootstrap-backup` reported never auto-deleted; `backups/sync/`
+  left (single-slot); delete accounting rolled into gc totals (Q16).
+  — 2026-07-09, PR #91 / 5c8c507 (issue #88).
+- [x] U1 = F6 (done in Wave 0) — staged-handoff exit codes + `--verify-last` (Q14).
+  — 2026-07-05, PR-B.
 
 ## Wave 6 — Wrap-up  (gating: Q7–Q11)
 - [ ] W1 verbosity knob + `memhub wrapup-policy --json`
@@ -433,7 +461,7 @@ Resolve per wave. Recommendations are in the review; mark here when the user rul
 
 **Lifecycle:** [x] Q1 [x] Q2 [x] Q3 [x] Q4 [x] Q5 [x] Q6 *(all resolved 2026-07-06 as memhub decision 145 — Wave 3 gate: Q1 demote+flag stale facts, not silent exclusion; Q2–Q4 supersession/audit/contradiction lifecycle; Q5 retire always-1.0 confidence (PR #52); Q6 auto pending-write expiry (PR #50))*
 **Wrap-up:** [ ] Q7 [ ] Q8 [ ] Q9 [ ] Q10 [ ] Q11
-**Upgrade/GC:** [ ] Q12 [ ] Q13 [ ] Q14 [ ] Q15 [ ] Q16
+**Upgrade/GC:** [x] Q12 [x] Q13 [x] Q14 [x] Q15 [x] Q16 *(all resolved 2026-07-09 — Wave 5 gate: Q12 amend both gc exclusions behind opt-in `[gc]` config flags (default byte-identical); Q13 consolidate tests → 3 harnesses (accept loss of per-file `--test X`); Q14 already shipped by Wave 0 F6 (staged-handoff exit 3 + `--verify-last`); Q15 ship skill-install manifest (fail-safe unknown→user-owned); Q16 backups retention N=20 report-only default. PRs #91/#92/#93.)*
 **Retrieval:** [x] Q17 [x] Q18 [x] Q19 [ ] Q20 *(Q17–Q19 resolved 2026-07-08 as memhub decision 148 — Wave 4 gate: Q17 gather-then-decide via R12's CLI/MCP surface column (PR #84); Q18 run R7 int8 as a separate eval-gated experiment, accepted at 0pp Recall@3 movement (PR #86); Q19 MCP-only recall bundle trim + add `rerank_score`, CLI `--json` keeps full shape (PR #82). Q20 (37% empty-recall question) still deferred until R12 data accrues.)*
 **CLAUDE.md:** [x] Q21 [x] Q22 [x] Q23 [x] Q24 [x] Q25 *(all resolved 2026-07-06 — Wave 2 gate: Q21 generate AGENTS.md from CLAUDE.md (derived, content-equal parity); Q22 accept ~2,500-tok target + inline {Guardrails, Session Continuity, Delegation, stale-embeddings gate, sync_adopt gate}; Q23 implement versioned managed block; Q24 fix — register `memhub serve` (confirmed registered in 0 CLIs; work lands Wave 4/Q40); Q25 opt-in `[audit] user_md_path`)*
 **Surfaces:** [ ] Q26 [ ] Q27 [ ] Q28 [x] Q29 *(resolved 2026-07-05 — wrapped noun-keyed objects; `doc ls` migrated; PR #18)*
