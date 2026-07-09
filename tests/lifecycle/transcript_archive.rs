@@ -72,15 +72,41 @@ fn archive_writes_a_compressed_copy_under_memhub_and_a_pointer_row() {
     assert_eq!(count, 1, "exactly one pointer row for the archived session");
 }
 
+fn embeddings_count(repo: &Path) -> i64 {
+    let ctx = db::open_project(repo).expect("open");
+    ctx.conn
+        .query_row("SELECT COUNT(*) FROM embeddings", [], |r| r.get(0))
+        .expect("count embeddings")
+}
+
 #[test]
 fn archived_transcript_is_never_embedded() {
     let temp = tempdir().expect("tempdir");
-    archive_a_marked_transcript(temp.path());
+    init::run(temp.path()).expect("init");
+    let tdir = temp.path().join("claude-transcripts");
+    fs::create_dir_all(&tdir).expect("tdir");
+    fs::write(
+        tdir.join("sess-iso.jsonl"),
+        format!("{{\"type\":\"assistant\",\"secret\":\"{MARKER}\"}}\n"),
+    )
+    .expect("write transcript");
+    set_claude_dir(temp.path(), &tdir);
 
+    // Snapshot the total embeddings row count, archive, snapshot again:
+    // archiving a transcript must add exactly zero embedding rows. This
+    // catches a leak even if it were ever mis-tagged with some other
+    // source_type (which the string-scoped check below cannot).
+    let before = embeddings_count(temp.path());
+    transcript::archive(temp.path(), transcript::Agent::Claude, "sess-iso", true).expect("archive");
+    let after = embeddings_count(temp.path());
+    assert_eq!(
+        before, after,
+        "archiving a transcript must add zero embedding rows (was {before}, now {after})"
+    );
+
+    // And, specifically, nothing is ever tagged as a transcript source —
+    // there is no `SourceType::Transcript`.
     let ctx = db::open_project(temp.path()).expect("open");
-    // The invariant: no embedding row is ever attributed to a transcript.
-    // There is no `SourceType::Transcript`, and the archive path never
-    // calls the eager-embed writers, so this count is structurally zero.
     let transcript_embeddings: i64 = ctx
         .conn
         .query_row(
@@ -89,10 +115,7 @@ fn archived_transcript_is_never_embedded() {
             |r| r.get(0),
         )
         .expect("count transcript embeddings");
-    assert_eq!(
-        transcript_embeddings, 0,
-        "transcripts must never enter the embeddings table"
-    );
+    assert_eq!(transcript_embeddings, 0);
 }
 
 #[test]
@@ -199,4 +222,45 @@ fn archive_refuses_without_explicit_approval_even_with_a_valid_session() {
         .expect("count");
     assert_eq!(count, 0);
     assert!(!temp.path().join(".memhub").join("transcripts").exists());
+}
+
+#[test]
+fn archive_refuses_a_path_traversal_session_id_without_reading_outside() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+    let tdir = temp.path().join("claude-transcripts");
+    fs::create_dir_all(&tdir).expect("tdir");
+    set_claude_dir(temp.path(), &tdir);
+
+    // Plant a "secret" transcript OUTSIDE the transcripts dir that a
+    // traversal id like `../outside` would path-resolve to
+    // (<tdir>/../outside.jsonl == <temp>/outside.jsonl).
+    fs::write(
+        temp.path().join("outside.jsonl"),
+        format!("{{\"leaked\":\"{MARKER}\"}}\n"),
+    )
+    .expect("write outside secret");
+
+    for evil in ["../outside", "..\\outside", "a/b", ".."] {
+        let err = transcript::archive(temp.path(), transcript::Agent::Claude, evil, true)
+            .expect_err("traversal id must be refused");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("path separator") || msg.contains(".."),
+            "expected a traversal-refusal message for {evil:?}, got: {msg}"
+        );
+    }
+
+    // No read happened, no archive was written, no pointer row exists, and
+    // the planted secret never entered `.memhub/`.
+    assert!(
+        !temp.path().join(".memhub").join("transcripts").exists(),
+        "a refused traversal must not create the archive dir"
+    );
+    let ctx = db::open_project(temp.path()).expect("open");
+    let count: i64 = ctx
+        .conn
+        .query_row("SELECT COUNT(*) FROM session_transcripts", [], |r| r.get(0))
+        .expect("count");
+    assert_eq!(count, 0, "no pointer row for a refused traversal id");
 }

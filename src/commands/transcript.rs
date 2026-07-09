@@ -138,11 +138,24 @@ pub fn archive(
         ));
     }
 
+    // Fail-closed path-traversal guard. The Claude resolver path-joins the
+    // session id (`<dir>/<session_id>.jsonl`), so an id carrying a
+    // separator or a `..` component could read a file OUTSIDE the
+    // transcripts dir. Reject that external input before any resolution or
+    // read. Applied uniformly to both agents — a real Claude UUID / Codex
+    // `codex:<uuid>` never trips it.
+    validate_session_id(session_id)?;
+
     let session_id = normalize_session_id(agent, session_id);
     let ctx = db::open_project(start)?;
     let retention_days = ctx.config.wrap_up.transcript_retention_days;
     let dir = resolve_transcript_dir(&ctx.config, &ctx.paths.repo_root, agent)?;
     let source = resolve_source(agent, &dir, &session_id)?;
+
+    // Belt-and-suspenders: even with a clean id, a symlinked transcript
+    // file could point outside the dir. Canonicalize both and require the
+    // resolved source to live under the transcripts directory, or refuse.
+    assert_source_contained(&dir, &source)?;
 
     archive_into(
         &ctx.conn,
@@ -163,6 +176,53 @@ fn normalize_session_id(agent: Agent, session_id: &str) -> String {
         Agent::Codex if !session_id.starts_with("codex:") => format!("codex:{session_id}"),
         _ => session_id.to_string(),
     }
+}
+
+/// Reject a session id that could escape the transcripts directory when
+/// path-joined. Fail-closed: a separator (`/` or `\`) or any `..` is
+/// refused before the id is ever resolved or read. No legitimate Claude
+/// UUID or Codex `codex:<uuid>` contains any of these.
+fn validate_session_id(session_id: &str) -> Result<()> {
+    if session_id.trim().is_empty() {
+        return Err(MemhubError::InvalidInput(
+            "session id must not be empty".to_string(),
+        ));
+    }
+    if session_id.contains('/') || session_id.contains('\\') || session_id.contains("..") {
+        return Err(MemhubError::InvalidInput(format!(
+            "session id '{session_id}' is invalid: it must not contain a path separator \
+             ('/' or '\\') or '..' — refusing to resolve a transcript outside the \
+             transcripts directory"
+        )));
+    }
+    Ok(())
+}
+
+/// Belt-and-suspenders containment check: the resolved source file, once
+/// canonicalized (following any symlink), must live under the transcripts
+/// directory. Fails closed on a path that escapes, or if either path
+/// cannot be canonicalized.
+fn assert_source_contained(dir: &Path, source: &Path) -> Result<()> {
+    let dir_canon = dir.canonicalize().map_err(|e| {
+        MemhubError::InvalidInput(format!(
+            "cannot canonicalize the transcripts directory {}: {e}",
+            dir.display()
+        ))
+    })?;
+    let source_canon = source.canonicalize().map_err(|e| {
+        MemhubError::InvalidInput(format!(
+            "cannot canonicalize the resolved transcript {}: {e}",
+            source.display()
+        ))
+    })?;
+    if !source_canon.starts_with(&dir_canon) {
+        return Err(MemhubError::InvalidInput(format!(
+            "resolved transcript {} is outside the transcripts directory {} — refusing to archive",
+            source_canon.display(),
+            dir_canon.display()
+        )));
+    }
+    Ok(())
 }
 
 /// Resolve the transcript directory for `agent`, reusing the metrics
@@ -435,6 +495,29 @@ mod tests {
             "uuid-1",
             "claude ids are never prefixed"
         );
+    }
+
+    #[test]
+    fn validate_session_id_rejects_traversal_and_accepts_real_ids() {
+        // Real ids pass.
+        validate_session_id("11111111-2222-3333-4444-555555555555").expect("claude uuid");
+        validate_session_id("codex:abcd-1234").expect("codex id");
+        // Traversal vectors are all refused.
+        for evil in [
+            "../../etc/passwd",
+            "..\\..\\secret",
+            "a/b",
+            "a\\b",
+            "..",
+            "foo/../bar",
+            "",
+            "   ",
+        ] {
+            assert!(
+                validate_session_id(evil).is_err(),
+                "must reject traversal-style id {evil:?}"
+            );
+        }
     }
 
     #[test]
