@@ -622,6 +622,70 @@ impl Default for GcConfig {
     }
 }
 
+/// Wrap-up policy verbosity (Wave 6 W1/W2, issue #95 / decision Q7).
+/// Governs how much a `/wrap-up` session drafts and writes, from the
+/// bare continuity floor (`minimal`) up through named transcript
+/// archiving (`transcript`). See `commands::wrapup_policy` for the full
+/// rendered instructions per level; `memhub wrapup-policy` is the
+/// read-only command that renders them.
+///
+/// This is a repo-policy field, seeded with a real value in the
+/// tracked `.memhub/config.example.toml` (Q7's "verbosity is a repo
+/// baseline") — unlike `metrics.enabled` / `global.enabled` /
+/// `sync.enabled`, which are per-install opt-ins with no shared
+/// baseline at all, every machine should start out at the same level
+/// by default. The one deliberate exception is `transcript`: Q7 rules
+/// it a per-machine opt-in on top of that baseline, so a machine may
+/// locally raise its own `.memhub/config.toml` to `transcript` without
+/// that being drift — see the `wrap_up.verbosity` exclusion note above
+/// `doctor::BASELINE_FIELDS`. The canonical baseline seeded in
+/// `config.example.toml` must never be `transcript` itself.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WrapUpVerbosity {
+    /// `state set` (currently building / next up) + task closures only
+    /// — the floor that keeps turn-1 `PROJECT.md` continuity working.
+    /// No decisions, facts, pending-write triage, session note, or
+    /// architecture check are drafted at this level.
+    Minimal,
+    /// memhub's original `/wrap-up` flow, unchanged: state, decisions,
+    /// backlog changes, facts, pending-write triage, a short session
+    /// note, opportunistic architecture drift, and stale-fact
+    /// re-verify candidates. See
+    /// `templates/skills/{claude,codex}/wrap-up.md`.
+    #[default]
+    Standard,
+    /// `standard`, with decision/fact summaries, the architecture-drift
+    /// check, and pending-write triage promoted from conditional to
+    /// mandatory, plus a richer (not two-to-four-sentence) session
+    /// note.
+    Full,
+    /// `full` + a named transcript-archive step. The archiver itself is
+    /// tracked separately (issue #96 / W3); this level only needs to
+    /// exist and name the step — `memhub wrapup-policy` renders
+    /// gracefully whether or not the archiver is implemented yet.
+    Transcript,
+}
+
+impl WrapUpVerbosity {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            WrapUpVerbosity::Minimal => "minimal",
+            WrapUpVerbosity::Standard => "standard",
+            WrapUpVerbosity::Full => "full",
+            WrapUpVerbosity::Transcript => "transcript",
+        }
+    }
+}
+
+/// Wrap-up policy config (Wave 6 W1, issue #95). See `WrapUpVerbosity`
+/// for the level semantics and the Q7 baseline-vs-per-machine ruling.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WrapUpConfig {
+    #[serde(default)]
+    pub verbosity: WrapUpVerbosity,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectConfig {
     pub project_name: String,
@@ -649,6 +713,8 @@ pub struct ProjectConfig {
     pub audit: AuditConfig,
     #[serde(default)]
     pub gc: GcConfig,
+    #[serde(default)]
+    pub wrap_up: WrapUpConfig,
 }
 
 impl ProjectConfig {
@@ -668,6 +734,7 @@ impl ProjectConfig {
             doc: DocConfig::default(),
             audit: AuditConfig::default(),
             gc: GcConfig::default(),
+            wrap_up: WrapUpConfig::default(),
         }
     }
 

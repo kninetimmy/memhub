@@ -1,7 +1,7 @@
 use std::fs;
 
 use memhub::commands::init;
-use memhub::config::ProjectConfig;
+use memhub::config::{ProjectConfig, WrapUpVerbosity};
 use memhub::db;
 use tempfile::tempdir;
 
@@ -187,4 +187,63 @@ log_level = "info"
     // A legacy config with no [metrics] block still defaults to
     // uncalibrated (serde default), never NaN/0.
     assert_eq!(config.metrics.calibration_factor, 1.0);
+}
+
+/// The tracked example's `[wrap_up]` block (Wave 6 W1, issue #95 /
+/// decision Q7) must seed the "standard" baseline — never "transcript",
+/// which Q7 reserves as a per-machine opt-in — so a fresh install's
+/// wrap-up behavior stays exactly what it was before this section
+/// existed.
+#[test]
+fn tracked_example_config_pins_wrap_up_defaults() {
+    let raw = fs::read_to_string(".memhub/config.example.toml")
+        .expect("read tracked .memhub/config.example.toml");
+    let config: ProjectConfig = toml::from_str(&raw).expect("parse tracked example");
+
+    assert_eq!(config.wrap_up.verbosity, WrapUpVerbosity::Standard);
+}
+
+/// An install that hasn't pulled the new example (no `[wrap_up]` block
+/// in its local `.memhub/config.toml`) must still load cleanly and
+/// default to `standard` — the same behavior an untouched install had
+/// before this section existed.
+#[test]
+fn pre_wrap_up_local_config_loads_with_standard_verbosity() {
+    let temp = tempdir().expect("tempdir");
+    let memhub_dir = temp.path().join(".memhub");
+    fs::create_dir_all(&memhub_dir).expect("create .memhub");
+
+    let legacy = r#"project_name = "pre-wrap-up"
+auto_sync_md = false
+log_level = "info"
+"#;
+    let local = memhub_dir.join("config.toml");
+    fs::write(&local, legacy).expect("write legacy config");
+
+    let config = ProjectConfig::load(&local).expect("load legacy config");
+    assert_eq!(config.wrap_up.verbosity, WrapUpVerbosity::Standard);
+}
+
+/// Round-trip: every level survives a save/load cycle through the real
+/// `ProjectConfig::save`/`load` (TOML ser/de), not just the in-memory
+/// enum.
+#[test]
+fn wrap_up_verbosity_round_trips_through_save_and_load_for_every_level() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+    let local_config_path = temp.path().join(".memhub").join("config.toml");
+
+    for level in [
+        WrapUpVerbosity::Minimal,
+        WrapUpVerbosity::Standard,
+        WrapUpVerbosity::Full,
+        WrapUpVerbosity::Transcript,
+    ] {
+        let mut config = ProjectConfig::load(&local_config_path).expect("load config");
+        config.wrap_up.verbosity = level;
+        config.save(&local_config_path).expect("save config");
+
+        let reloaded = ProjectConfig::load(&local_config_path).expect("reload config");
+        assert_eq!(reloaded.wrap_up.verbosity, level);
+    }
 }

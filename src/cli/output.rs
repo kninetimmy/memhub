@@ -7,6 +7,7 @@ use crate::code_index::locate::LocateResponse;
 use crate::commands;
 use crate::commands::import::ImportSummary;
 use crate::commands::review::{StaleCategory, StaleReport};
+use crate::commands::wrapup_policy::WrapupPolicyReport;
 use crate::config::RetrievalMode;
 use crate::models::{
     InitResult, NarrativeEntry, NarrativeKind, PendingWriteRecord, StatsSummary, StatusSummary,
@@ -1208,4 +1209,21 @@ pub(crate) fn print_review_stale_report_human(r: &StaleReport) {
         r.counts.pending_expired,
         r.counts.doc_hash_drift,
     );
+}
+
+/// `{"wrapup_policy": {...}}` — the wrapped noun-keyed shape (Q29),
+/// matching `doctor`/`audit_md`/`review_stale`'s own siblings.
+/// `verbosity` serializes via `WrapUpVerbosity`'s `rename_all =
+/// "lowercase"` derive, so this stays byte-identical to `.as_str()`.
+pub(crate) fn wrapup_policy_report_to_json(r: &WrapupPolicyReport) -> serde_json::Value {
+    json!({
+        "verbosity": r.verbosity.as_str(),
+        "instructions": r.instructions,
+    })
+}
+
+pub(crate) fn print_wrapup_policy_human(r: &WrapupPolicyReport) {
+    println!("Level: {}", r.verbosity.as_str());
+    println!();
+    print!("{}", r.instructions);
 }
