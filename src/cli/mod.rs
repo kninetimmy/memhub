@@ -19,8 +19,9 @@ use output::{
     print_doctor_report_human, print_eval_summary, print_index_status, print_init_result,
     print_locate, print_locate_eval_summary, print_metrics_status_human, print_recall_human,
     print_review_stale_report_human, print_stats_human, print_stats_json,
-    print_status_checks_human, recall_response_to_json, review_stale_report_to_json,
-    status_checks_to_json, status_summary_to_json,
+    print_status_checks_human, print_wrapup_policy_human, recall_response_to_json,
+    review_stale_report_to_json, status_checks_to_json, status_summary_to_json,
+    wrapup_policy_report_to_json,
 };
 use serde_json::json;
 
@@ -2037,6 +2038,17 @@ pub fn run(cli: Cli) -> Result<()> {
                 process::exit(report.exit_code);
             }
         },
+        TopLevelCommand::WrapupPolicy { json: as_json } => {
+            let report = commands::wrapup_policy::run(&cwd)?;
+            if as_json {
+                println!(
+                    "{}",
+                    json!({ "wrapup_policy": wrapup_policy_report_to_json(&report) })
+                );
+            } else {
+                print_wrapup_policy_human(&report);
+            }
+        }
         TopLevelCommand::Render => {
             let result = commands::render::run(&cwd, DEFAULT_ACTOR)?;
             println!("Rendered to {}", result.output_dir.display());

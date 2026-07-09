@@ -28,6 +28,7 @@ pub mod sync;
 pub mod sync_md;
 pub mod task;
 pub mod upgrade;
+pub mod wrapup_policy;
 
 use crate::{MemhubError, Result};
 

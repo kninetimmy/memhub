@@ -416,6 +416,7 @@ const KNOWN_LEAVES: &[&str] = &[
     "gc.prune_superseded_incremental",
     "gc.prune_large_thirdparty",
     "gc.delete_stale_backups",
+    "wrap_up.verbosity",
 ];
 
 /// Intermediate table paths (never themselves reported as unknown; a
@@ -434,6 +435,7 @@ const KNOWN_TABLES: &[&str] = &[
     "doc",
     "audit",
     "gc",
+    "wrap_up",
 ];
 
 fn check_config(config_path: &Path, memhub_dir: &Path) -> Vec<Check> {
@@ -644,7 +646,12 @@ fn check_config_types(raw: &str) -> Check {
 /// `global`/`sync` `enabled` flags stay excluded — the header documents
 /// those three as fields a machine legitimately diverges on and does not
 /// commit back. `doc.allowed_dirs` is excluded for the same per-machine
-/// reason.
+/// reason. `wrap_up.verbosity` (Wave 6, issue #95) is excluded too, for a
+/// related but distinct reason: Q7 rules it a repo baseline (seeded in
+/// the tracked example) whose canonical value a machine may still
+/// legitimately raise locally — most notably to `transcript`, an
+/// explicitly sanctioned per-machine opt-in — so treating any local
+/// divergence as drift would warn on exactly the behavior Q7 permits.
 const BASELINE_FIELDS: &[&str] = &[
     "deny_list.patterns",
     "render.output_dir",
@@ -1490,6 +1497,24 @@ mode = "bogus"
     }
 
     #[test]
+    fn config_types_catches_an_invalid_wrap_up_verbosity() {
+        // Doctor parity for the Wave 6 W1 `[wrap_up]` section (issue
+        // #95): an out-of-vocabulary verbosity must fail the same way
+        // an invalid `retrieval.mode` does — via the natural
+        // `ProjectConfig` deserialize failure, not a bespoke check.
+        let raw = r#"
+project_name = "x"
+auto_sync_md = false
+log_level = "info"
+
+[wrap_up]
+verbosity = "extremely-verbose"
+"#;
+        let check = check_config_types(raw);
+        assert_eq!(check.status, Status::Error, "{}", check.message);
+    }
+
+    #[test]
     fn config_types_catches_an_out_of_range_weight() {
         let raw = r#"
 project_name = "x"
@@ -1603,6 +1628,46 @@ delete_stale_backups = false
 
         let check = check_unknown_keys(&value);
         assert_eq!(check.status, Status::Ok, "detail: {:?}", check.detail);
+    }
+
+    #[test]
+    fn wrap_up_keys_are_known_not_unknown() {
+        // Doctor parity for the Wave 6 W1 `[wrap_up]` section (issue #95).
+        let value: toml::Value = toml::from_str(
+            r#"
+project_name = "x"
+auto_sync_md = false
+log_level = "info"
+
+[wrap_up]
+verbosity = "full"
+"#,
+        )
+        .expect("parse");
+
+        let check = check_unknown_keys(&value);
+        assert_eq!(check.status, Status::Ok, "detail: {:?}", check.detail);
+    }
+
+    #[test]
+    fn wrap_up_verbosity_is_excluded_from_baseline_drift() {
+        // Q7: verbosity is a repo baseline, but a machine may legitimately
+        // raise it locally (e.g. to "transcript") without that being
+        // flagged as drift — see the doc comment above BASELINE_FIELDS.
+        let local: toml::Value =
+            toml::from_str("[wrap_up]\nverbosity = \"transcript\"\n").expect("local");
+        let example: toml::Value =
+            toml::from_str("[wrap_up]\nverbosity = \"standard\"\n").expect("example");
+
+        let temp = tempdir().expect("tempdir");
+        fs::write(
+            temp.path().join(db::CONFIG_EXAMPLE_FILENAME),
+            toml::to_string(&example).unwrap(),
+        )
+        .expect("write example");
+
+        let check = check_baseline_drift(&local, temp.path());
+        assert_eq!(check.status, Status::Ok, "{:?}", check.detail);
     }
 
     #[test]
