@@ -567,6 +567,7 @@ fn run_recall(start: &Path, query: String) -> Result<RecallPayload> {
             // not "real usage" the metrics dashboard should be
             // reporting on.
             log_metrics: false,
+            surface: None,
         },
     )?;
     Ok(RecallPayload {

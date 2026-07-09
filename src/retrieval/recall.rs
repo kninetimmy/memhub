@@ -29,6 +29,27 @@ use crate::{MemhubError, Result};
 
 const PER_SOURCE_FTS_LIMIT: i64 = 50;
 
+/// Which agent-facing surface issued a recall — the CLI process or the
+/// MCP server's `recall` tool (issue #70, Wave 4 gate Q17 / decision
+/// 148). Threaded into `RecallOptions` purely so `recall_proxy::log_recall`
+/// can tag the `recall_metrics.surface` column; nothing else reads it.
+/// Q17 asks whether CLI-issued recalls feel slower than MCP-issued ones,
+/// and this is the signal a follow-up analysis needs to split by caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecallSurface {
+    Cli,
+    Mcp,
+}
+
+impl RecallSurface {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RecallSurface::Cli => "cli",
+            RecallSurface::Mcp => "mcp",
+        }
+    }
+}
+
 /// Caller-supplied recall request.
 #[derive(Debug, Clone)]
 pub struct RecallOptions {
@@ -61,6 +82,13 @@ pub struct RecallOptions {
     /// master switch gates the actual insert separately, so setting
     /// this `true` on a non-opted-in install is still a no-op.
     pub log_metrics: bool,
+    /// Which surface issued this call — `Some(Cli)` / `Some(Mcp)` at the
+    /// two agent-facing entry points, `None` everywhere else (eval
+    /// sweeps, the dashboard's recall inspector, the upgrade smoke
+    /// check, and unit tests that never log a row). Only consulted when
+    /// `log_metrics` is true; `None` there is accurate, not a gap, since
+    /// those callers never write to `recall_metrics` at all.
+    pub surface: Option<RecallSurface>,
 }
 
 /// Corpus a recall hit came from. Repo-local always; `"global"` only
@@ -232,6 +260,7 @@ pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
             &ctx.config.render.output_dir,
             &resolved.query,
             &response,
+            options.surface,
         );
     }
     Ok(response)
@@ -1295,6 +1324,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                surface: None,
             },
         )
         .expect("recall");
@@ -1326,6 +1356,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                surface: None,
             },
         )
         .expect("recall");
@@ -1350,6 +1381,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                surface: None,
             },
         )
         .expect("recall");
@@ -1386,6 +1418,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                surface: None,
             },
         )
         .expect_err("empty query");
@@ -1409,6 +1442,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                surface: None,
             },
         )
         .expect("recall");
@@ -1447,6 +1481,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                surface: None,
             },
         )
         .expect("recall");
@@ -1504,6 +1539,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                surface: None,
             },
         )
         .expect("recall");
@@ -1547,6 +1583,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                surface: None,
             },
         )
         .expect("recall");
@@ -1602,6 +1639,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                surface: None,
             },
         )
         .expect("recall");
@@ -1650,6 +1688,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                surface: None,
             },
         )
         .expect("recall");
@@ -1694,6 +1733,7 @@ mod tests {
             use_reranker: None,
             min_rerank_score: None,
             log_metrics: false,
+            surface: None,
         };
 
         let before = recall(temp.path(), opts(None)).expect("recall default horizon");
@@ -1773,6 +1813,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                surface: None,
             },
         )
         .expect("recall");
@@ -1949,6 +1990,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                surface: None,
             },
         )
         .expect("recall");
@@ -2018,6 +2060,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                surface: None,
             },
         )
         .expect("recall");
@@ -2102,6 +2145,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                surface: None,
             },
         )
         .expect("recall");
@@ -2146,6 +2190,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: Some(-1000.0),
                 log_metrics: false,
+                surface: None,
             },
         )
         .expect("recall");
@@ -2203,6 +2248,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                surface: None,
             },
         )
         .expect("default recall");
@@ -2229,6 +2275,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                surface: None,
             },
         )
         .expect("doc-scoped recall");
@@ -2313,6 +2360,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                surface: None,
             },
         )
         .expect("code-flavored recall");
@@ -2354,6 +2402,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                surface: None,
             },
         )
         .expect("ui-flavored recall");
@@ -2390,6 +2439,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                surface: None,
             },
         )
         .expect("flag-off recall");
@@ -2486,6 +2536,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: true,
+                surface: Some(RecallSurface::Cli),
             },
         )
         .expect("recall");
@@ -2518,6 +2569,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: true,
+                surface: Some(RecallSurface::Cli),
             },
         )
         .expect("recall");
@@ -2527,20 +2579,29 @@ mod tests {
         let mut stmt = ctx
             .conn
             .prepare(
-                "SELECT query_hash, bundle_tokens, ledger_tokens, rerank_used, result_count \
+                "SELECT query_hash, bundle_tokens, ledger_tokens, rerank_used, result_count, \
+                        surface \
                  FROM recall_metrics",
             )
             .expect("prepare");
-        let rows: Vec<(String, i64, i64, i64, i64)> = stmt
+        let rows: Vec<(String, i64, i64, i64, i64, Option<String>)> = stmt
             .query_map(params![], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
             })
             .expect("query")
             .collect::<std::result::Result<Vec<_>, _>>()
             .expect("collect");
 
         assert_eq!(rows.len(), 1, "exactly one row per recall");
-        let (query_hash, bundle_tokens, ledger_tokens, rerank_used, result_count) = &rows[0];
+        let (query_hash, bundle_tokens, ledger_tokens, rerank_used, result_count, surface) =
+            &rows[0];
         assert_eq!(query_hash.len(), 64);
         assert!(
             *bundle_tokens > 0,
@@ -2552,6 +2613,11 @@ mod tests {
         );
         assert_eq!(*rerank_used, 0, "fts mode never invokes the re-ranker");
         assert_eq!(*result_count, response.results.len() as i64);
+        assert_eq!(
+            surface.as_deref(),
+            Some("cli"),
+            "RecallOptions::surface must thread through to the persisted row (issue #70)"
+        );
     }
 
     #[test]
@@ -2581,6 +2647,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                surface: None,
             },
         )
         .expect("recall");

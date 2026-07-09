@@ -25,7 +25,9 @@ use crate::models::{
     CommandRecord, Decision, Fact, PendingWriteRecord, RenderResult, SearchResult, StatusSummary,
     Task,
 };
-use crate::retrieval::{self, RecallHit, RecallOptions, RecallResponse, RecallWarning, SourceType};
+use crate::retrieval::{
+    self, RecallHit, RecallOptions, RecallResponse, RecallSurface, RecallWarning, SourceType,
+};
 
 /// Warm the bundled embed + rerank ONNX models: one `embed_one` plus a
 /// tiny one-doc rerank. Called on a background thread from `serve` so the
@@ -432,6 +434,7 @@ impl MemhubServer {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: true,
+                surface: Some(RecallSurface::Mcp),
             },
         )
         .map_err(map_tool_error)?;
@@ -2801,6 +2804,45 @@ mod tests {
         assert!(!response.0.results.is_empty());
         assert_eq!(response.0.results[0].source_type, "decision");
         assert!(response.0.provenance.matcher.starts_with("recall:"));
+    }
+
+    /// Issue #70 / Wave 4 gate Q17: the MCP `recall` tool is one of the
+    /// two agent-facing entry points that tags `recall_metrics.surface`.
+    /// Exercise the real server call site — not just `RecallOptions`
+    /// plumbing — and confirm it persists 'mcp', not 'cli' or NULL.
+    #[test]
+    fn mcp_recall_logs_mcp_surface() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let cfg_path = temp.path().join(".memhub/config.toml");
+        let mut cfg = crate::config::ProjectConfig::load(&cfg_path).expect("load cfg");
+        cfg.metrics.enabled = true;
+        cfg.metrics.recall_proxy = true;
+        cfg.save(&cfg_path).expect("save cfg");
+
+        let server = MemhubServer::new(temp.path().to_path_buf());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+
+        runtime
+            .block_on(server.recall_impl(Parameters(RecallParams {
+                query: "anything".to_string(),
+                mode: Some("fts".to_string()),
+                max_results: None,
+                source_types: None,
+                accepted_only: None,
+                include_stale: None,
+            })))
+            .expect("recall");
+
+        let ctx = db::open_project(temp.path()).expect("open");
+        let surface: Option<String> = ctx
+            .conn
+            .query_row("SELECT surface FROM recall_metrics", [], |r| r.get(0))
+            .expect("read surface");
+        assert_eq!(surface.as_deref(), Some("mcp"));
     }
 
     #[test]
