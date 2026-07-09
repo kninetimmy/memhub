@@ -24,6 +24,7 @@ pub fn propose_fact(
         key,
         value,
         rationale,
+        None,
         false,
         actor,
         actor_raw,
@@ -34,13 +35,16 @@ pub fn propose_fact(
 /// As [`propose_fact`], but `global = true` tags the staged row
 /// `target: "global"` so an accepted proposal lands in the
 /// machine-global store (M9). Still staged; the human `review accept`
-/// remains the only path to a durable global write.
+/// remains the only path to a durable global write. `kind` (issue #97) is
+/// the same optional, unenforced classifier `fact add --kind` sets
+/// directly; staged here in the payload and applied at accept time.
 #[allow(clippy::too_many_arguments)]
 pub fn propose_fact_scoped(
     start: &Path,
     key: &str,
     value: &str,
     rationale: &str,
+    kind: Option<&str>,
     global: bool,
     actor: &str,
     actor_raw: &str,
@@ -53,6 +57,9 @@ pub fn propose_fact_scoped(
         "key": key,
         "value": value,
     });
+    if let Some(k) = kind.map(str::trim).filter(|k| !k.is_empty()) {
+        payload["kind"] = json!(k);
+    }
     if global {
         payload["target"] = json!("global");
     }

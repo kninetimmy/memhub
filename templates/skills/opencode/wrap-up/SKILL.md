@@ -10,7 +10,7 @@ Summarize the session, propose durable memory updates, and render after approved
 
 Workflow:
 - Review what changed in the conversation and working tree; do not invent project history.
-- Stage agent-originated facts and decisions for human review, or use CLI writes only after explicit user approval.
+- Stage agent-originated facts and decisions for human review, or use CLI writes only after explicit user approval. New facts may optionally be tagged `--kind` (gotcha | env | preference | command | constraint) when one clearly fits — skip it otherwise.
 - Attribute OpenCode skill writes with `--actor opencode:wrap-up`; accepted agent-surfaced facts/decisions should use source `user+agent:opencode`.
 - Record useful session notes and completed tasks when the user confirms them.
 - Offer a per-item re-verify step for stale facts: run `memhub fact list --json`, pick up to 5 facts ordered oldest-first by `verified_at` (`null` sorts as oldest, preferring rows already flagged `is_stale`), and confirm each individually — `memhub fact verify <id> --json --actor opencode:wrap-up` — never a single "verify all" action. Skip silently if there are no facts.

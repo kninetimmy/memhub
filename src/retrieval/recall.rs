@@ -126,6 +126,13 @@ pub struct RecallHit {
     /// dropped by `[retrieval.scoring] min_rerank_score` before this
     /// hit ever surfaces (decisions 70, 71).
     pub rerank_score: Option<f32>,
+    /// Optional, unenforced classifier tag (Wave 6 W4, migration 0021).
+    /// Fact-only -- always `None` for decisions, tasks, and doc chunks.
+    /// A pure passthrough: never read by `score()`, so its presence never
+    /// perturbs ranking (see `score_is_byte_identical_regardless_of_kind`).
+    /// `None` for an untagged fact, which is every fact recall ever
+    /// returned before this field existed.
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -597,6 +604,7 @@ fn finalize(
             source: hit.source,
             created_at: hit.created_at,
             rerank_score: hit.rerank_score,
+            kind: hit.kind,
         });
     }
 
@@ -676,6 +684,10 @@ struct CandidateRow {
     /// and never-verified facts — rows that carry no age and so never decay.
     /// Drives the `age_half_life_days` multiplier in `score()`.
     age_days: Option<f64>,
+    /// Optional, unenforced classifier tag (Wave 6 W4, migration 0021),
+    /// fact-only. Carried straight through to the returned `RecallHit`;
+    /// `score()` never reads it.
+    kind: Option<String>,
     hydrated: bool,
 }
 
@@ -694,6 +706,7 @@ impl CandidateRow {
             superseded_by: None,
             created_at: String::new(),
             age_days: None,
+            kind: None,
             hydrated: false,
         }
     }
@@ -733,6 +746,10 @@ struct ScoredHit {
     /// Used both as the final ordering key and as the nonsense-rejection
     /// floor (`min_rerank_score`). See decisions 68, 70, 71.
     rerank_score: Option<f32>,
+    /// Carried from the candidate row so the returned hit can be tagged
+    /// with its fact `kind` (Wave 6 W4, migration 0021). `score()` never
+    /// reads this -- it is a pure passthrough, unlike `superseded_by`.
+    kind: Option<String>,
 }
 
 fn fts_lookup(
@@ -1016,6 +1033,7 @@ fn hydrate_sources(
                 entry.superseded_by = row.superseded_by;
                 entry.created_at = row.created_at;
                 entry.age_days = row.age_days;
+                entry.kind = row.kind;
                 entry.hydrated = true;
             }
         }
@@ -1038,6 +1056,10 @@ struct HydratedSource {
     /// `verified_at`) and *done* tasks (from `updated_at`); `None` for
     /// decisions, doc chunks, open/blocked tasks, and never-verified facts.
     age_days: Option<f64>,
+    /// Optional, unenforced classifier tag (Wave 6 W4, migration 0021).
+    /// `Some` only for a tagged fact; always `None` for decisions, tasks,
+    /// and doc chunks, which have no `kind` column.
+    kind: Option<String>,
 }
 
 fn load_source_row(
@@ -1056,7 +1078,8 @@ fn load_source_row(
                         ELSE 0 \
                     END AS is_stale, \
                     superseded_by, \
-                    julianday('now') - julianday(verified_at) AS age_days \
+                    julianday('now') - julianday(verified_at) AS age_days, \
+                    kind \
                 FROM facts WHERE id = ?1",
             )?;
             let row: std::result::Result<HydratedSource, rusqlite::Error> =
@@ -1070,6 +1093,7 @@ fn load_source_row(
                     // `NULL` (never-verified fact) => julianday() is NULL =>
                     // `None` => no decay (already flagged stale + demoted).
                     let age_days: Option<f64> = r.get(7)?;
+                    let kind: Option<String> = r.get(8)?;
                     Ok(HydratedSource {
                         title: key,
                         body: value,
@@ -1079,6 +1103,7 @@ fn load_source_row(
                         superseded_by,
                         created_at,
                         age_days,
+                        kind,
                     })
                 });
             row.optional_row().map_err(Into::into)
@@ -1108,6 +1133,8 @@ fn load_source_row(
                         // decision 145): standing policy retires by
                         // supersession, not age.
                         age_days: None,
+                        // `kind` (migration 0021) is a facts-only column.
+                        kind: None,
                     })
                 });
             row.optional_row().map_err(Into::into)
@@ -1138,6 +1165,8 @@ fn load_source_row(
                         superseded_by: None,
                         created_at,
                         age_days,
+                        // `kind` (migration 0021) is a facts-only column.
+                        kind: None,
                     })
                 });
             row.optional_row().map_err(Into::into)
@@ -1172,6 +1201,8 @@ fn load_source_row(
                         created_at,
                         // Doc chunks are excluded from age decay (Wave 3 L6).
                         age_days: None,
+                        // `kind` (migration 0021) is a facts-only column.
+                        kind: None,
                     })
                 });
             row.optional_row().map_err(Into::into)
@@ -1205,6 +1236,8 @@ fn load_source_row(
                         // scope): write-only scratch, not a durable claim
                         // that ages toward staleness.
                         age_days: None,
+                        // `kind` (migration 0021) is a facts-only column.
+                        kind: None,
                     })
                 });
             row.optional_row().map_err(Into::into)
@@ -1293,6 +1326,7 @@ fn score(rows: &[CandidateRow], scoring: &RetrievalScoringConfig) -> Vec<ScoredH
                 source: c.source.clone(),
                 created_at: c.created_at.clone(),
                 rerank_score: None,
+                kind: c.kind.clone(),
             }
         })
         .collect()
@@ -1759,6 +1793,64 @@ mod tests {
         );
     }
 
+    // Wave 6 W4 (issue #97): a tagged fact's `kind` rides all the way
+    // through the SQL hydration seam into the returned hit; an untagged
+    // sibling in the same corpus stays `None` -- proving the migration
+    // 0021 SELECT wiring end to end, not just the `score()` passthrough.
+    #[test]
+    fn recall_surfaces_fact_kind_when_present_and_none_when_absent() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let (tagged_id, _) = fact::add_with_kind(
+            temp.path(),
+            "deploy-command",
+            "kubectl apply kindprobe",
+            Some("command"),
+            "user",
+            "cli:user",
+        )
+        .expect("tagged fact");
+        let (untagged_id, _) = fact::add(
+            temp.path(),
+            "other-command",
+            "echo kindprobe",
+            "user",
+            "cli:user",
+        )
+        .expect("untagged fact");
+
+        let response = recall(
+            temp.path(),
+            RecallOptions {
+                query: "kindprobe".to_string(),
+                mode: Some(RetrievalMode::Fts),
+                max_results: 5,
+                source_types: vec![SourceType::Fact],
+                include_stale: None,
+                accepted_only: None,
+                use_reranker: None,
+                min_rerank_score: None,
+                log_metrics: false,
+                surface: None,
+            },
+        )
+        .expect("recall");
+
+        let tagged_hit = response
+            .results
+            .iter()
+            .find(|h| h.source_id == tagged_id)
+            .expect("tagged fact must surface");
+        assert_eq!(tagged_hit.kind.as_deref(), Some("command"));
+
+        let untagged_hit = response
+            .results
+            .iter()
+            .find(|h| h.source_id == untagged_id)
+            .expect("untagged fact must surface");
+        assert_eq!(untagged_hit.kind, None);
+    }
+
     // The horizon is config-driven: `[retrieval] fact_stale_after_days`
     // widens or tightens which facts count as stale.
     #[test]
@@ -1959,6 +2051,43 @@ mod tests {
         // penalties. Score must equal the untouched blended relevance.
         let expected = scoring.fts_weight * 0.0 + scoring.vector_weight * 0.8;
         assert_eq!(fresh_bits, expected.to_bits());
+    }
+
+    // Wave 6 W4 (issue #97) byte-identical guarantee, proven at the same
+    // `score()` seam as the L6 test above: `kind` is a pure passthrough
+    // tag that `score()` never reads, so two otherwise-identical facts --
+    // one tagged, one untagged -- receive bit-for-bit identical blended
+    // scores. An untagged corpus's recall ranking is therefore
+    // byte-identical to pre-#97 memhub.
+    #[test]
+    fn score_is_byte_identical_regardless_of_kind() {
+        let mut untagged = CandidateRow::empty(SourceType::Fact, 1);
+        untagged.vector_score = Some(0.8);
+        untagged.kind = None;
+        let mut tagged = CandidateRow::empty(SourceType::Fact, 2);
+        tagged.vector_score = Some(0.8);
+        tagged.kind = Some("gotcha".to_string());
+
+        let scoring = RetrievalScoringConfig::default();
+        let hits = score(&[untagged, tagged], &scoring);
+        let untagged_bits = hits.iter().find(|h| h.source_id == 1).unwrap().score.to_bits();
+        let tagged_bits = hits.iter().find(|h| h.source_id == 2).unwrap().score.to_bits();
+        assert_eq!(
+            untagged_bits, tagged_bits,
+            "kind must not affect scoring, tagged or not (byte-identical)"
+        );
+        let expected = scoring.fts_weight * 0.0 + scoring.vector_weight * 0.8;
+        assert_eq!(untagged_bits, expected.to_bits());
+
+        // The tag itself still rides through to the returned hit untouched.
+        assert_eq!(
+            hits.iter().find(|h| h.source_id == 1).unwrap().kind,
+            None
+        );
+        assert_eq!(
+            hits.iter().find(|h| h.source_id == 2).unwrap().kind.as_deref(),
+            Some("gotcha")
+        );
     }
 
     // Q2 / decision 145: decisions retire by supersession, not age. A

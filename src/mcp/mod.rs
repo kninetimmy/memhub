@@ -190,6 +190,7 @@ impl MemhubServer {
             &params.key,
             &params.value,
             &params.rationale,
+            params.kind.as_deref(),
             params.global,
             &actor.normalized,
             &actor.raw,
@@ -203,6 +204,7 @@ impl MemhubServer {
             actor: actor.normalized,
             actor_raw: actor.raw,
             key: params.key,
+            kind: params.kind,
         }))
     }
 
@@ -922,6 +924,12 @@ struct ProposeFactParams {
     key: String,
     value: String,
     rationale: String,
+    /// Optional lightweight tag surfaced to the human reviewer at accept
+    /// time (issue #97). Purely additive and unenforced -- any non-empty
+    /// string is accepted, no CHECK constraint. Suggested vocabulary:
+    /// gotcha, env, preference, command, constraint.
+    #[serde(default)]
+    kind: Option<String>,
     /// Propose for the machine-global store instead of this repo. Still
     /// staged in pending_writes; durable in `~/.memhub/global.sqlite`
     /// only after human `memhub review accept` — the agent never writes
@@ -1217,6 +1225,9 @@ struct ProposeFactToolResponse {
     actor: String,
     actor_raw: String,
     key: String,
+    /// Echoes the staged `kind` back, `None` when the call omitted it
+    /// (issue #97).
+    kind: Option<String>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -1411,6 +1422,12 @@ struct RecallToolHit {
     /// fusion/FTS/vector scores are diagnostic-only and not surfaced here
     /// (issue #72; see `memhub recall --json` for the full breakdown).
     rerank_score: Option<f32>,
+    /// Fact-only optional tag (issue #97). Present only when the
+    /// underlying fact was tagged; omitted from the JSON payload
+    /// otherwise so an untagged corpus's MCP recall bundle stays
+    /// byte-identical to pre-#97 memhub.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<String>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -1441,6 +1458,7 @@ impl From<RecallHit> for RecallToolHit {
             source: value.source,
             created_at: value.created_at,
             rerank_score: value.rerank_score,
+            kind: value.kind,
         }
     }
 }
@@ -2367,6 +2385,7 @@ mod tests {
                     key: "build-command".to_string(),
                     value: "cargo build".to_string(),
                     rationale: "Observed in this repo and should be reviewed.".to_string(),
+                    kind: None,
                     global: false,
                 }),
                 ClientIdentity {
@@ -2592,6 +2611,7 @@ mod tests {
                     key: "lint-command".to_string(),
                     value: "cargo fmt --check".to_string(),
                     rationale: "Candidate command for future review.".to_string(),
+                    kind: None,
                     global: false,
                 }),
                 ClientIdentity {
@@ -2650,6 +2670,7 @@ mod tests {
                     key: "test-command".to_string(),
                     value: "cargo test".to_string(),
                     rationale: "OpenCode proposed a verified command candidate.".to_string(),
+                    kind: None,
                     global: false,
                 }),
                 actor,
