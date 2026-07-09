@@ -250,7 +250,7 @@ pub(crate) fn recall_response_to_json(response: &RecallResponse) -> serde_json::
         .results
         .iter()
         .map(|hit| {
-            json!({
+            let mut hit_json = json!({
                 "rank": hit.rank,
                 "source_type": hit.source_type,
                 "scope": hit.scope,
@@ -265,7 +265,17 @@ pub(crate) fn recall_response_to_json(response: &RecallResponse) -> serde_json::
                 "source": hit.source,
                 "created_at": hit.created_at,
                 "rerank_score": hit.rerank_score,
-            })
+            });
+            // Issue #97: `kind` is a fact-only, optional tag. Omitted
+            // entirely (not present-as-null) when absent, unlike every
+            // other Option field above -- the byte-identical guarantee
+            // means an untagged corpus's recall JSON must match pre-#97
+            // memhub exactly, and this is the one field new enough to
+            // need that care.
+            if let Some(kind) = &hit.kind {
+                hit_json["kind"] = json!(kind);
+            }
+            hit_json
         })
         .collect::<Vec<_>>();
     let warnings = response
@@ -333,13 +343,20 @@ pub(crate) fn print_recall_human(response: &RecallResponse) {
             } else {
                 ""
             };
+            // Fact-only optional tag (issue #97); empty for every other
+            // source type and for an untagged fact, so an untagged
+            // corpus's line stays byte-identical to pre-#97 output.
+            let kind_tag = match &hit.kind {
+                Some(k) => format!(" [kind:{k}]"),
+                None => String::new(),
+            };
             let source_label = if hit.source.is_empty() {
                 String::new()
             } else {
                 format!(" source={}", hit.source)
             };
             println!(
-                "#{rank} [{stype}:{sid}] {title}{scope}{stale}{superseded}  score={score:.3} (fts={fts:.3}, vec={vec:.3}){src}",
+                "#{rank} [{stype}:{sid}] {title}{scope}{stale}{superseded}{kind}  score={score:.3} (fts={fts:.3}, vec={vec:.3}){src}",
                 rank = hit.rank,
                 stype = hit.source_type,
                 sid = hit.source_id,
@@ -347,6 +364,7 @@ pub(crate) fn print_recall_human(response: &RecallResponse) {
                 title = hit.title,
                 stale = stale_tag,
                 superseded = superseded_tag,
+                kind = kind_tag,
                 score = hit.score,
                 fts = hit.fts_score,
                 vec = hit.vector_score,
@@ -1226,4 +1244,91 @@ pub(crate) fn print_wrapup_policy_human(r: &WrapupPolicyReport) {
     println!("Level: {}", r.verbosity.as_str());
     println!();
     print!("{}", r.instructions);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::retrieval::RecallHit;
+
+    fn untagged_hit() -> RecallHit {
+        RecallHit {
+            rank: 1,
+            source_type: "fact".to_string(),
+            scope: "repo".to_string(),
+            source_id: 1,
+            title: "build-command".to_string(),
+            body: "cargo build".to_string(),
+            score: 0.5,
+            fts_score: 0.5,
+            vector_score: 0.0,
+            stale: false,
+            superseded_by: None,
+            source: "user".to_string(),
+            created_at: "2026-01-01".to_string(),
+            rerank_score: None,
+            kind: None,
+        }
+    }
+
+    fn response_with(hit: RecallHit) -> RecallResponse {
+        RecallResponse {
+            query: "q".to_string(),
+            mode: RetrievalMode::Fts,
+            results: vec![hit],
+            candidate_count: 1,
+            returned_count: 1,
+            warnings: Vec::new(),
+            matcher: "recall:fts".to_string(),
+            elapsed_ms: 0,
+            available_docs: 0,
+        }
+    }
+
+    // Issue #97 byte-identical guarantee, snapshot-style (in the spirit of
+    // the L6/R11 no-op proofs): an untagged fact's recall JSON must be
+    // pinned exactly to the shape recall produced before `kind` existed --
+    // the key is omitted entirely, not present-as-null like every other
+    // Option field on this hit (e.g. `superseded_by`, `rerank_score`).
+    #[test]
+    fn recall_json_omits_kind_key_when_absent() {
+        let response = response_with(untagged_hit());
+        let json = recall_response_to_json(&response);
+        let hit_json = &json["results"][0];
+
+        assert!(
+            hit_json.get("kind").is_none(),
+            "untagged fact must omit the \"kind\" key entirely, got: {hit_json}"
+        );
+        let expected = json!({
+            "rank": 1,
+            "source_type": "fact",
+            "scope": "repo",
+            "source_id": 1,
+            "title": "build-command",
+            "body": "cargo build",
+            "score": 0.5,
+            "fts_score": 0.5,
+            "vector_score": 0.0,
+            "stale": false,
+            "superseded_by": null,
+            "source": "user",
+            "created_at": "2026-01-01",
+            "rerank_score": null,
+        });
+        assert_eq!(
+            hit_json, &expected,
+            "untagged hit JSON must be byte-identical to pre-#97 shape"
+        );
+    }
+
+    #[test]
+    fn recall_json_includes_kind_key_when_present() {
+        let mut hit = untagged_hit();
+        hit.kind = Some("gotcha".to_string());
+        let response = response_with(hit);
+
+        let json = recall_response_to_json(&response);
+        assert_eq!(json["results"][0]["kind"], "gotcha");
+    }
 }

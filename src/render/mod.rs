@@ -245,7 +245,8 @@ fn load_facts(conn: &Connection) -> Result<Vec<Fact>> {
                     WHEN (julianday('now') - julianday(verified_at)) > ?1 THEN 1
                     ELSE 0
                 END AS is_stale,
-                superseded_by
+                superseded_by,
+                kind
          FROM facts
          WHERE project_id = 1
          ORDER BY key ASC",
@@ -262,6 +263,7 @@ fn load_facts(conn: &Connection) -> Result<Vec<Fact>> {
                 created_at: row.get(5)?,
                 is_stale: is_stale_int != 0,
                 superseded_by: row.get(7)?,
+                kind: row.get(8)?,
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -489,8 +491,23 @@ fn format_ledger_md(s: &RenderSnapshot) -> String {
         // The "Superseded" column annotates (never hides) a superseded fact
         // with its replacement id — the demote-with-link surface for facts
         // (Wave 3 L3), parallel to the decisions annotation above.
-        out.push_str("| Key | Value | Source | Verified | Stale | Superseded |\n");
-        out.push_str("|-----|-------|--------|----------|-------|------------|\n");
+        //
+        // The "Kind" column (Wave 6 W4, migration 0021) is additive and
+        // conditional: it only appears when at least one rendered fact
+        // actually carries a tag, so an untagged corpus's table renders
+        // byte-identically to pre-#97 memhub (issue #97's byte-identical
+        // guarantee) instead of gaining an always-empty column.
+        let any_kind = s.facts.iter().any(|f| f.kind.is_some());
+        out.push_str("| Key | Value | Source | Verified | Stale | Superseded |");
+        if any_kind {
+            out.push_str(" Kind |");
+        }
+        out.push('\n');
+        out.push_str("|-----|-------|--------|----------|-------|------------|");
+        if any_kind {
+            out.push_str("------|");
+        }
+        out.push('\n');
         for f in &s.facts {
             // Show the superseding fact's KEY (not its id): the facts table
             // has no id column, but every fact's key is right there in the
@@ -504,7 +521,7 @@ fn format_ledger_md(s: &RenderSnapshot) -> String {
                 None => "no".to_string(),
             };
             out.push_str(&format!(
-                "| {} | {} | {} | {} | {} | {} |\n",
+                "| {} | {} | {} | {} | {} | {} |",
                 escape_table_cell(&f.key),
                 escape_table_cell(&f.value),
                 escape_table_cell(&f.source),
@@ -512,6 +529,13 @@ fn format_ledger_md(s: &RenderSnapshot) -> String {
                 if f.is_stale { "yes" } else { "no" },
                 escape_table_cell(&superseded),
             ));
+            if any_kind {
+                out.push_str(&format!(
+                    " {} |",
+                    escape_table_cell(f.kind.as_deref().unwrap_or(""))
+                ));
+            }
+            out.push('\n');
         }
         out.push('\n');
     }
@@ -579,7 +603,8 @@ fn escape_table_cell(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::strip_leading_heading;
+    use super::{RenderSnapshot, format_ledger_md, strip_leading_heading};
+    use crate::models::Fact;
 
     #[test]
     fn strips_matching_leading_heading() {
@@ -717,6 +742,116 @@ mod tests {
         assert!(
             ledger.contains("f-old"),
             "superseded fact must remain in the ledger:\n{ledger}"
+        );
+    }
+
+    // -- Wave 6 W4 (issue #97) — the "Kind" column stays additive ---------
+
+    fn minimal_snapshot(facts: Vec<Fact>) -> RenderSnapshot {
+        RenderSnapshot {
+            project_name: "test".to_string(),
+            generated_at: "2026-01-01T00:00:00Z".to_string(),
+            memhub_version: "0.0.0-test",
+            state: None,
+            arch: None,
+            decisions: Vec::new(),
+            tasks: Vec::new(),
+            stale_fact_count: 0,
+            open_task_count: 0,
+            recent_session_notes: Vec::new(),
+            recent_writes: Vec::new(),
+            token_accounting_section: None,
+            facts,
+        }
+    }
+
+    fn fact(id: i64, key: &str, value: &str, kind: Option<&str>) -> Fact {
+        Fact {
+            id,
+            key: key.to_string(),
+            value: value.to_string(),
+            source: "user".to_string(),
+            verified_at: Some("2026-01-01T00:00:00Z".to_string()),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            is_stale: false,
+            superseded_by: None,
+            kind: kind.map(str::to_string),
+        }
+    }
+
+    /// The headline byte-identical guarantee (issue #97 acceptance
+    /// criterion), pinned as a literal snapshot in the spirit of the L6 /
+    /// R11 no-op proofs: an untagged corpus's rendered facts block must be
+    /// byte-for-byte identical to what pre-#97 memhub produced -- no "Kind"
+    /// column, no per-row placeholder cell.
+    #[test]
+    fn ledger_facts_block_is_byte_identical_when_untagged() {
+        let snapshot = minimal_snapshot(vec![fact(1, "build-command", "cargo build", None)]);
+        let ledger = format_ledger_md(&snapshot);
+
+        let expected_block = "\
+## Facts
+
+_1 fact(s), 0 stale._
+
+| Key | Value | Source | Verified | Stale | Superseded |
+|-----|-------|--------|----------|-------|------------|
+| build-command | cargo build | user | 2026-01-01T00:00:00Z | no | no |
+
+";
+        assert!(
+            ledger.contains(expected_block),
+            "untagged facts block must render byte-identically to pre-#97:\n{ledger}"
+        );
+        assert!(
+            !ledger.contains("Kind"),
+            "no fact is tagged, so the Kind column must not appear at all:\n{ledger}"
+        );
+    }
+
+    /// A tagged corpus adds the "Kind" column; the tag surfaces in its row.
+    #[test]
+    fn ledger_facts_block_adds_kind_column_when_tagged() {
+        let snapshot = minimal_snapshot(vec![fact(1, "build-command", "cargo build", Some("command"))]);
+        let ledger = format_ledger_md(&snapshot);
+
+        let expected_block = "\
+## Facts
+
+_1 fact(s), 0 stale._
+
+| Key | Value | Source | Verified | Stale | Superseded | Kind |
+|-----|-------|--------|----------|-------|------------|------|
+| build-command | cargo build | user | 2026-01-01T00:00:00Z | no | no | command |
+
+";
+        assert!(
+            ledger.contains(expected_block),
+            "tagged facts block must render the Kind column byte-for-byte:\n{ledger}"
+        );
+    }
+
+    /// Mixed corpus: the Kind column appears (one fact is tagged) but the
+    /// untagged sibling's cell renders blank rather than "no fact" text.
+    #[test]
+    fn ledger_facts_block_blanks_kind_cell_for_untagged_row_in_mixed_corpus() {
+        let snapshot = minimal_snapshot(vec![
+            fact(1, "build-command", "cargo build", Some("command")),
+            fact(2, "other-fact", "some value", None),
+        ]);
+        let ledger = format_ledger_md(&snapshot);
+
+        assert!(
+            ledger.contains(
+                "| build-command | cargo build | user | 2026-01-01T00:00:00Z | no | no | command |\n"
+            ),
+            "tagged row must show its kind:\n{ledger}"
+        );
+        assert!(
+            ledger.contains(
+                "| other-fact | some value | user | 2026-01-01T00:00:00Z | no | no |  |\n"
+            ),
+            "untagged row must render a blank Kind cell, not be dropped:\n{ledger}"
         );
     }
 }
