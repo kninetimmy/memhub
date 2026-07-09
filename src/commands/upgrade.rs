@@ -92,6 +92,12 @@ const SKILLS_ENV: &str = "MEMHUB_UPGRADE_SKILLS_JSON";
 /// deserializes to an empty list (fail-safe, never fatal).
 const ORPHANS_ENV: &str = "MEMHUB_UPGRADE_ORPHANS_JSON";
 
+/// Set to "1" across the orchestrate->finish boundary when the resync hit
+/// the first-run (empty-manifest) case and left a pre-existing file
+/// untouched, so `--finish` renders the one-time adoption notice. Absent
+/// (e.g. an older orchestrate binary, or nothing protected) => no notice.
+const FIRSTRUN_ENV: &str = "MEMHUB_UPGRADE_RESYNC_FIRSTRUN";
+
 /// Exit code from a Windows staged handoff: the real upgrade continues in
 /// a detached staged copy, so the invoking shell can't yet know the
 /// outcome. It gets this "handed off, pending" code instead of a
@@ -506,6 +512,9 @@ fn orchestrate_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
     if let Ok(js) = serde_json::to_string(&resync.orphans) {
         child.env(ORPHANS_ENV, js);
     }
+    if resync.first_run_hint {
+        child.env(FIRSTRUN_ENV, "1");
+    }
     if args.json {
         child.arg("--json");
     }
@@ -651,6 +660,8 @@ fn finish_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
+    // First-run adoption notice flag (set by the orchestrate phase).
+    let first_run = std::env::var(FIRSTRUN_ENV).ok().as_deref() == Some("1");
 
     // Best-effort audit-md nag (Wave 2 C7, issue #33): unlike the skill
     // resync/gc above, this needs no old-vs-new-binary IPC — it's a
@@ -665,6 +676,7 @@ fn finish_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
         &skills,
         &orphans,
         &warnings,
+        first_run,
         &audit_nag,
         args.json,
     );
@@ -1167,6 +1179,8 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
                 "resync_orphans": resync.orphans,
                 // Degrade warnings (U7), e.g. a corrupt registry.
                 "warnings": warnings,
+                // First-run adoption notice (U6).
+                "resync_first_run_notice": resync.first_run_hint,
                 // Additive field (issue #33): same shape as the real
                 // (non-dry) upgrade JSON's "audit_md" field.
                 "audit_md": audit_nag,
@@ -1209,6 +1223,9 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
     }
     for orphan in &resync.orphans {
         println!("  orphan:       {orphan} (no longer shipped; left in place)");
+    }
+    if resync.first_run_hint {
+        print_first_run_notice();
     }
     if let Some(line) = audit_nag.nag_line(true) {
         println!("  audit md:     {line}");
@@ -1266,6 +1283,7 @@ fn emit(
     skills: &[SkillSync],
     orphans: &[String],
     warnings: &[String],
+    first_run: bool,
     audit: &AuditNag,
     as_json: bool,
 ) {
@@ -1300,6 +1318,10 @@ fn emit(
                 // abort the upgrade (e.g. a corrupt registry, a shadow-fix
                 // IO error).
                 "warnings": warnings,
+                // First-run adoption notice (U6): true when memhub left a
+                // pre-existing, unverifiable file untouched on an empty
+                // manifest.
+                "resync_first_run_notice": first_run,
                 // Additive field (issue #33): the audit-md nag result.
                 // Always present, `status` distinguishes clean/findings/warn.
                 "audit_md": audit,
@@ -1335,6 +1357,9 @@ fn emit(
     for orphan in orphans {
         println!("  orphan: {orphan} (no longer shipped; left in place)");
     }
+    if first_run {
+        print_first_run_notice();
+    }
     if let Some(line) = audit.nag_line(false) {
         println!("  audit md: {line}");
     }
@@ -1342,6 +1367,21 @@ fn emit(
         println!("  warning: {w}");
     }
     println!("  {ready}/{total} instances ready");
+}
+
+/// One-time notice (U6, REQUIRED 1b) shown when the first resync consults
+/// an empty manifest and leaves a pre-existing, unverifiable file
+/// untouched. Explains why and how to adopt a file the user DOES want
+/// memhub to manage.
+fn print_first_run_notice() {
+    println!(
+        "  note: some pre-existing skill/command files could not be verified as \
+         memhub-written and were left untouched."
+    );
+    println!(
+        "        to let memhub manage one, delete it and re-run `memhub upgrade` \
+         (it will reinstall + record it)."
+    );
 }
 
 fn status_word(s: &InstanceStatus) -> &'static str {
@@ -1419,14 +1459,21 @@ impl SkillSync {
     }
 
     fn render(&self, dry: bool) -> String {
-        let protected = if self.protected > 0 {
-            format!(", {} protected", self.protected)
-        } else {
-            String::new()
-        };
         let tail = match self.status {
-            SkillSyncStatus::Synced if dry => format!("would sync {}{protected}", self.synced),
-            SkillSyncStatus::Synced => format!("synced {}{protected}", self.synced),
+            SkillSyncStatus::Synced => {
+                let base = if dry {
+                    format!("would sync {}", self.synced)
+                } else {
+                    format!("synced {}", self.synced)
+                };
+                // Surface WHY files were left untouched (e.g. "2 left
+                // untouched (pre-existing, unverified owner)"), not a bare
+                // "2 protected" the user cannot act on.
+                match &self.detail {
+                    Some(d) => format!("{base}; {d}"),
+                    None => base,
+                }
+            }
             SkillSyncStatus::Skipped => match &self.detail {
                 Some(d) => format!("skipped ({d})"),
                 None => "skipped".to_string(),
@@ -1453,6 +1500,13 @@ pub struct ResyncReport {
     pub agents: Vec<SkillSync>,
     /// `$HOME`-abbreviated paths of orphaned installs, sorted.
     pub orphans: Vec<String>,
+    /// True on the first resync that consults an empty manifest AND leaves
+    /// at least one pre-existing file untouched (U6, REQUIRED 1b). The
+    /// caller surfaces a one-time notice explaining the remedy (delete the
+    /// file + re-run) so a memhub-written-but-unprovable file is not
+    /// silently frozen at its old version forever.
+    #[serde(default)]
+    pub first_run_hint: bool,
 }
 
 impl ResyncReport {
@@ -1460,6 +1514,7 @@ impl ResyncReport {
         ResyncReport {
             agents: vec![SkillSync::skipped_all(reason)],
             orphans: Vec::new(),
+            first_run_hint: false,
         }
     }
 }
@@ -1498,6 +1553,7 @@ pub fn sync_skills(source_repo: &Path, dry: bool) -> ResyncReport {
                     detail: Some(format!("cannot resolve home dir: {e}")),
                 }],
                 orphans: Vec::new(),
+                first_run_hint: false,
             };
         }
     };
@@ -1508,38 +1564,58 @@ pub fn sync_skills(source_repo: &Path, dry: bool) -> ResyncReport {
 
     let skills_root = source_repo.join("templates").join("skills");
     let commands_root = source_repo.join("templates").join("commands");
-    let outcomes = vec![
-        sync_one(
-            "claude",
-            &skills_root.join("claude"),
-            &home.join(".claude").join("commands"),
-            CopyKind::FlatMd,
-            dry,
-            &manifest,
+
+    // Install targets are declared up front so each outcome can be paired
+    // with its target dir — needed to carry a manifest slice forward when
+    // an agent's source could not be read this run (see below).
+    let claude_target = home.join(".claude").join("commands");
+    let codex_target = home.join(".codex").join("skills");
+    let oc_skills_target = home.join(".config").join("opencode").join("skills");
+    let oc_commands_target = home.join(".config").join("opencode").join("commands");
+    let outcomes: Vec<(AgentOutcome, PathBuf)> = vec![
+        (
+            sync_one(
+                "claude",
+                &skills_root.join("claude"),
+                &claude_target,
+                CopyKind::FlatMd,
+                dry,
+                &manifest,
+            ),
+            claude_target.clone(),
         ),
-        sync_one(
-            "codex",
-            &skills_root.join("codex"),
-            &home.join(".codex").join("skills"),
-            CopyKind::DirPerSkill,
-            dry,
-            &manifest,
+        (
+            sync_one(
+                "codex",
+                &skills_root.join("codex"),
+                &codex_target,
+                CopyKind::DirPerSkill,
+                dry,
+                &manifest,
+            ),
+            codex_target.clone(),
         ),
-        sync_one(
-            "opencode-skills",
-            &skills_root.join("opencode"),
-            &home.join(".config").join("opencode").join("skills"),
-            CopyKind::DirPerSkill,
-            dry,
-            &manifest,
+        (
+            sync_one(
+                "opencode-skills",
+                &skills_root.join("opencode"),
+                &oc_skills_target,
+                CopyKind::DirPerSkill,
+                dry,
+                &manifest,
+            ),
+            oc_skills_target.clone(),
         ),
-        sync_one(
-            "opencode-commands",
-            &commands_root.join("opencode"),
-            &home.join(".config").join("opencode").join("commands"),
-            CopyKind::FlatMd,
-            dry,
-            &manifest,
+        (
+            sync_one(
+                "opencode-commands",
+                &commands_root.join("opencode"),
+                &oc_commands_target,
+                CopyKind::FlatMd,
+                dry,
+                &manifest,
+            ),
+            oc_commands_target.clone(),
         ),
     ];
 
@@ -1548,26 +1624,57 @@ pub fn sync_skills(source_repo: &Path, dry: bool) -> ResyncReport {
     // tell "no longer shipped" from "shipped but the user's".
     let mut next = InstallManifest::default();
     let mut shipped: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    // Target dirs whose source we could NOT read this run (transient IO):
+    // we make no claims about them — their manifest slice is carried
+    // forward untouched and nothing under them is orphaned.
+    let mut carried_prefixes: Vec<PathBuf> = Vec::new();
     let mut agents = Vec::with_capacity(outcomes.len());
-    for outcome in outcomes {
-        for (key, owned) in outcome.shipped {
-            shipped.insert(key.clone());
-            if let Some(hash) = owned {
-                next.record(key, hash);
+    for (outcome, target_dir) in outcomes {
+        if outcome.enumerated {
+            for (key, owned) in outcome.shipped {
+                shipped.insert(key.clone());
+                if let Some(hash) = owned {
+                    next.record(key, hash);
+                }
             }
+        } else {
+            // Source unreadable this run: a transient error must never cede
+            // ownership. Without this, every still-owned file for this agent
+            // would look orphaned and be dropped from `next`, so next run it
+            // reads as user-owned and memhub silently stops updating it.
+            carried_prefixes.push(target_dir);
         }
         agents.push(outcome.report);
     }
 
+    // Carry the existing manifest slice forward for every un-enumerated
+    // agent, so its ownership survives the transient failure.
+    for key in manifest.keys() {
+        if under_any(key, &carried_prefixes) {
+            if let Some(hash) = manifest.recorded(key) {
+                next.record(key.clone(), hash.to_string());
+            }
+        }
+    }
+
     // Orphans: paths memhub recorded before but no longer ships, still on
-    // disk. Reported here, NEVER deleted.
+    // disk — EXCLUDING anything under a carried (un-enumerated) prefix,
+    // which we make no claims about this run. Reported here, NEVER deleted.
     let mut orphans: Vec<String> = manifest
         .keys()
         .filter(|k| !shipped.contains(k.as_str()))
+        .filter(|k| !under_any(k, &carried_prefixes))
         .filter(|k| Path::new(k).exists())
         .map(|k| abbrev(Path::new(k)))
         .collect();
     orphans.sort();
+
+    // First-run notice (REQUIRED 1b): the first time memhub consults an
+    // empty manifest and leaves at least one pre-existing file untouched,
+    // flag it so the caller can explain the remedy — otherwise a
+    // memhub-written-but-unprovable file stays frozen with nothing said.
+    let protected_total: usize = agents.iter().map(|a| a.protected).sum();
+    let first_run_hint = manifest.is_empty() && protected_total > 0;
 
     // Persist the refreshed ownership record. Best-effort and never fatal
     // (same posture as the registry write): a failure just means memhub
@@ -1580,7 +1687,19 @@ pub fn sync_skills(source_repo: &Path, dry: bool) -> ResyncReport {
         }
     }
 
-    ResyncReport { agents, orphans }
+    ResyncReport {
+        agents,
+        orphans,
+        first_run_hint,
+    }
+}
+
+/// True when `key` (a target path string) lives under any of `prefixes`.
+/// The four install targets are distinct, non-nested dirs, so this cleanly
+/// partitions manifest entries by owning agent.
+fn under_any(key: &str, prefixes: &[PathBuf]) -> bool {
+    let p = Path::new(key);
+    prefixes.iter().any(|prefix| p.starts_with(prefix))
 }
 
 /// One agent's resync result: the human-facing row plus, for the manifest
@@ -1591,6 +1710,11 @@ pub fn sync_skills(source_repo: &Path, dry: bool) -> ResyncReport {
 struct AgentOutcome {
     report: SkillSync,
     shipped: Vec<(String, Option<String>)>,
+    /// True when memhub could authoritatively enumerate what this agent
+    /// ships this run (its source dir was read). False when the source read
+    /// FAILED — in which case `shipped` is empty but says nothing, so the
+    /// caller must carry the manifest slice forward rather than orphaning it.
+    enumerated: bool,
 }
 
 /// What a resync did with one leaf file.
@@ -1621,7 +1745,7 @@ fn sync_one(
     manifest: &InstallManifest,
 ) -> AgentOutcome {
     let label = abbrev(target);
-    let skip = |status: SkillSyncStatus, detail: Option<String>| AgentOutcome {
+    let skip = |status: SkillSyncStatus, detail: Option<String>, enumerated: bool| AgentOutcome {
         report: SkillSync {
             agent: agent.to_string(),
             target: label.clone(),
@@ -1631,21 +1755,26 @@ fn sync_one(
             detail,
         },
         shipped: Vec::new(),
+        enumerated,
     };
 
     // Only sync an agent dir the user actually set up. A missing dir or
-    // a non-dir at that path is a clean skip — never created.
+    // a non-dir at that path is a clean skip — never created. These ARE
+    // authoritative (`enumerated: true`): the target is genuinely gone, so
+    // there is nothing to carry forward.
     match std::fs::symlink_metadata(target) {
         Err(_) => {
             return skip(
                 SkillSyncStatus::Skipped,
                 Some("agent dir absent (not set up)".to_string()),
+                true,
             );
         }
         Ok(m) if !m.is_dir() => {
             return skip(
                 SkillSyncStatus::Skipped,
                 Some("path exists but is not a directory".to_string()),
+                true,
             );
         }
         Ok(_) => {}
@@ -1654,11 +1783,13 @@ fn sync_one(
     let entries = match std::fs::read_dir(src) {
         Ok(e) => e,
         Err(e) => {
-            // Precondition is that templates/ exists in the source repo;
-            // surface rather than silently report 0.
+            // Source unreadable: NOT authoritative (`enumerated: false`).
+            // Possibly transient, so the caller must carry this agent's
+            // manifest slice forward instead of orphaning still-owned files.
             return skip(
                 SkillSyncStatus::Warn,
                 Some(format!("templates unreadable at {}: {e}", src.display())),
+                false,
             );
         }
     };
@@ -1696,8 +1827,11 @@ fn sync_one(
     }
 
     let report = if errors.is_empty() {
+        // Neutral wording: a protected file may be memhub's own that memhub
+        // simply cannot PROVE it wrote (no manifest entry). "the user's own"
+        // would be literally false in that case (REQUIRED 1c).
         let detail = (protected > 0)
-            .then(|| format!("{protected} left as the user's own (not memhub-written)"));
+            .then(|| format!("{protected} left untouched (pre-existing, unverified owner)"));
         SkillSync {
             agent: agent.to_string(),
             target: label,
@@ -1723,7 +1857,7 @@ fn sync_one(
             detail.push_str(&format!("; +{more} more"));
         }
         if protected > 0 {
-            detail.push_str(&format!("; {protected} protected"));
+            detail.push_str(&format!("; {protected} left untouched (unverified owner)"));
         }
         SkillSync {
             agent: agent.to_string(),
@@ -1735,7 +1869,11 @@ fn sync_one(
         }
     };
 
-    AgentOutcome { report, shipped }
+    AgentOutcome {
+        report,
+        shipped,
+        enumerated: true,
+    }
 }
 
 /// A flat `*.md` install unit is exactly one file.
@@ -2275,5 +2413,43 @@ mod tests {
         let ok = shadow_or_warn(Ok(ShadowOutcome::msg("all good")));
         assert!(!ok.warn);
         assert_eq!(ok.message, "all good");
+    }
+
+    // --- U6: protected reporting is loud and honest (REQUIRED 1a/1c) --
+
+    #[test]
+    fn synced_row_surfaces_protected_detail() {
+        let s = SkillSync {
+            agent: "claude".to_string(),
+            target: "~/.claude/commands".to_string(),
+            status: SkillSyncStatus::Synced,
+            synced: 10,
+            protected: 2,
+            detail: Some("2 left untouched (pre-existing, unverified owner)".to_string()),
+        };
+        let line = s.line();
+        assert!(line.contains("synced 10"), "{line}");
+        assert!(
+            line.contains("left untouched") && line.contains("unverified owner"),
+            "a protected summary must explain itself: {line}"
+        );
+        assert!(
+            !line.contains("the user's own"),
+            "must not claim ownership it cannot prove: {line}"
+        );
+    }
+
+    #[test]
+    fn synced_row_without_protected_stays_terse() {
+        let s = SkillSync {
+            agent: "claude".to_string(),
+            target: "~/.claude/commands".to_string(),
+            status: SkillSyncStatus::Synced,
+            synced: 11,
+            protected: 0,
+            detail: None,
+        };
+        assert!(s.line().contains("synced 11"));
+        assert!(!s.line().contains("untouched"));
     }
 }

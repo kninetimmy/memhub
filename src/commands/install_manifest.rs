@@ -131,7 +131,15 @@ impl InstallManifest {
             files: self.files.clone(),
         };
         let json = serde_json::to_vec_pretty(&doc)?;
-        let tmp = path.with_file_name(format!("{MANIFEST_FILENAME}.tmp"));
+        // Derive the temp name from the ACTUAL path (not the hardcoded
+        // manifest filename) so `save_to` is correct for any path a caller
+        // or test passes.
+        let mut tmp_name = path
+            .file_name()
+            .map(|n| n.to_os_string())
+            .unwrap_or_else(|| std::ffi::OsString::from(MANIFEST_FILENAME));
+        tmp_name.push(".tmp");
+        let tmp = path.with_file_name(tmp_name);
         std::fs::write(&tmp, &json)?;
         std::fs::rename(&tmp, path)?;
         Ok(())
