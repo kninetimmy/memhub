@@ -43,6 +43,10 @@ pub const DONE_TASK_STALE_DAYS: i64 = 30;
 /// config knob: like [`DONE_TASK_STALE_DAYS`] it never feeds recall scoring,
 /// so it doesn't warrant a config surface (or the doctor baseline upkeep a
 /// knob brings). The probe is advisory — a hit only yields a single refusal.
+/// Re-verified under the int8-quantized reranker (issue #75 / decision 147,
+/// a reranker swap): the reranked-contradiction accept tests still pass, so
+/// contradictory rows stay at/above 2.0 and unrelated rows well below it.
+/// Unchanged.
 const CONTRADICTION_RERANK_THRESHOLD: f32 = 2.0;
 
 /// Upper bound on same-kind rows the reranked probe scores at accept time.

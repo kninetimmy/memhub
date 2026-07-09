@@ -30,16 +30,19 @@ produced with `cargo about` / `cargo deny` and is not hand-maintained here.
   commercial purposes free of charge."
 - **Use in memhub:** bi-encoder for the hybrid recall path.
 
-### ms-marco-MiniLM-L-6-v2 (ONNX export)
+### ms-marco-MiniLM-L-6-v2 (int8-quantized ONNX export)
 
 - **Source:** https://huggingface.co/Xenova/ms-marco-MiniLM-L-6-v2 — an ONNX
   export of https://huggingface.co/cross-encoder/ms-marco-MiniLM-L6-v2
-- **Files embedded:** `onnx/model.onnx`, `tokenizer.json`, `config.json`,
-  `special_tokens_map.json`, `tokenizer_config.json`
+- **Files embedded:** `onnx/model_int8.onnx` (int8-quantized, staged locally as
+  `model.onnx`; issue #75 — was `onnx/model.onnx` fp32), `tokenizer.json`,
+  `config.json`, `special_tokens_map.json`, `tokenizer_config.json`
 - **License:** Apache License 2.0. The license is declared on the upstream
   `cross-encoder/ms-marco-MiniLM-L6-v2` model card (`License: apache-2.0`); the
   Xenova ONNX export re-distributes the same weights and declares no separate
-  license, so it inherits Apache-2.0. See the full Apache License 2.0 text below.
+  license, so it inherits Apache-2.0. The `model_int8.onnx` variant is the same
+  Xenova repo's int8 quantization of those same weights — same source, same
+  license, no separate license text. See the full Apache License 2.0 text below.
 - **Use in memhub:** cross-encoder re-ranker.
 
 ## Parsing grammars (tree-sitter; C parsers compiled into the binary)
