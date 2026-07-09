@@ -63,7 +63,10 @@ since both the level and the text can differ.
 
 The policy text is agent-agnostic and, as of this build, doesn't yet
 know about a few newer surfaces. Layer these on top of what it says —
-they refine its draft assembly, they don't replace it:
+they refine its draft assembly, they don't replace it. They apply
+wherever the policy actually drafts decisions/facts at all — at
+`minimal` it drafts neither (state + task closures only), so none of
+these apply there either:
 
 - **Decision summaries (decision 72).** Whenever you draft a decision,
   also draft a one-sentence `--summary` — a natural-language
@@ -97,11 +100,15 @@ retry without their saying so.
 
 ## DB writes — first, atomic per item, halt on failure
 
-Once approved, invoke each write in this order. Every command takes
-`--json --actor codex:wrap-up` so the response is parseable and the
-audit row is correctly attributed. Fact and decision adds also pass
-`--source user+agent:codex` so the durable `source` column records
-both the user approval and the mediating agent.
+This numbered list is not a second, competing policy — it's the
+concrete command mechanics for executing whatever the policy text
+(above) and the approved drafts actually called for; skip any step
+nothing was drafted for. Once approved, invoke each write in this
+order. Every command takes `--json --actor codex:wrap-up` so the
+response is parseable and the audit row is correctly attributed. Fact
+and decision adds also pass `--source user+agent:codex` so the durable
+`source` column records both the user approval and the mediating
+agent.
 
 ```
 # 1. State (only if changed)
@@ -128,8 +135,10 @@ memhub command verify <build|test|run|lint|other> "<cmdline>" --exit-code <n>
 # 7. New or revised reference docs (repo-scoped)
 memhub doc add "<path>" [--title "<title>"] --json --actor codex:wrap-up
 
-# 8. Session summary (always, unless the user rejected it)
-memhub note add "<two-to-four-sentence summary>" --json --actor codex:wrap-up
+# 8. Session summary (always, unless the user rejected it; length
+#    follows the resolved verbosity level -- standard's two-to-four
+#    sentences, or full/transcript's richer account)
+memhub note add "<summary>" --json --actor codex:wrap-up
 
 # 9. Architecture (only if approved this session)
 memhub arch set "<approved body>" --json --actor codex:wrap-up

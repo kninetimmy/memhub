@@ -204,8 +204,11 @@ own (memhub's original flow, unchanged):
 2. New decisions -- architectural / workflow / contract decisions locked this session,
    each title + rationale.
 3. Backlog changes -- new tasks discovered, status changes on existing tasks.
-4. New facts -- build / test / run commands or other durable key-value records,
-   skipping anything already recorded with the same value.
+4. New facts -- durable key-value records that are NOT command invocations, skipping
+   anything already recorded with the same value. A build/test/run/lint command you
+   actually ran this session, with an observed exit code, is a verified command, not a
+   fact -- route it to `memhub command verify` (CLI) / `record_command` (MCP) instead,
+   go-forward only (do not backfill existing command-shaped facts).
 5. Pending-write triage -- for each row from the read window, propose accept or reject
    with a one-line reason.
 6. Session-summary note -- two to four sentences on what actually shipped, anchored to
@@ -265,9 +268,12 @@ const MANDATORY_EIGHT_ITEMS: &str = "\
    entirely when there is nothing to record -- mandatory applies to what you draft, not
    to inventing decisions.
 3. Backlog changes -- new tasks discovered, status changes on existing tasks.
-4. New facts -- build / test / run commands or other durable key-value records,
-   skipping anything already recorded with the same value. Facts have no `--summary`
-   field (decision 72 is decisions-only), so this item is unchanged from `standard`.
+4. New facts -- durable key-value records that are NOT command invocations, skipping
+   anything already recorded with the same value. Facts have no `--summary` field
+   (decision 72 is decisions-only). A build/test/run/lint command you actually ran this
+   session, with an observed exit code, is a verified command, not a fact -- route it to
+   `memhub command verify` (CLI) / `record_command` (MCP) instead, go-forward only (do
+   not backfill existing command-shaped facts). Otherwise unchanged from `standard`.
 5. Pending-write triage -- MANDATORY: always run this pass and report its outcome, even
    'queue empty, nothing to triage' -- never silently skip it because it looked empty.
 6. Session-summary note -- MANDATORY and richer: a fuller account of what shipped than
@@ -453,6 +459,38 @@ mod tests {
             let text = render_instructions(level);
             assert!(text.ends_with('\n'));
             assert!(!text.ends_with("\n\n"), "level {level:?}: {text:?}");
+        }
+    }
+
+    /// Q11 (issue #99 review): the facts item must not teach command-as-fact,
+    /// and must route verified build/test/run/lint commands to `command
+    /// verify` (CLI) / `record_command` (MCP) instead, go-forward only. Skips
+    /// `minimal`, which drafts no facts at all.
+    #[test]
+    fn facts_item_routes_verified_commands_away_from_facts_at_every_level_that_drafts_them()
+     {
+        for level in [
+            WrapUpVerbosity::Standard,
+            WrapUpVerbosity::Full,
+            WrapUpVerbosity::Transcript,
+        ] {
+            let text = render_instructions(level);
+            assert!(
+                !text.contains("build / test / run commands"),
+                "level {level:?} still teaches command-as-fact: {text}"
+            );
+            assert!(
+                text.contains("NOT command invocations"),
+                "level {level:?}: {text}"
+            );
+            assert!(
+                text.contains("memhub command verify") && text.contains("record_command"),
+                "level {level:?} missing Q11 routing to command verify/record_command: {text}"
+            );
+            assert!(
+                text.contains("go-forward only"),
+                "level {level:?}: {text}"
+            );
         }
     }
 
