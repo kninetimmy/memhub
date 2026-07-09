@@ -724,6 +724,15 @@ fn backups_retention(root: &Path, dry_run: bool, delete: bool, out: &mut GcOutco
                         .push(format!("warn: could not remove {}: {e}", path.display()));
                 }
             }
+            // Faithful reporting: only REAL deletions count toward the
+            // headline totals `summary()` reads — mirrors
+            // `finalize_groups`/`sweep_stale_staging`, which roll their
+            // deletions into these same counters. Report-only mode
+            // (the `else` below) never reaches this branch, so it can
+            // never inflate `bytes_freed`/`removed_files`.
+            out.bytes_freed += stale_bytes;
+            out.removed_files += stale.len() as u64;
+            out.groups_pruned += 1;
         }
 
         out.backups.checked_dirs.push(BackupDirOutcome {
@@ -766,15 +775,30 @@ fn backups_retention(root: &Path, dry_run: bool, delete: bool, out: &mut GcOutco
 /// opt-ins. Unlike `db::open_project`, this never requires (or
 /// creates) an initialized memhub project — `memhub gc` has always
 /// worked on any Rust repo with a `Cargo.toml`, memhub-initialized or
-/// not, and must keep doing so. A missing `.memhub/`, a missing
-/// `config.toml`, or one that fails to parse all resolve to
-/// `GcConfig::default()` (every opt-in off), so an untouched or
-/// non-memhub repo behaves exactly as before Wave 5.
-fn load_gc_config_best_effort(root: &Path) -> GcConfig {
+/// not, and must keep doing so. A missing `.memhub/` or a missing
+/// `config.toml` is the normal, silent case: every opt-in resolves to
+/// `GcConfig::default()` (all off), so an untouched or non-memhub repo
+/// behaves exactly as before Wave 5. A `config.toml` that *exists* but
+/// fails to parse also falls back to all-off — never a hard error,
+/// since one malformed config must not break `gc` — but that case gets
+/// a breadcrumb in the returned `Option<String>` (fail-loud nit: a
+/// malformed config silently disabling an intended
+/// `delete_stale_backups = true` should say so, not go quiet).
+fn load_gc_config_best_effort(root: &Path) -> (GcConfig, Option<String>) {
     let config_path = root.join(".memhub").join("config.toml");
-    ProjectConfig::load(&config_path)
-        .map(|c| c.gc)
-        .unwrap_or_default()
+    if !config_path.is_file() {
+        return (GcConfig::default(), None);
+    }
+    match ProjectConfig::load(&config_path) {
+        Ok(c) => (c.gc, None),
+        Err(e) => (
+            GcConfig::default(),
+            Some(format!(
+                "warn: {} did not parse ({e}); all [gc] opt-ins default to off this run",
+                config_path.display()
+            )),
+        ),
+    }
 }
 
 /// Reclaim superseded build artifacts under `<repo>/target`. When
@@ -812,7 +836,7 @@ fn run_with_options_in_temp(
 ) -> Result<GcOutcome> {
     let root = find_repo_root(start)?;
 
-    let gc_config = load_gc_config_best_effort(&root);
+    let (gc_config, gc_config_warning) = load_gc_config_best_effort(&root);
     options.prune_superseded_incremental |= gc_config.prune_superseded_incremental;
     options.prune_large_thirdparty |= gc_config.prune_large_thirdparty;
     options.delete_stale_backups |= gc_config.delete_stale_backups;
@@ -828,6 +852,9 @@ fn run_with_options_in_temp(
         details: Vec::new(),
         backups: BackupsReport::default(),
     };
+    if let Some(warning) = gc_config_warning {
+        out.details.push(warning);
+    }
 
     let target = root.join("target");
     for profile in PROFILES {
@@ -917,6 +944,30 @@ mod tests {
         td
     }
 
+    /// Test-only: same as `run`, but hermetic — routes the U3 staging
+    /// sweep through a scratch fixture dir instead of the real,
+    /// process-global OS temp dir. `run`/`run_with_options` always use
+    /// the real temp dir (correct in production), so any test that
+    /// doesn't specifically exercise the staging sweep must go through
+    /// this instead, or it both pollutes and is at the mercy of
+    /// whatever `memhub-upgrade-*.exe` shims happen to be sitting in
+    /// `%TEMP%`/`$TMPDIR` on the machine running the test.
+    fn run_hermetic(start: &Path, dry_run: bool) -> Result<GcOutcome> {
+        run_with_options_hermetic(
+            start,
+            GcOptions {
+                dry_run,
+                ..GcOptions::default()
+            },
+        )
+    }
+
+    /// Same as `run_with_options`, hermetic — see `run_hermetic`.
+    fn run_with_options_hermetic(start: &Path, options: GcOptions) -> Result<GcOutcome> {
+        let scratch_temp = tempfile::tempdir().unwrap();
+        run_with_options_in_temp(start, options, scratch_temp.path())
+    }
+
     #[test]
     fn parse_artifact_accepts_hash_and_rejects_junk() {
         assert_eq!(
@@ -952,7 +1003,7 @@ mod tests {
         sleep(Duration::from_millis(20));
         touch(&deps.join("libmemhub-bbbbbbbbbbbbbbbb.rlib"), 1000);
 
-        let out = run(root, false).unwrap();
+        let out = run_hermetic(root, false).unwrap();
 
         assert!(deps.join("libmemhub-bbbbbbbbbbbbbbbb.rlib").exists());
         assert!(!deps.join("libmemhub-aaaaaaaaaaaaaaaa.rlib").exists());
@@ -974,7 +1025,7 @@ mod tests {
         sleep(Duration::from_millis(20));
         touch(&deps.join("libmemhub-bbbbbbbbbbbbbbbb.rlib"), 1000);
 
-        let out = run(root, true).unwrap();
+        let out = run_hermetic(root, true).unwrap();
 
         assert!(deps.join("libmemhub-aaaaaaaaaaaaaaaa.rlib").exists());
         assert!(deps.join("libmemhub-bbbbbbbbbbbbbbbb.rlib").exists());
@@ -989,7 +1040,7 @@ mod tests {
         let deps = root.join("target/debug/deps");
         touch(&deps.join("libmemhub-aaaaaaaaaaaaaaaa.rlib"), 1000);
 
-        let out = run(root, false).unwrap();
+        let out = run_hermetic(root, false).unwrap();
         assert_eq!(out.groups_pruned, 0);
         assert!(deps.join("libmemhub-aaaaaaaaaaaaaaaa.rlib").exists());
     }
@@ -1020,7 +1071,7 @@ mod tests {
         sleep(Duration::from_millis(20));
         touch(&build.join("memhub-bbbbbbbbbbbbbbbb/out/model.onnx"), 1000);
 
-        let out = run(root, false).unwrap();
+        let out = run_hermetic(root, false).unwrap();
 
         assert!(build.join("memhub-bbbbbbbbbbbbbbbb").exists());
         assert!(!build.join("memhub-aaaaaaaaaaaaaaaa").exists());
@@ -1053,7 +1104,7 @@ mod tests {
         // must never be treated as a stale artifact.
         touch(&examples.join("rerank_bakeoff.exe"), 9000);
 
-        let out = run(root, false).unwrap();
+        let out = run_hermetic(root, false).unwrap();
 
         assert!(
             examples
@@ -1189,8 +1240,10 @@ prune_superseded_incremental = true
 
         // Plain `run` (no explicit GcOptions) must still honor the
         // persisted config — this is the only way U5/U8 opt in, since
-        // gc exposes no CLI flags for them.
-        let out = run(root, false).unwrap();
+        // gc exposes no CLI flags for them. `run_hermetic` applies the
+        // identical default-options + config-merge path as `run`
+        // itself, just with an isolated staging temp dir.
+        let out = run_hermetic(root, false).unwrap();
 
         assert!(!incremental.join("memhub-oldsession1").exists());
         assert!(incremental.join("memhub-newsession2").exists());
@@ -1210,13 +1263,13 @@ prune_superseded_incremental = true
         touch(&deps.join("libort_sys-bbbbbbbbbbbbbbbb.rlib"), 1000);
 
         // Default: untouched.
-        let out = run(root, false).unwrap();
+        let out = run_hermetic(root, false).unwrap();
         assert!(deps.join("libort_sys-aaaaaaaaaaaaaaaa.rlib").exists());
         assert!(deps.join("libort_sys-bbbbbbbbbbbbbbbb.rlib").exists());
         assert_eq!(out.groups_pruned, 0);
 
         // Opted in, but well under the size bar: still untouched.
-        let out = run_with_options(
+        let out = run_with_options_hermetic(
             root,
             GcOptions {
                 prune_large_thirdparty: true,
@@ -1242,7 +1295,7 @@ prune_superseded_incremental = true
         sleep(Duration::from_millis(20));
         touch(&deps.join("libort_sys-bbbbbbbbbbbbbbbb.rlib"), 1000);
 
-        let out = run_with_options(
+        let out = run_with_options_hermetic(
             root,
             GcOptions {
                 prune_large_thirdparty: true,
@@ -1272,7 +1325,7 @@ prune_superseded_incremental = true
             set_mtime(&p, SystemTime::now() - Duration::from_secs(i));
         }
 
-        let out = run(root, false).unwrap();
+        let out = run_hermetic(root, false).unwrap();
 
         assert_eq!(
             fs::read_dir(&rendered).unwrap().count(),
@@ -1283,6 +1336,15 @@ prune_superseded_incremental = true
         assert_eq!(out.backups.checked_dirs[0].stale_files, 5);
         assert!(!out.backups.deleted);
         assert!(out.details.iter().any(|d| d.contains("would be removed")));
+        // Report-only must NOT inflate the headline totals `summary()`
+        // reads — only a real deletion counts.
+        assert_eq!(out.groups_pruned, 0);
+        assert_eq!(out.bytes_freed, 0);
+        assert_eq!(out.removed_files, 0);
+        assert_eq!(
+            out.summary(),
+            "nothing to reclaim (already at newest build set)"
+        );
     }
 
     #[test]
@@ -1298,7 +1360,7 @@ prune_superseded_incremental = true
             set_mtime(&p, SystemTime::now() - Duration::from_secs(i));
         }
 
-        let out = run_with_options(
+        let out = run_with_options_hermetic(
             root,
             GcOptions {
                 delete_stale_backups: true,
@@ -1316,6 +1378,16 @@ prune_superseded_incremental = true
         for i in 0..20u64 {
             assert!(rendered.join(format!("backup-{i}.bak")).exists());
         }
+        // A real deletion must be faithfully reflected in the headline
+        // totals `summary()` reads (matches `sweep_stale_staging` /
+        // `finalize_groups`) — otherwise `memhub gc` prints "nothing to
+        // reclaim" / "freed 0 B" after actually freeing space.
+        assert_eq!(out.groups_pruned, 1);
+        assert_eq!(out.removed_files, 5);
+        assert_eq!(out.bytes_freed, 50); // 5 files * 10 bytes each
+        let summary = out.summary();
+        assert_ne!(summary, "nothing to reclaim (already at newest build set)");
+        assert!(summary.contains("freed"), "summary: {summary}");
     }
 
     #[test]
@@ -1331,7 +1403,7 @@ prune_superseded_incremental = true
             set_mtime(&p, SystemTime::now() - Duration::from_secs(i));
         }
 
-        let out = run_with_options(
+        let out = run_with_options_hermetic(
             root,
             GcOptions {
                 dry_run: true,
@@ -1347,6 +1419,15 @@ prune_superseded_incremental = true
             "dry-run must override the delete flag"
         );
         assert!(!out.backups.deleted);
+        // dry_run must win over delete_stale_backups for the headline
+        // totals too, not just for the files on disk.
+        assert_eq!(out.groups_pruned, 0);
+        assert_eq!(out.bytes_freed, 0);
+        assert_eq!(out.removed_files, 0);
+        assert_eq!(
+            out.summary(),
+            "nothing to reclaim (already at newest build set)"
+        );
     }
 
     #[test]
@@ -1358,7 +1439,7 @@ prune_superseded_incremental = true
         let legacy = memhub_dir.join("project.sqlite.k9-bootstrap-backup");
         touch(&legacy, 100);
 
-        let out = run_with_options(
+        let out = run_with_options_hermetic(
             root,
             GcOptions {
                 delete_stale_backups: true,
@@ -1381,9 +1462,34 @@ prune_superseded_incremental = true
             touch(&rendered.join(format!("backup-{i}.bak")), 10);
         }
 
-        let out = run(root, false).unwrap();
+        let out = run_hermetic(root, false).unwrap();
 
         assert!(out.backups.checked_dirs.is_empty());
         assert!(out.backups.legacy_k9_backup.is_none());
+    }
+
+    // -- fail-loud nit: malformed [gc] config gets a breadcrumb --------------
+
+    #[test]
+    fn malformed_config_falls_back_to_defaults_with_a_breadcrumb() {
+        let td = scaffold();
+        let root = td.path();
+        let memhub_dir = root.join(".memhub");
+        fs::create_dir_all(&memhub_dir).unwrap();
+        // Valid TOML, but not a valid ProjectConfig shape (missing the
+        // required project_name/auto_sync_md/log_level fields).
+        fs::write(memhub_dir.join("config.toml"), "not_a_real_config = true\n").unwrap();
+
+        let out = run_hermetic(root, false).unwrap();
+
+        // Still resolves to every [gc] opt-in off, never a hard error.
+        assert_eq!(out.groups_pruned, 0);
+        assert!(
+            out.details
+                .iter()
+                .any(|d| d.contains("did not parse") && d.contains("config.toml")),
+            "details: {:?}",
+            out.details
+        );
     }
 }
