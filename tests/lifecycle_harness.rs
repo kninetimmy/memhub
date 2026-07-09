@@ -45,5 +45,7 @@ mod stats;
 mod status_health;
 #[path = "lifecycle/sync_md.rs"]
 mod sync_md;
+#[path = "lifecycle/transcript_archive.rs"]
+mod transcript_archive;
 #[path = "lifecycle/wrapup_policy.rs"]
 mod wrapup_policy;

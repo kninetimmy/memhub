@@ -10,6 +10,7 @@ pub use args::{
     EvalCommand, FactCommand, GlobalCommand, IndexCommand, IntegrationsCommand, MetricsCommand,
     NarrativeCommand, NoteCommand, PendingStatus, RecallModeArg, RecallSourceTypeArg,
     ReviewCommand, StatsWindowArg, SyncCommand, TaskCommand, TaskStatus, TopLevelCommand,
+    TranscriptAgentArg, TranscriptCommand,
 };
 use output::{
     audit_md_report_to_json, code_status_to_json, doctor_report_to_json, eval_summary_to_json,
@@ -41,6 +42,27 @@ fn print_global_store_created() {
          visible to recall in every repo on this machine that runs \
          `memhub global enable`."
     );
+}
+
+/// Approval gate for `memhub transcript archive` (issue #96). The archive
+/// is UNREDACTED, so this fails closed: `--yes` pre-authorizes;
+/// otherwise, on an interactive terminal we prompt, and on a non-TTY we
+/// refuse without archiving. Mirrors the `upgrade`/`sync adopt` gate.
+fn transcript_archive_approved(yes: bool) -> bool {
+    use std::io::{IsTerminal, Write};
+    if yes {
+        return true;
+    }
+    if !std::io::stdin().is_terminal() {
+        return false;
+    }
+    print!("Archive this UNREDACTED transcript? [y/N] ");
+    let _ = std::io::stdout().flush();
+    let mut line = String::new();
+    if std::io::stdin().read_line(&mut line).is_err() {
+        return false;
+    }
+    matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
 /// `promote` only supports the machine-global target in M9. Reject a
@@ -2047,6 +2069,61 @@ pub fn run(cli: Cli) -> Result<()> {
                 );
             } else {
                 print_wrapup_policy_human(&report);
+            }
+        }
+        TopLevelCommand::Transcript {
+            command: TranscriptCommand::Archive {
+                agent,
+                session_id,
+                yes,
+                json: as_json,
+            },
+        } => {
+            // Loud, unmissable warning at the surface — always, before the
+            // gate — because the archive is stored unredacted (Q8).
+            eprintln!("{}", commands::transcript::UNREDACTED_WARNING);
+
+            if !transcript_archive_approved(yes) {
+                return Err(MemhubError::InvalidInput(
+                    "transcript archive not approved. Pass --yes to archive (required on a \
+                     non-interactive terminal); the archive is UNREDACTED."
+                        .to_string(),
+                ));
+            }
+
+            let report =
+                commands::transcript::archive(&cwd, agent.to_agent(), &session_id, true)?;
+            if as_json {
+                println!(
+                    "{}",
+                    json!({ "transcript_archive": {
+                        "session_id": report.session_id,
+                        "agent": report.agent,
+                        "source_path": report.source_path.to_string_lossy(),
+                        "archive_path": report.archive_path.to_string_lossy(),
+                        "source_bytes": report.source_bytes,
+                        "archive_bytes": report.archive_bytes,
+                        "replaced_existing": report.replaced_existing,
+                        "pruned": report.pruned,
+                    } })
+                );
+            } else {
+                println!(
+                    "Archived {} transcript for session {} -> {} ({} -> {} bytes){}",
+                    report.agent,
+                    report.session_id,
+                    report.archive_path.display(),
+                    report.source_bytes,
+                    report.archive_bytes,
+                    if report.replaced_existing {
+                        " (replaced prior archive)"
+                    } else {
+                        ""
+                    },
+                );
+                if report.pruned > 0 {
+                    println!("Pruned {} archive(s) past the retention horizon.", report.pruned);
+                }
             }
         }
         TopLevelCommand::Render => {

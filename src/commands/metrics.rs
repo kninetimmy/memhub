@@ -1048,7 +1048,9 @@ fn query_token_totals_nd(conn: &rusqlite::Connection, days: u32) -> Option<Token
 /// per-project filter happens in the scraper via `session_meta.payload.cwd`
 /// (decision 77). Returns `None` when HOME is not set or the directory
 /// doesn't exist.
-fn detect_codex_sessions_dir() -> Option<std::path::PathBuf> {
+// `pub(crate)`: the transcript archiver (issue #96) reuses this to resolve
+// `~/.codex/sessions` the same way `metrics enable` does.
+pub(crate) fn detect_codex_sessions_dir() -> Option<std::path::PathBuf> {
     // `db::home_dir()` honors `%USERPROFILE%` too — raw `$HOME` is often
     // unset on Windows, which is why auto-detect silently produced nothing
     // there (F2).
@@ -1069,7 +1071,9 @@ fn detect_codex_sessions_dir() -> Option<std::path::PathBuf> {
 /// Returns `None` if the home dir can't be resolved, the repo root is not
 /// canonicalizable, or the expected directory does not exist.
 /// The caller should treat `None` as "no auto-detect; set manually."
-fn detect_claude_transcripts_dir(repo_root: &Path) -> Option<std::path::PathBuf> {
+// `pub(crate)`: the transcript archiver (issue #96) reuses this to resolve
+// the Claude per-project transcript dir the same way `metrics enable` does.
+pub(crate) fn detect_claude_transcripts_dir(repo_root: &Path) -> Option<std::path::PathBuf> {
     // `db::home_dir()` (not raw `$HOME`) so `%USERPROFILE%` is honored on
     // Windows — the F2 regression that left session accounting silently dead.
     let home = crate::db::home_dir().ok()?;

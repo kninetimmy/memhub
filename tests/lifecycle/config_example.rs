@@ -203,6 +203,43 @@ fn tracked_example_config_pins_wrap_up_defaults() {
     assert_eq!(config.wrap_up.verbosity, WrapUpVerbosity::Standard);
 }
 
+/// The tracked example seeds the Wave 6 W3 transcript-retention horizon
+/// (issue #96) at the canonical 90-day baseline. Unlike verbosity, this
+/// is a repo-wide policy value doctor drift-checks, so it must be present
+/// and pinned in the committed example.
+#[test]
+fn tracked_example_config_pins_transcript_retention_days() {
+    let raw = fs::read_to_string(".memhub/config.example.toml")
+        .expect("read tracked .memhub/config.example.toml");
+    let config: ProjectConfig = toml::from_str(&raw).expect("parse tracked example");
+
+    assert_eq!(config.wrap_up.transcript_retention_days, 90);
+}
+
+/// A legacy local config with a `[wrap_up]` block that predates the
+/// retention knob must still load, defaulting the horizon to 90 via the
+/// serde default rather than 0 (which would silently disable pruning).
+#[test]
+fn pre_retention_wrap_up_config_defaults_the_horizon() {
+    let temp = tempdir().expect("tempdir");
+    let memhub_dir = temp.path().join(".memhub");
+    fs::create_dir_all(&memhub_dir).expect("create .memhub");
+
+    let legacy = r#"project_name = "pre-retention"
+auto_sync_md = false
+log_level = "info"
+
+[wrap_up]
+verbosity = "full"
+"#;
+    let local = memhub_dir.join("config.toml");
+    fs::write(&local, legacy).expect("write legacy config");
+
+    let config = ProjectConfig::load(&local).expect("load legacy config");
+    assert_eq!(config.wrap_up.verbosity, WrapUpVerbosity::Full);
+    assert_eq!(config.wrap_up.transcript_retention_days, 90);
+}
+
 /// An install that hasn't pulled the new example (no `[wrap_up]` block
 /// in its local `.memhub/config.toml`) must still load cleanly and
 /// default to `standard` — the same behavior an untouched install had

@@ -38,6 +38,15 @@
 #                                       machine's external spec dirs sets
 #                                       it in the local config.toml, not
 #                                       committed back here as a real path)
+#   - wrap_up.transcript_retention_days (Wave 6 W3, issue #96; retention
+#                                       horizon in days for archived
+#                                       session transcripts. A repo-wide
+#                                       policy value even though the
+#                                       `transcript` verbosity that uses
+#                                       it is a per-machine opt-in; 0 =
+#                                       keep forever. Doctor baseline-
+#                                       checks this one, unlike
+#                                       wrap_up.verbosity below.)
 #
 # Fields that are per-machine preferences (override locally without
 # committing back to the example):
@@ -333,5 +342,15 @@ delete_stale_backups = false
 # locally (most notably to "transcript") without that being drift; see
 # the per-machine-preferences note above. Do NOT commit "transcript"
 # back as the baseline default here.
+#
+# transcript_retention_days (Wave 6 W3, issue #96): retention horizon in
+# days for the transcript-level archiver. Once a machine opts into
+# verbosity = "transcript", `/wrap-up` copies the raw session JSONL into
+# .memhub/transcripts/<date>-<session-id>.jsonl.zst; the archiver prunes
+# those files AND their pointer rows once they are older than this many
+# days. 0 disables pruning (keep forever). Unlike verbosity, this is a
+# repo-wide policy baseline (doctor drift-checks it), so commit horizon
+# changes here. Default 90, matching metrics.retention_days.
 [wrap_up]
 verbosity = "standard"
+transcript_retention_days = 90

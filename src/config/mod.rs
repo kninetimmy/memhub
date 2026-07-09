@@ -156,6 +156,23 @@ pub const DEFAULT_GC_PRUNE_SUPERSEDED_INCREMENTAL: bool = false;
 pub const DEFAULT_GC_PRUNE_LARGE_THIRDPARTY: bool = false;
 pub const DEFAULT_GC_DELETE_STALE_BACKUPS: bool = false;
 
+/// Retention horizon in days for archived session transcripts (Wave 6 W3,
+/// issue #96). Only consulted once a machine opts into `[wrap_up]
+/// verbosity = "transcript"`. The archiver prunes archive files and their
+/// `session_transcripts` pointer rows older than this many days on each
+/// run. `0` disables pruning (keep forever), mirroring the "0 = off"
+/// convention of `age_half_life_days`. Kept equal to
+/// `DEFAULT_METRICS_RETENTION_DAYS` (90) so the two on-disk-artifact
+/// retention knobs share one obvious baseline.
+pub const DEFAULT_WRAP_UP_TRANSCRIPT_RETENTION_DAYS: u32 = 90;
+/// Fat-finger ceiling for `transcript_retention_days` in `memhub doctor`'s
+/// range check (100 years). Any positive value below this is legitimate;
+/// the guard only catches an obviously mistaken horizon. `0` (disabled)
+/// stays valid. Not a hard limit on the type — a u32 already bounds it —
+/// just a sanity band, in the spirit of the `fact_stale_after_days >= 1`
+/// and `age_half_life_days >= 0` guards.
+pub const MAX_WRAP_UP_TRANSCRIPT_RETENTION_DAYS: u32 = 36_500;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RetrievalMode {
@@ -307,6 +324,9 @@ fn default_gc_prune_large_thirdparty() -> bool {
 }
 fn default_gc_delete_stale_backups() -> bool {
     DEFAULT_GC_DELETE_STALE_BACKUPS
+}
+fn default_wrap_up_transcript_retention_days() -> u32 {
+    DEFAULT_WRAP_UP_TRANSCRIPT_RETENTION_DAYS
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -685,10 +705,27 @@ impl WrapUpVerbosity {
 
 /// Wrap-up policy config (Wave 6 W1, issue #95). See `WrapUpVerbosity`
 /// for the level semantics and the Q7 baseline-vs-per-machine ruling.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+///
+/// `transcript_retention_days` (Wave 6 W3, issue #96) is the retention
+/// horizon for the `transcript`-level archiver. Unlike `verbosity` (a
+/// per-machine opt-in that doctor deliberately does NOT baseline-check),
+/// the retention horizon is a genuine repo-wide policy baseline seeded in
+/// `config.example.toml` and drift-checked in `doctor::BASELINE_FIELDS`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WrapUpConfig {
     #[serde(default)]
     pub verbosity: WrapUpVerbosity,
+    #[serde(default = "default_wrap_up_transcript_retention_days")]
+    pub transcript_retention_days: u32,
+}
+
+impl Default for WrapUpConfig {
+    fn default() -> Self {
+        Self {
+            verbosity: WrapUpVerbosity::default(),
+            transcript_retention_days: DEFAULT_WRAP_UP_TRANSCRIPT_RETENTION_DAYS,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

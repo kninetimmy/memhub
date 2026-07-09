@@ -242,9 +242,9 @@ from conditional to always-run:
 The same eight items as `full`, plus a ninth:
 
 {}9. Transcript archive. Archive this session's agent transcript after the DB writes and
-   render below succeed. The archiver itself is tracked separately (issue #96 / W3) --
-   if it is not yet available in this build, say so plainly and skip it without failing
-   the rest of wrap-up.
+   render below succeed, via `memhub transcript archive` (issue #96 / W3). The copy is
+   UNREDACTED, so get the user's explicit approval and pass `--yes`. On an older build
+   without the command, say so plainly and skip it without failing the rest of wrap-up.
 
 ",
             MANDATORY_EIGHT_ITEMS
@@ -375,10 +375,16 @@ either way.
 const TRANSCRIPT_ARCHIVE: &str = "\
 ## Transcript archive (transcript level only)
 
-After the render step above, archive this session's agent transcript. memhub does not
-yet ship the archiver (issue #96 / W3) as of this build -- check whether an archive
-command exists before invoking it. If it does not exist yet, say so plainly and
-continue; a missing archiver is not a failure of wrap-up itself.
+After the render step above, archive this session's agent transcript (issue #96 / W3):
+
+    memhub transcript archive --agent <claude|codex> --session-id <this session's id> --yes
+
+The archive is stored UNREDACTED under gitignored, export-excluded
+`.memhub/transcripts/<date>-<session-id>.jsonl.zst` and may contain secrets, so the
+command requires `--yes` and refuses on a non-interactive terminal without it. Get the
+user's explicit approval first, then pass `--yes`. Transcripts are never embedded,
+recalled, or exported. If the archive command is missing (an older build), say so
+plainly and continue -- a skipped archive is not a failure of wrap-up itself.
 
 ";
 

@@ -51,6 +51,14 @@ tower-http = { version = "0.6", features = ["trace"], optional = true }
 # user explicitly runs that command. Already vendored as a build- and
 # dev-dependency for the HF asset fetch and the rerank bake-off.
 ureq = { version = "2.10", default-features = false, features = ["tls", "json"] }
+# zstd compression for the opt-in session-transcript archiver (Wave 6 W3,
+# issue #96 / decision Q7). Used only by src/commands/transcript.rs to
+# compress a copy of the raw session JSONL into
+# `.memhub/transcripts/<date>-<session-id>.jsonl.zst`. zstd-sys vendors and
+# compiles the C library at build time (no runtime network), same posture
+# as rusqlite's bundled SQLite. New dependency explicitly approved by the
+# user for this feature.
+zstd = "0.13"
 
 [features]
 default = ["viz"]

@@ -130,6 +130,7 @@ fn tools_list_exposes_full_tool_surface() {
         "render",
         "propose_fact",
         "propose_decision",
+        "archive_transcript",
     ];
     for name in required {
         assert!(
