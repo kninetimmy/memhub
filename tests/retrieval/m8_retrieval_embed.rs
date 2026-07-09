@@ -2,11 +2,13 @@
 //!
 //! Verifies that fact/decision/task writers populate the embeddings table
 //! when [retrieval] mode = "hybrid" and skip it entirely when mode = "fts"
-//! (the default).
+//! (the default). Session notes (`SourceType::Note`, Wave 6 W5 / issue
+//! #98) joined this same eager-embed path later and are covered below
+//! alongside the original three.
 
 use std::fs;
 
-use memhub::commands::{decision, fact, init, review, task};
+use memhub::commands::{decision, fact, init, review, session_note, task};
 use memhub::config::ProjectConfig;
 use memhub::db;
 use rusqlite::params;
@@ -263,6 +265,60 @@ fn hybrid_mode_writes_task_embedding_with_and_without_notes() {
         blob_a, blob_b,
         "different content should produce different vectors"
     );
+}
+
+#[test]
+fn hybrid_mode_writes_session_note_embedding() {
+    // Wave 6 W5 / issue #98: session_note::add threads SourceType::Note
+    // through the same eager-embed path fact/decision/task already use.
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+    switch_to_hybrid(temp.path());
+
+    let note = session_note::add(
+        temp.path(),
+        "Investigated the flaky upload test; root cause was a race in the retry loop.",
+        "claude-code",
+        "claude-code:log_session_note",
+    )
+    .expect("add session note");
+
+    let ctx = db::open_project(temp.path()).expect("open project");
+    assert_eq!(embedding_count(&ctx.conn, "note", note.id), 1);
+
+    let (dim, hash, blob) = embedding_metadata(&ctx.conn, "note", note.id);
+    assert_eq!(dim, 384);
+    assert_eq!(hash.len(), 64, "expected hex sha256 string");
+    assert_eq!(blob.len(), 384 * 4, "expected 384 f32 little-endian floats");
+}
+
+#[test]
+fn deleting_session_note_cascades_to_embedding_via_trigger() {
+    // No `session_note remove` command exists yet (notes are add-only), so
+    // this drives the DELETE directly to prove migration 0022's
+    // `session_notes_delete_embeddings` trigger is wired correctly and
+    // ready for whenever a delete path lands, mirroring the fact/decision/
+    // task cascade-delete test above.
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+    switch_to_hybrid(temp.path());
+
+    let note = session_note::add(
+        temp.path(),
+        "Scratch note for the cascade-delete trigger test.",
+        "claude-code",
+        "claude-code:log_session_note",
+    )
+    .expect("add session note");
+
+    let ctx = db::open_project(temp.path()).expect("open project");
+    assert_eq!(embedding_count(&ctx.conn, "note", note.id), 1);
+
+    ctx.conn
+        .execute("DELETE FROM session_notes WHERE id = ?1", params![note.id])
+        .expect("delete session note");
+
+    assert_eq!(embedding_count(&ctx.conn, "note", note.id), 0);
 }
 
 #[test]

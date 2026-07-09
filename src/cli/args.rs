@@ -523,6 +523,7 @@ pub enum RecallSourceTypeArg {
     Decision,
     Task,
     Doc,
+    Note,
 }
 
 impl RecallSourceTypeArg {
@@ -532,6 +533,7 @@ impl RecallSourceTypeArg {
             Self::Decision => SourceType::Decision,
             Self::Task => SourceType::Task,
             Self::Doc => SourceType::DocChunk,
+            Self::Note => SourceType::Note,
         }
     }
 }

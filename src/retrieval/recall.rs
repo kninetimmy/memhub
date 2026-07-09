@@ -19,7 +19,8 @@ use crate::config::{RetrievalMode, RetrievalScoringConfig};
 use crate::db;
 use crate::retrieval::embeddings::{EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME, embed_one};
 use crate::retrieval::persist::{
-    SourceType, decision_embed_text, doc_chunk_embed_text, fact_embed_text, task_embed_text,
+    SourceType, decision_embed_text, doc_chunk_embed_text, fact_embed_text, note_embed_text,
+    task_embed_text,
 };
 use crate::retrieval::rerank;
 use crate::retrieval::util::{
@@ -768,6 +769,13 @@ fn fts_lookup(
              ORDER BY score ASC \
              LIMIT ?2"
         }
+        SourceType::Note => {
+            "SELECT session_notes_fts.rowid, bm25(session_notes_fts) AS score \
+             FROM session_notes_fts \
+             WHERE session_notes_fts MATCH ?1 \
+             ORDER BY score ASC \
+             LIMIT ?2"
+        }
     };
     let mut stmt = conn.prepare(sql)?;
     let rows = stmt.query_map(params![match_expr, PER_SOURCE_FTS_LIMIT], |row| {
@@ -970,6 +978,17 @@ fn current_embed_text(
                 None => Ok(None),
             }
         }
+        SourceType::Note => {
+            let row: std::result::Result<String, rusqlite::Error> = conn.query_row(
+                "SELECT text FROM session_notes WHERE id = ?1",
+                params![source_id],
+                |row| row.get(0),
+            );
+            match row.optional_row()? {
+                Some(t) => Ok(Some(note_embed_text(&t))),
+                None => Ok(None),
+            }
+        }
     }
 }
 
@@ -1157,6 +1176,39 @@ fn load_source_row(
                 });
             row.optional_row().map_err(Into::into)
         }
+        SourceType::Note => {
+            // No title-analog column exists for a note (unlike a fact's
+            // key or a doc chunk's heading_path), so `actor` — the
+            // provenance tag — doubles as the short scannable label;
+            // `text` is the full body.
+            let mut stmt =
+                conn.prepare("SELECT actor, text, created_at FROM session_notes WHERE id = ?1")?;
+            let row: std::result::Result<HydratedSource, rusqlite::Error> =
+                stmt.query_row(params![source_id], |r: &Row<'_>| {
+                    let actor: String = r.get(0)?;
+                    let text: String = r.get(1)?;
+                    let created_at: String = r.get(2)?;
+                    Ok(HydratedSource {
+                        title: actor,
+                        body: text,
+                        summary: None,
+                        // No source-vocabulary column on session_notes
+                        // (mirrors tasks, which also carry no `source`) —
+                        // `accepted_only` therefore excludes notes just
+                        // like it does tasks, since neither is a vetted
+                        // claim in the fact/decision sense.
+                        source: String::new(),
+                        is_stale: false,
+                        superseded_by: None,
+                        created_at,
+                        // Notes carry no decay-eligible age (Wave 3 L6
+                        // scope): write-only scratch, not a durable claim
+                        // that ages toward staleness.
+                        age_days: None,
+                    })
+                });
+            row.optional_row().map_err(Into::into)
+        }
     }
 }
 
@@ -1170,6 +1222,7 @@ fn parse_source_type(raw: &str) -> Option<SourceType> {
         "decision" => Some(SourceType::Decision),
         "task" => Some(SourceType::Task),
         "doc_chunk" => Some(SourceType::DocChunk),
+        "note" => Some(SourceType::Note),
         _ => None,
     }
 }
@@ -1274,7 +1327,7 @@ fn age_decay_multiplier(age_days: Option<f64>, half_life_days: i64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::{decision, doc, fact, init, task};
+    use crate::commands::{decision, doc, fact, init, session_note, task};
     use crate::config::{ProjectConfig, RetrievalMode};
     use rusqlite::params;
     use tempfile::tempdir;
@@ -2287,6 +2340,103 @@ mod tests {
             scoped.available_docs, 0,
             "available_docs is 0 when the caller already scoped to docs"
         );
+    }
+
+    // Q9 / issue #98: session notes are write-only scratch by default —
+    // never in the plain recall bundle, mirroring the pre-decision-90 docs
+    // default-exclusion pattern (migration 0014) but with NO opt-in flip
+    // like docs got in decision 90: notes have no
+    // `include_notes_in_default` equivalent and must never surface here,
+    // no matter how many are logged. Modeled on
+    // `docs_are_opt_in_and_signal_availability` above.
+    #[test]
+    fn session_notes_are_excluded_from_default_recall() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        // Same distinctive keyword in both rows: proves the default bundle
+        // still surfaces the fact (the query mechanism genuinely matches)
+        // while the note carrying the identical keyword stays out — not a
+        // vacuous pass from an empty result set.
+        fact::add(
+            temp.path(),
+            "flake-triage-command",
+            "recallnoteprobe: re-run failing suite with RUST_LOG=debug",
+            "user",
+            "cli:user",
+        )
+        .expect("fact");
+        session_note::add(
+            temp.path(),
+            "recallnoteprobe: root cause was a stale embedding, not a real flake.",
+            "claude-code",
+            "claude-code:log_session_note",
+        )
+        .expect("session note");
+
+        let response = recall(
+            temp.path(),
+            RecallOptions {
+                query: "recallnoteprobe".to_string(),
+                mode: Some(RetrievalMode::Fts),
+                max_results: 10,
+                source_types: vec![],
+                include_stale: None,
+                accepted_only: None,
+                use_reranker: None,
+                min_rerank_score: None,
+                log_metrics: false,
+                surface: None,
+            },
+        )
+        .expect("default recall");
+
+        assert!(
+            response.results.iter().any(|h| h.source_type == "fact"),
+            "sanity: the seeded fact must still surface in the default bundle"
+        );
+        assert!(
+            response.results.iter().all(|h| h.source_type != "note"),
+            "session notes must never appear in the default recall bundle, \
+             even when they match the query"
+        );
+    }
+
+    #[test]
+    fn session_notes_surface_only_on_explicit_source_type_request() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let note = session_note::add(
+            temp.path(),
+            "recallnoteprobe: root cause was a stale embedding, not a real flake.",
+            "claude-code",
+            "claude-code:log_session_note",
+        )
+        .expect("session note");
+
+        let scoped = recall(
+            temp.path(),
+            RecallOptions {
+                query: "recallnoteprobe".to_string(),
+                mode: Some(RetrievalMode::Fts),
+                max_results: 10,
+                source_types: vec![SourceType::Note],
+                include_stale: None,
+                accepted_only: None,
+                use_reranker: None,
+                min_rerank_score: None,
+                log_metrics: false,
+                surface: None,
+            },
+        )
+        .expect("note-scoped recall");
+
+        let hit = scoped
+            .results
+            .iter()
+            .find(|h| h.source_type == "note" && h.source_id == note.id)
+            .expect("note-scoped recall must return the logged note");
+        assert_eq!(hit.title, "claude-code");
+        assert!(hit.body.contains("recallnoteprobe"));
     }
 
     /// Two ingested docs (a code style guide and a UI style guide).

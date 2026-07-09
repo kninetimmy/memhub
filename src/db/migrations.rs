@@ -114,6 +114,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0020_recall_metrics_surface",
         include_str!("../../migrations/0020_recall_metrics_surface.sql"),
     ),
+    (
+        "0022_source_type_note",
+        include_str!("../../migrations/0022_source_type_note.sql"),
+    ),
 ];
 
 pub fn apply_all(conn: &mut Connection) -> Result<Vec<String>> {
@@ -251,5 +255,53 @@ mod tests {
             has_surface, 1,
             "recall_metrics.surface must exist after 0020"
         );
+    }
+
+    /// Migration 0022 (Wave 6 W5, issue #98) widens `embeddings.source_type`
+    /// to admit 'note' and adds `session_notes_fts`. Mirrors 0014's dance
+    /// for 'doc_chunk'; assert both landed and every pre-existing
+    /// source_type still inserts cleanly (the CHECK-rebuild must not
+    /// narrow anything, and the rebuilt table's UNIQUE/indexes must still
+    /// exist so the insert+cleanup round-trips for each type).
+    #[test]
+    fn migration_0022_widens_embeddings_check_and_adds_session_notes_fts() {
+        let mut conn = Connection::open_in_memory().expect("open");
+        apply_all(&mut conn).expect("apply");
+        // `embeddings.project_id` carries a real FK to `projects(id)` and
+        // this connection (unlike `db::open_project`) enforces foreign
+        // keys, so seed the row it references before inserting.
+        conn.execute(
+            "INSERT INTO projects(id, root_path, schema_version) VALUES (1, 'test', 'test')",
+            [],
+        )
+        .expect("seed projects row");
+
+        for source_type in ["fact", "decision", "task", "doc_chunk", "note"] {
+            conn.execute(
+                "INSERT INTO embeddings(
+                    project_id, source_type, source_id, model_name,
+                    dimension, vector, content_hash
+                 ) VALUES (1, ?1, 1, 'test-model', 1, X'00', 'hash')",
+                [source_type],
+            )
+            .unwrap_or_else(|e| {
+                panic!("embeddings CHECK must admit source_type '{source_type}': {e}")
+            });
+            conn.execute(
+                "DELETE FROM embeddings WHERE source_type = ?1",
+                [source_type],
+            )
+            .expect("cleanup");
+        }
+
+        let fts_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master \
+                 WHERE type = 'table' AND name = 'session_notes_fts'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("pragma session_notes_fts");
+        assert_eq!(fts_exists, 1, "session_notes_fts must exist after 0022");
     }
 }

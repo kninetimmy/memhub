@@ -16,7 +16,8 @@ use crate::config::RetrievalMode;
 use crate::db;
 use crate::retrieval::embeddings::{EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME, embed_batch};
 use crate::retrieval::persist::{
-    SourceType, decision_embed_text, doc_chunk_embed_text, fact_embed_text, task_embed_text,
+    SourceType, decision_embed_text, doc_chunk_embed_text, fact_embed_text, note_embed_text,
+    task_embed_text,
 };
 use crate::retrieval::util::{sha256_hex, vector_to_le_bytes};
 
@@ -471,6 +472,23 @@ fn current_source_hash(
                     let heading_path: String = row.get(0)?;
                     let body: String = row.get(1)?;
                     Ok(doc_chunk_embed_text(&heading_path, &body))
+                },
+            )
+            .optional()?,
+        // Session notes are eager-embedded at write time
+        // (`commands::session_note::add`) but do not yet participate in
+        // `index rebuild`'s backfill scan — `collect_source_rows` below
+        // has no notes branch, so `upsert_batch` is never called with
+        // `SourceType::Note` today. This arm exists so the match stays
+        // exhaustive and is already correct if/when notes join the
+        // rebuild backfill.
+        SourceType::Note => tx
+            .query_row(
+                "SELECT text FROM session_notes WHERE id = ?1",
+                params![source_id],
+                |row| {
+                    let text: String = row.get(0)?;
+                    Ok(note_embed_text(&text))
                 },
             )
             .optional()?,
