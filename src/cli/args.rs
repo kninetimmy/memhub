@@ -272,6 +272,14 @@ pub enum TopLevelCommand {
         #[command(subcommand)]
         command: AuditCommand,
     },
+    /// Render the full `/wrap-up` policy text for the resolved
+    /// `[wrap_up] verbosity` level (Wave 6 W1+W2, issue #95). Read-only:
+    /// no DB writes, and no `project.sqlite` open at all — verbosity is
+    /// a config-only value.
+    WrapupPolicy {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

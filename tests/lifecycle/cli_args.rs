@@ -256,6 +256,23 @@ fn audit_md_without_flags_defaults_to_false() {
     }
 }
 
+/// Wave 6 W1+W2 / issue #95: `memhub wrapup-policy [--json]`.
+#[test]
+fn wrapup_policy_json_flag_parses() {
+    match parse(&["wrapup-policy", "--json"]) {
+        TopLevelCommand::WrapupPolicy { json } => assert!(json),
+        other => panic!("expected WrapupPolicy, got {other:?}"),
+    }
+}
+
+#[test]
+fn wrapup_policy_without_json_defaults_to_false() {
+    match parse(&["wrapup-policy"]) {
+        TopLevelCommand::WrapupPolicy { json } => assert!(!json),
+        other => panic!("expected WrapupPolicy, got {other:?}"),
+    }
+}
+
 /// Wave 4 R5 / issue #67: `memhub locate <query> [--limit N] [--rerank]
 /// [--no-refresh] [--json]`.
 #[test]
