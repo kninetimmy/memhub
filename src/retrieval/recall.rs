@@ -2439,6 +2439,77 @@ mod tests {
         assert!(hit.body.contains("recallnoteprobe"));
     }
 
+    // The two tests above run in fts mode, where exclusion is structural
+    // and trivial: `fts_lookup` is only ever called for types already in
+    // `opts.source_types`, so a note is never even queried. The load-
+    // bearing guard is different in HYBRID mode: `vector_lookup` scans
+    // every row in `embeddings` with no source_type filter in the SQL
+    // itself (`SELECT source_type, source_id, vector FROM embeddings
+    // WHERE model_name = ?1 AND dimension = ?2`) and relies entirely on
+    // the Rust-side `if !allowed.contains(&st.as_str()) { continue; }`
+    // check to keep a note's vector out of a default-scoped call. A note
+    // only has a vector at all once eager-embedded (hybrid mode), so this
+    // is the one path a fts-mode test structurally cannot exercise. Pins
+    // the invariant against a future `vector_lookup` refactor.
+    #[test]
+    fn session_notes_are_excluded_from_default_recall_in_hybrid_mode() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let cfg_path = temp.path().join(".memhub/config.toml");
+        let mut cfg = ProjectConfig::load(&cfg_path).expect("load cfg");
+        cfg.retrieval.mode = RetrievalMode::Hybrid;
+        cfg.save(&cfg_path).expect("save cfg");
+
+        fact::add(
+            temp.path(),
+            "flake-triage-command",
+            "recallnoteprobe: re-run failing suite with RUST_LOG=debug",
+            "user",
+            "cli:user",
+        )
+        .expect("fact");
+        // Hybrid mode is already on, so this note is eager-embedded on
+        // write — it has a real row in `embeddings`, which is exactly
+        // what's needed to exercise `vector_lookup`'s allowlist check.
+        session_note::add(
+            temp.path(),
+            "recallnoteprobe: root cause was a stale embedding, not a real flake.",
+            "claude-code",
+            "claude-code:log_session_note",
+        )
+        .expect("session note");
+
+        let response = recall(
+            temp.path(),
+            RecallOptions {
+                query: "recallnoteprobe".to_string(),
+                mode: Some(RetrievalMode::Hybrid),
+                max_results: 10,
+                source_types: vec![],
+                include_stale: None,
+                accepted_only: None,
+                // Disabled so this test isolates vector_lookup's allowlist
+                // check specifically — the cross-encoder's rerank floor is
+                // a separate mechanism that must not be the only thing
+                // standing between a note and a false-negative "pass".
+                use_reranker: Some(false),
+                min_rerank_score: None,
+                log_metrics: false,
+                surface: None,
+            },
+        )
+        .expect("default hybrid recall");
+
+        assert!(
+            response.results.iter().any(|h| h.source_type == "fact"),
+            "sanity: the seeded fact must still surface in the default bundle"
+        );
+        assert!(
+            response.results.iter().all(|h| h.source_type != "note"),
+            "session notes must never leak into hybrid default recall via the vector path"
+        );
+    }
+
     /// Two ingested docs (a code style guide and a UI style guide).
     /// A code-flavored query must surface the code doc and the doc
     /// floor must keep the off-topic UI doc out of the default bundle;
