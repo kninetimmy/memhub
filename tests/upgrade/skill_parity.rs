@@ -278,9 +278,12 @@ fn lf(s: &str) -> String {
 /// the generator, replacing the older header-only parity check — so the two
 /// files can no longer silently drift in prose, only in structure.
 ///
-/// Regeneration path: `MEMHUB_REGEN=1 cargo test --test skill_parity` rewrites
+/// Regeneration path: `MEMHUB_REGEN=1 cargo test skill_parity` rewrites
 /// `AGENTS.md` from `CLAUDE.md` and passes; commit the result. A normal run is
-/// read-only and fails if the committed `AGENTS.md` is stale.
+/// read-only and fails if the committed `AGENTS.md` is stale. (Wave 5 U4,
+/// issue #90: this test now lives in the shared `upgrade_harness` binary —
+/// there is no more per-file `--test skill_parity` target, but the
+/// substring filter above still selects exactly this test.)
 #[test]
 fn agents_md_is_generated_from_claude_md() {
     let claude = fs::read_to_string(repo_root().join("CLAUDE.md")).expect("read CLAUDE.md");
@@ -296,7 +299,7 @@ fn agents_md_is_generated_from_claude_md() {
         lf(&agents),
         lf(&generated),
         "AGENTS.md is out of sync with CLAUDE.md. Regenerate it with \
-         `MEMHUB_REGEN=1 cargo test --test skill_parity` and commit AGENTS.md."
+         `MEMHUB_REGEN=1 cargo test skill_parity` and commit AGENTS.md."
     );
 }
 

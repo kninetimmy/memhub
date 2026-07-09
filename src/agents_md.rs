@@ -9,10 +9,10 @@
 //! fail-safe routing block). Nothing else is rewritten — the retained
 //! `## ` sections carry through verbatim.
 //!
-//! `tests/skill_parity.rs` asserts `AGENTS.md == generate_agents_md(CLAUDE.md)`
+//! `tests/upgrade/skill_parity.rs` asserts `AGENTS.md == generate_agents_md(CLAUDE.md)`
 //! (modulo line endings), so any edit to `CLAUDE.md` must be followed by a
 //! regenerate-and-commit of `AGENTS.md`. The regeneration path is
-//! `MEMHUB_REGEN=1 cargo test --test skill_parity` (see that test).
+//! `MEMHUB_REGEN=1 cargo test skill_parity` (see that test).
 
 /// The `# memhub` H1 line `CLAUDE.md` must start with.
 ///
@@ -30,7 +30,7 @@ const AGENTS_TITLE: &str = "# memhub — Codex CLI instructions";
 /// Injected right after `CLAUDE.md`'s intro paragraphs (before the first
 /// `## ` section). Explains that this file is a generated derivative — not
 /// present in `CLAUDE.md`.
-const COUNTERPART_NOTE: &str = "This file is the Codex / OpenCode counterpart to `CLAUDE.md`, and is **generated** from it by `generate_agents_md` — do not hand-edit it; edit `CLAUDE.md` and regenerate with `MEMHUB_REGEN=1 cargo test --test skill_parity`. The two exist so Codex CLI, OpenCode CLI, and Claude Code sessions get the same orientation when they open this repo; where they diverge it is intentional (a different H1, plus the Codex/OpenCode-only sections injected at the end).";
+const COUNTERPART_NOTE: &str = "This file is the Codex / OpenCode counterpart to `CLAUDE.md`, and is **generated** from it by `generate_agents_md` — do not hand-edit it; edit `CLAUDE.md` and regenerate with `MEMHUB_REGEN=1 cargo test skill_parity`. The two exist so Codex CLI, OpenCode CLI, and Claude Code sessions get the same orientation when they open this repo; where they diverge it is intentional (a different H1, plus the Codex/OpenCode-only sections injected at the end).";
 
 /// Codex-specific attribution guidance, appended to the generated file.
 /// Has no `CLAUDE.md` counterpart by design (Claude attributes via the MCP

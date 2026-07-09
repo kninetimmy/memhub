@@ -57,7 +57,7 @@ audit's own words, then add the recommendation:
   established pattern from the CLAUDE.md token diet (issue #30).
 - **`agents_md_drift`** — `AGENTS.md` no longer matches
   `generate_agents_md(CLAUDE.md)`. Recommend regenerating it:
-  `MEMHUB_REGEN=1 cargo test --test skill_parity`, then commit the
+  `MEMHUB_REGEN=1 cargo test skill_parity`, then commit the
   updated `AGENTS.md`. Never hand-edit `AGENTS.md` — it's a pure
   derivative (decision Q21).
 - **`claude_md_malformed`** — `CLAUDE.md` doesn't start with the

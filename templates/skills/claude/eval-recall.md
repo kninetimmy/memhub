@@ -137,7 +137,7 @@ plausible target.
   decisions/facts/tasks), so treat the number it reports as a
   self-hosted calibration/dogfood signal, not the enforced baseline.
   The enforced, deterministic reference is
-  `cargo test --test retrieval_golden_hermetic` (issue #44, N28): it
+  `cargo test retrieval_golden_hermetic` (issue #44, N28): it
   seeds a disposable fixture DB from scratch and reproduces the same
   18-query golden set independent of this machine's DB state. Recorded
   baseline there: Recall@3 100% (17/17), 0 safety failures

@@ -10,8 +10,10 @@
 //!    `[global] enabled = false`. Registry membership is not M9 opt-in.
 //!
 //! All assertions live in ONE test so the `HOME` override (which
-//! redirects `~/.memhub/global.sqlite` into a tempdir) cannot race
-//! other tests in this binary.
+//! redirects `~/.memhub/global.sqlite` into a tempdir) stays in one
+//! place. It takes `support::env_lock()` for the whole test — see
+//! `upgrade/support.rs` (Wave 5 U4, issue #90) — to stay isolated from
+//! sibling tests in this shared harness binary.
 
 use memhub::commands::{fact, global, init};
 use memhub::config::RetrievalMode;
@@ -56,11 +58,13 @@ fn assert_recall_identical(a: &RecallResponse, b: &RecallResponse) {
 
 #[test]
 fn registry_and_eval_regression_guarantee() {
+    // Held for the whole test (see module header and `upgrade/support.rs`).
+    let _env_guard = crate::support::env_lock();
+
     let home = tempdir().expect("home tempdir");
-    // SAFETY: single-test binary; no other thread reads these vars
-    // concurrently. The TMP_OK seam lets the registry accept the
-    // tempdir repos this test necessarily uses; production excludes
-    // OS-temp paths (covered by the registry unit test).
+    // The TMP_OK seam lets the registry accept the tempdir repos this test
+    // necessarily uses; production excludes OS-temp paths (covered by the
+    // registry unit test).
     unsafe {
         std::env::set_var("HOME", home.path());
         std::env::remove_var("USERPROFILE");

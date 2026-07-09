@@ -2,9 +2,10 @@
 //!
 //! End-to-end over `sync_skills` against a **fabricated** source repo, so
 //! the template set is entirely under the test's control. All assertions
-//! live in ONE test because it overrides `HOME` (process-global) — the same
-//! single-test-binary discipline as `upgrade_skills.rs` /
-//! `upgrade_registry.rs`.
+//! live in ONE test because it overrides `HOME` (process-global) — it
+//! takes `support::env_lock()` for the whole test, same as
+//! `upgrade_skills.rs` / `upgrade_registry.rs` (see `upgrade/support.rs`,
+//! Wave 5 U4 issue #90).
 //!
 //! Only the Claude template dir is populated: every other agent's target
 //! dir is absent, so those agents skip before their source is ever read.
@@ -31,8 +32,10 @@ fn claude_report(repo: &Path) -> SkillSync {
 
 #[test]
 fn resync_never_clobbers_user_files_and_reports_orphans() {
+    // Held for the whole test (see module header and `upgrade/support.rs`).
+    let _env_guard = crate::support::env_lock();
+
     let home = tempdir().expect("home");
-    // SAFETY: single-test binary; no other thread reads HOME concurrently.
     unsafe {
         std::env::set_var("HOME", home.path());
         std::env::remove_var("USERPROFILE");

@@ -17,7 +17,7 @@ Workflow:
 - Clean (`count: 0`): report "No findings — CLAUDE.md/AGENTS.md are in good shape" and stop.
 - Otherwise, for each finding recommend a concrete fix by `id`:
   `claude_md_size` → move prose into `docs/reference/operations.md`;
-  `agents_md_drift` → regenerate with `MEMHUB_REGEN=1 cargo test --test skill_parity` and commit, never hand-edit `AGENTS.md`;
+  `agents_md_drift` → regenerate with `MEMHUB_REGEN=1 cargo test skill_parity` and commit, never hand-edit `AGENTS.md`;
   `claude_md_malformed` → restore the `# memhub` H1 / `## ` section structure;
   `managed_block_missing` / `managed_block_version` → add or update the versioned `memhub:managed-block` (see `src/managed_block.rs`);
   `keystone_phrases` → restore the exact phrases listed in `detail`;

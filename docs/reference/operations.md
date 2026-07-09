@@ -197,7 +197,7 @@ regenerate — the corpus is defined entirely by the `fact::add` /
 `decision::add` calls in that test's `seed_hermetic_corpus`, rebuilt from
 scratch every run. When `tests/retrieval_golden.json` legitimately changes,
 update `seed_hermetic_corpus` to match and re-run
-`cargo test --test retrieval_golden_hermetic`. The live-DB run from the repo
+`cargo test retrieval_golden_hermetic`. The live-DB run from the repo
 root (what `/eval-recall` still drives by default) remains a self-hosted
 calibration signal, not the enforced gate.
 

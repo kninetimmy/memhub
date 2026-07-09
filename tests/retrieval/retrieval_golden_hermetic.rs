@@ -64,7 +64,10 @@
 //! reworded, or retargeted), update [`seed_hermetic_corpus`] (and, for a
 //! `global-*` query, [`seed_global_store`]) so its rows satisfy the
 //! new/changed matchers, update the query-count drift guards in this file,
-//! then `cargo test --test retrieval_golden_hermetic`.
+//! then `cargo test retrieval_golden_hermetic` (Wave 5 U4, issue #90: this
+//! test now lives in the shared `retrieval_harness` binary — there is no
+//! more per-file `--test retrieval_golden_hermetic` target, but the
+//! substring filter above still selects exactly this test).
 
 use std::fs;
 use std::path::{Path, PathBuf};

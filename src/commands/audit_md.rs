@@ -224,7 +224,7 @@ fn check_agents_md_drift(repo_root: &Path, claude_md: &str) -> Option<Finding> {
                 Severity::Error,
                 format!(
                     "{AGENTS_MD_FILENAME} not found at {} — generate it with MEMHUB_REGEN=1 \
-                     cargo test --test skill_parity",
+                     cargo test skill_parity",
                     agents_path.display()
                 ),
             ));
@@ -239,7 +239,7 @@ fn check_agents_md_drift(repo_root: &Path, claude_md: &str) -> Option<Finding> {
             Severity::Error,
             format!(
                 "{AGENTS_MD_FILENAME} does not match generate_agents_md({CLAUDE_MD_FILENAME}) — \
-                 regenerate with MEMHUB_REGEN=1 cargo test --test skill_parity and commit \
+                 regenerate with MEMHUB_REGEN=1 cargo test skill_parity and commit \
                  {AGENTS_MD_FILENAME}"
             ),
         ))
