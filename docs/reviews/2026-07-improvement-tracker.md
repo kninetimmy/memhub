@@ -25,12 +25,12 @@ numbers. Default-off config additions must keep an untouched install byte-identi
 | 3 | Staleness / lifecycle | 7 / 7 | Q1–Q6 ✓ (complete) |
 | 4 | Retrieval performance | 12 / 12 | Q17–Q19 ✓ · Q24 ✓ · Q40 ✓ (complete) |
 | 5 | Upgrade / GC hardening | 8 / 8 | Q12–Q16 ✓ (complete) |
-| 6 | Wrap-up policy / verbosity | 0 / 6 | Q7–Q11 |
+| 6 | Wrap-up policy / verbosity | 6 / 6 | Q7–Q11 ✓ (complete) |
 | 7 | Cross-machine sync / metrics | 0 / 6 | Q30–Q33 |
 | 8 | CI / infra / licensing | 0 / 2 | Q37–Q38 |
 | 9 | Housekeeping | 0 / 7 | Q26–Q27, Q36 |
 
-Decisions resolved: 25 / 56 (Q1, Q2, Q3, Q4, Q5, Q6, Q12, Q13, Q14, Q15, Q16, Q17, Q18, Q19, Q21, Q22, Q23, Q24, Q25, Q29, Q32, Q35, Q39, Q40, Q41).
+Decisions resolved: 30 / 56 (Q1, Q2, Q3, Q4, Q5, Q6, Q7, Q8, Q9, Q10, Q11, Q12, Q13, Q14, Q15, Q16, Q17, Q18, Q19, Q21, Q22, Q23, Q24, Q25, Q29, Q32, Q35, Q39, Q40, Q41).
 
 ---
 
@@ -425,13 +425,49 @@ report-only default.
 - [x] U1 = F6 (done in Wave 0) — staged-handoff exit codes + `--verify-last` (Q14).
   — 2026-07-05, PR-B.
 
-## Wave 6 — Wrap-up  (gating: Q7–Q11)
-- [ ] W1 verbosity knob + `memhub wrapup-policy --json`
-- [ ] W2 level semantics (minimal/standard/full/transcript)
-- [ ] W3 transcript mode (zst archive + pointer row; excluded from recall/export)
-- [ ] W4 optional `kind` tag on facts
-- [ ] W5 `SourceType::Note` retrievable on explicit request
-- [ ] W6 skill content fixes ×3 agents (record_command, --summary, OpenCode contract)
+## Wave 6 — Wrap-up  (gating: Q7–Q11 ✓ — resolved 2026-07-09 as decision 151) — COMPLETE
+
+Executed 2026-07-09 under orchestrator mode; main green at `2d9d8d4`. Five PRs
+(#100/#101/#102/#103/#104) fanned out to executor subagents, each through an
+adversarial diff-review round + a throwaway-merge full-suite pre-flight before the
+canonical squash. §11 gate rulings (decision 151, accept-recommendations): Q7
+verbosity baseline in tracked `config.example.toml` + transcript per-machine
+opt-in; Q8 transcript secrets = warn + fail-closed approval, redaction deferred;
+Q9 `SourceType::Note` explicit-only; Q10 full policy text rendered from the binary
+(thin skills); Q11 `record_command` go-forward (no backfill). The review loop
+caught defects the green targeted tests missed: a semantic merge break (#98
+`HydratedSource` missing `kind`), a Q11 self-contradiction (policy text still
+teaching command-as-fact), and a transcript session-id path-traversal read.
+
+- [x] W1 verbosity knob + `memhub wrapup-policy [--json]` — `[wrap_up] verbosity`
+  (minimal/standard/full/transcript, default standard, seeded in tracked
+  `config.example.toml`; Q7); full policy text rendered from the binary (Q10); new
+  keys in doctor `KNOWN_LEAVES` (excluded from `BASELINE_FIELDS` per the
+  gc.*/metrics.* precedent). — 2026-07-09, PR #100 / 2b0dceb (issue #95).
+- [x] W2 level semantics (minimal/standard/full/transcript) — landed with W1;
+  `full` promotes the decision `--summary` field (decision 72) + arch-drift check +
+  triage to always-run. — 2026-07-09, PR #100 / 2b0dceb (issue #95).
+- [x] W3 transcript mode — session JSONL → `.memhub/transcripts/<date>-<id>.jsonl.zst`
+  (zstd, approved dep) + `session_transcripts` pointer row (migration 0023); warn +
+  fail-closed approval gate (Q8, non-TTY refuses); provably excluded from
+  embed/recall/export; per-machine opt-in (Q7); `transcript_retention_days`.
+  Security round: session-id path-traversal read hardened (validate + canonicalized
+  containment). — 2026-07-09, PR #104 / 2d9d8d4 (issue #96).
+- [x] W4 optional `kind` tag on facts — nullable, no CHECK; surfaced in recall/render
+  when present; pure passthrough never read by `score()`; byte-identical-when-untagged
+  proven; migration 0021. — 2026-07-09, PR #102 / 0682668 (issue #97).
+- [x] W5 `SourceType::Note` retrievable on explicit request — `source_types=["note"]`
+  only, never default (docs default-exclusion precedent, tested FTS + hybrid);
+  migration 0022; `index rebuild`/`status` note parity. — 2026-07-09, PR #101 / cd265f6 (issue #98).
+- [x] W6 skill content fixes ×3 agents — thin executors of `memhub wrapup-policy`;
+  Q11 `record_command` routing (fixed in skills AND the policy source); decision
+  `--summary` drafting; docs/`--global` folded in; OpenCode real contract.
+  — 2026-07-09, PR #103 / 2e58330 (issue #99).
+
+**Follow-ups (out of wave scope):** export/import does not carry fact `kind` (Drive
+sync via VACUUM INTO does) · transcript `writes_log` records the archived source
+path + byte sizes which cross machines via export (audit-log, acceptable) · orphan
+`.zst` can linger if the pointer-row INSERT fails after `fs::write` (low).
 
 ## Wave 7 — Cross-machine  (gating: Q30–Q33)
 - [ ] X1 `sync check --diff`
@@ -460,7 +496,7 @@ report-only default.
 Resolve per wave. Recommendations are in the review; mark here when the user rules.
 
 **Lifecycle:** [x] Q1 [x] Q2 [x] Q3 [x] Q4 [x] Q5 [x] Q6 *(all resolved 2026-07-06 as memhub decision 145 — Wave 3 gate: Q1 demote+flag stale facts, not silent exclusion; Q2–Q4 supersession/audit/contradiction lifecycle; Q5 retire always-1.0 confidence (PR #52); Q6 auto pending-write expiry (PR #50))*
-**Wrap-up:** [ ] Q7 [ ] Q8 [ ] Q9 [ ] Q10 [ ] Q11
+**Wrap-up:** [x] Q7 [x] Q8 [x] Q9 [x] Q10 [x] Q11 *(all resolved 2026-07-09 as memhub decision 151 — Wave 6 gate, accepting the review recommendations: Q7 verbosity baseline in tracked `config.example.toml` + transcript per-machine opt-in; Q8 transcript secrets = warn + fail-closed approval, content redaction deferred as a follow-up; Q9 `SourceType::Note` explicit-only, never default; Q10 full policy text rendered from the binary (thin skills); Q11 `record_command` go-forward, no backfill of existing command-facts. PRs #100/#101/#102/#103/#104.)*
 **Upgrade/GC:** [x] Q12 [x] Q13 [x] Q14 [x] Q15 [x] Q16 *(all resolved 2026-07-09 — Wave 5 gate: Q12 amend both gc exclusions behind opt-in `[gc]` config flags (default byte-identical); Q13 consolidate tests → 3 harnesses (accept loss of per-file `--test X`); Q14 already shipped by Wave 0 F6 (staged-handoff exit 3 + `--verify-last`); Q15 ship skill-install manifest (fail-safe unknown→user-owned); Q16 backups retention N=20 report-only default. PRs #91/#92/#93.)*
 **Retrieval:** [x] Q17 [x] Q18 [x] Q19 [ ] Q20 *(Q17–Q19 resolved 2026-07-08 as memhub decision 148 — Wave 4 gate: Q17 gather-then-decide via R12's CLI/MCP surface column (PR #84); Q18 run R7 int8 as a separate eval-gated experiment, accepted at 0pp Recall@3 movement (PR #86); Q19 MCP-only recall bundle trim + add `rerank_score`, CLI `--json` keeps full shape (PR #82). Q20 (37% empty-recall question) still deferred until R12 data accrues.)*
 **CLAUDE.md:** [x] Q21 [x] Q22 [x] Q23 [x] Q24 [x] Q25 *(all resolved 2026-07-06 — Wave 2 gate: Q21 generate AGENTS.md from CLAUDE.md (derived, content-equal parity); Q22 accept ~2,500-tok target + inline {Guardrails, Session Continuity, Delegation, stale-embeddings gate, sync_adopt gate}; Q23 implement versioned managed block; Q24 fix — register `memhub serve` (confirmed registered in 0 CLIs; work lands Wave 4/Q40); Q25 opt-in `[audit] user_md_path`)*
