@@ -12,6 +12,8 @@
 //! resolved) and is out of scope here.
 
 use clap::Parser;
+#[cfg(feature = "metrics")]
+use memhub::cli::MetricsCommand;
 use memhub::cli::{
     AuditCommand, Cli, CommandCommand, DecisionCommand, DocCommand, FactCommand, TopLevelCommand,
 };
@@ -23,6 +25,42 @@ fn parse(args: &[&str]) -> TopLevelCommand {
     Cli::try_parse_from(full)
         .unwrap_or_else(|e| panic!("failed to parse {args:?}: {e}"))
         .command
+}
+
+#[cfg(not(feature = "metrics"))]
+#[test]
+fn metrics_command_is_absent_from_hibernated_build() {
+    assert!(Cli::try_parse_from(["memhub", "metrics", "status"]).is_err());
+}
+
+#[cfg(feature = "metrics")]
+#[test]
+fn metrics_command_returns_in_reactivated_build() {
+    match parse(&["metrics", "status"]) {
+        TopLevelCommand::Metrics {
+            command: MetricsCommand::Status { json },
+        } => assert!(!json),
+        other => panic!("expected Metrics status, got {other:?}"),
+    }
+}
+
+#[cfg(not(feature = "viz"))]
+#[test]
+fn viz_command_is_absent_from_hibernated_build() {
+    assert!(Cli::try_parse_from(["memhub", "viz"]).is_err());
+}
+
+#[cfg(feature = "viz")]
+#[test]
+fn viz_command_returns_in_reactivated_build() {
+    match parse(&["viz"]) {
+        TopLevelCommand::Viz { host, port, open } => {
+            assert_eq!(host, "127.0.0.1");
+            assert_eq!(port, 0);
+            assert!(!open);
+        }
+        other => panic!("expected Viz, got {other:?}"),
+    }
 }
 
 #[test]
@@ -38,6 +76,24 @@ fn status_without_json_defaults_to_false() {
     match parse(&["status"]) {
         TopLevelCommand::Status { json } => assert!(!json),
         other => panic!("expected Status, got {other:?}"),
+    }
+}
+
+#[test]
+fn render_actor_flag_parses() {
+    match parse(&["render", "--actor", "codex:wrap-up"]) {
+        TopLevelCommand::Render { actor } => {
+            assert_eq!(actor.as_deref(), Some("codex:wrap-up"));
+        }
+        other => panic!("expected Render, got {other:?}"),
+    }
+}
+
+#[test]
+fn render_without_actor_defaults_to_none() {
+    match parse(&["render"]) {
+        TopLevelCommand::Render { actor } => assert!(actor.is_none()),
+        other => panic!("expected Render, got {other:?}"),
     }
 }
 

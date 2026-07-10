@@ -138,6 +138,18 @@ fn tools_list_exposes_full_tool_surface() {
             "tools/list missing `{name}`; got {names:?}",
         );
     }
+
+    if cfg!(feature = "metrics") {
+        assert!(
+            names.contains("metrics"),
+            "reactivated build omitted metrics"
+        );
+    } else {
+        assert!(
+            !names.contains("metrics"),
+            "hibernated build exposed metrics: {names:?}"
+        );
+    }
 }
 
 #[test]

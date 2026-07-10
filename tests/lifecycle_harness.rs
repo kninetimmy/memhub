@@ -20,10 +20,13 @@ mod foundation;
 #[path = "lifecycle/mcp_protocol.rs"]
 mod mcp_protocol;
 #[path = "lifecycle/metrics_maintenance.rs"]
+#[cfg(feature = "metrics")]
 mod metrics_maintenance;
 #[path = "lifecycle/metrics_session_scraper.rs"]
+#[cfg(feature = "metrics")]
 mod metrics_session_scraper;
 #[path = "lifecycle/metrics_tokenizer.rs"]
+#[cfg(feature = "metrics")]
 mod metrics_tokenizer;
 #[path = "lifecycle/milestone2.rs"]
 mod milestone2;

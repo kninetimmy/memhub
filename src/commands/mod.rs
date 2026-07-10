@@ -15,6 +15,7 @@ pub mod ingest_git;
 pub mod init;
 pub mod install_manifest;
 pub mod integrations;
+#[cfg(feature = "metrics")]
 pub mod metrics;
 pub mod narrative;
 pub mod pending_write;

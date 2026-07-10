@@ -1,4 +1,5 @@
 use std::fs;
+use std::process::Command;
 
 use memhub::commands::{decision, fact, init, narrative, render, task};
 use memhub::config::ProjectConfig;
@@ -7,6 +8,14 @@ use tempfile::tempdir;
 
 fn read_string(path: &std::path::Path) -> String {
     fs::read_to_string(path).expect("read rendered file")
+}
+
+fn run_cli(repo: &std::path::Path, args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_memhub"))
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .expect("run memhub CLI")
 }
 
 #[test]
@@ -210,6 +219,70 @@ fn render_logs_a_writes_log_entry() {
         )
         .expect("count");
     assert_eq!(count, 1);
+}
+
+#[test]
+fn render_cli_accepts_actor_and_preserves_default_attribution() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    let attributed = run_cli(temp.path(), &["render", "--actor", "codex:wrap-up"]);
+    assert!(
+        attributed.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&attributed.stderr)
+    );
+    assert!(temp.path().join(".memhub/rendered/PROJECT.md").is_file());
+    assert!(
+        temp.path()
+            .join(".memhub/rendered/PROJECT_LEDGER.md")
+            .is_file()
+    );
+
+    let conn =
+        rusqlite::Connection::open(temp.path().join(".memhub/project.sqlite")).expect("open db");
+    let actor: String = conn
+        .query_row(
+            "SELECT actor FROM writes_log
+             WHERE table_name = 'render' AND action = 'render'
+             ORDER BY id DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("custom render actor");
+    assert_eq!(actor, "codex:wrap-up");
+
+    let defaulted = run_cli(temp.path(), &["render"]);
+    assert!(
+        defaulted.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&defaulted.stderr)
+    );
+    let actor: String = conn
+        .query_row(
+            "SELECT actor FROM writes_log
+             WHERE table_name = 'render' AND action = 'render'
+             ORDER BY id DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("default render actor");
+    assert_eq!(actor, "cli:user");
+}
+
+#[test]
+fn render_cli_rejects_an_invalid_actor_before_rendering() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    let output = run_cli(temp.path(), &["render", "--actor", "   "]);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("--actor cannot be empty"),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!temp.path().join(".memhub/rendered/PROJECT.md").exists());
 }
 
 #[test]

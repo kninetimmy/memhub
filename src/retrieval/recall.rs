@@ -260,6 +260,7 @@ pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
         started,
     )?;
 
+    #[cfg(feature = "metrics")]
     if options.log_metrics {
         crate::metrics::recall_proxy::log_recall(
             &ctx.conn,
@@ -2895,6 +2896,7 @@ mod tests {
         assert_eq!(count_recall_metrics(temp.path()), 0);
     }
 
+    #[cfg(feature = "metrics")]
     #[test]
     fn metrics_enabled_writes_one_row_per_recall() {
         let temp = tempdir().expect("tempdir");
@@ -2970,6 +2972,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "metrics")]
     #[test]
     fn metrics_log_opt_out_skips_insert_even_when_enabled() {
         // Eval and dashboard set log_metrics = false. Pin that

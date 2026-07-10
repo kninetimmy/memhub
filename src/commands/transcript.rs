@@ -36,10 +36,9 @@
 //!
 //! ## Path + id reuse
 //!
-//! Directory resolution and the session-id ↔ file mapping are reused from
-//! the metrics subsystem (`metrics::detect_*_dir`,
-//! `session_scraper::{find_claude_transcript, find_codex_transcript}`) —
-//! this module never re-derives its own transcript path or id convention.
+//! Directory resolution and the session-id ↔ file mapping come from the
+//! metrics-independent `transcript_files` module, so archiving still works
+//! while token accounting is hibernated.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -48,7 +47,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::config::ProjectConfig;
 use crate::db::{self, log_write};
-use crate::metrics::session_scraper;
+use crate::transcript_files;
 use crate::{MemhubError, Result};
 
 /// Directory under `.memhub/` that holds compressed transcript archives.
@@ -225,8 +224,7 @@ fn assert_source_contained(dir: &Path, source: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Resolve the transcript directory for `agent`, reusing the metrics
-/// subsystem's resolution exactly: the configured `[metrics]
+/// Resolve the transcript directory for `agent`: the configured `[metrics]
 /// *_transcripts_dir` when set, else the same auto-detection
 /// `memhub metrics enable` performs. Errors (rather than silently doing
 /// nothing) when neither yields a directory.
@@ -238,11 +236,11 @@ fn resolve_transcript_dir(
     let (configured, detected) = match agent {
         Agent::Claude => (
             config.metrics.claude_transcripts_dir.clone(),
-            crate::commands::metrics::detect_claude_transcripts_dir(repo_root),
+            transcript_files::detect_claude_transcripts_dir(repo_root),
         ),
         Agent::Codex => (
             config.metrics.codex_transcripts_dir.clone(),
-            crate::commands::metrics::detect_codex_sessions_dir(),
+            transcript_files::detect_codex_sessions_dir(),
         ),
     };
 
@@ -253,7 +251,7 @@ fn resolve_transcript_dir(
         MemhubError::InvalidInput(format!(
             "cannot resolve the {} transcript directory: it is not set in \
              [metrics] {}_transcripts_dir and auto-detection found nothing. \
-             Set it (e.g. run `memhub metrics enable`) or create the agent's \
+             Set it directly or create the agent's \
              transcript directory first.",
             agent.label(),
             agent.config_key(),
@@ -265,8 +263,8 @@ fn resolve_transcript_dir(
 /// scraper's file-naming knowledge (do not re-derive paths here).
 fn resolve_source(agent: Agent, dir: &Path, session_id: &str) -> Result<PathBuf> {
     let found = match agent {
-        Agent::Claude => session_scraper::find_claude_transcript(dir, session_id),
-        Agent::Codex => session_scraper::find_codex_transcript(dir, session_id),
+        Agent::Claude => transcript_files::find_claude_transcript(dir, session_id),
+        Agent::Codex => transcript_files::find_codex_transcript(dir, session_id),
     };
     found.ok_or_else(|| {
         MemhubError::InvalidInput(format!(

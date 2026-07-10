@@ -129,8 +129,10 @@ Run once, at the top, and let the result gate everything below:
 3. The schema is current (`memhub status` shows the latest applied migration) -- if not,
    stop; wrapping up against a stale schema produces silently wrong rows.
 
-Every memhub invocation below passes `--actor <agent>:wrap-up` so `writes_log`
-distinguishes wrap-up writes from raw CLI use.
+Use the exact syntax shown for each command. Every mutating CLI command below that exposes
+`--actor` passes `--actor <agent>:wrap-up` so `writes_log` distinguishes wrap-up writes
+from raw CLI use. Read-only commands omit it, and any other exception is called out beside
+that command.
 
 ";
 
@@ -353,10 +355,15 @@ durable; re-running wrap-up later picks up the rest.
 const RENDER_STEP: &str = "\
 ## Render
 
-After all approved DB writes succeed, run `memhub render`. This emits fresh local
+After all approved DB writes succeed, run `memhub render --actor <agent>:wrap-up`. This
+emits fresh local
 `PROJECT.md` and `PROJECT_LEDGER.md` from the new DB state, backing up the prior
 versions under `.memhub/backups/rendered/<stamp>/`. Report what got written and any
 backup paths.
+
+If render fails, stop and do not run cross-machine sync. When every approved DB write
+already succeeded, fix the render failure and resume at this Render step (then sync);
+do not repeat draft assembly or the durable writes.
 
 ";
 
@@ -465,6 +472,30 @@ mod tests {
             let text = render_instructions(level);
             assert!(text.ends_with('\n'));
             assert!(!text.ends_with("\n\n"), "level {level:?}: {text:?}");
+        }
+    }
+
+    #[test]
+    fn render_step_is_attributed_and_render_failure_stops_sync_without_replaying_writes() {
+        for level in [
+            WrapUpVerbosity::Minimal,
+            WrapUpVerbosity::Standard,
+            WrapUpVerbosity::Full,
+            WrapUpVerbosity::Transcript,
+        ] {
+            let text = render_instructions(level);
+            assert!(
+                text.contains("memhub render --actor <agent>:wrap-up"),
+                "level {level:?}: {text}"
+            );
+            assert!(
+                text.contains("If render fails, stop and do not run cross-machine sync"),
+                "level {level:?}: {text}"
+            );
+            assert!(
+                text.contains("do not repeat draft assembly or the durable writes"),
+                "level {level:?}: {text}"
+            );
         }
     }
 

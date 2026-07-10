@@ -4,8 +4,10 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::Result;
+#[cfg(feature = "metrics")]
 use crate::commands::metrics::query_period_totals;
 use crate::db;
+#[cfg(feature = "metrics")]
 use crate::metrics::formatter::render_period_block;
 use crate::models::{
     Decision, FACT_STALE_AFTER_DAYS, Fact, NarrativeEntry, RenderResult, SessionNote, Task,
@@ -153,12 +155,22 @@ fn build_snapshot(
         open_task_count: count_open_tasks(conn)?,
         recent_session_notes: load_recent_session_notes(conn)?,
         recent_writes: load_recent_writes(conn)?,
-        token_accounting_section: if metrics_enabled {
-            load_token_accounting_section(conn)?
-        } else {
-            None
-        },
+        token_accounting_section: token_accounting_section(conn, metrics_enabled)?,
     })
+}
+
+#[cfg(feature = "metrics")]
+fn token_accounting_section(conn: &Connection, metrics_enabled: bool) -> Result<Option<String>> {
+    if metrics_enabled {
+        load_token_accounting_section(conn)
+    } else {
+        Ok(None)
+    }
+}
+
+#[cfg(not(feature = "metrics"))]
+fn token_accounting_section(_conn: &Connection, _metrics_enabled: bool) -> Result<Option<String>> {
+    Ok(None)
 }
 
 fn load_latest_narrative(conn: &Connection, table: &str) -> Result<Option<NarrativeEntry>> {
@@ -314,6 +326,7 @@ fn load_recent_session_notes(conn: &Connection) -> Result<Vec<SessionNote>> {
     Ok(rows)
 }
 
+#[cfg(feature = "metrics")]
 fn load_token_accounting_section(conn: &Connection) -> Result<Option<String>> {
     let totals = query_period_totals(conn, 7)?;
     if totals.is_empty() {
@@ -651,6 +664,7 @@ mod tests {
         assert!(!md.contains("Token Accounting"));
     }
 
+    #[cfg(feature = "metrics")]
     #[test]
     fn token_accounting_section_absent_when_enabled_but_no_rows() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -660,6 +674,7 @@ mod tests {
         assert!(!md.contains("Token Accounting"));
     }
 
+    #[cfg(feature = "metrics")]
     #[test]
     fn token_accounting_section_present_when_enabled_and_rows_exist() {
         let temp = tempfile::tempdir().expect("tempdir");

@@ -1011,6 +1011,7 @@ pub(crate) fn check_embeddings_freshness(start: &Path, config: &ProjectConfig) -
     }
 }
 
+#[cfg(feature = "metrics")]
 pub(crate) fn check_metrics_health(conn: &Connection, config: &ProjectConfig) -> Check {
     let cfg = &config.metrics;
     if !cfg.enabled || !cfg.session_accounting {
@@ -1065,6 +1066,16 @@ pub(crate) fn check_metrics_health(conn: &Connection, config: &ProjectConfig) ->
             "session accounting on; no sessions scraped yet",
         ),
     }
+}
+
+#[cfg(not(feature = "metrics"))]
+pub(crate) fn check_metrics_health(_conn: &Connection, _config: &ProjectConfig) -> Check {
+    Check::new(
+        "metrics_health",
+        Group::RetrievalMetrics,
+        Status::Skipped,
+        "metrics subsystem hibernated in this build",
+    )
 }
 
 // ---------------------------------------------------------------------
@@ -1965,6 +1976,7 @@ transcript_retention_days = 99999999
         assert_eq!(check.status, Status::Skipped);
     }
 
+    #[cfg(feature = "metrics")]
     #[test]
     fn metrics_health_warns_on_missing_transcripts_dir() {
         let temp = healthy_repo();

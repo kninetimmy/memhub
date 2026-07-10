@@ -571,7 +571,7 @@ implementable without further input.
 29. JSON shape convention: **recommend wrapped objects** (`{"facts":[...]}`) everywhere; migrate `doc ls`'s bare array.
 
 **Cross-machine (§8)**
-30. Have you ever opened `/viz` or run `metrics calibrate`? If no: **recommend feature-gating viz out of default builds and shelving calibrate** (X3).
+30. ~~Have you ever opened `/viz` or run `metrics calibrate`?~~ **RESOLVED 2026-07-09:** hibernate the complete metrics subsystem, not only viz/calibrate. Preserve config, schema, stored rows, and source; default builds expose no metrics/viz CLI, MCP, agent skills, rendering, collection, maintenance, calibration, or dashboard runtime. Explicit resurfacing uses `--features metrics` or `--features viz` (`viz` implies metrics). Transcript archiving remains independent. (X3; memhub proposal #3 pending review.)
 31. Should metrics rows travel with adopt? **Recommend post-adopt scrub/close** (F3 hygiene) — whole-file snapshots make exclusion impossible; scrubbing is honest.
 32. Action item, time-sensitive: check the Mac's decision 109 against Windows' before the next adopt overwrites the evidence of the ID divergence. **RESOLVED 2026-07-05 (see §14 N27):** already settled by decision 134, recorded 2026-07-04 the same evening this review was produced — the Mac lineage was not adopted; Mac decisions 107–112 were manually ported as Windows 128–133 (Mac 109 = Windows 130) and the Mac snapshot is preserved byte-for-byte at `.memhub/backups/sync/mac-lineage-2026-07-03.sqlite`. Do not chase this and do not run an adopt to "verify" it.
 33. Once the empirical baseline accrues: retire the assumed-ledger line entirely, or keep as comparison? **Recommend keep one release, then retire.**

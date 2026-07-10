@@ -203,7 +203,17 @@ calibration signal, not the enforced gate.
 
 ## Token Accounting
 
-Off by default. Opt in per machine with `memhub metrics enable` — this
+**Hibernated by default (Wave 7 Q30).** Normal builds preserve the metrics
+schema, config, stored rows, and source implementation, but compile out all
+collection, maintenance, rendering, CLI, MCP, calibration, dashboard, and
+agent-skill surfaces. A pre-existing `metrics.enabled = true` is inert and is
+not rewritten or deleted. Reactivation is explicit: build with
+`--features metrics`; build with `--features viz` for the dashboard (`viz`
+implies `metrics`). Default skill installation also skips `/metrics` and
+`/viz`. Transcript archiving remains independent and available.
+
+The retained feature behaves as follows when explicitly compiled in. Opt in
+per machine with `memhub metrics enable` — this
 auto-detects the Claude Code transcript directory and writes the resolved
 path into `.memhub/config.toml`. Disable with `memhub metrics disable`.
 
@@ -287,7 +297,7 @@ is omitted when a window had no cache activity. Rendered only in
 `rendered_panel`, and the PROJECT.md digest); the plain `memhub metrics
 status` CLI text keeps its leaner per-line layout.
 
-Dashboard surfaces: `memhub metrics status` (CLI) · `memhub.metrics` (MCP
+Reactivated surfaces: `memhub metrics status` (CLI) · `memhub.metrics` (MCP
 tool) · `/metrics` (skill). `memhub render` appends a 7-day digest to
 `PROJECT.md` when enabled and ≥1 row exists; the section is omitted
 entirely when disabled or when no data has been captured yet.

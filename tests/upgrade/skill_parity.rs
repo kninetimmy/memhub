@@ -2,12 +2,9 @@
 //! parity, and the README install blocks plus the two tracked
 //! orientation files must not drift away from the actual skill set.
 //!
-//! This exists because the surface drifted once already: `/metrics`
-//! and `/viz` shipped as Codex skill templates and as live Claude
-//! commands but were never tracked under `templates/skills/claude/`,
-//! the README install blocks omitted them from the prose enumeration,
-//! and `AGENTS.md` was missing the `## Token Accounting` section that
-//! `CLAUDE.md` carried. Nothing failed a build, so nobody noticed.
+//! Metrics and viz templates intentionally remain in parity as dormant
+//! reactivation assets, but default install blocks exclude them while the
+//! subsystem is hibernated.
 //!
 //! There is no CI in this repo — `cargo test` is the gate. Adding a
 //! new skill, or a new `## ` section to one orientation file, now
@@ -131,6 +128,13 @@ fn canonical_skill_set() -> BTreeSet<String> {
     set
 }
 
+fn default_installed_skill_set() -> BTreeSet<String> {
+    let mut set = canonical_skill_set();
+    set.remove("metrics");
+    set.remove("viz");
+    set
+}
+
 #[test]
 fn agent_skill_template_sets_match() {
     let claude = claude_skill_names();
@@ -249,7 +253,7 @@ fn readme_install_blocks_enumerate_every_skill() {
         segments.len()
     );
 
-    let canonical = canonical_skill_set();
+    let canonical = default_installed_skill_set();
     for (idx, seg) in segments.iter().enumerate() {
         let listed = slash_tokens(seg);
         assert_eq!(
@@ -378,6 +382,39 @@ fn all_skill_template_files() -> Vec<PathBuf> {
     }
 
     files
+}
+
+#[test]
+fn wrap_up_templates_render_with_actor_and_resume_without_replaying_writes() {
+    for (relative, actor) in [
+        ("templates/skills/claude/wrap-up.md", "claude:wrap-up"),
+        ("templates/skills/codex/wrap-up/SKILL.md", "codex:wrap-up"),
+        (
+            "templates/skills/opencode/wrap-up/SKILL.md",
+            "opencode:wrap-up",
+        ),
+    ] {
+        let path = repo_root().join(relative);
+        let content =
+            fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        assert!(
+            content.contains(&format!("memhub render --actor {actor}")),
+            "{} must attribute wrap-up renders",
+            path.display()
+        );
+        assert!(
+            content.contains("If render fails") && content.contains("before sync"),
+            "{} must prevent sync after a failed render",
+            path.display()
+        );
+        assert!(
+            content.contains("resume at")
+                && content.contains("render after fixing the cause")
+                && content.contains("do not repeat"),
+            "{} must resume after durable writes instead of replaying them",
+            path.display()
+        );
+    }
 }
 
 /// True when `s` is a YAML block-scalar indicator on its own: `>` or `|`,
