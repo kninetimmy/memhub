@@ -28,11 +28,24 @@ fn find(reports: &[SkillSync], agent: &str) -> SkillSync {
         .clone()
 }
 
+fn active_template(path: &Path) -> bool {
+    let name = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
+    match name {
+        "metrics" => cfg!(feature = "metrics"),
+        "viz" => cfg!(feature = "viz"),
+        _ => true,
+    }
+}
+
 fn count_claude_templates(repo: &Path) -> usize {
     std::fs::read_dir(repo.join("templates").join("skills").join("claude"))
         .expect("claude templates dir")
         .flatten()
         .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("md"))
+        .filter(|e| active_template(&e.path()))
         .count()
 }
 
@@ -41,6 +54,7 @@ fn count_codex_templates(repo: &Path) -> usize {
         .expect("codex templates dir")
         .flatten()
         .filter(|e| e.path().is_dir())
+        .filter(|e| active_template(&e.path()))
         .count()
 }
 
@@ -49,6 +63,7 @@ fn count_opencode_skill_templates(repo: &Path) -> usize {
         .expect("opencode skill templates dir")
         .flatten()
         .filter(|e| e.path().is_dir())
+        .filter(|e| active_template(&e.path()))
         .count()
 }
 
@@ -57,6 +72,7 @@ fn count_opencode_command_templates(repo: &Path) -> usize {
         .expect("opencode command templates dir")
         .flatten()
         .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("md"))
+        .filter(|e| active_template(&e.path()))
         .count()
 }
 
@@ -179,6 +195,16 @@ fn skill_resync_additive_idempotent_and_conservative() {
     assert!(
         opencode_commands_dir.join("recall.md").is_file(),
         "a known OpenCode command wrapper must land on disk"
+    );
+    assert_eq!(
+        claude_dir.join("metrics.md").exists(),
+        cfg!(feature = "metrics"),
+        "metrics skill installation must follow the compile-time feature"
+    );
+    assert_eq!(
+        codex_dir.join("viz").exists(),
+        cfg!(feature = "viz"),
+        "viz skill installation must follow the compile-time feature"
     );
     // Additive: the user's unrelated skill is untouched.
     assert_eq!(

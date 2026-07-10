@@ -80,7 +80,19 @@ impl MemhubServer {
     fn new(start: PathBuf) -> Self {
         Self {
             start,
-            tool_router: Self::tool_router(),
+            tool_router: Self::build_tool_router(),
+        }
+    }
+
+    fn build_tool_router() -> ToolRouter<Self> {
+        let router = Self::tool_router();
+        #[cfg(feature = "metrics")]
+        {
+            router + Self::metrics_tool_router()
+        }
+        #[cfg(not(feature = "metrics"))]
+        {
+            router
         }
     }
 
@@ -387,6 +399,7 @@ impl MemhubServer {
         Ok(Json(RenderToolResponse::from(result)))
     }
 
+    #[cfg(feature = "metrics")]
     async fn metrics_impl(&self) -> std::result::Result<Json<MetricsToolResponse>, McpError> {
         let data = commands::metrics::query_tool_data(&self.start).map_err(map_tool_error)?;
         Ok(Json(MetricsToolResponse::from(data)))
@@ -809,18 +822,6 @@ impl MemhubServer {
     }
 
     #[tool(
-        name = "metrics",
-        description = "Return token-accounting totals and a pre-rendered dashboard panel. \
-                       When metrics are disabled returns {enabled:false} only. \
-                       When enabled, returns 7-day and 30-day recall/session token aggregates \
-                       plus up to 10 recent sessions and a rendered_panel string the /metrics \
-                       skill prints verbatim."
-    )]
-    async fn metrics(&self) -> std::result::Result<Json<MetricsToolResponse>, McpError> {
-        self.metrics_impl().await
-    }
-
-    #[tool(
         name = "sync_status",
         description = "Cross-machine Drive sync: show enablement, the Drive-folder project id, the resolved remote dir (<drive_subpath>/memhub/<project_id>), the local logical version, and the last-sync marker. No Drive comparison. memhub stays offline; the synced folder (Google Drive for Desktop) is the transport."
     )]
@@ -884,6 +885,22 @@ impl MemhubServer {
     }
 }
 
+#[cfg(feature = "metrics")]
+#[tool_router(router = metrics_tool_router)]
+impl MemhubServer {
+    #[tool(
+        name = "metrics",
+        description = "Return token-accounting totals and a pre-rendered dashboard panel. \
+                       When metrics are disabled returns {enabled:false} only. \
+                       When enabled, returns 7-day and 30-day recall/session token aggregates \
+                       plus up to 10 recent sessions and a rendered_panel string the /metrics \
+                       skill prints verbatim."
+    )]
+    async fn metrics(&self) -> std::result::Result<Json<MetricsToolResponse>, McpError> {
+        self.metrics_impl().await
+    }
+}
+
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for MemhubServer {
     fn get_info(&self) -> ServerInfo {
@@ -895,7 +912,6 @@ impl ServerHandler for MemhubServer {
 INTENT → TOOL (always start here; do not fall through to Grep/Read/manual scan):
 • past decisions, status of work, "is there a fact/task about X" → recall
 • find code by what it does, "where is X", "I want to change Y" → locate
-• token usage, context cost, recall savings → metrics
 • ingest a markdown spec/design doc as searchable reference → doc_add
 • new task / mark task done → task_add / task_done
 • cross-machine pull/push of memhub state → sync_check, sync_snapshot, sync_adopt, sync_commit
@@ -2009,6 +2025,7 @@ fn u128_to_i64(value: u128) -> i64 {
 
 // ── MetricsToolResponse ──────────────────────────────────────────────────────
 
+#[cfg(feature = "metrics")]
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 struct MetricsToolResponse {
     enabled: bool,
@@ -2030,12 +2047,14 @@ struct MetricsToolResponse {
     rendered_panel: Option<String>,
 }
 
+#[cfg(feature = "metrics")]
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 struct MetricsComponents {
     recall_proxy: bool,
     session_accounting: bool,
 }
 
+#[cfg(feature = "metrics")]
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 struct PeriodTotalsResponse {
     recalls: i64,
@@ -2049,6 +2068,7 @@ struct PeriodTotalsResponse {
     context_offset_pct: Option<f64>,
 }
 
+#[cfg(feature = "metrics")]
 impl From<crate::metrics::formatter::PeriodTotals> for PeriodTotalsResponse {
     fn from(t: crate::metrics::formatter::PeriodTotals) -> Self {
         let pct = t.context_offset_pct();
@@ -2066,6 +2086,7 @@ impl From<crate::metrics::formatter::PeriodTotals> for PeriodTotalsResponse {
     }
 }
 
+#[cfg(feature = "metrics")]
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 struct SessionToolRecord {
     session_id: String,
@@ -2081,6 +2102,7 @@ struct SessionToolRecord {
     recall_calls: i64,
 }
 
+#[cfg(feature = "metrics")]
 impl From<crate::metrics::formatter::SessionSummary> for SessionToolRecord {
     fn from(s: crate::metrics::formatter::SessionSummary) -> Self {
         Self {
@@ -2095,6 +2117,7 @@ impl From<crate::metrics::formatter::SessionSummary> for SessionToolRecord {
     }
 }
 
+#[cfg(feature = "metrics")]
 impl From<commands::metrics::MetricsToolData> for MetricsToolResponse {
     fn from(d: commands::metrics::MetricsToolData) -> Self {
         if !d.enabled {
@@ -2929,6 +2952,7 @@ mod tests {
     /// two agent-facing entry points that tags `recall_metrics.surface`.
     /// Exercise the real server call site — not just `RecallOptions`
     /// plumbing — and confirm it persists 'mcp', not 'cli' or NULL.
+    #[cfg(feature = "metrics")]
     #[test]
     fn mcp_recall_logs_mcp_surface() {
         let temp = tempdir().expect("tempdir");
@@ -3097,6 +3121,7 @@ mod tests {
         assert_eq!(actor_logged, "claude-code");
     }
 
+    #[cfg(feature = "metrics")]
     fn run_metrics(server: &MemhubServer) -> Json<MetricsToolResponse> {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -3106,6 +3131,7 @@ mod tests {
             .expect("metrics")
     }
 
+    #[cfg(feature = "metrics")]
     #[test]
     fn mcp_metrics_returns_disabled_state_when_not_enabled() {
         let temp = tempdir().expect("tempdir");
@@ -3118,6 +3144,7 @@ mod tests {
         assert!(resp.0.rendered_panel.is_none());
     }
 
+    #[cfg(feature = "metrics")]
     #[test]
     fn mcp_metrics_returns_no_data_panel_when_enabled_but_empty() {
         let temp = tempdir().expect("tempdir");
@@ -3135,6 +3162,7 @@ mod tests {
         assert!(resp.0.totals_7d.is_some());
     }
 
+    #[cfg(feature = "metrics")]
     #[test]
     fn mcp_metrics_returns_full_panel_when_session_data_present() {
         let temp = tempdir().expect("tempdir");

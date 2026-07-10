@@ -51,6 +51,7 @@ pub enum TopLevelCommand {
     },
     SyncMd,
     Serve,
+    #[cfg(feature = "viz")]
     Viz {
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
@@ -117,11 +118,15 @@ pub enum TopLevelCommand {
         #[command(subcommand)]
         command: NarrativeCommand,
     },
-    Render,
+    Render {
+        #[arg(long)]
+        actor: Option<String>,
+    },
     Index {
         #[command(subcommand)]
         command: IndexCommand,
     },
+    #[cfg(feature = "metrics")]
     Metrics {
         #[command(subcommand)]
         command: MetricsCommand,
@@ -424,6 +429,7 @@ pub enum EvalCommand {
     },
 }
 
+#[cfg(feature = "metrics")]
 #[derive(Debug, Subcommand)]
 pub enum MetricsCommand {
     /// Show token-accounting status: config, DB counts, recent sessions.

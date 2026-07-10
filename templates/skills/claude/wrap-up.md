@@ -37,8 +37,11 @@ checked as part of the policy text itself, not here.
 2. `command -v memhub >/dev/null 2>&1 && echo present || echo absent`
    — `absent` → stop. Tell me to put `memhub` on PATH, then re-run.
 
-All memhub invocations below pass `--actor claude:wrap-up` so
-`writes_log` distinguishes wrap-up writes from raw CLI use.
+Use the exact syntax shown for each command. Every mutating CLI command
+below that exposes `--actor` passes `--actor claude:wrap-up` so
+`writes_log` distinguishes wrap-up writes from raw CLI use. Read-only
+commands omit it, and any other exception is called out beside that
+command.
 
 ## Run the policy
 
@@ -176,12 +179,15 @@ myself; you keep ingesting it repo-scoped as in step 7.
 ## After the writes
 
 Once every approved write above succeeds, pick the policy text back up
-for Render and Cross-machine sync — run `memhub render`, then the sync
-steps if this repo has sync enabled, exactly as it describes them.
-Nothing repo- or agent-specific to add there. It also covers the
-closing reminder (audit trail, rendered files aren't a commit, start a
-new session anytime) — including that **you never run `git commit`**,
-which holds regardless of verbosity level; that's my call.
+for Render and Cross-machine sync — run
+`memhub render --actor claude:wrap-up`, then the sync steps if this repo
+has sync enabled, exactly as it describes them. If render fails, stop
+before sync. When all approved DB writes already succeeded, resume at
+render after fixing the cause; do not repeat draft assembly or the
+durable writes. The policy also covers the closing reminder (audit
+trail, rendered files aren't a commit, start a new session anytime) —
+including that **you never run `git commit`**, which holds regardless
+of verbosity level; that's my call.
 
 ## Notes
 

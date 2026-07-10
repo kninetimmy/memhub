@@ -609,6 +609,7 @@ pub(crate) fn print_locate_eval_summary(summary: &commands::eval::LocateEvalSumm
     }
 }
 
+#[cfg(feature = "metrics")]
 pub(crate) fn print_metrics_status_human(s: &commands::metrics::MetricsStatus) {
     let status_label = if s.config.enabled {
         "enabled"
@@ -710,6 +711,7 @@ pub(crate) fn print_metrics_status_human(s: &commands::metrics::MetricsStatus) {
     }
 }
 
+#[cfg(feature = "metrics")]
 pub(crate) fn metrics_status_to_json(s: &commands::metrics::MetricsStatus) -> serde_json::Value {
     let sessions: Vec<serde_json::Value> = s
         .recent_sessions

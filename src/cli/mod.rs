@@ -5,25 +5,28 @@ use std::process;
 mod args;
 mod output;
 
+#[cfg(feature = "metrics")]
+pub use args::MetricsCommand;
 pub use args::{
     AuditCommand, Cli, CodeCommand, CommandCommand, CommandKind, DecisionCommand, DocCommand,
-    EvalCommand, FactCommand, GlobalCommand, IndexCommand, IntegrationsCommand, MetricsCommand,
-    NarrativeCommand, NoteCommand, PendingStatus, RecallModeArg, RecallSourceTypeArg,
-    ReviewCommand, StatsWindowArg, SyncCommand, TaskCommand, TaskStatus, TopLevelCommand,
-    TranscriptAgentArg, TranscriptCommand,
+    EvalCommand, FactCommand, GlobalCommand, IndexCommand, IntegrationsCommand, NarrativeCommand,
+    NoteCommand, PendingStatus, RecallModeArg, RecallSourceTypeArg, ReviewCommand, StatsWindowArg,
+    SyncCommand, TaskCommand, TaskStatus, TopLevelCommand, TranscriptAgentArg, TranscriptCommand,
 };
 use output::{
     audit_md_report_to_json, code_status_to_json, doctor_report_to_json, eval_summary_to_json,
     import_summary_to_json, index_status_to_json, init_result_to_json, locate_eval_summary_to_json,
-    locate_response_to_json, metrics_status_to_json, narrative_entry_to_json,
+    locate_response_to_json, narrative_entry_to_json,
     pending_write_record_to_json, print_audit_md_report_human, print_code_status,
     print_doctor_report_human, print_eval_summary, print_index_status, print_init_result,
-    print_locate, print_locate_eval_summary, print_metrics_status_human, print_recall_human,
+    print_locate, print_locate_eval_summary, print_recall_human,
     print_review_stale_report_human, print_stats_human, print_stats_json,
     print_status_checks_human, print_wrapup_policy_human, recall_response_to_json,
     review_stale_report_to_json, status_checks_to_json, status_summary_to_json,
     wrapup_policy_report_to_json,
 };
+#[cfg(feature = "metrics")]
+use output::{metrics_status_to_json, print_metrics_status_human};
 use serde_json::json;
 
 use crate::commands;
@@ -314,6 +317,7 @@ pub fn run(cli: Cli) -> Result<()> {
         TopLevelCommand::Serve => {
             crate::mcp::serve(&cwd)?;
         }
+        #[cfg(feature = "viz")]
         TopLevelCommand::Viz { host, port, open } => {
             run_viz(&cwd, host, port, open)?;
         }
@@ -1374,6 +1378,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 }
             }
         },
+        #[cfg(feature = "metrics")]
         TopLevelCommand::Metrics { command } => match command {
             MetricsCommand::Status { json: as_json } => {
                 let s = commands::metrics::status(&cwd)?;
@@ -2126,8 +2131,9 @@ pub fn run(cli: Cli) -> Result<()> {
                 }
             }
         }
-        TopLevelCommand::Render => {
-            let result = commands::render::run(&cwd, DEFAULT_ACTOR)?;
+        TopLevelCommand::Render { actor } => {
+            let actor = resolve_actor(actor.as_deref())?;
+            let result = commands::render::run(&cwd, &actor)?;
             println!("Rendered to {}", result.output_dir.display());
             for path in &result.written_files {
                 println!("  wrote: {}", path.display());
@@ -2211,11 +2217,4 @@ pub fn run(cli: Cli) -> Result<()> {
 #[cfg(feature = "viz")]
 fn run_viz(cwd: &std::path::Path, host: String, port: u16, open: bool) -> Result<()> {
     crate::dashboard::serve_blocking(cwd, crate::dashboard::DashboardOptions { host, port, open })
-}
-
-#[cfg(not(feature = "viz"))]
-fn run_viz(_cwd: &std::path::Path, _host: String, _port: u16, _open: bool) -> Result<()> {
-    Err(MemhubError::InvalidInput(
-        "`memhub viz` was compiled out; rebuild with `--features viz`".to_string(),
-    ))
 }

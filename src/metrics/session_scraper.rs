@@ -47,7 +47,7 @@
 
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
@@ -55,99 +55,15 @@ use serde_json::Value;
 use crate::Result;
 use crate::config::MetricsConfig;
 use crate::db::log_write;
+pub use crate::transcript_files::{
+    claude_session_id_from_path, codex_session_id_from_path, find_claude_transcript,
+    find_codex_transcript,
+};
 
 const CLAUDE_AGENT: &str = "claude-code";
 const SCRAPER_ACTOR: &str = "metrics:claude-scraper";
 const CODEX_AGENT: &str = "codex";
 const CODEX_SCRAPER_ACTOR: &str = "metrics:codex-scraper";
-
-// ---------------------------------------------------------------------
-// Session-id mapping + file resolution (single source of truth).
-//
-// The scraper maps transcript file -> session id; the transcript archiver
-// (`commands::transcript`, issue #96) needs the inverse (session id ->
-// file) but MUST NOT re-derive its own path/id convention. These shared
-// helpers keep exactly one definition of "how a session id relates to its
-// file" for both directions and both agents (Claude + Codex).
-// ---------------------------------------------------------------------
-
-/// Claude Code names each session file `<session-id>.jsonl`, so the file
-/// stem *is* the stable per-session key. Returns `None` for a file with
-/// no usable stem.
-pub fn claude_session_id_from_path(path: &Path) -> Option<String> {
-    path.file_stem()
-        .and_then(|s| s.to_str())
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-}
-
-/// Codex rollout files are named
-/// `rollout-YYYY-MM-DDTHH-MM-SS-<UUID>.jsonl`, where the UUID is the last
-/// five hyphen-delimited groups of the stem. The scraper keys these as
-/// `codex:<UUID>` so a Codex session can never collide with a Claude
-/// session UUID (decision 77). Returns `None` when the stem has too few
-/// hyphen groups to carry a UUID.
-pub fn codex_session_id_from_path(path: &Path) -> Option<String> {
-    let stem = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .filter(|s| !s.is_empty())?;
-    let parts: Vec<&str> = stem.split('-').collect();
-    if parts.len() < 5 {
-        return None;
-    }
-    let uuid = parts[parts.len() - 5..].join("-");
-    Some(format!("codex:{uuid}"))
-}
-
-/// Resolve the source JSONL for a Claude `session_id` under `dir`, using
-/// the scraper's own `<session-id>.jsonl` naming. `None` if it does not
-/// exist. Reused by the archiver — do not re-derive the path elsewhere.
-pub fn find_claude_transcript(dir: &Path, session_id: &str) -> Option<PathBuf> {
-    let candidate = dir.join(format!("{session_id}.jsonl"));
-    candidate.is_file().then_some(candidate)
-}
-
-/// Resolve the source JSONL for a Codex `session_id` (the `codex:<uuid>`
-/// form) by walking `<dir>/YYYY/MM/DD/*.jsonl` — the same three-level tree
-/// the scraper reads — and returning the first file whose derived id
-/// matches. `None` if no such file exists. Reused by the archiver.
-pub fn find_codex_transcript(dir: &Path, session_id: &str) -> Option<PathBuf> {
-    for l1 in read_subdirs(dir) {
-        for l2 in read_subdirs(&l1) {
-            for l3 in read_subdirs(&l2) {
-                let files = match fs::read_dir(&l3) {
-                    Ok(e) => e,
-                    Err(_) => continue,
-                };
-                for entry in files.flatten() {
-                    let path = entry.path();
-                    if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                        continue;
-                    }
-                    if codex_session_id_from_path(&path).as_deref() == Some(session_id) {
-                        return Some(path);
-                    }
-                }
-            }
-        }
-    }
-    None
-}
-
-/// Immediate subdirectories of `dir`, ignoring unreadable entries and a
-/// missing directory. Helper for the Codex tree walk above.
-fn read_subdirs(dir: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    if let Ok(entries) = fs::read_dir(dir) {
-        for e in entries.flatten() {
-            if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                out.push(e.path());
-            }
-        }
-    }
-    out
-}
 
 /// Opportunistic entry point. Gated by the `metrics.enabled` master
 /// switch and the `metrics.session_accounting` sub-switch; both off by

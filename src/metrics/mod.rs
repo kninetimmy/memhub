@@ -21,9 +21,16 @@
 //! prunes rows past the retention horizon. It runs opportunistically
 //! from `db::open_project`, gated by the master switch alone.
 
+#[cfg(feature = "metrics")]
 pub mod calibrate;
+#[cfg(feature = "metrics")]
 pub mod formatter;
+#[cfg(feature = "metrics")]
 pub mod maintenance;
+#[cfg(feature = "metrics")]
 pub mod recall_proxy;
+#[cfg(feature = "metrics")]
 pub mod session_scraper;
+// Generic token estimation is also used by `audit md`, so it remains in
+// normal builds without activating any metrics collection or surface.
 pub mod tokenizer;

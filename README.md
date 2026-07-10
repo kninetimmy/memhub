@@ -40,7 +40,7 @@ When the agent needs context, it pulls a small, ranked bundle of just the releva
 - **Same memory across agents.** Claude Code, Codex, and OpenCode share the same rows. Switching tools doesn't cost you context.
 - **Memory that follows you between machines.** Opt in per repo and your laptop and desktop stay in sync through a folder that's already syncing (Google Drive for Desktop, or an rclone mount) — memhub still never goes online. `/catch-up` when you sit down, `/wrap-up` when you're done.
 - **Optional machine-wide memory.** Truths that aren't about one repo — toolchain facts, a standing engineering rule, a universal style guide — can live in an opt-in store shared by every repo on the machine. Off by default; you promote to it deliberately.
-- **Small context, relevant content.** A targeted recall bundle is much smaller than pasting your full project README into every prompt. The Token Metrics dashboard estimates how much context you're saving.
+- **Small context, relevant content.** A targeted recall bundle is much smaller than pasting your full project README into every prompt.
 - **It's just a file.** SQLite, gitignored, in your repo. No accounts, no services, no vendor lock-in. Back it up, move it, or `rm -rf .memhub/` and it's gone.
 
 ---
@@ -105,10 +105,10 @@ Please install memhub for me, then turn on hybrid recall.
    run `claude mcp add memhub -- memhub serve` (add `--scope user` to
    make it available across your sessions).
 5. Copy the user-level skills so /wrap-up, /catch-up, /check-init,
-   /init-project, /recall, /locate, /reindex, /eval-recall, /doc, /metrics, /viz,
+   /init-project, /recall, /locate, /reindex, /eval-recall, /doc,
    /global, /audit-md, and /upgrade all work as slash commands:
 
-       cp ~/src/memhub/templates/skills/claude/*.md ~/.claude/commands/
+       for f in ~/src/memhub/templates/skills/claude/*.md; do case "$(basename "$f")" in metrics.md|viz.md) continue;; esac; cp "$f" ~/.claude/commands/; done
 
 6. cd back to this repo and run `memhub init`, then `memhub status`.
    Tell me what status reports.
@@ -193,10 +193,10 @@ Please install memhub for me, then turn on hybrid recall.
    MCP-first skill instructions won't reliably fire.
 
 5. Copy the user-level skills so /wrap-up, /catch-up, /check-init,
-   /init-project, /recall, /locate, /reindex, /eval-recall, /doc, /metrics, /viz,
+   /init-project, /recall, /locate, /reindex, /eval-recall, /doc,
    /global, /audit-md, and /upgrade all work:
 
-       cp -R ~/src/memhub/templates/skills/codex/* ~/.codex/skills/
+       for d in ~/src/memhub/templates/skills/codex/*; do case "$(basename "$d")" in metrics|viz) continue;; esac; cp -R "$d" ~/.codex/skills/; done
 
 6. cd back to this repo and run `memhub init`, then `memhub status`.
    Tell me what status reports.
@@ -283,12 +283,12 @@ Please install memhub for me, then turn on hybrid recall.
 
    If that file already exists, merge only the `mcp.memhub` block.
 5. Copy the user-level skills so /wrap-up, /catch-up, /check-init,
-   /init-project, /recall, /locate, /reindex, /eval-recall, /doc, /metrics, /viz,
+   /init-project, /recall, /locate, /reindex, /eval-recall, /doc,
    /global, /audit-md, and /upgrade all work:
 
        mkdir -p ~/.config/opencode/skills ~/.config/opencode/commands
-       cp -R ~/src/memhub/templates/skills/opencode/* ~/.config/opencode/skills/
-       cp ~/src/memhub/templates/commands/opencode/*.md ~/.config/opencode/commands/
+       for d in ~/src/memhub/templates/skills/opencode/*; do case "$(basename "$d")" in metrics|viz) continue;; esac; cp -R "$d" ~/.config/opencode/skills/; done
+       for f in ~/src/memhub/templates/commands/opencode/*.md; do case "$(basename "$f")" in metrics.md|viz.md) continue;; esac; cp "$f" ~/.config/opencode/commands/; done
 
 6. Restart OpenCode so it reloads config, skills, and commands.
 7. cd back to this repo and run `memhub init`, then `memhub status`.
@@ -506,7 +506,10 @@ Surfaces: `memhub code index|status|rm` and `memhub locate` (CLI) · `memhub.loc
 
 ## The web dashboard
 
-Run `memhub viz` in your project directory (or `/viz` in Claude Code) to open a local read-only dashboard in your browser. Serves from localhost, reads the current repo's database, never writes anything.
+The dashboard is preserved but **hibernated**. Normal builds do not contain
+`memhub viz` or install `/viz`. To reactivate it deliberately, build with
+`cargo build --features viz`; `viz` implies the dormant `metrics` feature.
+The server remains localhost-only, read-only, and never writes anything.
 
 Six tabs:
 
@@ -750,8 +753,8 @@ Tasks and session notes write directly — they're low-stakes (intent and scratc
 | `memhub eval retrieval` | Run the Recall@K harness against `tests/retrieval_golden.json` |
 | `memhub eval locate` | Recall@K harness for the code locator |
 | `memhub stats --window 7d` | Write activity by actor, review rate, stale-fact counts |
-| `memhub metrics enable/status` | Opt-in token accounting (Claude Code transcript scraping) |
-| `memhub viz` | Open the local read-only web dashboard |
+| `memhub metrics enable/status` | Hibernated; available only in an explicit `--features metrics` build |
+| `memhub viz` | Hibernated; available only in an explicit `--features viz` build |
 | `memhub export/import` | Portable JSON backup; cross-machine restore |
 | `memhub sync enable/status/snapshot/check/adopt/commit` | Cross-machine Drive sync (M10); push/pull a whole-DB snapshot through a synced folder |
 | `memhub upgrade` | Rebuild + install the binary and bring every memhub instance on this machine to head schema; resync skill wrappers |
@@ -803,7 +806,7 @@ include_docs_in_default = false  # auto-flips on first `doc add --global`
 
 - Reads `CLAUDE.md` at session start.
 - MCP server registered repo-scoped via the committed [`.mcp.json`](.mcp.json) — nothing to set up per machine.
-- User-level slash commands at `~/.claude/commands/`: `/wrap-up`, `/catch-up`, `/check-init`, `/init-project`, `/recall`, `/locate`, `/reindex`, `/eval-recall`, `/doc`, `/metrics`, `/viz`, `/global`, `/upgrade`.
+- User-level slash commands at `~/.claude/commands/`: `/wrap-up`, `/catch-up`, `/check-init`, `/init-project`, `/recall`, `/locate`, `/reindex`, `/eval-recall`, `/doc`, `/global`, `/upgrade`. Dormant `/metrics` and `/viz` templates are retained for feature builds but are not installed by default.
 - Skill writes are attributed `actor=claude:wrap-up`, `source=user+agent:claude-code`.
 
 **Codex CLI**
@@ -884,7 +887,17 @@ Run `memhub doctor` (or `memhub doctor --json`) any time to confirm registration
 
 ### Token accounting
 
-Off by default. Opt in with `memhub metrics enable` — this auto-detects the Claude Code transcript directory and writes the resolved path into `.memhub/config.toml`. Disable with `memhub metrics disable`.
+The complete subsystem is **hibernated in normal builds**. Its implementation,
+configuration, schema, and existing rows are preserved, but the default binary
+contains no metrics CLI or MCP surface and performs no recall logging,
+transcript scraping, maintenance, rendering, calibration, or dashboard work.
+An existing `[metrics] enabled = true` is deliberately inert.
+
+To reactivate it for investigation, build with `cargo build --features metrics`.
+Add `--features viz` for the dashboard (`viz` implies `metrics`). Only those
+explicit builds expose `memhub metrics`, `metrics calibrate`, `memhub viz`, and
+the `memhub.metrics` MCP tool. The historical behavior retained behind that
+feature is documented below.
 
 Two independent sub-switches under `[metrics]`:
 - `recall_proxy = true` — logs one row to `recall_metrics` per `memhub recall` call: actual bundle size vs a full-ledger counterfactual.
@@ -934,7 +947,7 @@ memhub eval retrieval --mode fts       # A/B compare modes
 
 Single Rust binary over an embedded-migration SQLite database. The MCP server reuses the same command layer. The embedding model is bundled at build time via `build.rs` (downloads from Hugging Face, SHA256-pinned); no model download at runtime.
 
-> **Offline is a runtime guarantee, not a build-time one.** The shipped binary never touches the network (the lone exception is the explicit, opt-in `memhub metrics calibrate`). *Building from source* does: a clean build downloads ~150 MB of SHA256-pinned model assets from Hugging Face (the cross-encoder re-ranker is int8-quantized as of issue #75), and `cargo clean` discards the cache so the next build re-fetches. Airgapped source builds are unsupported today.
+> **Offline is a runtime guarantee, not a build-time one.** The default binary never touches the network. An explicitly reactivated `--features metrics` build retains the opt-in `memhub metrics calibrate` network call. *Building from source* does download ~150 MB of SHA256-pinned model assets from Hugging Face; `cargo clean` discards the cache, so the next build re-fetches. Airgapped source builds are unsupported today.
 
 ```text
 memhub CLI / MCP
@@ -944,8 +957,8 @@ memhub CLI / MCP
    ├── src/mcp/         stdio MCP server, client identity normalization
    ├── src/retrieval/   BGE-small bi-encoder + ms-marco cross-encoder, hybrid recall
    ├── src/code_index/  tree-sitter chunker + walker + `locate` over the sibling code index
-   ├── src/dashboard/   read-only local web UI (viz feature flag)
-   ├── src/metrics/     opt-in token accounting + session scraper
+   ├── src/dashboard/   hibernated read-only local web UI (`viz` feature)
+   ├── src/metrics/     hibernated token accounting (`metrics` feature)
    ├── src/render/      PROJECT.md and PROJECT_LEDGER.md emit
    └── src/export/      v1 portable JSON
        │

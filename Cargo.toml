@@ -21,10 +21,9 @@ sha2 = "0.10"
 thiserror = "2.0.17"
 # tiktoken cl100k_base BPE; vendored at compile time via include_str!
 # inside the crate, no runtime network calls. Used by
-# src/metrics/tokenizer.rs for the opt-in token-accounting subsystem
-# (decision 74). Acknowledged ~+/-10% estimate vs Anthropic's real
-# tokenizer; we use it symmetrically across both sides of every
-# comparison so the ratio stays sound.
+# src/metrics/tokenizer.rs for the hibernated token-accounting subsystem
+# (decision 74) and by the always-available markdown audit's token estimate.
+# Keeping this generic utility does not activate any metrics collection.
 tiktoken-rs = "0.11"
 tokio = { version = "1.48.0", features = ["io-std", "net", "rt-multi-thread", "signal", "time"] }
 toml = "0.8.23"
@@ -50,7 +49,7 @@ tower-http = { version = "0.6", features = ["trace"], optional = true }
 # offline-first guarantee holds — the network is touched only when a
 # user explicitly runs that command. Already vendored as a build- and
 # dev-dependency for the HF asset fetch and the rerank bake-off.
-ureq = { version = "2.10", default-features = false, features = ["tls", "json"] }
+ureq = { version = "2.10", default-features = false, features = ["tls", "json"], optional = true }
 # zstd compression for the opt-in session-transcript archiver (Wave 6 W3,
 # issue #96 / decision Q7). Used only by src/commands/transcript.rs to
 # compress a copy of the raw session JSONL into
@@ -61,8 +60,13 @@ ureq = { version = "2.10", default-features = false, features = ["tls", "json"] 
 zstd = "0.13"
 
 [features]
-default = ["viz"]
-viz = ["dep:axum", "dep:tower-http"]
+# Metrics is deliberately hibernated: normal builds contain none of its
+# runtime, CLI, MCP, rendering, scraping, or calibration surfaces. The
+# implementation and stored rows remain available for an explicit future
+# reactivation build.
+default = []
+metrics = ["dep:ureq"]
+viz = ["metrics", "dep:axum", "dep:tower-http"]
 
 # Dev/test artifacts are enormous here because the bge-small + MiniLM
 # ONNX models are `include_bytes!`'d into every binary (~250 MB of real

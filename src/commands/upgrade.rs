@@ -1801,6 +1801,9 @@ fn sync_one(
     for entry in entries.flatten() {
         let from = entry.path();
         let name = entry.file_name();
+        if !skill_surface_enabled(&name) {
+            continue;
+        }
         let (status, leaves) = match kind {
             CopyKind::FlatMd => {
                 if from.extension().and_then(|e| e.to_str()) != Some("md") {
@@ -1873,6 +1876,19 @@ fn sync_one(
         report,
         shipped,
         enumerated: true,
+    }
+}
+
+/// Metrics and viz templates stay in the source tree for an explicit
+/// reactivation build, but normal upgrades must not install their agent
+/// surfaces while the subsystem is hibernated.
+fn skill_surface_enabled(name: &std::ffi::OsStr) -> bool {
+    let raw = name.to_string_lossy();
+    let stem = raw.strip_suffix(".md").unwrap_or(&raw);
+    match stem {
+        "metrics" => cfg!(feature = "metrics"),
+        "viz" => cfg!(feature = "viz"),
+        _ => true,
     }
 }
 

@@ -152,15 +152,18 @@ pub fn open_project(start: &Path) -> Result<ProjectContext> {
     // output, which stays gated on this repo's `[global] enabled`.
     registry::record_open_best_effort(&paths.repo_root, migrations::latest_version());
 
-    // Opportunistic, gated, never-fails token-accounting scrape
+    // Opportunistic, gated, never-fails token-accounting scrape. The
+    // entire subsystem is absent from normal builds while hibernated.
     // (decision 74 component B, task #29). Off by default; a no-op
     // unless the user opted in via `memhub metrics enable`.
+    #[cfg(feature = "metrics")]
     crate::metrics::session_scraper::scrape_if_enabled(&conn, &config.metrics, &paths.repo_root);
 
     // Post-scrape upkeep (decision 74, task #30): attribute recall rows
     // to the freshly-updated session windows and prune past retention.
     // Master-switch gated, errors swallowed — same posture as the
     // scrape above. Runs after it so the reconciler sees current bounds.
+    #[cfg(feature = "metrics")]
     crate::metrics::maintenance::run_if_enabled(&conn, &config.metrics);
 
     // Automatic pending-write expiry (Wave 3 Q6, PRD §11.3): reuses the

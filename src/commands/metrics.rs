@@ -25,6 +25,7 @@ use crate::db;
 use crate::metrics::formatter::{self, PeriodTotals, SessionSummary};
 use crate::metrics::maintenance;
 use crate::metrics::session_scraper;
+use crate::transcript_files::{detect_claude_transcripts_dir, detect_codex_sessions_dir};
 use crate::{MemhubError, Result};
 
 const METRICS_ACTOR: &str = "cli:user";
@@ -1043,64 +1044,6 @@ fn query_token_totals_nd(conn: &rusqlite::Connection, days: u32) -> Option<Token
     .ok()
 }
 
-/// Auto-detect the Codex sessions directory. Codex writes all projects'
-/// sessions to `~/.codex/sessions/` (global, not per-project). The
-/// per-project filter happens in the scraper via `session_meta.payload.cwd`
-/// (decision 77). Returns `None` when HOME is not set or the directory
-/// doesn't exist.
-// `pub(crate)`: the transcript archiver (issue #96) reuses this to resolve
-// `~/.codex/sessions` the same way `metrics enable` does.
-pub(crate) fn detect_codex_sessions_dir() -> Option<std::path::PathBuf> {
-    // `db::home_dir()` honors `%USERPROFILE%` too — raw `$HOME` is often
-    // unset on Windows, which is why auto-detect silently produced nothing
-    // there (F2).
-    let home = crate::db::home_dir().ok()?;
-    let candidate = home.join(".codex/sessions");
-    if candidate.is_dir() {
-        Some(candidate)
-    } else {
-        None
-    }
-}
-
-/// Auto-detect the Claude Code transcripts dir for this repo.
-/// Claude Code stores session JSONL under
-/// `~/.claude/projects/<encoded-path>/`; see [`encode_claude_project_dir`]
-/// for the encoding.
-///
-/// Returns `None` if the home dir can't be resolved, the repo root is not
-/// canonicalizable, or the expected directory does not exist.
-/// The caller should treat `None` as "no auto-detect; set manually."
-// `pub(crate)`: the transcript archiver (issue #96) reuses this to resolve
-// the Claude per-project transcript dir the same way `metrics enable` does.
-pub(crate) fn detect_claude_transcripts_dir(repo_root: &Path) -> Option<std::path::PathBuf> {
-    // `db::home_dir()` (not raw `$HOME`) so `%USERPROFILE%` is honored on
-    // Windows — the F2 regression that left session accounting silently dead.
-    let home = crate::db::home_dir().ok()?;
-    let abs = repo_root.canonicalize().ok()?;
-    let candidate = home
-        .join(".claude/projects")
-        .join(encode_claude_project_dir(&abs));
-    if candidate.is_dir() {
-        Some(candidate)
-    } else {
-        None
-    }
-}
-
-/// Encode an absolute repo root the way Claude Code names its per-project
-/// transcript dir: every path separator — and the Windows drive `:` — is
-/// turned into `-`. Unix `/Users/foo` → `-Users-foo` (the leading `/`
-/// becomes the leading `-`); Windows `C:\Users\foo` → `C--Users-foo`
-/// (drive letter first, no leading dash). The `\\?\` verbatim prefix that
-/// `Path::canonicalize` adds on Windows is stripped first, so the result
-/// matches Claude Code's actual folder name.
-fn encode_claude_project_dir(abs: &Path) -> String {
-    let path_str = abs.to_string_lossy();
-    let stripped = path_str.strip_prefix(r"\\?\").unwrap_or(path_str.as_ref());
-    stripped.replace(['/', '\\', ':'], "-")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1109,22 +1052,6 @@ mod tests {
 
     fn init_project(dir: &std::path::Path) {
         init::run(dir).expect("init");
-    }
-
-    #[test]
-    fn claude_project_dir_encoding_windows_and_unix() {
-        use std::path::Path;
-        // Windows: verbatim prefix stripped, drive `:` and `\` → `-`,
-        // no leading dash. Matches the real folder Claude Code creates.
-        assert_eq!(
-            encode_claude_project_dir(Path::new(r"\\?\C:\Users\Kninetimmy\memhub")),
-            "C--Users-Kninetimmy-memhub"
-        );
-        // Unix: leading `/` becomes the leading `-` (unchanged from before).
-        assert_eq!(
-            encode_claude_project_dir(Path::new("/Users/foo/memhub")),
-            "-Users-foo-memhub"
-        );
     }
 
     #[test]

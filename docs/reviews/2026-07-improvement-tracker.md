@@ -26,11 +26,11 @@ numbers. Default-off config additions must keep an untouched install byte-identi
 | 4 | Retrieval performance | 12 / 12 | Q17–Q19 ✓ · Q24 ✓ · Q40 ✓ (complete) |
 | 5 | Upgrade / GC hardening | 8 / 8 | Q12–Q16 ✓ (complete) |
 | 6 | Wrap-up policy / verbosity | 6 / 6 | Q7–Q11 ✓ (complete) |
-| 7 | Cross-machine sync / metrics | 0 / 6 | Q30–Q33 |
+| 7 | Cross-machine sync / metrics | 2 / 6 | Q30 ✓ · Q32 ✓ · Q31/Q33 open |
 | 8 | CI / infra / licensing | 0 / 2 | Q37–Q38 |
 | 9 | Housekeeping | 0 / 7 | Q26–Q27, Q36 |
 
-Decisions resolved: 30 / 56 (Q1, Q2, Q3, Q4, Q5, Q6, Q7, Q8, Q9, Q10, Q11, Q12, Q13, Q14, Q15, Q16, Q17, Q18, Q19, Q21, Q22, Q23, Q24, Q25, Q29, Q32, Q35, Q39, Q40, Q41).
+Decisions resolved: 31 / 56 (Q1, Q2, Q3, Q4, Q5, Q6, Q7, Q8, Q9, Q10, Q11, Q12, Q13, Q14, Q15, Q16, Q17, Q18, Q19, Q21, Q22, Q23, Q24, Q25, Q29, Q30, Q32, Q35, Q39, Q40, Q41).
 
 ---
 
@@ -472,7 +472,12 @@ path + byte sizes which cross machines via export (audit-log, acceptable) · orp
 ## Wave 7 — Cross-machine  (gating: Q30–Q33)
 - [ ] X1 `sync check --diff`
 - [ ] X2 import-time printed checklist (+ fix inverted docs hint)
-- [ ] X3 metrics consolidation (after F2/F3 baselines accrue)
+- [x] X3 metrics hibernation: preserve config/schema/data/source, but compile the
+  complete subsystem, `metrics calibrate`, dashboard, MCP tool, render digest,
+  collection side effects, and `/metrics`+`/viz` skill installation out of default
+  builds. Reactivate explicitly with `--features metrics|viz`; `viz` implies
+  `metrics`. Transcript archiving was decoupled from metrics path helpers so it
+  remains available. — 2026-07-09, Q30 user direction (memhub proposal #3 pending review).
 - [ ] X5 marker temp+rename; degrade unparseable marker
 - [ ] X6 adopt pre-swap `BEGIN IMMEDIATE` probe
 
@@ -501,7 +506,7 @@ Resolve per wave. Recommendations are in the review; mark here when the user rul
 **Retrieval:** [x] Q17 [x] Q18 [x] Q19 [ ] Q20 *(Q17–Q19 resolved 2026-07-08 as memhub decision 148 — Wave 4 gate: Q17 gather-then-decide via R12's CLI/MCP surface column (PR #84); Q18 run R7 int8 as a separate eval-gated experiment, accepted at 0pp Recall@3 movement (PR #86); Q19 MCP-only recall bundle trim + add `rerank_score`, CLI `--json` keeps full shape (PR #82). Q20 (37% empty-recall question) still deferred until R12 data accrues.)*
 **CLAUDE.md:** [x] Q21 [x] Q22 [x] Q23 [x] Q24 [x] Q25 *(all resolved 2026-07-06 — Wave 2 gate: Q21 generate AGENTS.md from CLAUDE.md (derived, content-equal parity); Q22 accept ~2,500-tok target + inline {Guardrails, Session Continuity, Delegation, stale-embeddings gate, sync_adopt gate}; Q23 implement versioned managed block; Q24 fix — register `memhub serve` (confirmed registered in 0 CLIs; work lands Wave 4/Q40); Q25 opt-in `[audit] user_md_path`)*
 **Surfaces:** [ ] Q26 [ ] Q27 [ ] Q28 [x] Q29 *(resolved 2026-07-05 — wrapped noun-keyed objects; `doc ls` migrated; PR #18)*
-**Cross-machine:** [ ] Q30 [ ] Q31 [x] Q32 *(resolved — decision 134; Mac lineage not adopted, ported as Windows 128–133)* [ ] Q33
+**Cross-machine:** [x] Q30 *(resolved 2026-07-09 — hibernate the entire metrics/viz/calibrate subsystem behind off-by-default Cargo features; preserve implementation and data for explicit resurfacing; memhub proposal #3 pending review)* [ ] Q31 [x] Q32 *(resolved — decision 134; Mac lineage not adopted, ported as Windows 128–133)* [ ] Q33
 **DB:** [ ] Q34 [x] Q35 *(resolved 2026-07-05 — `synchronous = NORMAL` alongside WAL across all DB surfaces; memhub decision 140 / review D5)* [ ] Q36
 **Infra:** [ ] Q37 [ ] Q38 [x] Q39 *(resolved 2026-07-05 — repo-root + `[doc] allowed_dirs` allowlist for MCP `doc_add`; PR #17)*
 **Parity/free-form:** [x] Q40 *(resolved 2026-07-08 as decision 148 — Wave 4: register `memhub serve` in all three CLIs, repo-scoped where supported — committed `.mcp.json` (Claude Code) + `mcp.memhub` in tracked `opencode.json` + per-machine `[mcp_servers.memhub]`/trust in `~/.codex/config.toml` for Codex + a per-CLI registration probe in doctor; PR #79)* [x] Q41 *(resolved 2026-07-06 — adopt fail-safe: keep a ~10-line compact routing block in AGENTS.md for Codex/OpenCode, trim CLAUDE.md's verbose routing; the per-CLI instructions-delivery spike is deferred — see Wave 4's still-open note)* [ ] Q42 [ ] Q43 [ ] Q44 [ ] Q45 [ ] Q46 [ ] Q47 [ ] Q48 [ ] Q49 [ ] Q50 [ ] Q51 [ ] Q52 [ ] Q53 [ ] Q54 [ ] Q55 [ ] Q56
