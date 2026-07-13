@@ -9,6 +9,14 @@
 //! fail-safe routing block). Nothing else is rewritten — the retained
 //! `## ` sections carry through verbatim.
 //!
+//! If `CLAUDE.md` ends with an Orch-managed block (`<!-- orchestrator:managed:start -->`
+//! … `<!-- orchestrator:managed:end -->`, appended and maintained by Orch's
+//! installer — see `.orchestrator/config.toml`), it is split off before the
+//! transform above and re-appended last, verbatim, after the two
+//! Codex/OpenCode-only sections. Orch's installer expects to find that block
+//! at EOF, so the generated file keeps it there instead of letting the
+//! appended sections push it out of place.
+//!
 //! `tests/upgrade/skill_parity.rs` asserts `AGENTS.md == generate_agents_md(CLAUDE.md)`
 //! (modulo line endings), so any edit to `CLAUDE.md` must be followed by a
 //! regenerate-and-commit of `AGENTS.md`. The regeneration path is
@@ -66,6 +74,14 @@ Never Grep for code by intent before `locate`. Never read `PROJECT_LEDGER.md` be
 (Carrier note: Claude Code gets these rules from the MCP `instructions` field; this block is
 the Codex/OpenCode fallback pending the Wave 4 delivery spike.)";
 
+/// Opening marker of the Orch-managed block Orch's installer appends to
+/// `CLAUDE.md` (and, via [`generate_agents_md`], to `AGENTS.md`). See the
+/// module doc comment.
+const MANAGED_BLOCK_START: &str = "<!-- orchestrator:managed:start";
+
+/// Closing marker of the Orch-managed block; see [`MANAGED_BLOCK_START`].
+const MANAGED_BLOCK_END: &str = "<!-- orchestrator:managed:end -->";
+
 /// Transform `CLAUDE.md` content into the `AGENTS.md` content.
 ///
 /// Pure string work, no dependencies. Line-ending-agnostic: the input is
@@ -74,6 +90,21 @@ the Codex/OpenCode fallback pending the Wave 4 delivery spike.)";
 /// out CRLF on Windows under `core.autocrlf=true`).
 pub fn generate_agents_md(claude_md: &str) -> String {
     let claude = claude_md.replace("\r\n", "\n");
+
+    // 0. Split off a trailing Orch-managed block, if the input ends (modulo
+    //    trailing newlines) with one, so it can be re-appended last after
+    //    the Codex/OpenCode-only sections rather than getting pushed out of
+    //    EOF position by step 3.
+    let trimmed = claude.trim_end_matches('\n');
+    let managed_block = trimmed.rfind(MANAGED_BLOCK_START).and_then(|start| {
+        let end =
+            start + trimmed[start..].find(MANAGED_BLOCK_END)? + MANAGED_BLOCK_END.len();
+        (end == trimmed.len()).then(|| (start, trimmed[start..end].to_string()))
+    });
+    let claude = match &managed_block {
+        Some((start, _)) => trimmed[..*start].trim_end_matches('\n').to_string(),
+        None => claude,
+    };
 
     // 1. Swap the H1 title line.
     let (first_line, rest) = claude.split_once('\n').unwrap_or((claude.as_str(), ""));
@@ -94,8 +125,15 @@ pub fn generate_agents_md(claude_md: &str) -> String {
 
     // 3. Append the Codex/OpenCode-only sections after the last CLAUDE.md
     //    section, separated by a blank line, with a single trailing newline.
+    //    A trailing Orch-managed block (split off in step 0) is carried
+    //    through verbatim and re-appended last of all, so it stays at EOF.
     let body = with_note.trim_end_matches('\n');
-    format!("{body}\n\n{AGENT_ATTRIBUTION}\n\n{ROUTING_BLOCK}\n")
+    match managed_block {
+        Some((_, block)) => {
+            format!("{body}\n\n{AGENT_ATTRIBUTION}\n\n{ROUTING_BLOCK}\n\n{block}\n")
+        }
+        None => format!("{body}\n\n{AGENT_ATTRIBUTION}\n\n{ROUTING_BLOCK}\n"),
+    }
 }
 
 #[cfg(test)]
@@ -103,6 +141,10 @@ mod tests {
     use super::*;
 
     const SAMPLE: &str = "# memhub\n\nIntro line.\n\nPointer line.\n\n## Session Continuity\n\nBody.\n\n## Build / Test / Run\n\n```bash\ncargo build\n```\n";
+
+    const MANAGED_BLOCK: &str = "<!-- orchestrator:managed:start version=1 -->\nManaged line one.\nManaged line two.\n<!-- orchestrator:managed:end -->";
+
+    const SAMPLE_WITH_MANAGED_BLOCK: &str = "# memhub\n\nIntro line.\n\nPointer line.\n\n## Session Continuity\n\nBody.\n\n## Build / Test / Run\n\n```bash\ncargo build\n```\n\n<!-- orchestrator:managed:start version=1 -->\nManaged line one.\nManaged line two.\n<!-- orchestrator:managed:end -->";
 
     #[test]
     fn swaps_title_and_keeps_body_sections() {
@@ -146,5 +188,45 @@ mod tests {
     fn is_line_ending_agnostic() {
         let crlf = SAMPLE.replace('\n', "\r\n");
         assert_eq!(generate_agents_md(SAMPLE), generate_agents_md(&crlf));
+    }
+
+    #[test]
+    fn keeps_trailing_managed_block_last() {
+        let out = generate_agents_md(SAMPLE_WITH_MANAGED_BLOCK);
+        let last_body = out.find("## Build / Test / Run").expect("body section");
+        let attrib = out
+            .find("## Agent attribution (Codex-specific)")
+            .expect("attribution section appended");
+        let routing = out
+            .find("## memhub routing (Codex / OpenCode)")
+            .expect("routing block appended");
+        let managed = out
+            .find(MANAGED_BLOCK_START)
+            .expect("managed block carried through");
+        assert!(last_body < attrib, "injected sections come after the body");
+        assert!(attrib < routing, "attribution precedes routing");
+        assert!(routing < managed, "managed block stays last, after routing");
+        assert!(
+            out.ends_with("<!-- orchestrator:managed:end -->\n"),
+            "single trailing newline after the managed block"
+        );
+    }
+
+    #[test]
+    fn carries_managed_block_verbatim() {
+        let out = generate_agents_md(SAMPLE_WITH_MANAGED_BLOCK);
+        assert!(
+            out.contains(MANAGED_BLOCK),
+            "managed block content must be carried through unmodified"
+        );
+    }
+
+    #[test]
+    fn is_line_ending_agnostic_with_managed_block() {
+        let crlf = SAMPLE_WITH_MANAGED_BLOCK.replace('\n', "\r\n");
+        assert_eq!(
+            generate_agents_md(SAMPLE_WITH_MANAGED_BLOCK),
+            generate_agents_md(&crlf)
+        );
     }
 }
