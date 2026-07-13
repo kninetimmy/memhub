@@ -109,8 +109,15 @@ enable`. `enabled` + `drive_subpath` live in `.memhub/config.toml`
 
 Surfaces:
 - CLI: `memhub sync enable|disable|status|snapshot|check|adopt|commit`.
-  A push is `snapshot` then `commit`; a pull is `check` then `adopt
-  --yes`. `status` shows the resolved `remote dir`.
+  A push is just `snapshot`: writing to the resolved canonical remote
+  dir records the push baseline itself, so a later `check` reads
+  up-to-date on equal local/remote logical versions with no second
+  step. (Snapshotting to a non-canonical destination — an inspection
+  copy, a test fixture dir — leaves the marker untouched, the
+  pre-existing fail-closed behavior.) `commit` is no longer part of
+  the routine push; it exists to verify or repair a baseline after
+  the fact. A pull is `check` then `adopt --yes`. `status` shows the
+  resolved `remote dir`.
 - MCP (the agent-first surface): `memhub.sync_status`,
   `memhub.sync_snapshot`, `memhub.sync_check`, `memhub.sync_commit`,
   and `memhub.sync_adopt`. All default the target to the canonical
