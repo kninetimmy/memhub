@@ -373,9 +373,11 @@ const SYNC_PUSH: &str = "\
 Run `memhub sync status --json`. If `enabled` is false, skip this section silently.
 Otherwise: `memhub sync check` first, and stop to /catch-up instead of pushing if the
 verdict is `drive-ahead` or `diverged`. If safe, `memhub sync snapshot` (writes directly
-into the synced folder) then `memhub sync commit` to record the new baseline. If
-snapshot fails or refuses, say so and do not run commit -- the local DB is unaffected
-either way.
+into the synced folder) -- when pushing to the configured remote this records the new
+baseline itself, so no separate step is required. If snapshot fails or refuses, say so;
+the local DB is unaffected either way. `memhub sync commit` remains available as an
+optional verify/repair step (e.g. after pushing to an explicit out_dir override), and
+is a harmless no-op if the baseline is already recorded.
 
 ";
 

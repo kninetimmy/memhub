@@ -831,7 +831,7 @@ impl MemhubServer {
 
     #[tool(
         name = "sync_snapshot",
-        description = "Write a consistent single-file DB snapshot + manifest into the synced Drive folder — the push; follow with sync_commit to record the baseline. Refuses when the remote is drive-ahead of or diverged from local (would clobber newer state) — pull first, or pass `force=true` for last-writer-wins. Defaults to the configured remote dir; pass `remote` to override. Requires `memhub sync enable` for this repo."
+        description = "Write a consistent single-file DB snapshot + manifest into the synced Drive folder — the push. When targeting the configured remote dir (the default) this records the new baseline itself, so no follow-up call is needed; sync_commit remains for an explicit-remote push or as a manual repair step. Refuses when the remote is drive-ahead of or diverged from local (would clobber newer state) — pull first, or pass `force=true` for last-writer-wins. Defaults to the configured remote dir; pass `remote` to override. Requires `memhub sync enable` for this repo."
     )]
     async fn sync_snapshot(
         &self,
@@ -864,7 +864,7 @@ impl MemhubServer {
 
     #[tool(
         name = "sync_commit",
-        description = "Record that the local DB now equals the just-pushed snapshot, so the next sync_check reads up-to-date. Call after sync_snapshot. Defaults to the configured remote dir; pass `remote` to override."
+        description = "Record that the local DB now equals the just-pushed snapshot, so the next sync_check reads up-to-date. A push to the configured remote dir already records this via sync_snapshot; use sync_commit to cover an explicit-remote push, or as an idempotent verify/repair step (harmless no-op if the baseline is already recorded). Defaults to the configured remote dir; pass `remote` to override."
     )]
     async fn sync_commit(
         &self,

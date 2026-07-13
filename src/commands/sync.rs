@@ -287,6 +287,27 @@ pub fn snapshot(start: &Path, out_dir: &Path, force: bool) -> Result<SnapshotSum
     let manifest_path = out_dir.join(MANIFEST_FILENAME);
     fs::write(&manifest_path, serde_json::to_string_pretty(&manifest)?)?;
 
+    // A snapshot written into the repo's *canonical* remote dir just
+    // pushed the DB to the shared destination -- record the same
+    // baseline `commit()` would, so a push is atomic with its own
+    // marker instead of leaving a stale one until a required second
+    // step. A snapshot to anywhere else (an inspection copy, a test
+    // fixture dir) must never touch the marker: stamping a baseline for
+    // a push that never reached the real remote would let a later
+    // check() report a false DriveAhead/UpToDate over a true Diverged.
+    if is_canonical_remote_dir(&ctx.paths.repo_root, &ctx.config.sync, out_dir) {
+        save_marker(
+            &ctx.paths.memhub_dir,
+            &SyncMarker {
+                project_id: manifest.project_id.clone(),
+                baseline: manifest.logical_version.clone(),
+                baseline_file_sha256: manifest.file_sha256.clone(),
+                synced_at: manifest.created_at.clone(),
+                last_action: "push".into(),
+            },
+        )?;
+    }
+
     Ok(SnapshotSummary {
         out_dir: out_dir.to_path_buf(),
         snapshot_path,
@@ -297,6 +318,31 @@ pub fn snapshot(start: &Path, out_dir: &Path, force: bool) -> Result<SnapshotSum
         file_sha256,
         bytes,
     })
+}
+
+/// Whether `out_dir` is this repo's canonical remote dir (`<drive_subpath>
+/// /memhub/<project_id>`, per `resolve_remote_dir`) -- used to decide
+/// whether `snapshot()` should record the push baseline automatically.
+/// Paths are compared via `fs::canonicalize` (the caller only reaches
+/// here after `create_dir_all(out_dir)`, so it's guaranteed to exist) so
+/// a `\\?\`-prefixed or differently-cased spelling of the same directory
+/// on Windows doesn't produce a false negative.
+///
+/// Any failure -- `resolve_remote_dir` erroring (no `drive_subpath`
+/// configured, the case for every existing unit test's bare
+/// `enable_sync` fixture) or either side failing to canonicalize -- is
+/// treated as "not canonical". That fails toward the pre-existing
+/// behavior (no automatic marker write, `commit()` still required) and
+/// is the safe direction: it never risks stamping a baseline for a
+/// snapshot that did not actually land at the real remote.
+fn is_canonical_remote_dir(repo_root: &Path, cfg: &SyncConfig, out_dir: &Path) -> bool {
+    let Ok(remote_dir) = resolve_remote_dir(repo_root, cfg) else {
+        return false;
+    };
+    match (fs::canonicalize(&remote_dir), fs::canonicalize(out_dir)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
 }
 
 /// Per-machine last-sync marker, stored at `.memhub/sync_marker.json`
@@ -438,13 +484,23 @@ pub fn check(start: &Path, remote: &Path) -> Result<CheckReport> {
             }
         }
         Some(m) => {
-            let local_changed = local_logical != m.baseline;
-            let drive_changed = manifest.logical_version != m.baseline;
-            match (local_changed, drive_changed) {
-                (false, false) => SyncVerdict::UpToDate,
-                (true, false) => SyncVerdict::LocalAhead,
-                (false, true) => SyncVerdict::DriveAhead,
-                (true, true) => SyncVerdict::Diverged,
+            // Local and remote already hold identical content, regardless
+            // of what the stored baseline says. This self-heals a marker
+            // that fell behind a real sync (e.g. a push that skipped
+            // `commit()` before this baseline-on-push fix existed) so a
+            // historically-missed commit doesn't keep reporting a stale
+            // verdict forever.
+            if manifest.logical_version == local_logical {
+                SyncVerdict::UpToDate
+            } else {
+                let local_changed = local_logical != m.baseline;
+                let drive_changed = manifest.logical_version != m.baseline;
+                match (local_changed, drive_changed) {
+                    (false, false) => SyncVerdict::UpToDate,
+                    (true, false) => SyncVerdict::LocalAhead,
+                    (false, true) => SyncVerdict::DriveAhead,
+                    (true, true) => SyncVerdict::Diverged,
+                }
             }
         }
     };
@@ -1031,6 +1087,20 @@ mod tests {
         cfg.save(&ctx.paths.config_path).expect("save config");
     }
 
+    /// Like `enable_sync`, but also sets `drive_subpath` so
+    /// `resolve_remote_dir`/`default_remote_dir` succeed -- needed to
+    /// exercise the canonical-remote-dir baseline-on-push path, which
+    /// `enable_sync`'s bare (empty `drive_subpath`) fixture deliberately
+    /// leaves unreachable for every other test.
+    fn enable_sync_with_drive_subpath(repo: &Path, drive_subpath: &Path) {
+        let ctx = db::open_project(repo).expect("open");
+        let mut cfg = ctx.config.clone();
+        cfg.sync.enabled = true;
+        cfg.sync.project_id = "test-proj-abcd1234".to_string();
+        cfg.sync.drive_subpath = drive_subpath.display().to_string();
+        cfg.save(&ctx.paths.config_path).expect("save config");
+    }
+
     #[test]
     fn normalize_remote_folds_all_spellings_of_one_repo() {
         let canonical = "github.com/kninetimmy/memhub";
@@ -1526,6 +1596,131 @@ mod tests {
         assert_eq!(
             check(a.path(), &drive).expect("status").verdict,
             SyncVerdict::LocalAhead
+        );
+    }
+
+    #[test]
+    fn second_push_after_local_write_succeeds_without_force_and_precheck_is_local_ahead() {
+        // Regression test for the filed bug: a push into the repo's
+        // canonical remote dir must record its own baseline (this fix),
+        // rather than leaving the marker absent until an easy-to-forget
+        // `sync commit` -- which made every *second* push see the
+        // (still markerless) remote as Diverged from local and refuse
+        // without --force.
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let drive_root = tempdir().expect("drive tempdir");
+        enable_sync_with_drive_subpath(temp.path(), drive_root.path());
+        fact::add(temp.path(), "alpha", "1", "user", "cli:user").expect("fact");
+
+        let remote_dir = default_remote_dir(temp.path()).expect("resolve remote dir");
+        snapshot(temp.path(), &remote_dir, false).expect("first push");
+
+        // A durable local write after the push.
+        fact::add(temp.path(), "beta", "2", "user", "cli:user").expect("fact");
+
+        // Pre-push check must read local-ahead (the first push recorded
+        // its own baseline), never diverged.
+        assert_eq!(
+            check(temp.path(), &remote_dir).expect("status").verdict,
+            SyncVerdict::LocalAhead,
+            "the baseline from the first push means the new local write reads as local-ahead"
+        );
+
+        // The second push must succeed without --force.
+        snapshot(temp.path(), &remote_dir, false)
+            .expect("second push without --force must succeed");
+    }
+
+    #[test]
+    fn snapshot_to_foreign_dir_does_not_touch_marker() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let drive_root = tempdir().expect("drive tempdir");
+        enable_sync_with_drive_subpath(temp.path(), drive_root.path());
+        fact::add(temp.path(), "k", "v", "user", "cli:user").expect("fact");
+
+        let ctx = db::open_project(temp.path()).expect("open");
+        assert!(
+            load_marker(&ctx.paths.memhub_dir).expect("load").is_none(),
+            "no marker before any push"
+        );
+
+        // Push to a directory that is NOT the canonical remote dir (an
+        // inspection copy, or a test fixture) -- must not create a
+        // marker.
+        let foreign = temp.path().join("inspect-copy");
+        snapshot(temp.path(), &foreign, false).expect("snapshot to foreign dir");
+        assert!(
+            load_marker(&ctx.paths.memhub_dir).expect("load").is_none(),
+            "foreign-dir snapshot must not create a marker"
+        );
+
+        // An existing marker (e.g. from a prior real push) must survive a
+        // foreign-dir snapshot unchanged.
+        let existing = SyncMarker {
+            project_id: "test-proj-abcd1234".into(),
+            baseline: LogicalVersion {
+                writes_log_max_id: 1,
+                writes_log_count: 1,
+                digest: "existing-baseline".into(),
+            },
+            baseline_file_sha256: "existing-sha".into(),
+            synced_at: "2026-01-01 00:00:00".into(),
+            last_action: "push".into(),
+        };
+        save_marker(&ctx.paths.memhub_dir, &existing).expect("save marker");
+        let foreign2 = temp.path().join("inspect-copy-2");
+        snapshot(temp.path(), &foreign2, false).expect("snapshot to another foreign dir");
+        let after = load_marker(&ctx.paths.memhub_dir)
+            .expect("load")
+            .expect("marker still present");
+        assert_eq!(after.baseline, existing.baseline, "existing marker untouched");
+        assert_eq!(
+            after.baseline_file_sha256, existing.baseline_file_sha256,
+            "existing marker untouched"
+        );
+        assert_eq!(after.synced_at, existing.synced_at, "existing marker untouched");
+    }
+
+    #[test]
+    fn status_equal_logical_is_up_to_date_despite_stale_baseline() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        enable_sync(temp.path());
+        let (local, schema) = local_state(temp.path());
+
+        // Baseline is stale (matches neither side), but local and remote
+        // logical versions are equal -- e.g. a push that skipped
+        // `commit()` before this fix, followed by a fresh check with
+        // nothing else having changed on either side. Must self-heal to
+        // up-to-date rather than derive a verdict from a baseline that
+        // neither side actually agreed on.
+        let ctx = db::open_project(temp.path()).expect("open");
+        let stale_baseline = LogicalVersion {
+            writes_log_max_id: local.writes_log_max_id + 99,
+            writes_log_count: local.writes_log_count + 99,
+            digest: "stale-baseline-neither-side-agrees-with".into(),
+        };
+        save_marker(
+            &ctx.paths.memhub_dir,
+            &SyncMarker {
+                project_id: "test-proj-abcd1234".into(),
+                baseline: stale_baseline,
+                baseline_file_sha256: "stale-sha".into(),
+                synced_at: "2026-01-01 00:00:00".into(),
+                last_action: "push".into(),
+            },
+        )
+        .expect("save marker");
+
+        let remote = temp.path().join("remote");
+        write_remote_manifest(&remote, "test-proj-abcd1234", local.clone(), &schema);
+
+        assert_eq!(
+            check(temp.path(), &remote).expect("status").verdict,
+            SyncVerdict::UpToDate,
+            "equal local/remote logical versions must read up-to-date even with a stale baseline"
         );
     }
 
