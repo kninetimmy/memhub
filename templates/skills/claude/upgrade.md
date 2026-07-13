@@ -66,8 +66,8 @@ about what will change.
 
 ## What it does, in order
 
-1. `cargo install --path . --force` (aborts the whole run on build
-   failure — no half-upgrade).
+1. `cargo install --path . --force --locked` (aborts the whole run on
+   build failure — no half-upgrade).
 2. **PATH-shadow fix (closes the recurring stale-binary bug):** if
    `~/.local/bin/memhub` is a *regular file* shadowing
    `~/.cargo/bin/memhub`, it is replaced **once** with a symlink so
