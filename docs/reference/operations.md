@@ -509,7 +509,7 @@ store, and the installed agent skill wrappers — not just whichever
 repo you rebuilt from. Run it **from the memhub source repo**; it
 errors elsewhere.
 
-Flow: `cargo install --path . --force` → one-time, order-independent
+Flow: `cargo install --path . --force --locked` → one-time, order-independent
 PATH-shadow fix (a regular-file `~/.local/bin/memhub` shadowing
 `~/.cargo/bin/memhub` is replaced **once** with a symlink so future
 installs always take effect; already-a-symlink is an idempotent no-op;

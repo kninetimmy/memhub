@@ -258,7 +258,7 @@ fn stage_decision(
 // Windows self-replace staging hop
 // ---------------------------------------------------------------------
 
-/// The two files `cargo install --path . --force` overwrites: its build
+/// The two files `cargo install --path . --force --locked` overwrites: its build
 /// artifact under the source repo's `target/release/`, and its install
 /// destination in the cargo bin. The orchestrator's own image must be
 /// neither.
@@ -499,7 +499,7 @@ fn sweep_stale_old_exes(cargo_bin: &Path) -> Vec<PathBuf> {
     leftover
 }
 
-/// Run `cargo install --path . --force`, streaming cargo's own output.
+/// Run `cargo install --path . --force --locked`, streaming cargo's own output.
 /// When `staged` (Windows staged run), retry a failed attempt a few
 /// times with backoff: the only expected transient is the parent's
 /// image lock lingering past its exit, and cargo's cache makes retries
@@ -526,10 +526,11 @@ fn cargo_install_with_retry(cwd: &Path, staged: bool, cargo_bin: &Path) -> Resul
             .arg("--path")
             .arg(".")
             .arg("--force")
+            .arg("--locked")
             .current_dir(cwd)
             .status()
             .map_err(|e| MemhubError::ExternalCommand {
-                command: "cargo install --path . --force".to_string(),
+                command: "cargo install --path . --force --locked".to_string(),
                 stderr: format!("could not launch cargo ({e}); is it on PATH?"),
             })?;
         if status.success() {
@@ -545,7 +546,7 @@ fn cargo_install_with_retry(cwd: &Path, staged: bool, cargo_bin: &Path) -> Resul
         }
     }
     Err(MemhubError::ExternalCommand {
-        command: "cargo install --path . --force".to_string(),
+        command: "cargo install --path . --force --locked".to_string(),
         stderr: format!(
             "build/install failed after {attempts} attempt(s); not migrating instances"
         ),
@@ -586,7 +587,7 @@ fn orchestrate_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
     //    — the fix for a SECOND, unrelated memhub process (not this
     //    orchestrator) holding it open, which retrying alone cannot
     //    resolve.
-    println!("==> cargo install --path . --force");
+    println!("==> cargo install --path . --force --locked");
     let renamed_old = cargo_install_with_retry(cwd, args.staged, &cargo_bin)?;
     if let Some(old) = renamed_old {
         println!(
@@ -1322,7 +1323,7 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
             "{}",
             json!({
                 "dry_run": true,
-                "would_run": "cargo install --path . --force",
+                "would_run": "cargo install --path . --force --locked",
                 "head_schema": head,
                 "path_shadow": shadow_state,
                 "would_prune": would_prune,
@@ -1361,7 +1362,7 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
              copy (auto if a TTY is attached, else needs --allow-self-stage)"
         );
     }
-    println!("  would run:    cargo install --path . --force");
+    println!("  would run:    cargo install --path . --force --locked");
     println!("  install ->    {}", cargo_bin.display());
     println!("  PATH shadow:  {shadow_state}");
     println!("  head schema:  {head}");
