@@ -32,6 +32,30 @@
 //! upgrade:` line. Interactive runs stage automatically; non-interactive
 //! runs (CI) require `--allow-self-stage` so the exit-code loss is never
 //! silent. Unix is untouched — `stage_decision` returns `Orchestrate`.
+//!
+//! ## Windows locked destination (a second, unrelated process)
+//!
+//! The staging hop above only frees *the orchestrator's own* image lock.
+//! It does nothing when some completely different running memhub
+//! process — e.g. a live `memhub` MCP server attached to an agent
+//! session — holds `~/.cargo/bin/memhub.exe` open: that process is not
+//! going anywhere just because we relaunched ourselves elsewhere, so
+//! `cargo install` fails every retry (as it did on 2026-07-13, all 3
+//! staged attempts). Fix: Windows permits *renaming* a file that is
+//! open/mapped for execution — only deleting or overwriting it in place
+//! is blocked — which is exactly the manual workaround that resolved
+//! that incident. So immediately before the first `cargo install`
+//! attempt, `cargo_install_with_retry` unconditionally renames an
+//! existing install destination aside to `memhub.exe.old-<timestamp>`
+//! (`rename_locked_dest_aside`) whether or not anything is actually
+//! holding it; cargo install then simply creates a fresh file at the
+//! now-empty path. This is not a lock probe — the rename itself always
+//! succeeds, locked or not — so leftovers are bounded by sweeping on
+//! every run: `orchestrate_phase` first best-effort deletes `.old-*`
+//! files left by earlier runs (`sweep_stale_old_exes`, skipping any
+//! still open), then reports whatever is renamed-aside or still left
+//! over in the upgrade summary. Never fatal, and Unix is untouched (the
+//! rename/sweep pair only runs under `cfg!(windows)`).
 
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -97,6 +121,15 @@ const ORPHANS_ENV: &str = "MEMHUB_UPGRADE_ORPHANS_JSON";
 /// untouched, so `--finish` renders the one-time adoption notice. Absent
 /// (e.g. an older orchestrate binary, or nothing protected) => no notice.
 const FIRSTRUN_ENV: &str = "MEMHUB_UPGRADE_RESYNC_FIRSTRUN";
+
+/// Windows only: crosses the orchestrate->finish process boundary with
+/// the abbreviated paths of any `memhub.exe.old-*` install destination
+/// left behind this run — one this run itself renamed aside
+/// (`rename_locked_dest_aside`), plus any from earlier runs that
+/// `sweep_stale_old_exes` could not remove because something still has
+/// them open. Absent/empty => nothing to report. JSON-encoded `Vec<String>`,
+/// same shape as `SKILLS_ENV`/`ORPHANS_ENV`.
+const OLD_EXE_ENV: &str = "MEMHUB_UPGRADE_OLD_EXE_JSON";
 
 /// Exit code from a Windows staged handoff: the real upgrade continues in
 /// a detached staged copy, so the invoking shell can't yet know the
@@ -389,12 +422,103 @@ fn now_stamp() -> u128 {
         .unwrap_or(0)
 }
 
+// ---------------------------------------------------------------------
+// Windows locked-destination rename-aside
+// ---------------------------------------------------------------------
+//
+// See the module-level "Windows locked destination" doc above for the
+// scenario this handles: a SECOND, unrelated memhub process (not this
+// orchestrator — the staging hop above already keeps this process's own
+// image out of cargo's conflict set) holding the install destination
+// open. Retrying `cargo install` cannot fix that; renaming the
+// destination aside can.
+
+/// Filename prefix for a renamed-aside install destination. Distinct
+/// from `sweep_stale_staging`'s `memhub-upgrade-*` shim prefix so the two
+/// sweeps can never collide.
+fn old_exe_prefix() -> String {
+    format!("{}.old-", bin_name())
+}
+
+/// Pure naming logic, split out so it is unit-testable without touching
+/// the filesystem or the (time-dependent) real `now_stamp()`.
+fn old_exe_name(stamp: u128) -> String {
+    format!("{}{stamp}", old_exe_prefix())
+}
+
+/// Selection predicate for the stale-sweep: true for a filename this
+/// module could have renamed a destination to. Split out so the
+/// selection logic is unit-testable independent of directory scanning.
+fn is_old_exe_name(name: &str) -> bool {
+    name.starts_with(&old_exe_prefix())
+}
+
+/// Rename an existing install destination aside to
+/// `<bin>.old-<timestamp>`, returning the new path on success. Not a lock
+/// probe: Windows permits renaming a file that is open/mapped for
+/// execution (only deleting/overwriting it in place is blocked), so this
+/// succeeds whether or not anything currently holds `cargo_bin` open —
+/// the proven manual workaround, automated. A missing destination (the
+/// very first install) or a rename failure (e.g. a read-only mount) is a
+/// silent no-op: `cargo install` proceeds and surfaces its own error if
+/// something else is actually wrong.
+fn rename_locked_dest_aside(cargo_bin: &Path) -> Option<PathBuf> {
+    if !cargo_bin.exists() {
+        return None;
+    }
+    let old = cargo_bin.with_file_name(old_exe_name(now_stamp()));
+    std::fs::rename(cargo_bin, &old).ok().map(|_| old)
+}
+
+/// Best-effort removal of `.old-*` install destinations left by
+/// `rename_locked_dest_aside` on an earlier run. Returns the ones that
+/// could NOT be removed (still open — skipped, not retried; reclaimed on
+/// some later run once nothing maps them). Unlike `sweep_stale_staging`'s
+/// hour cutoff (which guards against racing a concurrent upgrade's live
+/// shim), a renamed-aside `.old` file plays no active role once created,
+/// so every run simply tries to delete every one it finds; a deletion
+/// failure IS the "still locked" signal, not a reason to wait.
+fn sweep_stale_old_exes(cargo_bin: &Path) -> Vec<PathBuf> {
+    let Some(dir) = cargo_bin.parent() else {
+        return Vec::new();
+    };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut leftover = Vec::new();
+    for entry in rd.flatten() {
+        let name = entry.file_name();
+        if !is_old_exe_name(&name.to_string_lossy()) {
+            continue;
+        }
+        let path = entry.path();
+        if std::fs::remove_file(&path).is_err() {
+            leftover.push(path);
+        }
+    }
+    leftover
+}
+
 /// Run `cargo install --path . --force`, streaming cargo's own output.
 /// When `staged` (Windows staged run), retry a failed attempt a few
 /// times with backoff: the only expected transient is the parent's
 /// image lock lingering past its exit, and cargo's cache makes retries
 /// cheap. Non-staged / Unix keeps the original single-shot fail-fast.
-fn cargo_install_with_retry(cwd: &Path, staged: bool) -> Result<()> {
+///
+/// Windows only, and orthogonal to the `staged` retry above: before the
+/// first attempt, `rename_locked_dest_aside` unconditionally renames an
+/// existing install destination aside. This is what lets THIS run
+/// succeed when some OTHER running memhub process (not this
+/// orchestrator) still has the destination open — retrying alone never
+/// resolves that, since the holder isn't going anywhere. On success,
+/// returns the renamed-aside path (if any) so the caller can report it.
+fn cargo_install_with_retry(cwd: &Path, staged: bool, cargo_bin: &Path) -> Result<Option<PathBuf>> {
+    let renamed_old = if cfg!(windows) {
+        rename_locked_dest_aside(cargo_bin)
+    } else {
+        None
+    };
+
     let attempts = if staged { 3 } else { 1 };
     for attempt in 1..=attempts {
         let status = Command::new("cargo")
@@ -409,7 +533,7 @@ fn cargo_install_with_retry(cwd: &Path, staged: bool) -> Result<()> {
                 stderr: format!("could not launch cargo ({e}); is it on PATH?"),
             })?;
         if status.success() {
-            return Ok(());
+            return Ok(renamed_old);
         }
         if attempt < attempts {
             eprintln!(
@@ -440,13 +564,39 @@ fn orchestrate_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
         return dry_run_report(cwd, args, &cargo_bin);
     }
 
+    // 0. Windows only: best-effort sweep of `.old-*` install destinations
+    //    a PRIOR run left behind via the rename-aside below (see the
+    //    module-level "Windows locked destination" doc). Never fatal — a
+    //    file still open (e.g. a long-running memhub MCP server) is
+    //    simply skipped, not retried, and reported alongside anything
+    //    renamed aside this run so leftovers never silently accumulate.
+    let mut old_exe_leftovers: Vec<PathBuf> = if cfg!(windows) {
+        sweep_stale_old_exes(&cargo_bin)
+    } else {
+        Vec::new()
+    };
+
     // 1. Rebuild + install. Stream cargo's own output; abort on failure
     //    rather than half-upgrade. On a Windows staged run the original
     //    process may still be releasing its image lock for a few ms, so
     //    retry: cargo's incremental cache makes a retry cheap (a lock
     //    failure skips compile entirely and just re-attempts the move).
+    //    On Windows, `cargo_install_with_retry` also unconditionally
+    //    renames aside an existing destination before the first attempt
+    //    — the fix for a SECOND, unrelated memhub process (not this
+    //    orchestrator) holding it open, which retrying alone cannot
+    //    resolve.
     println!("==> cargo install --path . --force");
-    cargo_install_with_retry(cwd, args.staged)?;
+    let renamed_old = cargo_install_with_retry(cwd, args.staged, &cargo_bin)?;
+    if let Some(old) = renamed_old {
+        println!(
+            "==> windows: install destination was in use by another \
+             process; renamed aside -> {} (reclaimed on a later upgrade \
+             once nothing has it open)",
+            old.display()
+        );
+        old_exe_leftovers.push(old);
+    }
     println!("    installed -> {}", cargo_bin.display());
 
     // 2. One-time, order-independent PATH-shadow fix (closes task 39).
@@ -514,6 +664,12 @@ fn orchestrate_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
     }
     if resync.first_run_hint {
         child.env(FIRSTRUN_ENV, "1");
+    }
+    if !old_exe_leftovers.is_empty() {
+        let abbrev_paths: Vec<String> = old_exe_leftovers.iter().map(|p| abbrev(p)).collect();
+        if let Ok(js) = serde_json::to_string(&abbrev_paths) {
+            child.env(OLD_EXE_ENV, js);
+        }
     }
     if args.json {
         child.arg("--json");
@@ -662,6 +818,14 @@ fn finish_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
         .unwrap_or_default();
     // First-run adoption notice flag (set by the orchestrate phase).
     let first_run = std::env::var(FIRSTRUN_ENV).ok().as_deref() == Some("1");
+    // Windows only: leftover `.old-*` install destinations (renamed
+    // aside this run, or still left over from an earlier one) — see the
+    // module-level "Windows locked destination" doc. Absent/unparseable
+    // (e.g. Unix, or `--finish` invoked directly) => nothing to report.
+    let old_exe_leftovers: Vec<String> = std::env::var(OLD_EXE_ENV)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
 
     // Best-effort audit-md nag (Wave 2 C7, issue #33): unlike the skill
     // resync/gc above, this needs no old-vs-new-binary IPC — it's a
@@ -675,6 +839,7 @@ fn finish_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
         pruned,
         &skills,
         &orphans,
+        &old_exe_leftovers,
         &warnings,
         first_run,
         &audit_nag,
@@ -1282,6 +1447,7 @@ fn emit(
     pruned: usize,
     skills: &[SkillSync],
     orphans: &[String],
+    old_exe_leftovers: &[String],
     warnings: &[String],
     first_run: bool,
     audit: &AuditNag,
@@ -1314,6 +1480,10 @@ fn emit(
                 // Resync orphans (U6): files memhub installed before but no
                 // longer ships. Reported, never deleted.
                 "resync_orphans": orphans,
+                // Windows only: `.old-*` install destinations renamed
+                // aside (this run or an earlier one) that still exist —
+                // reclaimed on a later run once nothing has them open.
+                "old_install_leftovers": old_exe_leftovers,
                 // Degrade warnings (U7): recoverable problems that did NOT
                 // abort the upgrade (e.g. a corrupt registry, a shadow-fix
                 // IO error).
@@ -1356,6 +1526,9 @@ fn emit(
     }
     for orphan in orphans {
         println!("  orphan: {orphan} (no longer shipped; left in place)");
+    }
+    for old in old_exe_leftovers {
+        println!("  old install: {old} (renamed aside; reclaimed once nothing has it open)");
     }
     if first_run {
         print_first_run_notice();
@@ -2467,5 +2640,100 @@ mod tests {
         };
         assert!(s.line().contains("synced 11"));
         assert!(!s.line().contains("untouched"));
+    }
+
+    // --- Windows locked-destination rename-aside ---------------------
+
+    #[test]
+    fn old_exe_name_uses_bin_name_and_stamp() {
+        let name = old_exe_name(1720900123456);
+        assert!(
+            name.starts_with(bin_name()),
+            "expected {name} to start with {}",
+            bin_name()
+        );
+        assert!(name.ends_with(".old-1720900123456"), "{name}");
+    }
+
+    #[test]
+    fn is_old_exe_name_matches_only_the_rename_aside_pattern() {
+        let ours = old_exe_name(1);
+        assert!(is_old_exe_name(&ours), "{ours}");
+        // The manual workaround's leftover from the 2026-07-13 incident
+        // uses a non-numeric suffix; the predicate must not care what
+        // follows the prefix, only that it's there.
+        assert!(is_old_exe_name(&format!("{}upgrade-20260713", old_exe_prefix())));
+        // The bare install destination is not itself a leftover.
+        assert!(!is_old_exe_name(bin_name()));
+        // A different sweep's prefix (the staged %TEMP% shim) must never
+        // be picked up by this predicate — the two sweeps must not
+        // collide.
+        assert!(!is_old_exe_name("memhub-upgrade-1234-5678.exe"));
+        assert!(!is_old_exe_name("somethingelse.old-1"));
+    }
+
+    #[test]
+    fn rename_locked_dest_aside_is_noop_when_destination_absent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dest = dir.path().join("does-not-exist.exe");
+        assert_eq!(rename_locked_dest_aside(&dest), None);
+    }
+
+    #[test]
+    fn rename_locked_dest_aside_renames_an_existing_destination() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dest = dir.path().join(bin_name());
+        std::fs::write(&dest, b"fake binary").expect("write dest");
+
+        let old = rename_locked_dest_aside(&dest).expect("rename should happen");
+
+        assert!(!dest.exists(), "original destination must be gone");
+        assert!(old.exists(), "renamed-aside file must exist");
+        assert_eq!(old.parent(), Some(dir.path()));
+        let name = old.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(is_old_exe_name(&name), "{name}");
+        assert_eq!(
+            std::fs::read(&old).unwrap(),
+            b"fake binary",
+            "rename must preserve contents, not truncate/recreate"
+        );
+    }
+
+    #[test]
+    fn sweep_stale_old_exes_removes_matches_and_leaves_others() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dest = dir.path().join(bin_name());
+        // Two stale renamed-aside files from earlier runs...
+        std::fs::write(dir.path().join(old_exe_name(1)), b"a").unwrap();
+        std::fs::write(dir.path().join(old_exe_name(2)), b"b").unwrap();
+        // ...and files the sweep must never touch: the live destination,
+        // an unrelated file, and a staged-shim leftover (swept
+        // separately by `sweep_stale_staging`).
+        std::fs::write(&dest, b"live").unwrap();
+        std::fs::write(dir.path().join("unrelated.txt"), b"c").unwrap();
+        std::fs::write(dir.path().join("memhub-upgrade-1-2.exe"), b"d").unwrap();
+
+        let leftover = sweep_stale_old_exes(&dest);
+
+        assert!(
+            leftover.is_empty(),
+            "nothing here is actually locked; sweep should reclaim it all: {leftover:?}"
+        );
+        assert!(!dir.path().join(old_exe_name(1)).exists());
+        assert!(!dir.path().join(old_exe_name(2)).exists());
+        assert!(dest.exists(), "the live destination must be left alone");
+        assert!(dir.path().join("unrelated.txt").exists());
+        assert!(
+            dir.path().join("memhub-upgrade-1-2.exe").exists(),
+            "the staged-shim prefix belongs to a different sweep"
+        );
+    }
+
+    #[test]
+    fn sweep_stale_old_exes_on_missing_dir_returns_empty() {
+        let dest = std::env::temp_dir()
+            .join("memhub-upgrade-tests-definitely-absent-dir-xyz")
+            .join(bin_name());
+        assert_eq!(sweep_stale_old_exes(&dest), Vec::<PathBuf>::new());
     }
 }
