@@ -3,7 +3,7 @@ name: init-project
 description: Bootstrap memhub in this repo — initialize the SQLite store, seed starter state and architecture narratives, render PROJECT.md and PROJECT_LEDGER.md
 framework: memhub
 framework_version: 1.0.0
-last_updated: 2026-05-13
+last_updated: 2026-07-14
 ---
 
 Set up memhub in the current repository: create `.memhub/project.sqlite`,
@@ -22,14 +22,20 @@ host-aware optional step at the end offers `AGENTS.md` by default
 Run these in order. Stop and report if any fails.
 
 **Check 1 — memhub binary on PATH.**
-Run: `command -v memhub >/dev/null 2>&1 && echo "present" || echo "absent"`
+- POSIX shell (bash/zsh): `command -v memhub >/dev/null 2>&1 && echo "present" || echo "absent"`
+- Windows PowerShell: `if (Get-Command memhub -ErrorAction SilentlyContinue) { "present" } else { "absent" }`
+
+Run whichever matches the current shell — no bash or WSL required.
 - `absent` → stop. Tell the user memhub isn't installed; point them at
   the memhub README for install instructions
   (`cargo install --path <path-to-memhub-source>` from a local clone).
   Do not proceed.
 
 **Check 2 — already initialized.**
-Run: `test -d .memhub && echo "present" || echo "absent"`
+- POSIX shell (bash/zsh): `test -d .memhub && echo "present" || echo "absent"`
+- Windows PowerShell: `if (Test-Path .memhub -PathType Container) { "present" } else { "absent" }`
+
+Run whichever matches the current shell.
 - `present` → refuse politely. The repo already has memhub. Suggest
   `/check-init` for diagnostics or `/wrap-up` to update state. Stop
   here.

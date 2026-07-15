@@ -3,7 +3,7 @@ name: wrap-up
 description: Summarize this memhub session, route updates into the database, then re-render PROJECT.md and PROJECT_LEDGER.md
 framework: memhub
 framework_version: 1.0.0
-last_updated: 2026-07-09
+last_updated: 2026-07-14
 ---
 
 Wrap up the current session against the memhub repo. Memhub's SQLite
@@ -30,13 +30,19 @@ Run this once, before anything else — it only covers what has to be
 true before `memhub wrapup-policy` can even run; schema currency is
 checked as part of the policy text itself, not here.
 
-1. `test -d .memhub && echo present || echo absent` — `absent` → stop.
-   Tell me: "No `.memhub/` in this repo. Run `memhub init` first, or
-   invoke a different wrap-up command if this repo uses K9 markdown
-   directly." Do not proceed.
-2. `command -v memhub >/dev/null 2>&1 && echo present || echo absent`
-   — `absent` → stop. Tell me to put `memhub` on PATH, then re-run.
+1. Check whether `.memhub/` exists in the repo root.
+   - POSIX shell (bash/zsh): `test -d .memhub && echo present || echo absent`
+   - Windows PowerShell: `if (Test-Path .memhub -PathType Container) { "present" } else { "absent" }`
+   `absent` → stop. Tell me: "No `.memhub/` in this repo. Run
+   `memhub init` first, or invoke a different wrap-up command if this
+   repo uses K9 markdown directly." Do not proceed.
+2. Check whether `memhub` is on PATH.
+   - POSIX shell (bash/zsh): `command -v memhub >/dev/null 2>&1 && echo present || echo absent`
+   - Windows PowerShell: `if (Get-Command memhub -ErrorAction SilentlyContinue) { "present" } else { "absent" }`
+   `absent` → stop. Tell me to put `memhub` on PATH, then re-run.
 
+Run whichever variant matches your current shell — there is no bash
+or WSL dependency here, this preflight must work on native Windows.
 Use the exact syntax shown for each command. Every mutating CLI command
 below that exposes `--actor` passes `--actor claude:wrap-up` so
 `writes_log` distinguishes wrap-up writes from raw CLI use. Read-only
