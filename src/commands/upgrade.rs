@@ -513,21 +513,29 @@ fn sweep_stale_old_exes(cargo_bin: &Path) -> Vec<PathBuf> {
 /// resolves that, since the holder isn't going anywhere. On success,
 /// returns the renamed-aside path (if any) so the caller can report it.
 fn cargo_install_with_retry(cwd: &Path, staged: bool, cargo_bin: &Path) -> Result<Option<PathBuf>> {
-    cargo_install_with_retry_for(cwd, staged, cargo_bin, cfg!(windows))
+    cargo_install_with_retry_for(cwd, staged, cargo_bin, cfg!(windows), "cargo")
 }
 
-/// Same as `cargo_install_with_retry`, with whether to rename an existing
-/// destination aside before the first attempt taken as an explicit
-/// parameter (production always passes `cfg!(windows)`) rather than
-/// baked in via `cfg!` directly — same seam `stage_decision` uses for the
-/// same reason: it lets a test force the Windows rename-aside behavior,
-/// including the on-failure restore below, on any host, not only actual
-/// Windows.
+/// Same as `cargo_install_with_retry`, with two extra explicit parameters
+/// production always fixes but tests can override, for the same reason
+/// `stage_decision` takes `is_windows` as a parameter rather than reading
+/// `cfg!` internally:
+/// - `rename_aside`: whether to rename an existing destination aside
+///   before the first attempt (production: `cfg!(windows)`) — lets a
+///   test force the Windows rename-aside behavior, including the
+///   on-failure restore below, on any host.
+/// - `cargo_program`: the program `Command::new` launches (production:
+///   `"cargo"`) — lets a test point at a path that cannot possibly
+///   spawn, deterministically exercising the launch-failure branch
+///   below without touching `PATH` (process-global, so unsafe to mutate
+///   from a test in this multi-threaded harness) or needing a real
+///   missing-cargo host.
 fn cargo_install_with_retry_for(
     cwd: &Path,
     staged: bool,
     cargo_bin: &Path,
     rename_aside: bool,
+    cargo_program: &str,
 ) -> Result<Option<PathBuf>> {
     let renamed_old = if rename_aside {
         rename_locked_dest_aside(cargo_bin)
@@ -537,7 +545,16 @@ fn cargo_install_with_retry_for(
 
     let attempts = if staged { 3 } else { 1 };
     for attempt in 1..=attempts {
-        let status = Command::new("cargo")
+        // NB: a launch failure (cargo itself missing/unspawnable) returns
+        // immediately, same as the original `?`-propagation — it is not
+        // retried, since there is nothing transient about "cargo is not
+        // on PATH". But it must still go through the same aside-restore
+        // as an exhausted-retries build failure: `renamed_old` was
+        // already moved before this loop started, so this path can
+        // strand it exactly like a failed build can (this is what #122's
+        // review round caught — the original code let `?` skip the
+        // restore here).
+        let status = match Command::new(cargo_program)
             .arg("install")
             .arg("--path")
             .arg(".")
@@ -545,10 +562,16 @@ fn cargo_install_with_retry_for(
             .arg("--locked")
             .current_dir(cwd)
             .status()
-            .map_err(|e| MemhubError::ExternalCommand {
-                command: "cargo install --path . --force --locked".to_string(),
-                stderr: format!("could not launch cargo ({e}); is it on PATH?"),
-            })?;
+        {
+            Ok(status) => status,
+            Err(e) => {
+                return Err(install_failure(
+                    cargo_bin,
+                    renamed_old,
+                    format!("could not launch cargo ({e}); is it on PATH?"),
+                ));
+            }
+        };
         if status.success() {
             return Ok(renamed_old);
         }
@@ -575,37 +598,53 @@ fn cargo_install_with_retry_for(
 /// fails too (e.g. the aside file was itself removed, or the directory
 /// went read-only in between), fall back to naming the exact aside path
 /// and the manual command that restores it — never a silent "figure it
-/// out yourself".
+/// out yourself". Thin wrapper over `install_failure` so this keeps its
+/// existing "build/install failed after N attempt(s)" wording (and
+/// existing tests) while sharing the restore-or-report logic with the
+/// launch-failure path below.
 fn install_failed_after_retries(
     cargo_bin: &Path,
     renamed_old: Option<PathBuf>,
     attempts: i32,
 ) -> MemhubError {
+    install_failure(
+        cargo_bin,
+        renamed_old,
+        format!("build/install failed after {attempts} attempt(s)"),
+    )
+}
+
+/// Shared terminal-error builder for every way `cargo_install_with_retry_for`
+/// can give up — an exhausted retry loop (`install_failed_after_retries`) or
+/// cargo itself failing to launch at all (e.g. not on PATH). `reason`
+/// describes which one, without a trailing period/semicolon; this appends
+/// the "not migrating instances" / restore outcome and formats the whole
+/// `MemhubError`. See `install_failed_after_retries`'s doc for why the
+/// restore matters at all.
+fn install_failure(cargo_bin: &Path, renamed_old: Option<PathBuf>, reason: String) -> MemhubError {
     const COMMAND: &str = "cargo install --path . --force --locked";
     let Some(old) = renamed_old else {
         return MemhubError::ExternalCommand {
             command: COMMAND.to_string(),
-            stderr: format!(
-                "build/install failed after {attempts} attempt(s); not migrating instances"
-            ),
+            stderr: format!("{reason}; not migrating instances"),
         };
     };
     match std::fs::rename(&old, cargo_bin) {
         Ok(()) => MemhubError::ExternalCommand {
             command: COMMAND.to_string(),
             stderr: format!(
-                "build/install failed after {attempts} attempt(s); restored the prior \
-                 binary (renamed aside before this attempt) back to {} so memhub is \
-                 still on PATH; not migrating instances",
+                "{reason}; restored the prior binary (renamed aside before this \
+                 attempt) back to {} so memhub is still on PATH; not migrating \
+                 instances",
                 cargo_bin.display()
             ),
         },
         Err(e) => MemhubError::ExternalCommand {
             command: COMMAND.to_string(),
             stderr: format!(
-                "build/install failed after {attempts} attempt(s); the prior binary \
-                 renamed aside to {} could NOT be restored to {} ({e}) — no memhub \
-                 binary is on PATH; restore it manually: mv \"{}\" \"{}\"",
+                "{reason}; the prior binary renamed aside to {} could NOT be \
+                 restored to {} ({e}) — no memhub binary is on PATH; restore it \
+                 manually: mv \"{}\" \"{}\"",
                 old.display(),
                 cargo_bin.display(),
                 old.display(),
@@ -2982,7 +3021,7 @@ mod tests {
         let cargo_bin = bin_dir.path().join(bin_name());
         std::fs::write(&cargo_bin, b"prior working binary").unwrap();
 
-        let result = cargo_install_with_retry_for(src.path(), false, &cargo_bin, true);
+        let result = cargo_install_with_retry_for(src.path(), false, &cargo_bin, true, "cargo");
 
         assert!(
             result.is_err(),
@@ -3005,6 +3044,85 @@ mod tests {
         );
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("restored"), "{msg}");
+    }
+
+    #[test]
+    fn cargo_install_with_retry_for_restores_aside_copy_when_cargo_cannot_launch() {
+        // The residual strand-path caught in #122's review round: a launch
+        // failure (`Command::new(cargo_program).status()` itself erroring,
+        // e.g. cargo not found) used to `?`-propagate straight out of the
+        // retry loop, BEFORE `install_failed_after_retries` was ever
+        // reached — so `renamed_old` was silently dropped with no restore
+        // and no printed recovery command, stranding the prior binary
+        // aside with nothing left on PATH. Point `cargo_program` at a path
+        // that cannot possibly spawn (deterministic, no PATH mutation, no
+        // network) to exercise exactly that branch.
+        let src = tempfile::tempdir().expect("src tempdir");
+        let bin_dir = tempfile::tempdir().expect("bin tempdir");
+        let cargo_bin = bin_dir.path().join(bin_name());
+        std::fs::write(&cargo_bin, b"prior working binary").unwrap();
+        let nonexistent_cargo = bin_dir
+            .path()
+            .join("definitely-not-a-real-cargo-binary-xyz");
+
+        let result = cargo_install_with_retry_for(
+            src.path(),
+            false,
+            &cargo_bin,
+            true,
+            nonexistent_cargo.to_str().expect("utf8 tempdir path"),
+        );
+
+        assert!(result.is_err(), "spawning a nonexistent program must fail");
+        assert!(
+            cargo_bin.exists(),
+            "the prior binary must be restored even when cargo itself never launched"
+        );
+        assert_eq!(
+            std::fs::read(&cargo_bin).unwrap(),
+            b"prior working binary",
+            "restore must not corrupt the prior binary's contents"
+        );
+        let leftovers = sweep_stale_old_exes(&cargo_bin);
+        assert!(
+            leftovers.is_empty(),
+            "restore must not leave a renamed-aside file behind: {leftovers:?}"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("could not launch cargo"),
+            "must still name the original launch failure: {msg}"
+        );
+        assert!(msg.contains("restored"), "{msg}");
+    }
+
+    #[test]
+    fn install_failure_reports_manual_command_on_launch_failure_when_restore_fails() {
+        // Same launch-failure branch as above, but the aside copy is gone
+        // by the time restore is attempted, so the fallback manual-command
+        // message must fire here too, not only on the build-failure path.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cargo_bin = dir.path().join(bin_name());
+        let old = dir.path().join(old_exe_name(1)); // never created
+
+        let err = install_failure(
+            &cargo_bin,
+            Some(old.clone()),
+            "could not launch cargo (No such file or directory); is it on PATH?".to_string(),
+        );
+
+        assert!(!cargo_bin.exists());
+        let msg = err.to_string();
+        assert!(msg.contains("could not launch cargo"), "{msg}");
+        assert!(
+            msg.contains("could NOT be restored") || msg.contains("could not be restored"),
+            "{msg}"
+        );
+        assert!(
+            msg.contains(&old.display().to_string()) && msg.contains(&cargo_bin.display().to_string()),
+            "{msg}"
+        );
+        assert!(msg.contains("mv "), "{msg}");
     }
 
     // --- issue #122: CARGO_INSTALL_ROOT / install.root divergence ----
