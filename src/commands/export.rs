@@ -92,7 +92,7 @@ fn read_project_meta(conn: &Connection) -> Result<(String, String, String)> {
 
 fn read_facts(conn: &Connection) -> Result<Vec<v1::Fact>> {
     let mut stmt = conn.prepare(
-        "SELECT id, key, value, confidence, source, verified_at, created_at, superseded_by
+        "SELECT id, key, value, confidence, source, verified_at, created_at, superseded_by, kind
          FROM facts
          WHERE project_id = 1
          ORDER BY id",
@@ -107,6 +107,7 @@ fn read_facts(conn: &Connection) -> Result<Vec<v1::Fact>> {
             verified_at: row.get(5)?,
             created_at: row.get(6)?,
             superseded_by: row.get(7)?,
+            kind: row.get(8)?,
         })
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
