@@ -513,7 +513,31 @@ fn sweep_stale_old_exes(cargo_bin: &Path) -> Vec<PathBuf> {
 /// resolves that, since the holder isn't going anywhere. On success,
 /// returns the renamed-aside path (if any) so the caller can report it.
 fn cargo_install_with_retry(cwd: &Path, staged: bool, cargo_bin: &Path) -> Result<Option<PathBuf>> {
-    let renamed_old = if cfg!(windows) {
+    cargo_install_with_retry_for(cwd, staged, cargo_bin, cfg!(windows), "cargo")
+}
+
+/// Same as `cargo_install_with_retry`, with two extra explicit parameters
+/// production always fixes but tests can override, for the same reason
+/// `stage_decision` takes `is_windows` as a parameter rather than reading
+/// `cfg!` internally:
+/// - `rename_aside`: whether to rename an existing destination aside
+///   before the first attempt (production: `cfg!(windows)`) — lets a
+///   test force the Windows rename-aside behavior, including the
+///   on-failure restore below, on any host.
+/// - `cargo_program`: the program `Command::new` launches (production:
+///   `"cargo"`) — lets a test point at a path that cannot possibly
+///   spawn, deterministically exercising the launch-failure branch
+///   below without touching `PATH` (process-global, so unsafe to mutate
+///   from a test in this multi-threaded harness) or needing a real
+///   missing-cargo host.
+fn cargo_install_with_retry_for(
+    cwd: &Path,
+    staged: bool,
+    cargo_bin: &Path,
+    rename_aside: bool,
+    cargo_program: &str,
+) -> Result<Option<PathBuf>> {
+    let renamed_old = if rename_aside {
         rename_locked_dest_aside(cargo_bin)
     } else {
         None
@@ -521,7 +545,16 @@ fn cargo_install_with_retry(cwd: &Path, staged: bool, cargo_bin: &Path) -> Resul
 
     let attempts = if staged { 3 } else { 1 };
     for attempt in 1..=attempts {
-        let status = Command::new("cargo")
+        // NB: a launch failure (cargo itself missing/unspawnable) returns
+        // immediately, same as the original `?`-propagation — it is not
+        // retried, since there is nothing transient about "cargo is not
+        // on PATH". But it must still go through the same aside-restore
+        // as an exhausted-retries build failure: `renamed_old` was
+        // already moved before this loop started, so this path can
+        // strand it exactly like a failed build can (this is what #122's
+        // review round caught — the original code let `?` skip the
+        // restore here).
+        let status = match Command::new(cargo_program)
             .arg("install")
             .arg("--path")
             .arg(".")
@@ -529,10 +562,16 @@ fn cargo_install_with_retry(cwd: &Path, staged: bool, cargo_bin: &Path) -> Resul
             .arg("--locked")
             .current_dir(cwd)
             .status()
-            .map_err(|e| MemhubError::ExternalCommand {
-                command: "cargo install --path . --force --locked".to_string(),
-                stderr: format!("could not launch cargo ({e}); is it on PATH?"),
-            })?;
+        {
+            Ok(status) => status,
+            Err(e) => {
+                return Err(install_failure(
+                    cargo_bin,
+                    renamed_old,
+                    format!("could not launch cargo ({e}); is it on PATH?"),
+                ));
+            }
+        };
         if status.success() {
             return Ok(renamed_old);
         }
@@ -545,12 +584,74 @@ fn cargo_install_with_retry(cwd: &Path, staged: bool, cargo_bin: &Path) -> Resul
             std::thread::sleep(std::time::Duration::from_secs(attempt as u64));
         }
     }
-    Err(MemhubError::ExternalCommand {
-        command: "cargo install --path . --force --locked".to_string(),
-        stderr: format!(
-            "build/install failed after {attempts} attempt(s); not migrating instances"
-        ),
-    })
+    Err(install_failed_after_retries(cargo_bin, renamed_old, attempts))
+}
+
+/// Build the terminal error once every install attempt has failed. A
+/// source tree that fails to build is expected and recoverable (fix the
+/// tree, re-run) — but if `rename_locked_dest_aside` already moved the
+/// PRIOR working binary out of the way before the first attempt
+/// (`renamed_old` is `Some`), leaving it there on failure means the
+/// machine has NO memhub binary on PATH at all: every repo's MCP server
+/// and CLI break, and there is no `memhub` left on PATH to even re-run
+/// `memhub upgrade`. So put it straight back. If the restore itself
+/// fails too (e.g. the aside file was itself removed, or the directory
+/// went read-only in between), fall back to naming the exact aside path
+/// and the manual command that restores it — never a silent "figure it
+/// out yourself". Thin wrapper over `install_failure` so this keeps its
+/// existing "build/install failed after N attempt(s)" wording (and
+/// existing tests) while sharing the restore-or-report logic with the
+/// launch-failure path below.
+fn install_failed_after_retries(
+    cargo_bin: &Path,
+    renamed_old: Option<PathBuf>,
+    attempts: i32,
+) -> MemhubError {
+    install_failure(
+        cargo_bin,
+        renamed_old,
+        format!("build/install failed after {attempts} attempt(s)"),
+    )
+}
+
+/// Shared terminal-error builder for every way `cargo_install_with_retry_for`
+/// can give up — an exhausted retry loop (`install_failed_after_retries`) or
+/// cargo itself failing to launch at all (e.g. not on PATH). `reason`
+/// describes which one, without a trailing period/semicolon; this appends
+/// the "not migrating instances" / restore outcome and formats the whole
+/// `MemhubError`. See `install_failed_after_retries`'s doc for why the
+/// restore matters at all.
+fn install_failure(cargo_bin: &Path, renamed_old: Option<PathBuf>, reason: String) -> MemhubError {
+    const COMMAND: &str = "cargo install --path . --force --locked";
+    let Some(old) = renamed_old else {
+        return MemhubError::ExternalCommand {
+            command: COMMAND.to_string(),
+            stderr: format!("{reason}; not migrating instances"),
+        };
+    };
+    match std::fs::rename(&old, cargo_bin) {
+        Ok(()) => MemhubError::ExternalCommand {
+            command: COMMAND.to_string(),
+            stderr: format!(
+                "{reason}; restored the prior binary (renamed aside before this \
+                 attempt) back to {} so memhub is still on PATH; not migrating \
+                 instances",
+                cargo_bin.display()
+            ),
+        },
+        Err(e) => MemhubError::ExternalCommand {
+            command: COMMAND.to_string(),
+            stderr: format!(
+                "{reason}; the prior binary renamed aside to {} could NOT be \
+                 restored to {} ({e}) — no memhub binary is on PATH; restore it \
+                 manually: mv \"{}\" \"{}\"",
+                old.display(),
+                cargo_bin.display(),
+                old.display(),
+                cargo_bin.display()
+            ),
+        },
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -560,6 +661,28 @@ fn cargo_install_with_retry(cwd: &Path, staged: bool, cargo_bin: &Path) -> Resul
 fn orchestrate_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
     ensure_source_repo(cwd)?;
     let cargo_bin = cargo_bin_path()?;
+
+    // CARGO_INSTALL_ROOT / cargo config `install.root` redirect where
+    // `cargo install` actually writes; `cargo_bin_path()` above knows
+    // nothing about either, so step 4's `--finish` re-exec would target
+    // whatever STALE binary already sits at the assumed path rather than
+    // the one just built, running migrate + verify under old code.
+    // Refuse loudly rather than risk that silently — before dry-run too,
+    // so a preview surfaces the same problem instead of a clean report
+    // that a real run would then contradict.
+    if let Some(reason) = install_root_override(cwd) {
+        return Err(MemhubError::InvalidInput(format!(
+            "cargo's install destination is overridden ({reason}); `memhub upgrade` \
+             assumes cargo installs to {} and re-execs that exact path for the \
+             migrate + verify pass. With an override in effect it would silently \
+             re-exec whatever binary already happens to be sitting there instead \
+             of the one `cargo install` just built. Refusing rather than risk \
+             running migrate/verify under stale code; unset the override (or run \
+             `cargo install` yourself and skip `memhub upgrade`'s orchestration) to \
+             proceed.",
+            cargo_bin.display()
+        )));
+    }
 
     if args.dry_run {
         return dry_run_report(cwd, args, &cargo_bin);
@@ -2325,6 +2448,90 @@ fn cargo_bin_path() -> Result<PathBuf> {
     Ok(db::home_dir()?.join(".cargo").join("bin").join(bin_name()))
 }
 
+/// Parse a cargo config file's `[install] root = "..."` (the only key
+/// this reads), tolerating any other shape (missing table, missing key,
+/// non-string value, invalid TOML) as "not set" rather than an error —
+/// this is best-effort detection layered on top of `cargo_bin_path`'s
+/// assumption, not a config parser memhub owns or must fully validate.
+fn parse_install_root_toml(text: &str) -> Option<String> {
+    let value: toml::Value = toml::from_str(text).ok()?;
+    value
+        .get("install")?
+        .get("root")?
+        .as_str()
+        .map(str::to_string)
+}
+
+/// `install.root`, if set, from whichever of cargo's two config file
+/// names (`config.toml` takes precedence over the legacy `config`, same
+/// as cargo itself) exists directly inside `config_dir`.
+fn read_install_root_from_config_dir(config_dir: &Path) -> Option<String> {
+    for name in ["config.toml", "config"] {
+        if let Ok(text) = std::fs::read_to_string(config_dir.join(name)) {
+            if let Some(root) = parse_install_root_toml(&text) {
+                return Some(root);
+            }
+        }
+    }
+    None
+}
+
+/// Search cargo's own config precedence order for an `install.root`
+/// override of the default install destination: this process's `cwd`
+/// and every ancestor's `.cargo/` subdirectory (closest wins, same as
+/// cargo's own merge order), then `cargo_home` itself — cargo's config
+/// lives directly inside `$CARGO_HOME`, not under an extra `.cargo/`
+/// there. Returns `(root value, human-readable source path)` for the
+/// first one found, or `None` if nothing sets it. Split out from
+/// `install_root_override` so it is unit-testable against plain tempdirs
+/// without touching real env vars or `$HOME`.
+fn find_install_root_override(cwd: &Path, cargo_home: &Path) -> Option<(String, String)> {
+    let mut dir = Some(cwd.to_path_buf());
+    while let Some(d) = dir {
+        let config_dir = d.join(".cargo");
+        if let Some(root) = read_install_root_from_config_dir(&config_dir) {
+            return Some((root, config_dir.display().to_string()));
+        }
+        dir = d.parent().map(Path::to_path_buf);
+    }
+    read_install_root_from_config_dir(cargo_home).map(|root| {
+        let source = cargo_home.display().to_string();
+        (root, source)
+    })
+}
+
+/// Whole-picture check used by `orchestrate_phase` before it touches
+/// anything: does some cargo configuration override the install
+/// destination `cargo_bin_path` assumes ($CARGO_HOME/bin, or
+/// ~/.cargo/bin when `CARGO_HOME` is unset)? `CARGO_INSTALL_ROOT` (env,
+/// cargo's own highest-precedence override) is checked first, then
+/// cargo config `install.root` via `find_install_root_override`. Either
+/// one redirects `cargo install`'s actual destination somewhere
+/// `cargo_bin_path` never looks — so the `--finish` re-exec in
+/// `orchestrate_phase` (which uses the `cargo_bin_path()` value
+/// verbatim, not a PATH lookup, precisely to dodge PATH shadows) would
+/// silently re-exec whatever STALE binary is already sitting at that
+/// assumed path instead of the one `cargo install` just built, running
+/// migrate + verify under old code. `None` means nothing overrides the
+/// default and `cargo_bin_path()` can be trusted.
+fn install_root_override(cwd: &Path) -> Option<String> {
+    if let Some(v) = std::env::var_os("CARGO_INSTALL_ROOT").filter(|s| !s.is_empty()) {
+        return Some(format!(
+            "CARGO_INSTALL_ROOT={}",
+            PathBuf::from(v).display()
+        ));
+    }
+    let cargo_home = match std::env::var_os("CARGO_HOME").filter(|v| !v.is_empty()) {
+        Some(h) => PathBuf::from(h),
+        None => match db::home_dir() {
+            Ok(h) => h.join(".cargo"),
+            Err(_) => return None,
+        },
+    };
+    find_install_root_override(cwd, &cargo_home)
+        .map(|(root, source)| format!("install.root={root} (from {source})"))
+}
+
 fn local_bin_shadow() -> Result<PathBuf> {
     Ok(db::home_dir()?.join(".local").join("bin").join(bin_name()))
 }
@@ -2736,5 +2943,316 @@ mod tests {
             .join("memhub-upgrade-tests-definitely-absent-dir-xyz")
             .join(bin_name());
         assert_eq!(sweep_stale_old_exes(&dest), Vec::<PathBuf>::new());
+    }
+
+    // --- issue #122: restore the aside copy on a failed install ------
+
+    #[test]
+    fn install_failed_after_retries_without_rename_aside_stays_terse() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cargo_bin = dir.path().join(bin_name());
+        let err = install_failed_after_retries(&cargo_bin, None, 1);
+        let msg = err.to_string();
+        assert!(msg.contains("failed after 1 attempt"), "{msg}");
+        assert!(
+            !msg.contains("restore"),
+            "nothing was renamed aside; must not talk about restoring: {msg}"
+        );
+    }
+
+    #[test]
+    fn install_failed_after_retries_restores_the_aside_copy() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cargo_bin = dir.path().join(bin_name());
+        let old = dir.path().join(old_exe_name(1));
+        std::fs::write(&old, b"prior working binary").unwrap();
+
+        let err = install_failed_after_retries(&cargo_bin, Some(old.clone()), 3);
+
+        assert!(
+            cargo_bin.exists(),
+            "the prior binary must be back at the install destination"
+        );
+        assert!(!old.exists(), "the aside copy must be gone, moved back");
+        assert_eq!(std::fs::read(&cargo_bin).unwrap(), b"prior working binary");
+        let msg = err.to_string();
+        assert!(msg.contains("restored"), "{msg}");
+        assert!(msg.contains(&cargo_bin.display().to_string()), "{msg}");
+    }
+
+    #[test]
+    fn install_failed_after_retries_reports_manual_command_when_restore_fails() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cargo_bin = dir.path().join(bin_name());
+        // The aside path does not exist, so the restore rename must fail —
+        // simulating it having vanished out from under this run.
+        let old = dir.path().join(old_exe_name(1));
+
+        let err = install_failed_after_retries(&cargo_bin, Some(old.clone()), 1);
+
+        assert!(!cargo_bin.exists(), "nothing to restore from, so still absent");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("could NOT be restored") || msg.contains("could not be restored"),
+            "{msg}"
+        );
+        assert!(
+            msg.contains(&old.display().to_string()) && msg.contains(&cargo_bin.display().to_string()),
+            "the exact aside path and destination must both be named so a human can \
+             restore it by hand: {msg}"
+        );
+        assert!(
+            msg.contains("mv ") || msg.contains("mv\""),
+            "must print the actual restore command, not just describe it: {msg}"
+        );
+    }
+
+    #[test]
+    fn cargo_install_with_retry_for_restores_aside_copy_on_build_failure() {
+        // A cwd with no Cargo.toml makes `cargo install --path .` fail
+        // immediately (no network, no real build) — a real, deterministic
+        // failed-build path, not a mocked one. `rename_aside = true` is
+        // forced explicitly (rather than gated on `cfg!(windows)`) so this
+        // exercises the Windows-only production behavior on any host,
+        // including this aarch64 Linux CI (see `cargo_install_with_retry_for`'s
+        // doc).
+        let src = tempfile::tempdir().expect("src tempdir");
+        let bin_dir = tempfile::tempdir().expect("bin tempdir");
+        let cargo_bin = bin_dir.path().join(bin_name());
+        std::fs::write(&cargo_bin, b"prior working binary").unwrap();
+
+        let result = cargo_install_with_retry_for(src.path(), false, &cargo_bin, true, "cargo");
+
+        assert!(
+            result.is_err(),
+            "cargo install against a dir with no Cargo.toml must fail"
+        );
+        assert!(
+            cargo_bin.exists(),
+            "the prior binary must be restored, not left renamed aside"
+        );
+        assert_eq!(
+            std::fs::read(&cargo_bin).unwrap(),
+            b"prior working binary",
+            "restore must not corrupt the prior binary's contents"
+        );
+        // No abandoned `.old-*` file left behind either.
+        let leftovers = sweep_stale_old_exes(&cargo_bin);
+        assert!(
+            leftovers.is_empty(),
+            "restore must not leave a renamed-aside file behind: {leftovers:?}"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("restored"), "{msg}");
+    }
+
+    #[test]
+    fn cargo_install_with_retry_for_restores_aside_copy_when_cargo_cannot_launch() {
+        // The residual strand-path caught in #122's review round: a launch
+        // failure (`Command::new(cargo_program).status()` itself erroring,
+        // e.g. cargo not found) used to `?`-propagate straight out of the
+        // retry loop, BEFORE `install_failed_after_retries` was ever
+        // reached — so `renamed_old` was silently dropped with no restore
+        // and no printed recovery command, stranding the prior binary
+        // aside with nothing left on PATH. Point `cargo_program` at a path
+        // that cannot possibly spawn (deterministic, no PATH mutation, no
+        // network) to exercise exactly that branch.
+        let src = tempfile::tempdir().expect("src tempdir");
+        let bin_dir = tempfile::tempdir().expect("bin tempdir");
+        let cargo_bin = bin_dir.path().join(bin_name());
+        std::fs::write(&cargo_bin, b"prior working binary").unwrap();
+        let nonexistent_cargo = bin_dir
+            .path()
+            .join("definitely-not-a-real-cargo-binary-xyz");
+
+        let result = cargo_install_with_retry_for(
+            src.path(),
+            false,
+            &cargo_bin,
+            true,
+            nonexistent_cargo.to_str().expect("utf8 tempdir path"),
+        );
+
+        assert!(result.is_err(), "spawning a nonexistent program must fail");
+        assert!(
+            cargo_bin.exists(),
+            "the prior binary must be restored even when cargo itself never launched"
+        );
+        assert_eq!(
+            std::fs::read(&cargo_bin).unwrap(),
+            b"prior working binary",
+            "restore must not corrupt the prior binary's contents"
+        );
+        let leftovers = sweep_stale_old_exes(&cargo_bin);
+        assert!(
+            leftovers.is_empty(),
+            "restore must not leave a renamed-aside file behind: {leftovers:?}"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("could not launch cargo"),
+            "must still name the original launch failure: {msg}"
+        );
+        assert!(msg.contains("restored"), "{msg}");
+    }
+
+    #[test]
+    fn install_failure_reports_manual_command_on_launch_failure_when_restore_fails() {
+        // Same launch-failure branch as above, but the aside copy is gone
+        // by the time restore is attempted, so the fallback manual-command
+        // message must fire here too, not only on the build-failure path.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cargo_bin = dir.path().join(bin_name());
+        let old = dir.path().join(old_exe_name(1)); // never created
+
+        let err = install_failure(
+            &cargo_bin,
+            Some(old.clone()),
+            "could not launch cargo (No such file or directory); is it on PATH?".to_string(),
+        );
+
+        assert!(!cargo_bin.exists());
+        let msg = err.to_string();
+        assert!(msg.contains("could not launch cargo"), "{msg}");
+        assert!(
+            msg.contains("could NOT be restored") || msg.contains("could not be restored"),
+            "{msg}"
+        );
+        assert!(
+            msg.contains(&old.display().to_string()) && msg.contains(&cargo_bin.display().to_string()),
+            "{msg}"
+        );
+        assert!(msg.contains("mv "), "{msg}");
+    }
+
+    // --- issue #122: CARGO_INSTALL_ROOT / install.root divergence ----
+
+    #[test]
+    fn parse_install_root_toml_reads_the_key() {
+        let text = "[install]\nroot = \"/custom/root\"\n";
+        assert_eq!(
+            parse_install_root_toml(text),
+            Some("/custom/root".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_install_root_toml_tolerates_absence_and_garbage() {
+        assert_eq!(parse_install_root_toml(""), None);
+        assert_eq!(parse_install_root_toml("[build]\njobs = 4\n"), None);
+        assert_eq!(parse_install_root_toml("[install]\n"), None);
+        assert_eq!(
+            parse_install_root_toml("[install]\nroot = 5\n"),
+            None,
+            "a non-string root must not be misread as a path"
+        );
+        assert_eq!(parse_install_root_toml("not valid toml {{{"), None);
+    }
+
+    #[test]
+    fn find_install_root_override_returns_none_with_no_config_anywhere() {
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+        let cargo_home = tempfile::tempdir().expect("cargo home tempdir");
+        assert_eq!(
+            find_install_root_override(cwd.path(), cargo_home.path()),
+            None
+        );
+    }
+
+    #[test]
+    fn find_install_root_override_finds_cwd_dot_cargo_config() {
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+        let cargo_home = tempfile::tempdir().expect("cargo home tempdir");
+        let cargo_dir = cwd.path().join(".cargo");
+        std::fs::create_dir_all(&cargo_dir).unwrap();
+        std::fs::write(
+            cargo_dir.join("config.toml"),
+            "[install]\nroot = \"/repo/local/install\"\n",
+        )
+        .unwrap();
+
+        let found =
+            find_install_root_override(cwd.path(), cargo_home.path()).expect("must be found");
+        assert_eq!(found.0, "/repo/local/install");
+        assert_eq!(found.1, cargo_dir.display().to_string());
+    }
+
+    #[test]
+    fn find_install_root_override_searches_ancestors_when_cwd_has_none() {
+        let root = tempfile::tempdir().expect("root tempdir");
+        let cargo_home = tempfile::tempdir().expect("cargo home tempdir");
+        let parent_cargo_dir = root.path().join(".cargo");
+        std::fs::create_dir_all(&parent_cargo_dir).unwrap();
+        std::fs::write(
+            parent_cargo_dir.join("config.toml"),
+            "[install]\nroot = \"/from/ancestor\"\n",
+        )
+        .unwrap();
+        let child = root.path().join("nested").join("repo");
+        std::fs::create_dir_all(&child).unwrap();
+
+        let found =
+            find_install_root_override(&child, cargo_home.path()).expect("must be found");
+        assert_eq!(found.0, "/from/ancestor");
+    }
+
+    #[test]
+    fn find_install_root_override_prefers_closest_ancestor() {
+        let root = tempfile::tempdir().expect("root tempdir");
+        let cargo_home = tempfile::tempdir().expect("cargo home tempdir");
+        let parent_cargo_dir = root.path().join(".cargo");
+        std::fs::create_dir_all(&parent_cargo_dir).unwrap();
+        std::fs::write(
+            parent_cargo_dir.join("config.toml"),
+            "[install]\nroot = \"/from/ancestor\"\n",
+        )
+        .unwrap();
+        let child = root.path().join("repo");
+        let child_cargo_dir = child.join(".cargo");
+        std::fs::create_dir_all(&child_cargo_dir).unwrap();
+        std::fs::write(
+            child_cargo_dir.join("config.toml"),
+            "[install]\nroot = \"/from/repo\"\n",
+        )
+        .unwrap();
+
+        let found = find_install_root_override(&child, cargo_home.path()).expect("must be found");
+        assert_eq!(
+            found.0, "/from/repo",
+            "the closer config must win, matching cargo's own precedence"
+        );
+    }
+
+    #[test]
+    fn find_install_root_override_falls_back_to_cargo_home() {
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+        let cargo_home = tempfile::tempdir().expect("cargo home tempdir");
+        std::fs::write(
+            cargo_home.path().join("config.toml"),
+            "[install]\nroot = \"/from/cargo/home\"\n",
+        )
+        .unwrap();
+
+        let found =
+            find_install_root_override(cwd.path(), cargo_home.path()).expect("must be found");
+        assert_eq!(found.0, "/from/cargo/home");
+        assert_eq!(found.1, cargo_home.path().display().to_string());
+    }
+
+    #[test]
+    fn find_install_root_override_legacy_config_name_also_read() {
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+        let cargo_home = tempfile::tempdir().expect("cargo home tempdir");
+        let cargo_dir = cwd.path().join(".cargo");
+        std::fs::create_dir_all(&cargo_dir).unwrap();
+        std::fs::write(
+            cargo_dir.join("config"),
+            "[install]\nroot = \"/legacy/name\"\n",
+        )
+        .unwrap();
+
+        let found =
+            find_install_root_override(cwd.path(), cargo_home.path()).expect("must be found");
+        assert_eq!(found.0, "/legacy/name");
     }
 }
