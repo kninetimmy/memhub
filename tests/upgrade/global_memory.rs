@@ -270,4 +270,60 @@ fn machine_global_memory_end_to_end() {
         !has_scope(&d, "global"),
         "disabled repo must not merge the global corpus"
     );
+
+    // --- `doc add --global`'s config flip is gated on the CALLING
+    // REPO's own config state, never on the shared global store's
+    // emptiness (issue #123) -------------------------------------------
+    //
+    // Regression: repo A's first `doc add --global` used to consume the
+    // shared global store's only "documents table was empty" moment
+    // (`was_first_doc`), so repo B's own later first global doc add saw
+    // a non-empty store and silently never flipped repo B's own config
+    // — no notice printed, and B's ingested doc never joined B's own
+    // default recall. `repo_d` seeds the shared store first so it is
+    // already non-empty by the time `repo_e` does ITS first global doc
+    // add, reproducing the exact failure scenario.
+    let repo_d = tempdir().expect("repo_d");
+    let repo_e = tempdir().expect("repo_e");
+    init::run(repo_d.path()).expect("init d");
+    init::run(repo_e.path()).expect("init e");
+    global::enable(repo_d.path()).expect("enable d");
+    global::enable(repo_e.path()).expect("enable e");
+
+    let seed_file = repo_d.path().join("seed.md");
+    std::fs::write(&seed_file, "# Seed\n\n## S\n\nseed body\n").expect("write seed");
+    let seeded =
+        doc::add_global(repo_d.path(), &seed_file, None, "cli:user").expect("seed doc add_global");
+    assert!(
+        seeded.enabled_default_recall,
+        "repo_d's own first global doc add must flip repo_d's own config"
+    );
+
+    let e_doc_file = repo_e.path().join("guide-e.md");
+    std::fs::write(&e_doc_file, "# Guide E\n\n## Section\n\ne doc body\n").expect("write e doc");
+    let e_added = doc::add_global(repo_e.path(), &e_doc_file, None, "cli:user")
+        .expect("repo_e doc add_global");
+    assert!(
+        e_added.enabled_default_recall,
+        "repo_e's own first global doc add must flip repo_e's config even though \
+         the shared global store already held repo_d's seed doc"
+    );
+    let e_cfg_path = repo_e.path().join(".memhub").join("config.toml");
+    let e_cfg = memhub::config::ProjectConfig::load(&e_cfg_path).expect("load e cfg");
+    assert!(e_cfg.global.include_docs_in_default);
+
+    // A repo whose config is already enabled: a further global doc add
+    // is a no-op on the flag (no rewrite, no duplicate notice).
+    let e_doc_file2 = repo_e.path().join("guide-e2.md");
+    std::fs::write(
+        &e_doc_file2,
+        "# Guide E2\n\n## Section\n\ne doc body two\n",
+    )
+    .expect("write e doc 2");
+    let e_added2 = doc::add_global(repo_e.path(), &e_doc_file2, None, "cli:user")
+        .expect("repo_e second doc add_global");
+    assert!(
+        !e_added2.enabled_default_recall,
+        "a second global doc add for a repo already enabled must be a no-op"
+    );
 }
