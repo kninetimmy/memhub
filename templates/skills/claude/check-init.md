@@ -3,7 +3,7 @@ name: check-init
 description: Read-only health check of the memhub project in this repo — schema version, render freshness, K9 coexistence, write-log activity
 framework: memhub
 framework_version: 1.0.0
-last_updated: 2026-07-06
+last_updated: 2026-07-14
 ---
 
 Verify this repo's memhub setup is healthy. Read-only — this skill
@@ -18,12 +18,18 @@ skill's own job is just detection + reporting the doctor output.
 ## Detection
 
 **Check 1 — `.memhub/` exists.**
-Run: `test -d .memhub && echo "present" || echo "absent"`
+- POSIX shell (bash/zsh): `test -d .memhub && echo "present" || echo "absent"`
+- Windows PowerShell: `if (Test-Path .memhub -PathType Container) { "present" } else { "absent" }`
+
+Run whichever matches the current shell — no bash or WSL required.
 - `absent` → report **Red**. Suggest `/init-project` if the user
   wants to bootstrap memhub here. Stop here.
 
 **Check 2 — memhub binary on PATH.**
-Run: `command -v memhub >/dev/null 2>&1 && echo "present" || echo "absent"`
+- POSIX shell (bash/zsh): `command -v memhub >/dev/null 2>&1 && echo "present" || echo "absent"`
+- Windows PowerShell: `if (Get-Command memhub -ErrorAction SilentlyContinue) { "present" } else { "absent" }`
+
+Run whichever matches the current shell.
 - `absent` → report **Red**. `.memhub/` exists locally but the CLI
   isn't on PATH; tell the user to install or rebuild memhub. Stop
   here.
