@@ -497,7 +497,20 @@ Onboarding exposes two explicit toggles — `[retrieval] mode` (fts vs
 hybrid) and the machine-global store — plus two auto-followers with a
 manual override: `[retrieval] use_reranker` (auto-on with hybrid) and
 `[retrieval] include_docs_in_default` / its `[global]` mirror
-(auto-flips true on the first `doc add` / `doc add --global`).
+(auto-flips true on the first `doc add` / `doc add --global`). The
+`[global]` mirror flips **per repo**, gated on that repo's own current
+config value — `doc add --global` in repo B still flips B's mirror on
+B's own first call even when the shared global store already holds
+docs from repo A (issue #123; the store's `documents` table spans every
+opted-in repo, so store-emptiness is not "first add for this repo").
+
+Because `config.toml` never travels through Drive sync — a sync
+snapshot is the DB only (`VACUUM INTO project.sqlite` + manifest; see
+"Cross-machine Drive sync" above) — a machine that `sync adopt`s a
+snapshot containing global docs does not gain
+`[global] include_docs_in_default` locally. Re-run `doc add --global`
+(or set the flag by hand) on each machine that should see those docs
+in its own default recall.
 
 ## Machine-wide upgrade
 
