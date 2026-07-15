@@ -171,8 +171,8 @@ fn insert_facts(tx: &Transaction<'_>, rows: &[v1::Fact]) -> Result<()> {
     // that points at a not-yet-inserted newer fact resolves at commit
     // (same handling decisions already rely on).
     let mut stmt = tx.prepare(
-        "INSERT INTO facts(id, project_id, key, value, confidence, source, verified_at, created_at, superseded_by)
-         VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO facts(id, project_id, key, value, confidence, source, verified_at, created_at, superseded_by, kind)
+         VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
     )?;
     for fact in rows {
         stmt.execute(params![
@@ -184,6 +184,7 @@ fn insert_facts(tx: &Transaction<'_>, rows: &[v1::Fact]) -> Result<()> {
             fact.verified_at,
             fact.created_at,
             fact.superseded_by,
+            fact.kind,
         ])?;
     }
     Ok(())

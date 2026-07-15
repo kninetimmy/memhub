@@ -293,6 +293,121 @@ fn import_accepts_v1_export_missing_reviewed_at_field() {
 }
 
 #[test]
+fn export_import_round_trips_fact_kind() {
+    // Issue #120: facts.kind (migration 0021) was missing from the export
+    // v1 schema and read/write paths, so a JSON export/import round trip
+    // silently stripped the kind tag from every fact.
+    let source = tempdir().expect("source tempdir");
+    init::run(source.path()).expect("source init");
+
+    fact::add_with_kind(
+        source.path(),
+        "deploy-script",
+        "./deploy.sh --prod",
+        Some("gotcha"),
+        "user",
+        "cli:user",
+    )
+    .expect("fact add with kind");
+    fact::add(source.path(), "untagged", "no kind here", "user", "cli:user")
+        .expect("fact add without kind");
+
+    let export_path = source.path().join("export.json");
+    export::run(source.path(), &export_path).expect("export succeeds");
+
+    let raw = fs::read_to_string(&export_path).expect("read export");
+    let parsed: v1::Export = serde_json::from_str(&raw).expect("parse export");
+
+    let tagged = parsed
+        .facts
+        .iter()
+        .find(|f| f.key == "deploy-script")
+        .expect("deploy-script fact present in export");
+    assert_eq!(
+        tagged.kind.as_deref(),
+        Some("gotcha"),
+        "export should carry the fact's kind"
+    );
+    let untagged = parsed
+        .facts
+        .iter()
+        .find(|f| f.key == "untagged")
+        .expect("untagged fact present in export");
+    assert_eq!(untagged.kind, None, "untagged fact should export kind: None");
+
+    let target = tempdir().expect("target tempdir");
+    init::run(target.path()).expect("target init");
+    import::run(target.path(), &export_path, false).expect("import succeeds");
+
+    let facts = fact::list(target.path()).expect("list facts in target");
+    let restored_tagged = facts
+        .iter()
+        .find(|f| f.key == "deploy-script")
+        .expect("deploy-script fact restored");
+    assert_eq!(
+        restored_tagged.kind.as_deref(),
+        Some("gotcha"),
+        "import should restore the fact's kind"
+    );
+    let restored_untagged = facts
+        .iter()
+        .find(|f| f.key == "untagged")
+        .expect("untagged fact restored");
+    assert_eq!(
+        restored_untagged.kind, None,
+        "import should restore an untagged fact as kind: None"
+    );
+}
+
+#[test]
+fn import_accepts_v1_export_missing_fact_kind_field() {
+    // Exports written before migration 0021 (issue #97) added facts.kind
+    // omit the field entirely from each fact object. `#[serde(default)]`
+    // should let those old backups still parse and import cleanly.
+    let target = tempdir().expect("target tempdir");
+    init::run(target.path()).expect("target init");
+
+    let legacy_export = serde_json::json!({
+        "memhub_export_version": 1,
+        "exported_at": "2025-01-01T00:00:00Z",
+        "exported_by": "memhub legacy",
+        "source_schema_version": "1",
+        "project": {
+            "root_path_at_export": target.path().to_string_lossy(),
+            "created_at": "2025-01-01T00:00:00Z",
+        },
+        "facts": [{
+            "id": 1,
+            "key": "legacy-fact",
+            "value": "predates kind column",
+            "confidence": 1.0,
+            "source": "user",
+            "verified_at": null,
+            "created_at": "2025-01-01T00:00:00Z",
+        }],
+        "decisions": [],
+        "tasks": [],
+        "commands": [],
+        "pending_writes": [],
+        "writes_log": []
+    });
+    let legacy_path = target.path().join("legacy.json");
+    fs::write(&legacy_path, legacy_export.to_string()).expect("write legacy export");
+
+    let summary =
+        import::run(target.path(), &legacy_path, true).expect("legacy import should succeed");
+    assert_eq!(summary.facts, 1);
+
+    let facts = fact::list(target.path()).expect("list facts in target");
+    assert_eq!(facts.len(), 1);
+    assert_eq!(facts[0].key, "legacy-fact");
+    assert_eq!(
+        facts[0].kind, None,
+        "kind should default to None for a pre-0021 backup"
+    );
+}
+
+#[test]
 fn import_refuses_to_overwrite_existing_data_without_force() {
     let source = tempdir().expect("source tempdir");
     seed_project(source.path());

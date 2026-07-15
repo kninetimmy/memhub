@@ -51,6 +51,12 @@ pub struct Fact {
     /// demote-with-link survives cross-machine transfer, not just decisions.
     #[serde(default)]
     pub superseded_by: Option<i64>,
+    /// Optional lightweight tag for the writing agent, added in migration
+    /// 0021 (Wave 6 W4, issue #97). `#[serde(default)]` keeps backups
+    /// written before this column existed importable cleanly as `None`,
+    /// same treatment as `superseded_by` above.
+    #[serde(default)]
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
