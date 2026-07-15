@@ -298,11 +298,41 @@ pub(crate) fn archive_into(
 
     let archive_dir = memhub_dir.join(ARCHIVE_DIRNAME);
     fs::create_dir_all(&archive_dir)?;
+    // The canonical archive root is the ONLY tree the previous-archive
+    // cleanup below is ever allowed to delete inside. Resolve it now (the
+    // dir was just created), so a poisoned pointer row can never steer a
+    // delete outside it.
+    let archive_root = archive_dir.canonicalize()?;
 
     // `date('now')` is UTC and pairs with the DB's other timestamps.
     let date: String = conn.query_row("SELECT date('now')", [], |r| r.get(0))?;
     let file_name = format!("{date}-{}.jsonl.zst", sanitize_filename(session_id));
     let archive_path = archive_dir.join(&file_name);
+
+    // Decision 161 — REJECT LOUDLY on a sanitize_filename collision. Two
+    // distinct session ids can sanitize to the same on-disk filename (the
+    // `codex:` colon and every other non-`[A-Za-z0-9._-]` char all fold to
+    // `_`). If the archive path we are about to write already belongs to a
+    // DIFFERENT session, refuse rather than silently clobber that session's
+    // archive and cross-link the rows — which would let one session's prune
+    // delete the other's archive. Same-session re-archive is excluded and
+    // still overwrites in place.
+    let colliding: Option<String> = conn
+        .query_row(
+            "SELECT session_id FROM session_transcripts \
+             WHERE archive_path = ?1 AND session_id != ?2",
+            params![archive_path.to_string_lossy(), session_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(other) = colliding {
+        return Err(MemhubError::InvalidInput(format!(
+            "transcript archive filename {file_name:?} for session {session_id:?} \
+             collides with a different session {other:?} already archived under the \
+             same name; refusing to overwrite it. Distinct session ids must not \
+             sanitize to the same archive filename."
+        )));
+    }
 
     // Remember any prior archive so a re-archive on a different day cleans
     // up the stale file after the new one is safely written.
@@ -314,9 +344,24 @@ pub(crate) fn archive_into(
         )
         .optional()?;
 
-    fs::write(&archive_path, &compressed)?;
+    // Temp-then-publish (F7 (a)): write to a sibling temp file and rename it
+    // atomically into place, so a crash mid-write never leaves a
+    // half-written archive at the real path. Track whether the publish
+    // overwrites an existing file for THIS session (a same-day re-archive):
+    // if so, a later upsert failure must NOT delete a file a surviving row
+    // still points at.
+    let published_over_existing = archive_path.exists();
+    let tmp_path = archive_dir.join(format!(".{file_name}.tmp-{}", std::process::id()));
+    fs::write(&tmp_path, &compressed)?;
+    if let Err(e) = fs::rename(&tmp_path, &archive_path) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(e.into());
+    }
 
-    conn.execute(
+    // Upsert the pointer row. If it fails, clean up the archive we just
+    // published so an unredacted .zst is never orphaned on disk without a
+    // row (F7 (a)) — unless we overwrote a file a prior row still references.
+    if let Err(e) = conn.execute(
         "INSERT INTO session_transcripts \
             (session_id, agent, source_path, archive_path, source_bytes, \
              archive_bytes, created_at) \
@@ -336,13 +381,30 @@ pub(crate) fn archive_into(
             source_bytes as i64,
             archive_bytes as i64,
         ],
-    )?;
+    ) {
+        if !published_over_existing {
+            let _ = fs::remove_file(&archive_path);
+        }
+        return Err(e.into());
+    }
 
     let replaced_existing = match &previous {
         Some(old) if Path::new(old) != archive_path => {
-            // Best-effort: a leftover file is harmless, and prune would
-            // not catch it (its row is gone).
-            let _ = fs::remove_file(old);
+            // Guarded best-effort cleanup of the prior archive. A
+            // poisoned/adopted row could store an ARBITRARY absolute path
+            // here, so only delete a prior archive we can prove lives inside
+            // the canonical archive root — never an outside target.
+            match classify_archive_target(&archive_root, memhub_dir, old) {
+                ArchiveTarget::Contained(path) => {
+                    let _ = fs::remove_file(path);
+                }
+                ArchiveTarget::Escapes => {
+                    log::warn!(
+                        "transcript archive: refusing to delete prior out-of-root \
+                         archive path {old:?} for session {session_id:?}"
+                    );
+                }
+            }
             true
         }
         Some(_) => true,
@@ -400,17 +462,74 @@ pub(crate) fn prune(conn: &Connection, memhub_dir: &Path, retention_days: u32) -
         return Ok(0);
     }
 
-    // Remove files first (best-effort); a missing/locked file must not
-    // block reclaiming the row — the archive dir is under `.memhub/`.
-    for (_, path) in &stale {
-        let full = archive_file_path(memhub_dir, path);
-        let _ = fs::remove_file(&full);
+    // The canonical archive root: the ONLY tree prune may delete inside. If
+    // it cannot be resolved we cannot prove ANY path is safe to delete, so
+    // keep every row rather than silently orphan an unredacted archive.
+    let archive_dir = memhub_dir.join(ARCHIVE_DIRNAME);
+    let root = match archive_dir.canonicalize() {
+        Ok(r) => r,
+        Err(e) => {
+            log::warn!(
+                "transcript prune: cannot canonicalize archive root {} ({e}) — \
+                 keeping {} stale pointer row(s) untouched",
+                archive_dir.display(),
+                stale.len()
+            );
+            return Ok(0);
+        }
+    };
+
+    let mut removed = 0usize;
+    // Row ids that are safe to drop: the file was removed, the file was
+    // already gone, or the row is a poisoned/out-of-root pointer we must
+    // never act on (its target, if any, is not ours to keep tracking).
+    let mut reclaim: Vec<i64> = Vec::new();
+
+    for (id, stored) in &stale {
+        match classify_archive_target(&root, memhub_dir, stored) {
+            ArchiveTarget::Contained(path) => match fs::remove_file(&path) {
+                Ok(()) => {
+                    removed += 1;
+                    reclaim.push(*id);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    // Nothing on disk to orphan; reclaim the pointer row.
+                    reclaim.push(*id);
+                }
+                Err(e) => {
+                    // A real delete failure (a Windows open handle, a
+                    // permission error, ...). Do NOT drop the row: the
+                    // unredacted archive is still on disk and retention must
+                    // retry, not silently forget it (F7 (b), criterion 3).
+                    log::warn!(
+                        "transcript prune: failed to delete archive {} — keeping \
+                         its pointer row for a later retry: {e}",
+                        path.display()
+                    );
+                }
+            },
+            ArchiveTarget::Escapes => {
+                // Poisoned/corrupt/adopted row pointing outside the archive
+                // root. NEVER delete the target. Drop only the pointer row
+                // and warn loudly so it is not silent (F1/F7, criterion 2).
+                log::warn!(
+                    "transcript prune: refusing to delete out-of-root archive path \
+                     {stored:?} from stale pointer row id {id}; dropping the pointer \
+                     row only"
+                );
+                reclaim.push(*id);
+            }
+        }
     }
 
-    conn.execute(
-        "DELETE FROM session_transcripts WHERE created_at < datetime('now', ?1)",
-        params![cutoff],
-    )?;
+    if !reclaim.is_empty() {
+        // Delete exactly the rows we handled, by id — never a blanket cutoff
+        // DELETE that could drop a row whose unredacted file still survives.
+        let mut stmt = conn.prepare("DELETE FROM session_transcripts WHERE id = ?1")?;
+        for id in &reclaim {
+            stmt.execute(params![id])?;
+        }
+    }
 
     let _ = log_write(
         conn,
@@ -419,25 +538,140 @@ pub(crate) fn prune(conn: &Connection, memhub_dir: &Path, retention_days: u32) -
         None,
         "prune",
         &format!(
-            "pruned {} transcript archive(s) older than {} day(s)",
-            stale.len(),
-            retention_days
+            "pruned {removed} transcript archive(s) older than {retention_days} day(s)"
         ),
     );
 
-    Ok(stale.len())
+    Ok(removed)
 }
 
-/// `archive_path` is stored as written (absolute for a real archive). If
-/// it is somehow relative, resolve it under `.memhub/` so prune still
-/// finds the file.
-fn archive_file_path(memhub_dir: &Path, stored: &str) -> PathBuf {
-    let p = Path::new(stored);
-    if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        memhub_dir.join(p)
+/// Classification of a stored `archive_path` for the two deletion sinks
+/// (prune + the previous-archive cleanup in `archive_into`).
+enum ArchiveTarget {
+    /// Provably inside the canonical transcripts root, so safe to remove.
+    /// The file itself may or may not still exist.
+    Contained(PathBuf),
+    /// Escapes the root, or cannot be proven inside it. NEVER delete it.
+    Escapes,
+}
+
+/// Decide whether `stored` (an `archive_path` value from
+/// `session_transcripts`) may be deleted. Fail-closed: only a path proven
+/// to live under the canonicalized transcripts `root` is `Contained`.
+///
+/// Back-compat: real archives store an absolute path under the root, so
+/// those stay deletable. A poisoned/adopted row with an absolute path
+/// outside the root, a `..` escape, or a symlink whose canonical target
+/// leaves the root is classified `Escapes` and never touched. `root` must
+/// already be canonicalized by the caller.
+fn classify_archive_target(root: &Path, memhub_dir: &Path, stored: &str) -> ArchiveTarget {
+    if stored.trim().is_empty() {
+        return ArchiveTarget::Escapes;
     }
+
+    // Resolve a relative stored path under `.memhub/` (legacy behaviour), an
+    // absolute one as-is.
+    let candidate = {
+        let p = Path::new(stored);
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            memhub_dir.join(p)
+        }
+    };
+
+    let root_comps = split_path_components(&root.to_string_lossy());
+    let cand_comps = split_path_components(&candidate.to_string_lossy());
+
+    // A `..` component is always an escape attempt. This is also the only
+    // defence for a MISSING target, which cannot be canonicalized.
+    if has_parent_component(&cand_comps) {
+        return ArchiveTarget::Escapes;
+    }
+
+    let case_insensitive = cfg!(windows);
+
+    // Canonicalization is the authoritative, symlink-safe containment proof.
+    // `canonicalize_lexical` follows symlinks for an existing target and
+    // falls back to the nearest existing ancestor for a missing one, so a
+    // symlinked path prefix never yields a false negative and a symlink
+    // inside the root pointing OUT is caught (its resolved target escapes).
+    match canonicalize_lexical(&candidate) {
+        Some(real) => {
+            let real_comps = split_path_components(&real.to_string_lossy());
+            if components_contained(&root_comps, &real_comps, case_insensitive) {
+                ArchiveTarget::Contained(candidate)
+            } else {
+                ArchiveTarget::Escapes
+            }
+        }
+        // No resolvable ancestor at all: we cannot prove containment, so
+        // refuse. (remove_file would no-op on a truly absent path anyway.)
+        None => ArchiveTarget::Escapes,
+    }
+}
+
+/// Canonicalize `path`, tolerating a missing leaf: if the full path does
+/// not exist, canonicalize the nearest existing ancestor and re-append the
+/// missing tail. Returns `None` when no ancestor resolves. Callers must
+/// have already rejected any `..` component so re-appending is safe.
+fn canonicalize_lexical(path: &Path) -> Option<PathBuf> {
+    if let Ok(real) = path.canonicalize() {
+        return Some(real);
+    }
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    let mut cur = path;
+    loop {
+        let parent = cur.parent()?;
+        let name = cur.file_name()?;
+        tail.push(name.to_os_string());
+        if let Ok(real_parent) = parent.canonicalize() {
+            let mut result = real_parent;
+            for seg in tail.iter().rev() {
+                result.push(seg);
+            }
+            return Some(result);
+        }
+        cur = parent;
+    }
+}
+
+/// Split a path string into components, treating BOTH `/` and `\` as
+/// separators and stripping a Windows `\\?\` / `\\?\UNC\` verbatim prefix.
+/// This is pure string logic so the containment check is unit-testable
+/// cross-platform — a Windows-style string never parses into Windows
+/// `Path` components on a Unix host. `.` segments are dropped; `..` is
+/// preserved so callers can reject it.
+fn split_path_components(raw: &str) -> Vec<String> {
+    let stripped = raw
+        .strip_prefix(r"\\?\UNC\")
+        .or_else(|| raw.strip_prefix(r"\\?\"))
+        .unwrap_or(raw);
+    stripped
+        .split(|c| c == '/' || c == '\\')
+        .filter(|seg| !seg.is_empty() && *seg != ".")
+        .map(|seg| seg.to_string())
+        .collect()
+}
+
+/// True when any component is a `..` parent reference.
+fn has_parent_component(comps: &[String]) -> bool {
+    comps.iter().any(|c| c == "..")
+}
+
+/// Component-wise prefix containment: is `candidate` inside `root`? When
+/// `case_insensitive` (Windows/NTFS), components are compared case-folded.
+fn components_contained(root: &[String], candidate: &[String], case_insensitive: bool) -> bool {
+    if candidate.len() < root.len() {
+        return false;
+    }
+    root.iter().zip(candidate.iter()).all(|(r, c)| {
+        if case_insensitive {
+            r.eq_ignore_ascii_case(c)
+        } else {
+            r == c
+        }
+    })
 }
 
 /// Make a session id safe as a single filename component. Colons (the
@@ -699,5 +933,297 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM session_transcripts", [], |r| r.get(0))
             .expect("count");
         assert_eq!(rows, 1);
+    }
+
+    // -- containment + lifecycle hardening (F1 + F7) -----------------------
+
+    /// Seed a stale (backdated) pointer row directly, without going through
+    /// the archive path — so tests can plant unsafe `archive_path` values.
+    fn seed_stale_row(conn: &Connection, session_id: &str, archive_path: &str) {
+        conn.execute(
+            "INSERT INTO session_transcripts \
+                (session_id, agent, source_path, archive_path, source_bytes, \
+                 archive_bytes, created_at) \
+             VALUES (?1, 'claude-code', '/src', ?2, 1, 1, datetime('now', '-100 days'))",
+            params![session_id, archive_path],
+        )
+        .expect("seed stale row");
+    }
+
+    fn row_count(conn: &Connection) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM session_transcripts", [], |r| r.get(0))
+            .expect("count")
+    }
+
+    #[test]
+    fn prune_never_deletes_targets_outside_the_archive_root() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ctx = open_ctx(temp.path());
+        let archive_dir = ctx.paths.memhub_dir.join("transcripts");
+        fs::create_dir_all(&archive_dir).expect("archive dir");
+
+        // (1) Absolute path escaping the root: a sentinel elsewhere in the
+        // repo tree that a poisoned/adopted row points at.
+        let victim_abs = temp.path().join("victim-abs.txt");
+        fs::write(&victim_abs, "keep me").expect("victim abs");
+        seed_stale_row(&ctx.conn, "evil-abs", &victim_abs.to_string_lossy());
+
+        // (2) `..` relative escape: resolves to <temp>/victim-rel.txt.
+        let victim_rel = temp.path().join("victim-rel.txt");
+        fs::write(&victim_rel, "keep me too").expect("victim rel");
+        seed_stale_row(&ctx.conn, "evil-rel", "../victim-rel.txt");
+
+        let pruned = prune(&ctx.conn, &ctx.paths.memhub_dir, 30).expect("prune");
+
+        assert!(victim_abs.exists(), "absolute-escape target must survive");
+        assert!(victim_rel.exists(), "..-relative-escape target must survive");
+        assert_eq!(pruned, 0, "no in-root archive was removed");
+        assert_eq!(
+            row_count(&ctx.conn),
+            0,
+            "poisoned pointer rows are dropped, targets untouched"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prune_never_deletes_through_an_in_root_symlink_to_outside() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ctx = open_ctx(temp.path());
+        let archive_dir = ctx.paths.memhub_dir.join("transcripts");
+        fs::create_dir_all(&archive_dir).expect("archive dir");
+
+        // A symlink that LIVES inside the root but points OUT of it. Its
+        // canonical target escapes, so the row must be classified unsafe.
+        let outside = temp.path().join("outside-secret.txt");
+        fs::write(&outside, "do not delete").expect("outside");
+        let link = archive_dir.join("2020-01-01-linked.jsonl.zst");
+        std::os::unix::fs::symlink(&outside, &link).expect("symlink");
+        seed_stale_row(&ctx.conn, "evil-symlink", &link.to_string_lossy());
+
+        let pruned = prune(&ctx.conn, &ctx.paths.memhub_dir, 30).expect("prune");
+
+        assert!(
+            outside.exists(),
+            "the symlink target outside the root must survive"
+        );
+        assert_eq!(pruned, 0);
+        assert_eq!(row_count(&ctx.conn), 0, "the poisoned row is reclaimed");
+    }
+
+    #[test]
+    fn prune_reclaims_a_row_whose_contained_archive_is_missing() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ctx = open_ctx(temp.path());
+        let archive_dir = ctx.paths.memhub_dir.join("transcripts");
+        fs::create_dir_all(&archive_dir).expect("archive dir");
+
+        // A path INSIDE the root whose file was already removed out of band.
+        let missing = archive_dir.join("2020-01-01-gone.jsonl.zst");
+        seed_stale_row(&ctx.conn, "gone", &missing.to_string_lossy());
+
+        let pruned = prune(&ctx.conn, &ctx.paths.memhub_dir, 30).expect("prune");
+        assert_eq!(pruned, 0, "no file existed to remove");
+        assert_eq!(
+            row_count(&ctx.conn),
+            0,
+            "an absent-but-contained archive reclaims its row"
+        );
+    }
+
+    #[test]
+    fn prune_keeps_the_row_when_the_file_delete_fails() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ctx = open_ctx(temp.path());
+        let archive_dir = ctx.paths.memhub_dir.join("transcripts");
+        fs::create_dir_all(&archive_dir).expect("archive dir");
+
+        // A DIRECTORY sitting where the archive file's path points: it is
+        // contained in the root and exists, so classification is Contained,
+        // but `remove_file` on a directory fails with a non-NotFound error —
+        // a portable stand-in for a locked/undeletable archive (F7 (b)).
+        let blocked = archive_dir.join("2020-01-01-blocked.jsonl.zst");
+        fs::create_dir(&blocked).expect("dir at archive path");
+        seed_stale_row(&ctx.conn, "blocked", &blocked.to_string_lossy());
+
+        let pruned = prune(&ctx.conn, &ctx.paths.memhub_dir, 30).expect("prune");
+        assert_eq!(pruned, 0, "the undeletable archive was not counted as removed");
+        assert!(blocked.exists(), "the undeletable file survives");
+        assert_eq!(
+            row_count(&ctx.conn),
+            1,
+            "the pointer row is kept for a retry, never silently dropped"
+        );
+    }
+
+    #[test]
+    fn archive_into_cleans_up_the_zst_when_the_upsert_fails() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ctx = open_ctx(temp.path());
+
+        // Force the pointer-row INSERT to fail deterministically, AFTER the
+        // archive file is published, so the cleanup path is exercised.
+        ctx.conn
+            .execute_batch(
+                "CREATE TRIGGER t_fail_upsert BEFORE INSERT ON session_transcripts \
+                 BEGIN SELECT RAISE(FAIL, 'forced upsert failure'); END;",
+            )
+            .expect("trigger");
+
+        let source = temp.path().join("sess-orphan.jsonl");
+        fs::write(&source, "{\"x\":1}\n").expect("write source");
+
+        let err = archive_into(
+            &ctx.conn,
+            &ctx.paths.memhub_dir,
+            Agent::Claude,
+            "sess-orphan",
+            &source,
+            0,
+        )
+        .expect_err("upsert must fail");
+        assert!(
+            err.to_string().contains("forced upsert failure"),
+            "unexpected error: {err}"
+        );
+
+        // No orphaned archive (and no leftover temp file) remains on disk.
+        let archive_dir = ctx.paths.memhub_dir.join("transcripts");
+        let entries: Vec<String> = fs::read_dir(&archive_dir)
+            .expect("read dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            entries.is_empty(),
+            "a failed upsert must leave no archive/temp file: {entries:?}"
+        );
+        assert_eq!(row_count(&ctx.conn), 0, "no pointer row was written");
+    }
+
+    #[test]
+    fn archive_into_rejects_a_sanitize_filename_collision_across_sessions() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ctx = open_ctx(temp.path());
+        let source = temp.path().join("sess.jsonl");
+        fs::write(&source, "{\"x\":1}\n").expect("write");
+
+        // Two DISTINCT session ids that sanitize to the same filename: `a:b`
+        // and `a_b` both map to `a_b` (decision 161: reject loudly).
+        archive_into(&ctx.conn, &ctx.paths.memhub_dir, Agent::Claude, "a_b", &source, 0)
+            .expect("first archive");
+        let err = archive_into(&ctx.conn, &ctx.paths.memhub_dir, Agent::Claude, "a:b", &source, 0)
+            .expect_err("colliding filename must be refused");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("collides") && msg.contains("a_b"),
+            "expected a loud collision refusal, got: {msg}"
+        );
+
+        assert_eq!(row_count(&ctx.conn), 1, "only the first session has a row");
+        let archive_dir = ctx.paths.memhub_dir.join("transcripts");
+        let zst = fs::read_dir(&archive_dir)
+            .expect("read dir")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".jsonl.zst"))
+            .count();
+        assert_eq!(zst, 1, "the colliding second archive must not be written");
+    }
+
+    #[test]
+    fn re_archive_previous_cleanup_never_deletes_an_out_of_root_prior_path() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ctx = open_ctx(temp.path());
+        fs::create_dir_all(ctx.paths.memhub_dir.join("transcripts")).expect("archive dir");
+
+        // Sentinel OUTSIDE the archive root that a poisoned prior row points
+        // at. Dated fresh so prune won't touch it — this exercises the
+        // SECOND deletion sink: archive_into's previous-archive cleanup.
+        let victim = temp.path().join("prior-victim.txt");
+        fs::write(&victim, "keep me").expect("victim");
+        ctx.conn
+            .execute(
+                "INSERT INTO session_transcripts \
+                    (session_id, agent, source_path, archive_path, source_bytes, \
+                     archive_bytes, created_at) \
+                 VALUES ('sess-p', 'claude-code', '/src', ?1, 1, 1, CURRENT_TIMESTAMP)",
+                params![victim.to_string_lossy()],
+            )
+            .expect("seed poisoned row");
+
+        let source = temp.path().join("sess-p.jsonl");
+        fs::write(&source, "{\"x\":1}\n").expect("write source");
+        let report = archive_into(
+            &ctx.conn,
+            &ctx.paths.memhub_dir,
+            Agent::Claude,
+            "sess-p",
+            &source,
+            0,
+        )
+        .expect("re-archive");
+
+        assert!(report.replaced_existing, "the prior row was replaced");
+        assert!(
+            victim.exists(),
+            "the out-of-root prior target must survive the cleanup"
+        );
+    }
+
+    // -- pure Windows-normalization / containment units (criterion 7) ------
+
+    #[test]
+    fn split_path_components_strips_verbatim_prefix_and_both_separators() {
+        assert_eq!(split_path_components("/a/b/c"), vec!["a", "b", "c"]);
+        assert_eq!(split_path_components(r"C:\a\b"), vec!["C:", "a", "b"]);
+        assert_eq!(split_path_components(r"\\?\C:\a\b"), vec!["C:", "a", "b"]);
+        assert_eq!(
+            split_path_components(r"\\?\UNC\server\share\x"),
+            vec!["server", "share", "x"]
+        );
+        // redundant separators and `.` segments are dropped
+        assert_eq!(split_path_components("/a//./b/"), vec!["a", "b"]);
+        // `..` is preserved so the caller can reject it
+        assert_eq!(split_path_components("a/../b"), vec!["a", "..", "b"]);
+    }
+
+    #[test]
+    fn components_contained_prefix_and_case_semantics() {
+        let root = vec!["a".to_string(), "b".to_string()];
+        let inside = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let sibling = vec!["a".to_string(), "bb".to_string()];
+        let shorter = vec!["a".to_string()];
+        assert!(components_contained(&root, &inside, false));
+        assert!(components_contained(&root, &root, false));
+        assert!(
+            !components_contained(&root, &sibling, false),
+            "component prefix, not string prefix"
+        );
+        assert!(!components_contained(&root, &shorter, false));
+
+        // Case-insensitive (Windows/NTFS) folds; case-sensitive does not.
+        let upper = vec!["A".to_string(), "B".to_string(), "c".to_string()];
+        assert!(components_contained(&root, &upper, true));
+        assert!(!components_contained(&root, &upper, false));
+    }
+
+    #[test]
+    fn windows_verbatim_paths_normalize_for_containment() {
+        // Exercises the Windows path normalization on any host: `\\?\`
+        // verbatim absolute paths compared case-insensitively.
+        let root = split_path_components(r"\\?\C:\repo\.memhub\transcripts");
+        let escape = split_path_components(r"\\?\C:\Windows\System32\evil.txt");
+        let inside = split_path_components(r"\\?\C:\repo\.memhub\transcripts\2026-a.jsonl.zst");
+        let inside_ci = split_path_components(r"\\?\c:\REPO\.memhub\TRANSCRIPTS\x.zst");
+        assert!(!components_contained(&root, &escape, true), "escape rejected");
+        assert!(components_contained(&root, &inside, true), "in-root accepted");
+        assert!(
+            components_contained(&root, &inside_ci, true),
+            "case-folded in-root path is still contained on Windows"
+        );
+        assert!(
+            !components_contained(&root, &inside_ci, false),
+            "the same differ-by-case path is NOT contained under case-sensitive rules"
+        );
     }
 }
