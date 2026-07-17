@@ -154,6 +154,20 @@ half-replaced is ever observable.
 **unrelated** to sync. Sync state (`[sync]`, the `sync_marker.json`
 baseline) is per-machine and **not** exported by `memhub export`.
 
+**One-time baseline-stale note after a digest change (audit F2).** The
+logical-version digest was widened to cover `documents`/`doc_chunks` and
+`facts.kind`/`superseded_by`, and its row encoding was made unambiguous
+(length-prefixed, NULL distinct from `''`). This changes the digest of
+*every* DB, so the first `check` on each machine after upgrading past
+this change compares the newly-computed local digest against a
+`sync_marker.json` baseline written by the old encoding — they will not
+match, so a repo that was `up-to-date` may read `diverged` (no shared
+baseline) exactly once. This is expected and harmless: re-establish the
+baseline the normal way — a `snapshot` into the canonical remote dir
+(push records its own baseline) or a `check` → `adopt --yes` (pull), or
+`commit` against the current remote — and subsequent checks read
+correctly again. No data is lost; only the stale marker is replaced.
+
 ## Retrieval
 
 Hybrid recall (the default) combines FTS5 BM25 and BGE-small embeddings,
