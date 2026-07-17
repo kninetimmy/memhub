@@ -7,7 +7,7 @@ contract at [`k9-wrap-up-contract.md`](k9-wrap-up-contract.md).
 
 The K9 consumer edit (calling memhub commands from `/wrap-up`) is
 explicitly tracked as "outside this repo" in
-[`docs/roadmap/k9-integration.md`](../roadmap/k9-integration.md). This
+[`docs/archive/k9-integration.md`](k9-integration.md). This
 prompt is the operator-facing handoff for that work.
 
 ## When to use it
@@ -36,10 +36,10 @@ question.
 
 # Authoritative references (read these first, verbatim)
 
-1. /Users/stephenelswick/memhub/docs/reference/k9-wrap-up-contract.md
+1. /Users/stephenelswick/memhub/docs/archive/k9-wrap-up-contract.md
    — the v1 contract: gate command, read surfaces, mutating commands,
      JSON shapes, exit codes, actor convention.
-2. /Users/stephenelswick/memhub/docs/roadmap/k9-integration.md
+2. /Users/stephenelswick/memhub/docs/archive/k9-integration.md
    — phasing, operating modes (K9-only, memhub-only, K9+memhub),
      source-of-truth model, non-goals.
 

@@ -2,7 +2,7 @@
 
 Status: Closed / superseded. The hypothesis tested here resolved in
 favor of memhub-primary; the deprecation direction is now captured
-in `docs/roadmap/k9-deprecation-plan.md`. This document remains as
+in `docs/archive/k9-deprecation-plan.md`. This document remains as
 the origin record of how the direction was reached — including the
 Phase 2 evidence on Free-AI-SSD — but it is no longer a live
 evaluation. Phase 3's three open routes are obsolete: the
@@ -99,7 +99,7 @@ After Phase 2, route to one of three outcomes:
 
 - **Bootstrap quality acceptable.** Bridge fixes are sufficient.
   Commission `memhub render` design doc as a separate slice (new file:
-  `docs/roadmap/memhub-render-design.md`). Do not modify PRD or
+  `docs/archive/memhub-render-design.md`). Do not modify PRD or
   roadmap non-goals here — the render design doc itself argues for or
   against that change.
 - **Bootstrap quality marginal.** Identify the specific patterns that
@@ -324,7 +324,7 @@ narrowly scoped:
   Expected lift: 4-5 false-opens recovered on this data set.
 - `M6-006` (suggested) — accept mojibake as a third separator branch
   in `extract_date_and_title`, or document a one-line `iconv` /
-  `sed` fix in `docs/reference/k9-consumer-audit-prompt.md` so the
+  `sed` fix in `docs/archive/k9-consumer-audit-prompt.md` so the
   human can clean the source file before bootstrap. Expected lift:
   19 decisions promoted from dirty-title to clean.
 
@@ -339,7 +339,7 @@ the K9-non-goal carve-outs are not opened by this Phase 2 result.
 ## Outcome routing
 
 If Phase 3 lands on "commission `memhub render` design," the next
-artifact is `docs/roadmap/memhub-render-design.md`. PRD §2 and the
-non-goals in `docs/roadmap/k9-integration.md` stay in force until that
+artifact is `docs/archive/memhub-render-design.md`. PRD §2 and the
+non-goals in `docs/archive/k9-integration.md` stay in force until that
 design doc proposes a specific change with explicit reasoning that
 the user accepts.

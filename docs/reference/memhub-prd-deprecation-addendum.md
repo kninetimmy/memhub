@@ -49,7 +49,7 @@ content use `memhub state set` / `memhub arch set` /
 
 ## 2. State and architecture as DB content
 
-`docs/roadmap/k9-integration.md` previously listed "no mapping of
+`docs/archive/k9-integration.md` previously listed "no mapping of
 `project_state.md` or `project_arch.md` into DB tables" as a non-goal.
 That non-goal is **overturned**. Migration `0007_project_narrative`
 adds two tables:
@@ -66,7 +66,7 @@ characters.
 
 Decision rationale (single-blob over decomposed columns) is captured
 in `agent_docs/project_decisions.md` (decision dated 2026-05-12) and
-in `docs/roadmap/memhub-render-design.md` §2. Future schema work can
+in `docs/archive/memhub-render-design.md` §2. Future schema work can
 decompose if querying patterns demand it; blob ships first because
 narrative resists clean decomposition without losing prose flow.
 
@@ -107,7 +107,7 @@ The header marker on every rendered file (`<!-- memhub:rendered -->`)
 documents this contract. To change content, use the CLI; the file is
 a view, not a source.
 
-Full design rationale lives in [`docs/roadmap/memhub-render-design.md`](../roadmap/memhub-render-design.md).
+Full design rationale lives in [`docs/archive/memhub-render-design.md`](../archive/memhub-render-design.md).
 
 ## 5. Wrap-up routing brain is a Claude Code skill, not a CLI subcommand
 
@@ -123,7 +123,7 @@ the deprecation track was specifically committed to keep.
 
 Full design rationale, including why-not-CLI and the slash-command
 collision-resolution pattern (rename the user-level skill, not the
-project-level one), lives in [`docs/roadmap/wrap-up-design.md`](../roadmap/wrap-up-design.md).
+project-level one), lives in [`docs/archive/wrap-up-design.md`](../archive/wrap-up-design.md).
 
 Future memhub-aware skills (`/init-project`, `/check-init`
 equivalents) follow the same pattern. None ship in v1.
@@ -146,7 +146,7 @@ Carried forward:
 
 - Existing K9 repos (e.g., Free-AI-SSD) continue to use K9 with
   memhub as the optional cache via the v1 K9 `/wrap-up` shell-out
-  contract (`docs/reference/k9-wrap-up-contract.md`). No forced
+  contract (`docs/archive/k9-wrap-up-contract.md`). No forced
   migration.
 - `memhub integrations bootstrap-k9` stays as the priming ramp for
   K9 repos that opt into memhub-primary. After bootstrap, render
@@ -154,7 +154,7 @@ Carried forward:
   framework itself stops shipping releases.
 
 Full plan and the four load-bearing slices are documented in
-[`docs/roadmap/k9-deprecation-plan.md`](../roadmap/k9-deprecation-plan.md).
+[`docs/archive/k9-deprecation-plan.md`](../archive/k9-deprecation-plan.md).
 
 ## 7. What did not change
 
@@ -221,8 +221,8 @@ sequence is the reference implementation.
 
 Authoritative for the items they cover:
 
-- [`docs/roadmap/memhub-render-design.md`](../roadmap/memhub-render-design.md) — output shape, conflict semantics, trigger model, output location, state/arch storage.
-- [`docs/roadmap/wrap-up-design.md`](../roadmap/wrap-up-design.md) — wrap-up routing brain location, session-boundary model, K9-vocabulary scope.
-- [`docs/roadmap/k9-deprecation-plan.md`](../roadmap/k9-deprecation-plan.md) — full deprecation direction and slice enumeration.
-- [`docs/reference/k9-wrap-up-contract.md`](k9-wrap-up-contract.md) — v1 K9 `/wrap-up` shell-out contract (still authoritative for K9-using repos).
+- [`docs/archive/memhub-render-design.md`](../archive/memhub-render-design.md) — output shape, conflict semantics, trigger model, output location, state/arch storage.
+- [`docs/archive/wrap-up-design.md`](../archive/wrap-up-design.md) — wrap-up routing brain location, session-boundary model, K9-vocabulary scope.
+- [`docs/archive/k9-deprecation-plan.md`](../archive/k9-deprecation-plan.md) — full deprecation direction and slice enumeration.
+- [`docs/archive/k9-wrap-up-contract.md`](../archive/k9-wrap-up-contract.md) — v1 K9 `/wrap-up` shell-out contract (still authoritative for K9-using repos).
 - [`docs/reference/export-format.md`](export-format.md) — export format v1; addendum will follow if `state`/`arch`/`session_notes` get added in v2.
