@@ -16,8 +16,10 @@ use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
-use rusqlite::Connection;
+use rusqlite::backup::{Backup, StepResult};
+use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -469,8 +471,15 @@ pub fn check(start: &Path, remote: &Path) -> Result<CheckReport> {
 
     let project_id_mismatch =
         (manifest.project_id != project_id).then(|| manifest.project_id.clone());
-    let schema_blocks_adopt =
-        schema_ordinal(&manifest.schema_version) > schema_ordinal(&local_schema);
+    // The local schema always parses (it is written by our own
+    // migrations); a remote schema that does not parse can never be
+    // adopted (adopt hard-refuses it), so `check` reports it as blocking
+    // rather than as a spurious "older, safe to adopt".
+    let local_ordinal = schema_ordinal(&local_schema)?;
+    let schema_blocks_adopt = match schema_ordinal(&manifest.schema_version) {
+        Ok(remote_ordinal) => remote_ordinal > local_ordinal,
+        Err(_) => true,
+    };
 
     // Did each side move off the shared baseline? With no baseline this
     // is the first sync: equal logical → already in step, else the
@@ -537,13 +546,27 @@ fn read_remote_manifest(remote: &Path) -> Result<Option<Manifest>> {
 
 /// Numeric prefix of a migration-style schema version (`"0016_x"` →
 /// 16). Schema versions are zero-padded ordinals, so comparing the
-/// leading number orders them; unparseable → 0 (treated as oldest).
-fn schema_ordinal(schema_version: &str) -> u32 {
+/// leading number orders them.
+///
+/// **Fail-closed** (F4/X6): an empty or non-numeric prefix is an error,
+/// never a silent `0`. Collapsing an unparseable version to "oldest"
+/// would let a garbage or hostile manifest `schema_version` slip *under*
+/// the newer-schema refusal in [`adopt`] and get installed by a binary
+/// that may not understand it — the exact hole this hardening closes.
+/// This mirrors the upward-only `MAX(schema_version)` ratchet in
+/// `db::upsert_project`, which likewise refuses to let an unknown/newer
+/// schema be treated as safe.
+fn schema_ordinal(schema_version: &str) -> Result<u32> {
     schema_version
         .split('_')
         .next()
         .and_then(|n| n.parse().ok())
-        .unwrap_or(0)
+        .ok_or_else(|| {
+            MemhubError::InvalidInput(format!(
+                "schema_version '{schema_version}' is not a parseable migration ordinal \
+                 (expected a zero-padded 'NNNN_name')"
+            ))
+        })
 }
 
 /// The snapshot file paired with a `remote` argument: inside it when a
@@ -556,11 +579,88 @@ fn remote_snapshot_file(remote: &Path) -> PathBuf {
     }
 }
 
-fn remove_sidecars(db_path: &Path) {
-    for suffix in ["-wal", "-shm"] {
-        let p = PathBuf::from(format!("{}{}", db_path.display(), suffix));
-        let _ = fs::remove_file(p);
+/// Name of the local staging copy `adopt` writes before hashing and
+/// installing. Sits inside `.memhub/` (same filesystem as the live DB),
+/// never in the Drive folder, so the bytes we hash are the bytes we
+/// install — Drive cannot rewrite it between the two.
+const INCOMING_FILENAME: &str = "project.sqlite.incoming";
+
+/// Bound on how long the online-backup restore waits for a live external
+/// writer to release the destination DB before refusing. SQLite's backup
+/// step reports BUSY/LOCKED **without writing anything** when it cannot
+/// lock the destination, so a bounded retry that then errors out leaves
+/// the original DB fully intact — never a torn, half-restored file.
+/// ~2 s worst case (20 × 100 ms), comfortably longer than memhub's own
+/// millisecond-scale writes yet still a prompt, deterministic give-up.
+const RESTORE_BUSY_RETRIES: u32 = 20;
+const RESTORE_BUSY_PAUSE: Duration = Duration::from_millis(100);
+
+/// Restore the pages of the staged snapshot into the live DB **in place**
+/// via SQLite's online-backup API, instead of deleting/renaming the DB
+/// file out from under any process that holds it open. This is the
+/// cross-process-safe swap (F4/X6):
+///
+/// * **Windows:** a DB file another `memhub` process (a CLI invocation or
+///   the long-lived MCP server) holds open cannot be renamed or deleted —
+///   the OS raises a sharing violation, so the old delete-`-wal`/`-shm`
+///   + `rename` swap would fail outright. The backup API instead writes
+///   *through* SQLite's own file locking, so a concurrent process is
+///   serialized against and always sees a coherent DB.
+/// * **POSIX:** renaming over an open DB there does *not* error; it
+///   silently orphans the other process onto the old (now-unlinked)
+///   inode, and unlinking `-wal`/`-shm` beside a live connection lets it
+///   keep writing to a WAL that no longer matches the DB — a silent
+///   divergence. Writing through the backup API avoids both.
+///
+/// A single `step(-1)` copies every page in one operation, holding the
+/// destination's write lock for its duration, so other connections
+/// observe either the pre- or post-restore DB, never a partial mix. If
+/// the destination is locked, `step` copies nothing and reports BUSY; we
+/// retry a bounded number of times and then refuse cleanly, leaving the
+/// original DB untouched.
+fn restore_into_live_db(staged: &Path, dest_path: &Path) -> Result<()> {
+    // Source read-only: the backup only reads it, and read-only opening
+    // avoids leaving a stray rollback journal beside the staged file.
+    let src = Connection::open_with_flags(staged, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    // Destination opened plain (default `busy_timeout` = 0) so each locked
+    // step returns BUSY immediately and our own bounded loop — not an
+    // unbounded internal wait — governs the retry budget.
+    let mut dest = Connection::open(dest_path)?;
+
+    let backup = Backup::new(&src, &mut dest)?;
+    let mut attempts = 0u32;
+    loop {
+        // `-1` copies all remaining pages in a single locked step.
+        match backup.step(-1)? {
+            StepResult::Done => break,
+            // Cannot occur for `step(-1)`, but treat it as "keep copying"
+            // rather than assume completion.
+            StepResult::More => continue,
+            StepResult::Busy | StepResult::Locked => {
+                attempts += 1;
+                if attempts >= RESTORE_BUSY_RETRIES {
+                    return Err(MemhubError::InvalidInput(format!(
+                        "the local DB at {} is held open by another memhub process; adopt \
+                         retried {RESTORE_BUSY_RETRIES} times without writing anything and \
+                         gave up. The DB is unchanged — close other memhub processes and \
+                         retry `sync adopt`.",
+                        dest_path.display()
+                    )));
+                }
+                std::thread::sleep(RESTORE_BUSY_PAUSE);
+            }
+            // `StepResult` is `#[non_exhaustive]`; a future rusqlite variant
+            // we do not understand must fail loudly rather than be treated
+            // as success — the DB may be in an unknown state, so refuse.
+            other => {
+                return Err(MemhubError::InvalidInput(format!(
+                    "online-backup restore returned an unrecognized step result ({other:?}); \
+                     refusing to treat it as a completed adopt"
+                )));
+            }
+        }
     }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -578,12 +678,27 @@ pub struct AdoptSummary {
 /// (`/catch-up`) only reaches here after the operator confirms a
 /// `status` verdict.
 ///
-/// Three checks are **hard refusals regardless of `force`**: a
+/// Three checks are **hard refusals `force` cannot override**: a
 /// project-id mismatch (wrong Drive folder), a snapshot schema newer
-/// than this binary (run `memhub upgrade` first — §6), and a sha256
-/// that disagrees with the manifest (torn/partial sync). The
-/// just-replaced DB is copied to `.memhub/backups/sync/` first as a
-/// single most-recent safety net for the swap itself.
+/// than — or unparseable by — this binary (run `memhub upgrade` first —
+/// §6), and a sha256 that disagrees with the manifest (torn/partial
+/// sync). The manifest-only refusals run first; the checksum is verified
+/// against a **local staged copy** (see below), so a snapshot Drive
+/// rewrites between hashing and install cannot be installed unverified
+/// (TOCTOU, F4/X6).
+///
+/// Install sequence, ordered so a failure at any stage leaves the
+/// original DB intact:
+/// 1. stage the remote snapshot into `.memhub/project.sqlite.incoming`;
+/// 2. hash the *staged* copy and verify it against the manifest;
+/// 3. take a pre-adopt safety copy of the current DB to
+///    `.memhub/backups/sync/last-replaced.sqlite` via `VACUUM INTO`, so
+///    it captures committed WAL state (a raw file copy could miss it);
+/// 4. restore the staged snapshot's pages into the live DB through
+///    SQLite's online-backup API (see [`restore_into_live_db`]) — no DB
+///    file is ever deleted or renamed under a process that may hold it
+///    open, and concurrent memhub processes serialize through SQLite's
+///    own locking.
 pub fn adopt(start: &Path, remote: &Path, force: bool) -> Result<AdoptSummary> {
     let manifest = read_remote_manifest(remote)?.ok_or_else(|| {
         MemhubError::InvalidInput("no snapshot manifest found at the given path".into())
@@ -609,7 +724,8 @@ pub fn adopt(start: &Path, remote: &Path, force: bool) -> Result<AdoptSummary> {
     let db_path = ctx.paths.db_path.clone();
     let repo_root = ctx.paths.repo_root.clone();
 
-    // ── Hard refusals (independent of `force`) ──────────────────────
+    // ── Manifest-only hard refusals (independent of `force`, evaluated
+    //    before any local file is touched) ───────────────────────────
     if manifest.project_id != project_id {
         return Err(MemhubError::InvalidInput(format!(
             "snapshot is for project '{}', not this repo's '{}'; refusing to adopt a \
@@ -617,15 +733,49 @@ pub fn adopt(start: &Path, remote: &Path, force: bool) -> Result<AdoptSummary> {
             manifest.project_id, project_id
         )));
     }
-    if schema_ordinal(&manifest.schema_version) > schema_ordinal(&previous_schema) {
+    // Fail closed on an unreadable manifest schema version: it must
+    // hard-refuse here, before any local mutation, naming the field —
+    // never collapse to ordinal 0 and slip under the newer-schema guard.
+    let snapshot_ordinal = schema_ordinal(&manifest.schema_version).map_err(|_| {
+        MemhubError::InvalidInput(format!(
+            "snapshot manifest field 'schema_version' = '{}' is not a parseable migration \
+             ordinal (expected 'NNNN_name'); refusing to adopt a snapshot whose schema \
+             version cannot be read",
+            manifest.schema_version
+        ))
+    })?;
+    if snapshot_ordinal > schema_ordinal(&previous_schema)? {
         return Err(MemhubError::InvalidInput(format!(
             "snapshot schema {} is newer than this binary ({}); run `memhub upgrade` first, \
              then retry",
             manifest.schema_version, previous_schema
         )));
     }
-    let actual_sha = sha256_file(&snapshot_file)?;
-    if actual_sha != manifest.file_sha256 {
+
+    // ── Confirmation gate (before the multi-MB staging copy) ─────────
+    if !force {
+        return Err(MemhubError::InvalidInput(
+            "adopt overwrites the local DB with the Drive snapshot; pass --yes to confirm".into(),
+        ));
+    }
+
+    // ── Stage the incoming snapshot locally, then hash THAT copy ─────
+    // Everything from here reads/writes only the staged local copy and
+    // the destination; Drive can rewrite `snapshot_file` freely without
+    // affecting what we install.
+    let incoming = memhub_dir.join(INCOMING_FILENAME);
+    if incoming.exists() {
+        fs::remove_file(&incoming)?;
+    }
+    fs::copy(&snapshot_file, &incoming)?;
+
+    let staged_sha = sha256_file(&incoming)?;
+    if staged_sha != manifest.file_sha256 {
+        // Torn/partial download, or a snapshot that changed on Drive
+        // between manifest-write and now: the staged bytes we would
+        // install do not match the manifest. Refuse and drop the stage —
+        // no local DB state has been touched.
+        let _ = fs::remove_file(&incoming);
         return Err(MemhubError::InvalidInput(
             "snapshot sha256 does not match its manifest (corrupt or partial download); \
              not adopting"
@@ -633,31 +783,34 @@ pub fn adopt(start: &Path, remote: &Path, force: bool) -> Result<AdoptSummary> {
         ));
     }
 
-    // ── Confirmation gate ───────────────────────────────────────────
-    if !force {
-        return Err(MemhubError::InvalidInput(
-            "adopt overwrites the local DB with the Drive snapshot; pass --yes to confirm".into(),
-        ));
-    }
-
-    // Close the local connection before swapping the file underneath it.
-    drop(ctx);
-
-    // Single most-recent safety copy of the DB being replaced.
+    // ── Pre-adopt safety copy of the DB being replaced ───────────────
+    // `VACUUM INTO` from the still-open connection captures committed WAL
+    // state that a raw `fs::copy` of `project.sqlite` alone could miss.
     let backup_dir = memhub_dir.join("backups").join("sync");
     fs::create_dir_all(&backup_dir)?;
     let backup_path = backup_dir.join("last-replaced.sqlite");
-    if db_path.exists() {
-        fs::copy(&db_path, &backup_path)?;
+    // `VACUUM INTO` refuses to overwrite; clear the single prior slot.
+    if backup_path.exists() {
+        fs::remove_file(&backup_path)?;
+    }
+    if let Err(e) = vacuum_into(&ctx.conn, &backup_path) {
+        let _ = fs::remove_file(&incoming);
+        return Err(e);
     }
 
-    // Drop stale WAL/SHM so they aren't replayed onto the new file, then
-    // stage the incoming snapshot beside the DB and rename it into place
-    // (same-dir rename is atomic on one filesystem).
-    remove_sidecars(&db_path);
-    let incoming = memhub_dir.join("project.sqlite.incoming");
-    fs::copy(&snapshot_file, &incoming)?;
-    fs::rename(&incoming, &db_path)?;
+    // Close our own connection so the in-place restore serializes only
+    // against *other* processes, not this one.
+    drop(ctx);
+
+    // ── Restore the staged snapshot into the live DB in place ────────
+    // Never deletes or renames the DB/-wal/-shm; writes through SQLite's
+    // locking so a concurrent process cannot observe a torn DB. On a
+    // busy/locked destination this refuses cleanly with the original DB
+    // (and the WAL-inclusive backup above) intact.
+    let restore_result = restore_into_live_db(&incoming, &db_path);
+    // The stage is transient either way.
+    let _ = fs::remove_file(&incoming);
+    restore_result?;
 
     // Reopen: `open_project` migrates forward if the snapshot was older.
     let ctx = db::open_project(&repo_root)?;
@@ -1461,10 +1614,16 @@ mod tests {
 
     #[test]
     fn schema_ordinal_parses_migration_prefix() {
-        assert_eq!(schema_ordinal("0016_global_accept_markers"), 16);
-        assert_eq!(schema_ordinal("0001_initial"), 1);
-        assert_eq!(schema_ordinal("garbage"), 0);
-        assert!(schema_ordinal("9999_future") > schema_ordinal("0016_x"));
+        assert_eq!(schema_ordinal("0016_global_accept_markers").unwrap(), 16);
+        assert_eq!(schema_ordinal("0001_initial").unwrap(), 1);
+        // Fail-closed: an unparseable version is an error, never a silent
+        // 0 that would slip under the newer-schema adopt guard (F4/X6).
+        assert!(
+            schema_ordinal("garbage").is_err(),
+            "a non-numeric prefix must fail closed, not collapse to 0"
+        );
+        assert!(schema_ordinal("").is_err(), "empty must fail closed");
+        assert!(schema_ordinal("9999_future").unwrap() > schema_ordinal("0016_x").unwrap());
     }
 
     fn fact_keys(repo: &Path) -> Vec<String> {
@@ -1572,6 +1731,193 @@ mod tests {
 
         // Through all refusals, b's DB is still its pristine empty self.
         assert!(fact_keys(b.path()).is_empty(), "no partial adopt occurred");
+    }
+
+    #[test]
+    fn adopt_refuses_unparseable_manifest_schema_before_touching_local() {
+        // F4/X6: a manifest whose `schema_version` cannot be parsed as a
+        // migration ordinal must hard-refuse *before* any local mutation,
+        // rather than collapse to ordinal 0 and slip under the
+        // newer-schema guard. project_id still matches so the schema check
+        // is the one that fires.
+        let a = new_synced_repo();
+        fact::add(a.path(), "alpha", "1", "user", "cli:user").expect("fact");
+        let b = new_synced_repo();
+        fact::add(b.path(), "beta", "2", "user", "cli:user").expect("fact");
+
+        let garbled = a.path().join("garbled-schema");
+        snapshot(a.path(), &garbled, false).expect("snapshot");
+        rewrite_manifest(&garbled, |m| m.schema_version = "not-an-ordinal".into());
+
+        let err = adopt(b.path(), &garbled, true).expect_err("unparseable schema must refuse");
+        match err {
+            MemhubError::InvalidInput(msg) => assert!(
+                msg.contains("schema_version"),
+                "error must name the manifest field: {msg}"
+            ),
+            other => panic!("expected InvalidInput naming schema_version, got {other:?}"),
+        }
+
+        // Not one byte of local state was touched: b keeps its own data
+        // and no staging/backup artifact was created.
+        assert_eq!(fact_keys(b.path()), vec!["beta"], "local DB untouched");
+        assert!(
+            !b.path().join(".memhub").join(INCOMING_FILENAME).exists(),
+            "no staged copy on a pre-mutation refusal"
+        );
+        assert!(
+            !b.path()
+                .join(".memhub")
+                .join("backups")
+                .join("sync")
+                .join("last-replaced.sqlite")
+                .exists(),
+            "no pre-adopt backup on a pre-mutation refusal"
+        );
+    }
+
+    #[test]
+    fn adopt_refuses_cleanly_when_a_second_client_holds_the_db_locked() {
+        // Two-process coordination: while a distinct SQLite client holds a
+        // write transaction on b's live DB, adopt must refuse cleanly and
+        // leave the DB intact — never a torn, half-replaced file. A second
+        // `Connection` is a separate lock-holder even in-process, so this
+        // deterministically drives the same exclusion a real second OS
+        // process would (no sleeps-and-hope: the blocker holds the lock
+        // for the entire adopt call, so the outcome is fixed).
+        let a = new_synced_repo();
+        fact::add(a.path(), "alpha", "1", "user", "cli:user").expect("fact");
+        let drive = a.path().join("drive");
+        snapshot(a.path(), &drive, false).expect("snapshot");
+
+        let b = new_synced_repo();
+        fact::add(b.path(), "beta", "2", "user", "cli:user").expect("fact");
+
+        let db_path = b.path().join(".memhub").join("project.sqlite");
+        let blocker = Connection::open(&db_path).expect("second client");
+        blocker
+            .execute_batch("BEGIN IMMEDIATE;")
+            .expect("hold the write lock");
+
+        let err = adopt(b.path(), &drive, true).expect_err("locked DB must refuse");
+        assert!(matches!(
+            err,
+            MemhubError::InvalidInput(_) | MemhubError::DatabaseBusy { .. }
+        ));
+
+        // Release the concurrent writer, then confirm b was never mutated
+        // and its DB is a coherent, readable SQLite file (no torn state).
+        blocker.execute_batch("ROLLBACK;").expect("release");
+        drop(blocker);
+        assert_eq!(fact_keys(b.path()), vec!["beta"], "adopt left b intact");
+    }
+
+    #[test]
+    fn restore_into_live_db_refuses_and_preserves_db_when_destination_locked() {
+        // The restore step in isolation: a locked destination must exhaust
+        // the bounded retry budget and refuse, copying zero pages, so the
+        // live DB keeps its original content. Deterministic — the blocker
+        // holds the write lock for the whole restore window.
+        let dest = tempdir().expect("tempdir");
+        init::run(dest.path()).expect("init");
+        fact::add(dest.path(), "keeper", "1", "user", "cli:user").expect("fact");
+        let db_path = dest.path().join(".memhub").join("project.sqlite");
+
+        // A staged snapshot with different content to (attempt to) restore.
+        let other = tempdir().expect("tempdir");
+        init::run(other.path()).expect("init");
+        fact::add(other.path(), "incoming", "2", "user", "cli:user").expect("fact");
+        let staged = dest.path().join("staged.sqlite");
+        {
+            let src = db::open_project(other.path()).expect("open other");
+            vacuum_into(&src.conn, &staged).expect("stage snapshot");
+        }
+
+        let blocker = Connection::open(&db_path).expect("second client");
+        blocker
+            .execute_batch("BEGIN IMMEDIATE;")
+            .expect("hold the write lock");
+
+        let err = restore_into_live_db(&staged, &db_path)
+            .expect_err("a locked destination must refuse");
+        assert!(matches!(err, MemhubError::InvalidInput(_)));
+
+        blocker.execute_batch("ROLLBACK;").expect("release");
+        drop(blocker);
+
+        // The destination still holds its ORIGINAL content, untouched.
+        assert_eq!(
+            fact_keys(dest.path()),
+            vec!["keeper"],
+            "restore copied nothing into the locked DB"
+        );
+    }
+
+    #[test]
+    fn adopt_failure_during_restore_keeps_original_db_and_backup() {
+        // A "snapshot" that clears every pre-restore gate but is not a
+        // valid SQLite DB, so the online-backup restore itself fails
+        // *after* the pre-adopt backup is taken. This proves two things at
+        // once: (a) the checksum is computed on the STAGED copy and that
+        // same copy is what the restore reads (the manifest hash is set to
+        // the staged garbage's hash, so the gate passes only because
+        // staged bytes == hashed bytes); and (b) a failure past the backup
+        // step leaves the original DB intact plus a usable WAL-inclusive
+        // backup.
+        let b = new_synced_repo();
+        fact::add(b.path(), "beta", "2", "user", "cli:user").expect("fact");
+
+        let drive = b.path().join("drive");
+        fs::create_dir_all(&drive).expect("mkdir");
+        let snap = drive.join(SNAPSHOT_FILENAME);
+        fs::write(&snap, b"this is emphatically not a sqlite database").expect("write garbage");
+        let garbage_sha = sha256_file(&snap).expect("hash garbage");
+
+        let (local, schema) = local_state(b.path());
+        let manifest = Manifest {
+            manifest_version: MANIFEST_VERSION,
+            project_id: "test-proj-abcd1234".into(),
+            schema_version: schema,
+            logical_version: local,
+            file_sha256: garbage_sha,
+            machine_id: "other-machine".into(),
+            created_at: "2026-05-22 00:00:00".into(),
+            memhub_version: "0.1.0".into(),
+        };
+        fs::write(
+            drive.join(MANIFEST_FILENAME),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .expect("write manifest");
+
+        let err = adopt(b.path(), &drive, true).expect_err("restore of a non-DB must fail");
+        assert!(matches!(
+            err,
+            MemhubError::Sqlite(_) | MemhubError::InvalidInput(_) | MemhubError::DatabaseBusy { .. }
+        ));
+
+        // Original DB intact.
+        assert_eq!(fact_keys(b.path()), vec!["beta"], "failed restore left b intact");
+
+        // The pre-adopt backup was taken before the doomed restore and is
+        // a real, VACUUM-INTO'd SQLite file (WAL-inclusive), and the
+        // transient stage was cleaned up.
+        let backup = b
+            .path()
+            .join(".memhub")
+            .join("backups")
+            .join("sync")
+            .join("last-replaced.sqlite");
+        assert!(backup.exists(), "pre-adopt backup survives a failed restore");
+        let head = fs::read(&backup).expect("read backup");
+        assert!(
+            head.starts_with(b"SQLite format 3\0"),
+            "backup is a valid sqlite file"
+        );
+        assert!(
+            !b.path().join(".memhub").join(INCOMING_FILENAME).exists(),
+            "transient stage cleaned up after a failed restore"
+        );
     }
 
     #[test]

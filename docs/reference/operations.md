@@ -133,6 +133,23 @@ Surfaces:
 - Skill: `/catch-up` orchestrates the pull side (check → summarize →
   adopt with your approval).
 
+How `adopt` installs the snapshot (F4/X6): it stages the remote
+snapshot into a local `.memhub/project.sqlite.incoming` copy, hashes
+**that** copy, and verifies it against the manifest — so a snapshot
+Drive rewrites between hashing and install can never be installed
+unverified. It then takes a `VACUUM INTO` safety copy of the current DB
+to `.memhub/backups/sync/last-replaced.sqlite` (single slot,
+WAL-inclusive) and restores the staged snapshot's pages into the live
+DB **in place** through SQLite's online-backup API. It never deletes or
+renames the DB (or its `-wal`/`-shm`) out from under a process that may
+hold it open: on Windows that would raise a sharing violation; on POSIX
+it would silently orphan another connection onto a stale inode/WAL.
+Concurrent memhub processes therefore serialize through SQLite's own
+locking. If the live DB is held open by another writer for the whole
+restore window, adopt retries briefly and then refuses cleanly, leaving
+the original DB — and the pre-adopt backup — intact; nothing torn or
+half-replaced is ever observable.
+
 `known_projects`/registry membership and the M9 global store are
 **unrelated** to sync. Sync state (`[sync]`, the `sync_marker.json`
 baseline) is per-machine and **not** exported by `memhub export`.
