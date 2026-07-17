@@ -1,0 +1,26 @@
+name: Security Audit
+
+# Scheduled, not per-commit: RustSec advisories change independently of our
+# commits, and a full `cargo install cargo-audit` + scan on every push would
+# be wasted work. Runs weekly plus an on-demand workflow_dispatch trigger.
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: cargo audit
+        run: cargo audit
