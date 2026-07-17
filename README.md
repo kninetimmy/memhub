@@ -445,13 +445,15 @@ memhub sync status   # confirms enablement + the resolved remote dir
 
 ## Project status
 
-A point-in-time snapshot pulled from the memhub task DB on **2026-07-17** — not a live feed. Run `memhub task list` or `memhub recall "sync hardening"` in this repo for the current picture.
+A point-in-time snapshot pulled from the memhub task DB, current as of audit Run B's merge on **2026-07-17** — not a live feed. Run `memhub task list` or `memhub recall "sync hardening"` in this repo for the current picture.
+
+### Recently fixed
+
+- **Run B (2026-07-17, PRs #138–#142): sync divergence blind spots closed.** The sync logical-version digest now covers doc ingests and fact kind/supersede changes, with a schema-drift test guarding it (task 113, #140). Sync adopt is hardened: a fail-closed manifest schema parse, staged-hash install closing the hash/copy TOCTOU window, and local DB replacement via SQLite's online-backup API (task 112, #139). Sync publication is now atomic: content-addressed versioned snapshots with manifest-last publication, torn-marker degrade, and `sync_commit` refusing to re-baseline over a remote that has already diverged (task 114, #141). Also landed: `sync check --diff` per-table divergence detail since baseline (#142), and an import retained-docs checklist with the inverted docs-hint fix (#138).
+- **Run A (2026-07-15, PRs #124–#128):** transcript deletion containment, export of `facts.kind`, repo-first doc default flip, dual-shell preflights, and upgrade aside-restore (tasks 101/102/104/109/110/111).
 
 ### Known issues (hardening in flight)
 
-- **Sync divergence detection has blind spots.** Doc ingests and fact kind/supersede changes don't advance the logical version, so two machines that have actually diverged can still compare as up-to-date (task 113).
-- **Sync adopt needs more hardening.** An unparseable manifest schema version bypasses the pre-swap "newer schema" refusal, there's a TOCTOU window between hashing and copying the snapshot, and adopt doesn't coordinate with a live memhub process on the machine (task 112).
-- **Sync publication isn't fully atomic.** A torn baseline marker can block sync ops outright, a snapshot write that fails mid-sequence can lose the last valid remote copy, and the ungated `sync_commit` can re-baseline over a remote that has already diverged (task 114).
 - **Corrupt or truncated embedding blobs degrade silently.** Recall falls back to FTS-only without raising the `stale_embeddings` warning, so the degradation is invisible (task 117).
 - **`memhub audit md` can panic** on a `CLAUDE.md` whose only `##` heading sits inside the managed block (task 117).
 - **`memhub import` without `--force` can wipe the `writes_log` audit trail** of a fresh-init DB (task 117).
