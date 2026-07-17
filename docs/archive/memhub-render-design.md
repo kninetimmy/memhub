@@ -1,12 +1,12 @@
 # `memhub render` design
 
 Status: Open design doc. The deprecation direction is committed
-([`docs/roadmap/k9-deprecation-plan.md`](k9-deprecation-plan.md)) but
+([`docs/archive/k9-deprecation-plan.md`](k9-deprecation-plan.md)) but
 the render slice is not yet implemented. This document picks the
 output shape, surfaces alternatives on the secondary questions
 (trigger, conflict semantics, location, state/arch storage), and
 recommends a default for each. PRD §2 and the
-`docs/roadmap/k9-integration.md` non-goals are not modified by this
+`docs/archive/k9-integration.md` non-goals are not modified by this
 document; the addendum that revises them is a separate slice
 sequenced after this one.
 

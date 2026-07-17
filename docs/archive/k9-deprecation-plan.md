@@ -4,7 +4,7 @@ Status: All four load-bearing slices have shipped. This document
 remains as the planning anchor and historical record of the
 direction; ongoing PRD-level changes live in
 [`docs/reference/memhub-prd-deprecation-addendum.md`](../reference/memhub-prd-deprecation-addendum.md).
-PRD §2 and the `docs/roadmap/k9-integration.md` non-goals have been
+PRD §2 and the `docs/archive/k9-integration.md` non-goals have been
 formally revisited (see the addendum and the revised non-goals
 section in `k9-integration.md`).
 
@@ -27,7 +27,7 @@ Decides:
   design slices should be framed under "memhub becomes primary," not
   under "memhub stays complementary."
 - That PRD §2 ("markdown files stay as the entry point") and the
-  non-goals in `docs/roadmap/k9-integration.md` will be revisited
+  non-goals in `docs/archive/k9-integration.md` will be revisited
   under explicit reasoning, not silently reinterpreted.
 
 Does not decide:
@@ -46,7 +46,7 @@ Does not decide:
 
 **Status: shipped (`c1becc5`, `2757a0a`, `c3fbef0`).**
 
-The design doc at [`docs/roadmap/memhub-render-design.md`](memhub-render-design.md)
+The design doc at [`docs/archive/memhub-render-design.md`](memhub-render-design.md)
 locked the output shape (memhub-native two-file:
 `PROJECT.md` for narrative + `PROJECT_LEDGER.md` for the ledger) and
 resolved the four secondary questions: trigger is on-demand only,
@@ -80,13 +80,13 @@ and `project_arch`), append-only history, with `memhub state set` /
 `memhub arch set` / `show` / `history` as the CLI surface.
 Decomposed-columns option was rejected; rationale captured as a
 durable decision dated 2026-05-12 in `agent_docs/project_decisions.md`
-and in `docs/roadmap/memhub-render-design.md` §2.
+and in `docs/archive/memhub-render-design.md` §2.
 
 ### 4. Wrap-up routing brain
 
 **Status: shipped (`a2b6606`, `5037033`, `588168b`, `103eea0`,
 `591832f`).** Design doc at
-[`docs/roadmap/wrap-up-design.md`](wrap-up-design.md) locked the
+[`docs/archive/wrap-up-design.md`](wrap-up-design.md) locked the
 routing brain as a Claude Code project-level slash command at
 `.claude/commands/wrap-up.md`, not a `memhub wrap-up` CLI
 subcommand. Only new CLI primitive needed was `memhub note add`
@@ -130,7 +130,7 @@ case under explicit reasoning rather than retroactive justification.
   stays open but may be obviated by slice 1 — once memhub emits its
   own narrative via `memhub render`, the "dogfood K9 canonical in
   memhub's `agent_docs`" goal disappears entirely.
-- `docs/roadmap/memhub-primary-evaluation.md` Phase 3 ("three
+- `docs/archive/memhub-primary-evaluation.md` Phase 3 ("three
   outcomes — render, marginal, poor") no longer routes between
   open alternatives. The deprecation direction commits to the
   render-design route. That document becomes a historical artifact

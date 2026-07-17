@@ -2,11 +2,11 @@
 
 Status: phases 1 (`M5-001`), 2 memhub-side (`M5-002`), and 3 memhub-side
 (`M5-003`) shipped. The v1 wrap-up contract lives at
-[`docs/reference/k9-wrap-up-contract.md`](../reference/k9-wrap-up-contract.md).
+[`docs/archive/k9-wrap-up-contract.md`](k9-wrap-up-contract.md).
 The K9-repo consumer edit that calls into the contract end-to-end (gate
 + read + mutate) remains triaged separately, outside this repo. The
 operator-facing handoff for that work is the audit prompt at
-[`docs/reference/k9-consumer-audit-prompt.md`](../reference/k9-consumer-audit-prompt.md).
+[`docs/archive/k9-consumer-audit-prompt.md`](k9-consumer-audit-prompt.md).
 
 ## Goal
 
@@ -128,7 +128,7 @@ time rather than parsing Markdown after the fact.
 2. **`/wrap-up` post-approval hook** — K9 repo's `/wrap-up.md` gains an
    optional final step that shells out to memhub when `.memhub/` exists
    and `[integrations.k9].enabled = true`. **Memhub side shipped as
-   `M5-002`**: v1 contract at `docs/reference/k9-wrap-up-contract.md`,
+   `M5-002`**: v1 contract at `docs/archive/k9-wrap-up-contract.md`,
    `memhub integrations check-k9` exit-code gate, `--json` / `--actor`
    flags on every mutating command K9 needs. The K9 repo consumer edit
    that actually calls those commands lives outside this repo and

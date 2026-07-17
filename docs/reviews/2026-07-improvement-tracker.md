@@ -486,7 +486,7 @@ path + byte sizes which cross machines via export (audit-log, acceptable) · orp
 - [ ] G2 write-time secret-pattern warning
 
 ## Wave 9 — Housekeeping  (gating: Q26–Q27, Q36)
-- [ ] S5 docs prune (NEXT_STEPS.md, current-architecture.md, milestones.md, roadmap archive, Source PRD/)
+- [x] S5 docs prune (NEXT_STEPS.md, current-architecture.md, milestones.md, roadmap archive, Source PRD/) — 2026-07-17, archived to `docs/archive/` (issue #130).
 - [ ] G3 legacy surface disposition (`ingest-git`/`search`/`stats`/`bootstrap-k9`)
 - [ ] D10 retire `chunks`/`chunk_fts` (after G3)
 - [ ] D4 `memhub db maintain`

@@ -1,14 +1,14 @@
 # `wrap-up` design (memhub-primary)
 
 Status: Open design doc. Slice 4 of the K9 deprecation plan
-([`docs/roadmap/k9-deprecation-plan.md`](k9-deprecation-plan.md)).
+([`docs/archive/k9-deprecation-plan.md`](k9-deprecation-plan.md)).
 Render slice steps 1 and 2 are shipped (`2757a0a`, `c3fbef0`); the
 narrative storage and markdown emission paths the wrap-up brain will
 call into both exist now. This doc commits the routing-brain
 direction (Claude Code skill, not a `memhub wrap-up` CLI subcommand),
 surfaces the secondary questions as two-option choices, recommends a
 default for each, and sequences implementation. PRD §2 and the
-`docs/roadmap/k9-integration.md` non-goals are not modified by this
+`docs/archive/k9-integration.md` non-goals are not modified by this
 document.
 
 ## Why a wrap-up brain exists at all
