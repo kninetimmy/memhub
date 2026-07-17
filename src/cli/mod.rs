@@ -200,6 +200,76 @@ fn resolve_text_input(
     }
 }
 
+/// Human `sync check --diff` detail: per-table added/updated counts and
+/// changed fact/decision/task titles for whichever side(s) the verdict
+/// says moved since the shared baseline (tracker X1). `diff_report` is
+/// `None` exactly when the verdict already says there is nothing to
+/// diff (`NoRemote`/`UpToDate`) — those two cases are handled here
+/// without the caller ever calling `commands::sync::diff`.
+fn print_sync_diff_human(
+    report: &commands::sync::CheckReport,
+    diff_report: Option<&commands::sync::DiffReport>,
+    remote: &std::path::Path,
+) {
+    use commands::sync::SyncVerdict;
+
+    if matches!(report.verdict, SyncVerdict::NoRemote) {
+        println!(
+            "  diff: no remote snapshot at {} — nothing to show",
+            remote.display()
+        );
+        return;
+    }
+    if matches!(report.verdict, SyncVerdict::UpToDate) {
+        println!("  diff: local and drive are identical since the last sync — nothing to show");
+        return;
+    }
+    let Some(diff_report) = diff_report else {
+        return;
+    };
+    if let Some(reason) = &diff_report.unavailable_reason {
+        println!("  diff: {reason}");
+        return;
+    }
+
+    println!(
+        "  diff since baseline (writes_log id > {}):",
+        diff_report.baseline_writes_log_max_id.unwrap_or(0)
+    );
+    let show_local = matches!(
+        report.verdict,
+        SyncVerdict::LocalAhead | SyncVerdict::Diverged
+    );
+    let show_remote = matches!(
+        report.verdict,
+        SyncVerdict::DriveAhead | SyncVerdict::Diverged
+    );
+    if show_local {
+        print_sync_side_diff_human("local", diff_report.local.as_ref());
+    }
+    if show_remote {
+        print_sync_side_diff_human("drive", diff_report.remote.as_ref());
+    }
+}
+
+fn print_sync_side_diff_human(label: &str, side: Option<&commands::sync::SideDiff>) {
+    let Some(side) = side else { return };
+    if side.tables.is_empty() {
+        println!("    {label}: no writes since baseline");
+        return;
+    }
+    println!(
+        "    {label}: {} write(s) since baseline",
+        side.writes_since_baseline
+    );
+    for t in &side.tables {
+        println!("      {}: +{} added, {} updated", t.table, t.added, t.updated);
+        for title in &t.changed {
+            println!("        - {title}");
+        }
+    }
+}
+
 pub fn run(cli: Cli) -> Result<()> {
     let cwd = std::env::current_dir()?;
 
@@ -1731,6 +1801,7 @@ pub fn run(cli: Cli) -> Result<()> {
             }
             SyncCommand::Check {
                 remote,
+                diff,
                 json: as_json,
             } => {
                 let remote = match remote {
@@ -1738,8 +1809,29 @@ pub fn run(cli: Cli) -> Result<()> {
                     None => commands::sync::default_remote_dir(&cwd)?,
                 };
                 let report = commands::sync::check(&cwd, &remote)?;
+                // Only spend the extra read when asked to, and only when a
+                // diff could possibly say anything: NoRemote/UpToDate have
+                // nothing to show, and their human/json branches below say
+                // so without touching the remote snapshot at all.
+                let diff_report = if diff
+                    && !matches!(
+                        report.verdict,
+                        commands::sync::SyncVerdict::NoRemote
+                            | commands::sync::SyncVerdict::UpToDate
+                    ) {
+                    Some(commands::sync::diff(&cwd, &remote)?)
+                } else {
+                    None
+                };
                 if as_json {
-                    println!("{}", serde_json::to_string(&report)?);
+                    if diff {
+                        println!(
+                            "{}",
+                            serde_json::json!({ "check": report, "diff": diff_report })
+                        );
+                    } else {
+                        println!("{}", serde_json::to_string(&report)?);
+                    }
                 } else {
                     println!("sync status for project '{}'", report.project_id);
                     println!("  verdict: {}", report.verdict.as_str());
@@ -1780,6 +1872,9 @@ pub fn run(cli: Cli) -> Result<()> {
                         println!(
                             "  ⚠ snapshot schema is newer than this binary — run `memhub upgrade` before adopting"
                         );
+                    }
+                    if diff {
+                        print_sync_diff_human(&report, diff_report.as_ref(), &remote);
                     }
                 }
             }
