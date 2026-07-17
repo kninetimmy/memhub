@@ -26,8 +26,11 @@ pub struct ImportSummary {
     /// untouched. Ingested docs are export-excluded, re-ingestable cache
     /// (decisions 86/90): import neither carries nor wipes them, and they
     /// are not counted by `count_durable_rows`, so a docs-only target
-    /// passes the no-`--force` emptiness guard. Surfaced so the operator
-    /// knows pre-existing docs survived rather than assuming a clean slate.
+    /// passes the no-`--force` emptiness guard. The CLI prints a hint keyed
+    /// on this count either way (tracker X2): >0 tells the operator
+    /// pre-existing docs survived; 0 (the fresh-machine case, which needs
+    /// the guidance most) tells them docs were never carried and how to
+    /// re-ingest via `memhub doc add`.
     pub retained_doc_chunks: usize,
 }
 

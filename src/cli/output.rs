@@ -809,6 +809,43 @@ pub(crate) fn print_init_result(result: &InitResult) {
     }
 }
 
+/// Shared by `import` and `init --from-backup` (both funnel through
+/// `commands::import::run`). `retained_doc_chunks` is only ever nonzero
+/// when importing into a target that already had docs ingested (tracker
+/// X2) — a fresh `init --from-backup` target is always 0, but the hint
+/// still needs to fire there so a fresh machine is told docs are not
+/// carried, not just silently left with none.
+pub(crate) fn print_retained_docs_hint(retained_doc_chunks: usize) {
+    if retained_doc_chunks > 0 {
+        println!(
+            "  retained doc chunks: {retained_doc_chunks} (pre-existing ingested docs on this \
+             target were left untouched — import neither carries nor wipes docs; re-run \
+             `memhub doc add` to refresh them)"
+        );
+    } else {
+        println!(
+            "  docs: not carried by import — ingested reference docs are excluded from the \
+             export/import format; re-run `memhub doc add <path>` to re-ingest them here"
+        );
+    }
+}
+
+/// Tracker X2: the export/import format is deliberately narrow (decisions
+/// 86/90 and friends) — printed after every successful `import` and
+/// `init --from-backup` so a fresh machine knows what it still needs to
+/// set up rather than discovering the gaps one command at a time.
+pub(crate) fn print_not_carried_checklist() {
+    println!();
+    println!("Not carried by export/import — set these up on this machine if needed:");
+    println!("  - Ingested reference docs: re-add via `memhub doc add <path>`");
+    println!(
+        "  - Machine-global memory store (~/.memhub/global.sqlite): opt in via `memhub global enable`"
+    );
+    println!("  - Metrics collection: enable via `memhub metrics enable` ([metrics] in .memhub/config.toml)");
+    println!("  - Drive sync: enable via `memhub sync enable` ([sync] in .memhub/config.toml)");
+    println!("  - Code index: run `memhub code index` to build it here");
+}
+
 pub(crate) fn init_result_to_json(result: &InitResult) -> serde_json::Value {
     json!({
         "repo_root": result.repo_root.display().to_string(),
