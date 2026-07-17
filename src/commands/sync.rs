@@ -63,9 +63,30 @@ pub struct LogicalVersion {
     pub digest: String,
 }
 
-/// Durable content tables and the columns that define their content,
-/// mirroring what `memhub export` carries. Order is fixed so the
-/// digest is deterministic.
+/// Durable content tables and the columns that define their content.
+/// Order is fixed so the digest is deterministic.
+///
+/// This is the authoritative list of what divergence the sync check
+/// gates on. It is a **superset** of `memhub export` — a whole-DB sync
+/// snapshot (`VACUUM INTO`) carries every table, including `documents` /
+/// `doc_chunks`, which `export` deliberately omits — so the digest must
+/// cover them too or two machines that each ingest a different doc would
+/// compare EQUAL over real divergence (audit finding F2).
+///
+/// Coverage is hand-maintained but drift-proofed: the
+/// `content_tables_cover_the_live_schema` test asserts every live table
+/// and column is either digested here or on an explicit exemption list
+/// with a stated reason. Adding a durable table/column without updating
+/// one of the two lists turns that test red.
+///
+/// `project_id` is intentionally never digested (it is the constant
+/// singleton partition key, always 1, and the digest already filters
+/// `WHERE project_id = 1`). `documents` / `doc_chunks` also omit their
+/// surrogate `id` and local ingest timestamp so two machines that
+/// independently ingest the *same* document at the same path converge to
+/// an equal digest; their content identity is the natural
+/// (path/title/hash/…) and (doc_id/ord/heading/body) columns. Both
+/// exemptions are recorded in `column_exempt` alongside their reasons.
 const CONTENT_TABLES: &[(&str, &[&str])] = &[
     (
         "facts",
@@ -77,6 +98,8 @@ const CONTENT_TABLES: &[(&str, &[&str])] = &[
             "source",
             "verified_at",
             "created_at",
+            "kind",
+            "superseded_by",
         ],
     ),
     (
@@ -119,6 +142,7 @@ const CONTENT_TABLES: &[(&str, &[&str])] = &[
             "actor",
             "actor_raw",
             "created_at",
+            "provenance_json",
             "reviewed_at",
         ],
     ),
@@ -134,6 +158,11 @@ const CONTENT_TABLES: &[(&str, &[&str])] = &[
         "project_arch",
         &["id", "body", "actor", "actor_raw", "created_at"],
     ),
+    (
+        "documents",
+        &["path", "title", "content_hash", "byte_len", "source"],
+    ),
+    ("doc_chunks", &["doc_id", "ord", "heading_path", "body"]),
 ];
 
 impl LogicalVersion {
@@ -144,26 +173,51 @@ impl LogicalVersion {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
 
+        // Self-describing, length-prefixed encoding (F2). The old scheme
+        // COALESCE'd NULL to '' (so NULL and empty string collided) and
+        // joined columns with 0x1f/0x1e/0x1d separators that can occur
+        // inside TEXT (so embedded separator bytes could blur row/column
+        // boundaries). Here every value carries its own length and a
+        // NULL/TEXT tag, and rows and tables are framed with control
+        // bytes, so the byte stream is a prefix-free encoding of the
+        // content — two DBs hash equal iff their digested content is
+        // byte-for-byte identical, and NULL ≠ '' ≠ any other value.
         let mut hasher = Sha256::new();
         for (table, cols) in CONTENT_TABLES {
-            // 0x1d (group separator) delimits tables.
-            hasher.update([0x1d]);
-            hasher.update(table.as_bytes());
-            // Each row is rendered as its columns joined by char(31)
-            // (unit separator) inside SQLite; nulls coalesce to empty,
-            // so a row is always a single non-null TEXT value.
-            let sql = format!(
-                "SELECT {} FROM {} WHERE project_id = 1 ORDER BY id",
-                row_expr(cols),
-                table
-            );
+            // Length-framed table name so no table's bytes can bleed into
+            // the next.
+            hash_len_prefixed(&mut hasher, table.as_bytes());
+            // Each column is CAST to TEXT individually (NULL stays NULL —
+            // it is not coalesced), so integer/real columns render
+            // deterministically while NULL remains distinguishable.
+            let select_list = cols
+                .iter()
+                .map(|c| format!("CAST({c} AS TEXT)"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql =
+                format!("SELECT {select_list} FROM {table} WHERE project_id = 1 ORDER BY id");
             let mut stmt = conn.prepare(&sql)?;
             let mut rows = stmt.query([])?;
             while let Some(row) = rows.next()? {
-                let rendered: String = row.get(0)?;
-                hasher.update([0x1e]); // record separator
-                hasher.update(rendered.as_bytes());
+                // 0x01 = "a row follows"; distinguished from the 0x00
+                // end-of-table marker below. The column count is fixed per
+                // table, so the parse of the framed values is unambiguous.
+                hasher.update([ROW_PRESENT]);
+                for i in 0..cols.len() {
+                    match row.get::<_, Option<String>>(i)? {
+                        // 0x00 tag, no length: a NULL, distinct from an
+                        // empty string (0x01 tag + length 0).
+                        None => hasher.update([VALUE_NULL]),
+                        Some(s) => {
+                            hasher.update([VALUE_TEXT]);
+                            hash_len_prefixed(&mut hasher, s.as_bytes());
+                        }
+                    }
+                }
             }
+            // 0x00 closes the table's row stream.
+            hasher.update([TABLE_END]);
         }
         let digest = hasher
             .finalize()
@@ -179,14 +233,21 @@ impl LogicalVersion {
     }
 }
 
-/// A SQLite expression that renders a row's columns into one non-null
-/// TEXT value, separated by the unit-separator char so column
-/// boundaries can't blur.
-fn row_expr(cols: &[&str]) -> String {
-    cols.iter()
-        .map(|c| format!("COALESCE(CAST({c} AS TEXT),'')"))
-        .collect::<Vec<_>>()
-        .join("||char(31)||")
+/// Control bytes for the digest's prefix-free row/value framing (see
+/// [`LogicalVersion::read`]). Kept distinct so a row-boundary marker can
+/// never be confused with a value's NULL/TEXT tag during the (conceptual)
+/// parse that makes the encoding injective.
+const ROW_PRESENT: u8 = 0x01;
+const TABLE_END: u8 = 0x00;
+const VALUE_NULL: u8 = 0x00;
+const VALUE_TEXT: u8 = 0x01;
+
+/// Feed `bytes` into `hasher` prefixed by its length as 8 little-endian
+/// bytes, so an arbitrary byte payload cannot blur into whatever follows
+/// it — the length says exactly where it ends regardless of its content.
+fn hash_len_prefixed(hasher: &mut Sha256, bytes: &[u8]) {
+    hasher.update((bytes.len() as u64).to_le_bytes());
+    hasher.update(bytes);
 }
 
 /// Sidecar written next to a snapshot in the Drive folder. Carries the
@@ -1229,7 +1290,7 @@ pub fn sha256_file(path: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::{fact, init};
+    use crate::commands::{doc, fact, init};
     use tempfile::tempdir;
 
     fn enable_sync(repo: &Path) {
@@ -2075,5 +2136,381 @@ mod tests {
         let mut manifest = Manifest::load(&path).expect("load manifest");
         f(&mut manifest);
         fs::write(&path, serde_json::to_string_pretty(&manifest).unwrap()).expect("rewrite");
+    }
+
+    // ── LogicalVersion digest completeness (audit finding F2) ─────────────
+    //
+    // CONTENT_TABLES is hand-maintained; these exemption lists are its
+    // drift guard. Every live table/column is either digested (in
+    // CONTENT_TABLES) or accounted for below with a reason, and
+    // `content_tables_cover_the_live_schema` fails if the schema grows a
+    // table/column that is neither — the exact hole F2 closes, where an
+    // omitted durable table (documents/doc_chunks) let two divergent DBs
+    // compare EQUAL.
+
+    /// Whole tables excluded from the content digest, each with the reason
+    /// it carries no cross-machine divergence signal.
+    const DIGEST_EXEMPT_TABLES: &[(&str, &str)] = &[
+        (
+            "projects",
+            "singleton config/bookkeeping row (schema_version, root_path, metrics-maintenance \
+             debounce marker): machine-local identity + migration state, not durable content",
+        ),
+        (
+            "writes_log",
+            "append-only mutation log; surfaced separately as writes_log_max_id/count and \
+             deliberately excluded from the digest (two DBs that each logged one write log \
+             near-identical rows, giving a false 'equal' — see the LogicalVersion module doc)",
+        ),
+        (
+            "schema_migrations",
+            "migration bookkeeping ledger; schema state tracked via schema_version, not content",
+        ),
+        (
+            "commits",
+            "git-ingestion cache; re-derivable from git history, excluded from `memhub export`",
+        ),
+        (
+            "files",
+            "git-ingestion cache; re-derivable from git history, excluded from `memhub export`",
+        ),
+        (
+            "commit_files",
+            "git-ingestion cache; re-derivable from git history, excluded from `memhub export`",
+        ),
+        (
+            "chunks",
+            "legacy chunk cache feeding chunk_fts; re-derivable retrieval index, excluded from \
+             `memhub export`",
+        ),
+        (
+            "embeddings",
+            "re-derivable vector cache; rebuilt by `memhub index`/reindex, excluded from \
+             `memhub export`",
+        ),
+        (
+            "recall_metrics",
+            "opt-in machine-local token-accounting metrics; excluded from `memhub export`",
+        ),
+        (
+            "session_metrics",
+            "opt-in machine-local token-accounting metrics; excluded from `memhub export`",
+        ),
+        (
+            "session_turn_metrics",
+            "opt-in machine-local token-accounting metrics; excluded from `memhub export`",
+        ),
+        (
+            "known_projects",
+            "machine-wide upgrade registry keyed by absolute repo path; machine-local, excluded \
+             from `memhub export`",
+        ),
+        (
+            "global_accept_markers",
+            "machine-local cross-DB accept crash-recovery markers; excluded from `memhub export`",
+        ),
+        (
+            "session_transcripts",
+            "machine-local archive-pointer rows under gitignored .memhub/; excluded from \
+             `memhub export`",
+        ),
+    ];
+
+    /// FTS5 external-content virtual tables. Each is a derived keyword
+    /// index over a digested source table, and SQLite manages its shadow
+    /// tables (`<base>_data|_idx|_docsize|_config`). Listing the bases —
+    /// not every shadow table — keeps the exemption drift-proof: a NEW fts
+    /// family whose base is unlisted leaves its virtual + shadow tables
+    /// unaccounted-for and fails the coverage test.
+    const DIGEST_EXEMPT_FTS_BASES: &[&str] = &[
+        "chunk_fts",
+        "facts_fts",
+        "decisions_fts",
+        "tasks_fts",
+        "doc_chunks_fts",
+        "session_notes_fts",
+    ];
+
+    /// Columns of an otherwise-digested table that are intentionally NOT
+    /// digested, each with a reason. (`project_id` is exempt on every
+    /// table and handled in `column_exempt`, not listed per-table.)
+    const DIGEST_EXEMPT_COLUMNS: &[(&str, &str, &str)] = &[
+        (
+            "documents",
+            "id",
+            "surrogate rowid; a document's content identity is (path,title,content_hash,\
+             byte_len,source), so omitting id lets two machines that ingest the same doc \
+             converge to an equal digest",
+        ),
+        (
+            "documents",
+            "ingested_at",
+            "local ingest timestamp; machine-specific, not content",
+        ),
+        (
+            "doc_chunks",
+            "id",
+            "surrogate rowid; a chunk's content identity is (doc_id,ord,heading_path,body)",
+        ),
+        (
+            "doc_chunks",
+            "created_at",
+            "local ingest timestamp; machine-specific, not content",
+        ),
+    ];
+
+    fn live_columns(conn: &Connection, table: &str) -> Vec<String> {
+        let mut stmt = conn
+            .prepare("SELECT name FROM pragma_table_info(?1)")
+            .expect("prepare pragma_table_info");
+        stmt.query_map([table], |r| r.get::<_, String>(0))
+            .expect("pragma query")
+            .map(|r| r.expect("column name"))
+            .collect()
+    }
+
+    fn table_exempt(table: &str) -> bool {
+        if DIGEST_EXEMPT_TABLES.iter().any(|(t, _)| *t == table) {
+            return true;
+        }
+        DIGEST_EXEMPT_FTS_BASES
+            .iter()
+            .any(|base| table == *base || table.starts_with(&format!("{base}_")))
+    }
+
+    fn column_exempt(table: &str, col: &str) -> bool {
+        // The constant singleton partition key is never digested — the
+        // digest already filters `WHERE project_id = 1`.
+        if col == "project_id" {
+            return true;
+        }
+        DIGEST_EXEMPT_COLUMNS
+            .iter()
+            .any(|(t, c, _)| *t == table && *c == col)
+    }
+
+    #[test]
+    fn content_tables_cover_the_live_schema() {
+        // Every live table and column in a fully-migrated DB must be either
+        // digested (CONTENT_TABLES) or explicitly exempt with a reason.
+        // Drift — a durable table/column added without updating one of the
+        // lists — turns this red, so the sync check can never silently miss
+        // a new table's divergence (audit finding F2).
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let ctx = db::open_project(temp.path()).expect("open");
+        let conn = &ctx.conn;
+
+        let digested: std::collections::HashMap<&str, Vec<&str>> = CONTENT_TABLES
+            .iter()
+            .map(|(t, cols)| (*t, cols.to_vec()))
+            .collect();
+
+        let mut tables_stmt = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+            .expect("prepare tables");
+        let tables: Vec<String> = tables_stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .expect("query tables")
+            .map(|r| r.expect("table name"))
+            .collect();
+
+        let mut problems: Vec<String> = Vec::new();
+        for table in &tables {
+            let cols = live_columns(conn, table);
+            if let Some(digested_cols) = digested.get(table.as_str()) {
+                // Every live column must be digested or column-exempt.
+                for col in &cols {
+                    if !digested_cols.contains(&col.as_str()) && !column_exempt(table, col) {
+                        problems.push(format!(
+                            "column `{table}.{col}` is neither digested nor exempt — add it to \
+                             CONTENT_TABLES or DIGEST_EXEMPT_COLUMNS with a reason"
+                        ));
+                    }
+                }
+                // Every digested column must still exist (catch a rename/drop
+                // that would make the digest SELECT error at runtime).
+                for dc in digested_cols {
+                    if !cols.iter().any(|c| c == dc) {
+                        problems.push(format!(
+                            "digested column `{table}.{dc}` no longer exists in the live schema"
+                        ));
+                    }
+                }
+            } else if !table_exempt(table) {
+                problems.push(format!(
+                    "table `{table}` is neither digested (CONTENT_TABLES) nor exempt — add it to \
+                     CONTENT_TABLES or DIGEST_EXEMPT_TABLES/DIGEST_EXEMPT_FTS_BASES with a reason"
+                ));
+            }
+        }
+
+        assert!(
+            problems.is_empty(),
+            "LogicalVersion digest drift:\n{}",
+            problems.join("\n")
+        );
+    }
+
+    #[test]
+    fn digest_distinguishes_null_from_empty_string() {
+        // NULL and '' must not collide (the old COALESCE-to-'' scheme did).
+        // Same row, same timestamps: the only change is NULL → '' on a
+        // nullable digested column, which must still move the digest.
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        fact::add(temp.path(), "k", "v", "user", "cli:user").expect("fact");
+        let ctx = db::open_project(temp.path()).expect("open");
+
+        ctx.conn
+            .execute("UPDATE facts SET kind = NULL WHERE key = 'k'", [])
+            .expect("set null");
+        let d_null = LogicalVersion::read(&ctx.conn).expect("read").digest;
+
+        ctx.conn
+            .execute("UPDATE facts SET kind = '' WHERE key = 'k'", [])
+            .expect("set empty");
+        let d_empty = LogicalVersion::read(&ctx.conn).expect("read").digest;
+
+        assert_ne!(
+            d_null, d_empty,
+            "a NULL column must produce a different digest than an empty string"
+        );
+    }
+
+    #[test]
+    fn digest_reflects_facts_kind_and_superseded_by() {
+        // The two columns F2 named as omitted (migrations 0021/0018): a
+        // change to either must move the digest.
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        fact::add(temp.path(), "a", "1", "user", "cli:user").expect("fact a");
+        fact::add(temp.path(), "b", "2", "user", "cli:user").expect("fact b");
+        let ctx = db::open_project(temp.path()).expect("open");
+
+        let base = LogicalVersion::read(&ctx.conn).expect("read").digest;
+
+        ctx.conn
+            .execute("UPDATE facts SET kind = 'gotcha' WHERE key = 'a'", [])
+            .expect("set kind");
+        let with_kind = LogicalVersion::read(&ctx.conn).expect("read").digest;
+        assert_ne!(base, with_kind, "facts.kind must be part of the digest");
+
+        let b_id: i64 = ctx
+            .conn
+            .query_row("SELECT id FROM facts WHERE key = 'b'", [], |r| r.get(0))
+            .expect("b id");
+        ctx.conn
+            .execute("UPDATE facts SET superseded_by = ?1 WHERE key = 'a'", [b_id])
+            .expect("set superseded_by");
+        let with_supersede = LogicalVersion::read(&ctx.conn).expect("read").digest;
+        assert_ne!(
+            with_kind, with_supersede,
+            "facts.superseded_by must be part of the digest"
+        );
+    }
+
+    fn write_doc(dir: &Path, name: &str, body: &str) -> PathBuf {
+        let path = dir.join(name);
+        fs::write(&path, body).expect("write doc file");
+        path
+    }
+
+    #[test]
+    fn digest_diverges_when_sides_ingest_different_documents() {
+        // F2's headline case: two fresh repos start with identical (empty)
+        // digests; once each ingests a DIFFERENT document their digests
+        // must diverge (the pre-F2 digest omitted documents/doc_chunks
+        // entirely, so this comparison read EQUAL over real divergence).
+        let a = new_synced_repo();
+        let b = new_synced_repo();
+        assert_eq!(
+            local_state(a.path()).0.digest,
+            local_state(b.path()).0.digest,
+            "two fresh repos have identical (empty) digests"
+        );
+
+        let doc_a = write_doc(a.path(), "spec.md", "# A\n\nalpha body paragraph to chunk.\n");
+        doc::add(a.path(), &doc_a, None, "cli:user").expect("ingest a");
+        let doc_b = write_doc(b.path(), "notes.md", "# B\n\nbeta body, different entirely.\n");
+        doc::add(b.path(), &doc_b, None, "cli:user").expect("ingest b");
+        assert_ne!(
+            local_state(a.path()).0.digest,
+            local_state(b.path()).0.digest,
+            "different ingested documents must diverge the digest (F2)"
+        );
+    }
+
+    #[test]
+    fn digest_is_stable_across_page_layout_with_documents() {
+        // "Identical logical state still compares equal despite page-layout
+        // differences": a document ingested, then carried through a
+        // `VACUUM INTO` snapshot + adopt (which recopies/reorders every
+        // page), must yield the SAME digest on the receiving side — the
+        // digest hashes content, never file bytes. Exercised WITH documents
+        // in play so the widened digest is covered end to end.
+        let a = new_synced_repo();
+        let doc_a = write_doc(a.path(), "spec.md", "# Title\n\nbody paragraph to chunk here.\n");
+        doc::add(a.path(), &doc_a, None, "cli:user").expect("ingest");
+        let a_digest = local_state(a.path()).0.digest;
+
+        let drive = a.path().join("drive");
+        snapshot(a.path(), &drive, false).expect("snapshot");
+
+        let b = new_synced_repo();
+        adopt(b.path(), &drive, true).expect("adopt");
+
+        assert_eq!(
+            a_digest,
+            local_state(b.path()).0.digest,
+            "identical logical state (documents included) compares equal despite page reordering"
+        );
+        assert_eq!(
+            check(b.path(), &drive).expect("check").verdict,
+            SyncVerdict::UpToDate,
+            "the adopting side reads up-to-date on the shared post-adopt baseline"
+        );
+    }
+
+    #[test]
+    fn digest_changes_on_reingest_of_different_content_at_same_path() {
+        // Re-ingesting different bytes at the SAME doc path must move the
+        // digest (documents.content_hash carries it), so a later check
+        // reads Diverged rather than up-to-date.
+        let temp = new_synced_repo();
+        let path = write_doc(temp.path(), "spec.md", "# V1\n\noriginal body text here.\n");
+        doc::add(temp.path(), &path, None, "cli:user").expect("ingest v1");
+        let before = local_state(temp.path()).0.digest;
+
+        // Overwrite the same path with new content and re-ingest.
+        write_doc(temp.path(), "spec.md", "# V2\n\ncompletely rewritten body text.\n");
+        doc::add(temp.path(), &path, None, "cli:user").expect("re-ingest v2");
+        let after = local_state(temp.path()).0.digest;
+
+        assert_ne!(
+            before, after,
+            "re-ingesting different content at the same path must change the digest"
+        );
+    }
+
+    #[test]
+    fn check_reports_diverged_when_only_one_side_ingested_a_doc() {
+        // End-to-end at the check() seam: a document only one side ingested
+        // must read as divergence, not a false up-to-date (the pre-F2 bug).
+        let a = new_synced_repo();
+        let doc_a = write_doc(a.path(), "spec.md", "# A\n\nbody paragraph to chunk.\n");
+        doc::add(a.path(), &doc_a, None, "cli:user").expect("ingest");
+        let drive = a.path().join("drive");
+        snapshot(a.path(), &drive, false).expect("snapshot");
+
+        // b is an otherwise-identical repo that ingested NO doc. No shared
+        // baseline → first-sync compare: unequal logical (a's doc) →
+        // Diverged.
+        let b = new_synced_repo();
+        assert_eq!(
+            check(b.path(), &drive).expect("check").verdict,
+            SyncVerdict::Diverged,
+            "a doc only one side ingested must read as divergence, not up-to-date (F2)"
+        );
     }
 }
