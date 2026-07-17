@@ -19,7 +19,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use rusqlite::backup::{Backup, StepResult};
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -840,6 +840,252 @@ fn resolve_snapshot_file(remote: &Path, manifest: &Manifest) -> Result<PathBuf> 
         )));
     }
     Ok(dir.join(candidate))
+}
+
+/// Tables whose `writes_log` rows carry enough identity in the table
+/// itself (a `key`/`title` column) to be worth surfacing individually in
+/// a [`diff`] — the durable, human-authored content types. Every other
+/// `table_name` that shows up in `writes_log` (documents, pending_writes,
+/// config, …) still gets its added/updated counts, just no per-row list.
+fn title_column(table: &str) -> Option<&'static str> {
+    match table {
+        "facts" => Some("key"),
+        "decisions" => Some("title"),
+        "tasks" => Some("title"),
+        _ => None,
+    }
+}
+
+/// Per-table divergence detail for one side (local or remote) since a
+/// shared baseline `writes_log` id — see [`diff`].
+#[derive(Debug, Clone, Serialize)]
+pub struct TableDelta {
+    pub table: String,
+    /// Rows whose `writes_log` action was `"insert"`.
+    pub added: i64,
+    /// Rows whose `writes_log` action was anything else (`update`,
+    /// `promote`, `verify`, `supersede`, `delete`, …).
+    pub updated: i64,
+    /// For `facts`/`decisions`/`tasks`: the current key/title of each
+    /// distinct row touched since the baseline, in the order first
+    /// touched. Falls back to the `writes_log` reason when the row no
+    /// longer exists in the current table (e.g. later superseded). Empty
+    /// for every other table.
+    pub changed: Vec<String>,
+}
+
+/// One side's (local or remote) divergence detail since the baseline.
+#[derive(Debug, Clone, Serialize)]
+pub struct SideDiff {
+    pub writes_since_baseline: i64,
+    pub tables: Vec<TableDelta>,
+}
+
+/// Per-table divergence detail for both sides since the last agreed sync
+/// baseline — the `--diff` detail behind `memhub sync check --diff`
+/// (tracker X1). `local`/`remote` are `None` exactly when
+/// `unavailable_reason` explains why no diff could be computed: no
+/// baseline recorded yet (first sync), no remote snapshot, or a remote
+/// schema this binary cannot open.
+#[derive(Debug, Clone, Serialize)]
+pub struct DiffReport {
+    pub baseline_writes_log_max_id: Option<i64>,
+    pub local: Option<SideDiff>,
+    pub remote: Option<SideDiff>,
+    pub unavailable_reason: Option<String>,
+}
+
+fn diff_unavailable(baseline: Option<i64>, reason: impl Into<String>) -> DiffReport {
+    DiffReport {
+        baseline_writes_log_max_id: baseline,
+        local: None,
+        remote: None,
+        unavailable_reason: Some(reason.into()),
+    }
+}
+
+/// Per-table added/updated counts and changed fact/decision/task titles
+/// on both sides since the common sync baseline (tracker X1). Strictly
+/// read-only: the local DB is only ever `SELECT`ed from (the same
+/// `db::open_project` every other read command uses), and the remote
+/// snapshot is opened with `SQLITE_OPEN_READ_ONLY` — never through
+/// `db::open_project`, which migrates/upserts on open. Nothing here
+/// writes to the local DB, the sync marker, or the remote dir.
+///
+/// `writes_log` rows are appended by every durable mutation (see
+/// [`db::log_write`]), so `WHERE id > baseline` on each side's own copy
+/// gives that side's writes since the fork — both sides' `writes_log`
+/// share the same id numbering up to the baseline because a sync
+/// (`adopt`/`snapshot`+`commit`) leaves the two byte-identical at that
+/// point, and each side's `AUTOINCREMENT` counter continues from there
+/// independently.
+pub fn diff(start: &Path, remote: &Path) -> Result<DiffReport> {
+    let ctx = db::open_project(start)?;
+    require_enabled(&ctx.config.sync)?;
+
+    let marker = load_marker(&ctx.paths.memhub_dir)?;
+    let Some(marker) = marker else {
+        return Ok(diff_unavailable(
+            None,
+            "no common sync baseline recorded yet (first sync) — a per-table diff needs a \
+             shared starting point. Reconcile first (`sync adopt` to take the remote, or \
+             `sync snapshot` + `sync commit` to push local), then retry `sync check --diff`.",
+        ));
+    };
+    let baseline_id = marker.baseline.writes_log_max_id;
+
+    let manifest = read_remote_manifest(remote)?;
+    let Some(manifest) = manifest else {
+        return Ok(diff_unavailable(
+            Some(baseline_id),
+            format!("no remote snapshot manifest found at {}", remote.display()),
+        ));
+    };
+
+    let local_schema: String = ctx.conn.query_row(
+        "SELECT schema_version FROM projects WHERE id = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let local_ordinal = schema_ordinal(&local_schema)?;
+    let schema_blocks = match schema_ordinal(&manifest.schema_version) {
+        Ok(remote_ordinal) => remote_ordinal > local_ordinal,
+        Err(_) => true,
+    };
+    if schema_blocks {
+        return Ok(diff_unavailable(
+            Some(baseline_id),
+            format!(
+                "remote snapshot schema '{}' is newer than this binary understands ('{}'); \
+                 run `memhub upgrade` before diffing",
+                manifest.schema_version, local_schema
+            ),
+        ));
+    }
+
+    let snapshot_file = resolve_snapshot_file(remote, &manifest)?;
+    if !snapshot_file.exists() {
+        return Ok(diff_unavailable(
+            Some(baseline_id),
+            format!(
+                "manifest present but its snapshot is missing at {}",
+                snapshot_file.display()
+            ),
+        ));
+    }
+
+    let local = side_diff_since(&ctx.conn, baseline_id)?;
+
+    // Read-only: never opened via `db::open_project` (would migrate/upsert
+    // the remote file), and `SQLITE_OPEN_READ_ONLY` refuses any write SQLite
+    // itself might otherwise attempt (e.g. journal creation).
+    let remote_conn =
+        Connection::open_with_flags(&snapshot_file, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let remote_side = side_diff_since(&remote_conn, baseline_id)?;
+
+    Ok(DiffReport {
+        baseline_writes_log_max_id: Some(baseline_id),
+        local: Some(local),
+        remote: Some(remote_side),
+        unavailable_reason: None,
+    })
+}
+
+/// One side's [`SideDiff`]: every `writes_log` row past `baseline_id`,
+/// aggregated per table. Read-only — a single `SELECT` over `writes_log`
+/// plus, for `facts`/`decisions`/`tasks`, one lookup per distinct row
+/// touched to resolve its current title/key.
+fn side_diff_since(conn: &Connection, baseline_id: i64) -> Result<SideDiff> {
+    use std::collections::BTreeMap;
+
+    struct Agg {
+        added: i64,
+        updated: i64,
+        // Distinct row ids touched, in first-seen order, each paired with
+        // the most recent writes_log reason (the identifier fallback).
+        rows: Vec<(i64, String)>,
+    }
+
+    let mut per_table: BTreeMap<String, Agg> = BTreeMap::new();
+    let mut writes_since_baseline = 0i64;
+
+    let mut stmt = conn.prepare(
+        "SELECT table_name, action, row_id, reason FROM writes_log \
+         WHERE project_id = 1 AND id > ?1 ORDER BY id",
+    )?;
+    let mut rows = stmt.query(params![baseline_id])?;
+    while let Some(row) = rows.next()? {
+        writes_since_baseline += 1;
+        let table: String = row.get(0)?;
+        let action: String = row.get(1)?;
+        let row_id: Option<i64> = row.get(2)?;
+        let reason: Option<String> = row.get(3)?;
+
+        let agg = per_table.entry(table).or_insert(Agg {
+            added: 0,
+            updated: 0,
+            rows: Vec::new(),
+        });
+        if action == "insert" {
+            agg.added += 1;
+        } else {
+            agg.updated += 1;
+        }
+        if let Some(rid) = row_id {
+            let reason = reason.unwrap_or_default();
+            match agg.rows.iter_mut().find(|(id, _)| *id == rid) {
+                Some(existing) => existing.1 = reason,
+                None => agg.rows.push((rid, reason)),
+            }
+        }
+    }
+
+    let mut tables = Vec::with_capacity(per_table.len());
+    for (table, agg) in per_table {
+        let changed = match title_column(&table) {
+            Some(col) => changed_titles(conn, &table, col, &agg.rows)?,
+            None => Vec::new(),
+        };
+        tables.push(TableDelta {
+            table,
+            added: agg.added,
+            updated: agg.updated,
+            changed,
+        });
+    }
+
+    Ok(SideDiff {
+        writes_since_baseline,
+        tables,
+    })
+}
+
+/// Current key/title of each `(row_id, fallback_reason)` in `table`,
+/// falling back to the `writes_log` reason (the fallback identifier)
+/// when the row no longer exists there — e.g. it was later removed.
+fn changed_titles(
+    conn: &Connection,
+    table: &str,
+    title_col: &str,
+    rows: &[(i64, String)],
+) -> Result<Vec<String>> {
+    use rusqlite::OptionalExtension;
+    let sql = format!("SELECT {title_col} FROM {table} WHERE project_id = 1 AND id = ?1");
+    let mut stmt = conn.prepare(&sql)?;
+    let mut out = Vec::with_capacity(rows.len());
+    for (row_id, reason) in rows {
+        let title: Option<String> = stmt
+            .query_row(params![row_id], |row| row.get(0))
+            .optional()?;
+        out.push(title.unwrap_or_else(|| {
+            if reason.is_empty() {
+                format!("{table} id {row_id} (no longer present)")
+            } else {
+                reason.clone()
+            }
+        }));
+    }
+    Ok(out)
 }
 
 /// Name of the local staging copy `adopt` writes before hashing and
@@ -3084,5 +3330,163 @@ mod tests {
             .expect("load")
             .expect("marker present");
         assert_eq!(marker.last_action, "push", "baseline recorded on a matching commit");
+    }
+
+    #[test]
+    fn diff_reports_both_sides_since_common_baseline() {
+        // a and b share a baseline (a pushes, b adopts), then each side
+        // makes its own independent fact write, so `check` reads Diverged
+        // and `diff` must show each side's own added row.
+        let a = new_synced_repo();
+        fact::add(a.path(), "alpha", "1", "user", "cli:user").expect("fact");
+        let drive = a.path().join("drive");
+        snapshot(a.path(), &drive, false).expect("snapshot");
+        commit(a.path(), &drive).expect("commit records a's own baseline");
+        let (baseline, _) = local_state(a.path());
+
+        let b = new_synced_repo();
+        adopt(b.path(), &drive, true).expect("b adopts a's push, sharing the baseline");
+
+        // a moves ahead of the shared baseline and re-publishes.
+        fact::add(a.path(), "gamma", "g", "user", "cli:user").expect("fact");
+        snapshot(a.path(), &drive, false)
+            .expect("a's second push (no force: drive still equals a's own baseline)");
+
+        // b independently moves ahead of the same baseline.
+        fact::add(b.path(), "delta", "d", "user", "cli:user").expect("fact");
+
+        let report = check(b.path(), &drive).expect("check");
+        assert_eq!(
+            report.verdict,
+            SyncVerdict::Diverged,
+            "both sides moved off the shared baseline"
+        );
+        assert!(report.baseline_present);
+
+        let d = diff(b.path(), &drive).expect("diff");
+        assert!(
+            d.unavailable_reason.is_none(),
+            "diff must be computable: {d:?}"
+        );
+        assert_eq!(
+            d.baseline_writes_log_max_id,
+            Some(baseline.writes_log_max_id),
+            "diff anchors on the recorded marker baseline"
+        );
+
+        let local = d.local.expect("local side present for Diverged");
+        let facts_local = local
+            .tables
+            .iter()
+            .find(|t| t.table == "facts")
+            .expect("local facts delta present");
+        assert_eq!(facts_local.added, 1, "b added exactly one fact since baseline");
+        assert_eq!(facts_local.updated, 0);
+        assert_eq!(
+            facts_local.changed,
+            vec!["delta".to_string()],
+            "b's own new fact key is surfaced"
+        );
+
+        let remote = d.remote.expect("remote side present for Diverged");
+        let facts_remote = remote
+            .tables
+            .iter()
+            .find(|t| t.table == "facts")
+            .expect("remote facts delta present");
+        assert_eq!(facts_remote.added, 1, "a added exactly one fact since baseline");
+        assert_eq!(facts_remote.updated, 0);
+        assert_eq!(
+            facts_remote.changed,
+            vec!["gamma".to_string()],
+            "a's own new fact key is surfaced from the remote snapshot"
+        );
+    }
+
+    #[test]
+    fn diff_explains_when_there_is_no_common_baseline() {
+        // First-sync divergence (no marker yet) — diff cannot anchor a
+        // per-table comparison, and must say so rather than error.
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        enable_sync(temp.path());
+        let (local, schema) = local_state(temp.path());
+
+        let remote = temp.path().join("remote");
+        let bumped = LogicalVersion {
+            writes_log_max_id: local.writes_log_max_id + 3,
+            writes_log_count: local.writes_log_count + 3,
+            digest: "some-other-content".into(),
+        };
+        write_remote_manifest(&remote, "test-proj-abcd1234", bumped, &schema);
+        assert_eq!(
+            check(temp.path(), &remote).expect("check").verdict,
+            SyncVerdict::Diverged
+        );
+
+        let d = diff(temp.path(), &remote).expect("diff must not error");
+        assert!(d.local.is_none());
+        assert!(d.remote.is_none());
+        assert!(d.baseline_writes_log_max_id.is_none());
+        let reason = d.unavailable_reason.expect("explains why it can't diff");
+        assert!(
+            reason.contains("baseline"),
+            "reason names the missing baseline: {reason}"
+        );
+    }
+
+    #[test]
+    fn diff_is_strictly_read_only() {
+        let a = new_synced_repo();
+        fact::add(a.path(), "alpha", "1", "user", "cli:user").expect("fact");
+        let drive = a.path().join("drive");
+        snapshot(a.path(), &drive, false).expect("snapshot");
+        commit(a.path(), &drive).expect("commit");
+
+        let b = new_synced_repo();
+        adopt(b.path(), &drive, true).expect("adopt");
+        fact::add(b.path(), "delta", "d", "user", "cli:user").expect("fact");
+        fact::add(a.path(), "gamma", "g", "user", "cli:user").expect("fact");
+        snapshot(a.path(), &drive, false).expect("a's second push");
+
+        // Snapshot every artifact `diff` must not touch: the remote
+        // snapshot file's bytes, the manifest bytes, and the local
+        // marker's bytes.
+        let remote_manifest_before = fs::read(drive.join(MANIFEST_FILENAME)).expect("read manifest");
+        let latest_manifest = Manifest::load(&drive.join(MANIFEST_FILENAME)).expect("load");
+        let snapshot_path = resolve_snapshot_file(&drive, &latest_manifest).expect("resolve");
+        let remote_snapshot_sha_before = sha256_file(&snapshot_path).expect("hash remote before");
+        let ctx = db::open_project(b.path()).expect("open");
+        let marker_bytes_before =
+            fs::read(marker_path(&ctx.paths.memhub_dir)).expect("read marker before");
+        drop(ctx);
+        let (local_before, _) = local_state(b.path());
+
+        let d = diff(b.path(), &drive).expect("diff");
+        assert!(d.unavailable_reason.is_none());
+
+        let remote_snapshot_sha_after = sha256_file(&snapshot_path).expect("hash remote after");
+        assert_eq!(
+            remote_snapshot_sha_before, remote_snapshot_sha_after,
+            "diff must never write to the remote snapshot file"
+        );
+        let remote_manifest_after =
+            fs::read(drive.join(MANIFEST_FILENAME)).expect("read manifest after");
+        assert_eq!(
+            remote_manifest_before, remote_manifest_after,
+            "diff must never write to the remote manifest"
+        );
+        let ctx = db::open_project(b.path()).expect("open");
+        let marker_bytes_after =
+            fs::read(marker_path(&ctx.paths.memhub_dir)).expect("read marker after");
+        assert_eq!(
+            marker_bytes_before, marker_bytes_after,
+            "diff must never write to the local sync marker"
+        );
+        let (local_after, _) = local_state(b.path());
+        assert_eq!(
+            local_before, local_after,
+            "diff must never write to the local DB (logical version unchanged)"
+        );
     }
 }

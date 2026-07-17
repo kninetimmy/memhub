@@ -538,6 +538,13 @@ pub enum SyncCommand {
         /// `manifest.json` (or a path to `manifest.json`). Omit to use
         /// the canonical `<drive_subpath>/memhub/<project_id>` from config.
         remote: Option<PathBuf>,
+        /// Print per-table divergence detail (added/updated counts, plus
+        /// changed fact/decision/task titles) for both sides since the
+        /// common sync baseline. Strictly read-only: opens the remote
+        /// snapshot read-only and never touches the local DB, marker, or
+        /// remote dir.
+        #[arg(long)]
+        diff: bool,
         #[arg(long)]
         json: bool,
     },
