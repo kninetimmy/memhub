@@ -13,7 +13,7 @@
 //! - `commit` — record the post-push baseline in the marker.
 
 use std::fs::{self, File};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -29,8 +29,35 @@ use crate::sync_md;
 use crate::{MemhubError, Result};
 
 /// File names inside a `<project-id>` Drive folder.
+///
+/// `SNAPSHOT_FILENAME` is the **legacy** bare snapshot name. New pushes
+/// write an immutable, content-addressed `project-<sha256>.sqlite`
+/// (see [`versioned_snapshot_filename`]) so publishing a new snapshot
+/// never overwrites the one the current manifest still points at. The
+/// bare name survives only as the read-side fallback for a Drive folder
+/// last written by a pre-versioning binary — a manifest without a
+/// `snapshot_filename` field resolves to it (see [`resolve_snapshot_file`]).
 pub const SNAPSHOT_FILENAME: &str = "project.sqlite";
 pub const MANIFEST_FILENAME: &str = "manifest.json";
+
+/// Immutable, content-addressed snapshot filename: `project-<sha256>.sqlite`.
+/// Keying the name on the file's own hash makes every distinct snapshot a
+/// distinct file, so a new publication is a *new* file rather than an
+/// in-place overwrite of the snapshot the live manifest still references —
+/// the previous snapshot+manifest pair stays adoptable right up until the
+/// manifest rename swings the pointer to the new one.
+fn versioned_snapshot_filename(file_sha256: &str) -> String {
+    format!("project-{file_sha256}.sqlite")
+}
+
+/// Whether `name` looks like one of memhub's own snapshot DB files — the
+/// legacy bare `project.sqlite` or a versioned `project-<hash>.sqlite`.
+/// Used by publication GC to find snapshots the current manifest no
+/// longer references, without touching files other tools may keep in a
+/// shared folder.
+fn is_snapshot_filename(name: &str) -> bool {
+    name == SNAPSHOT_FILENAME || (name.starts_with("project-") && name.ends_with(".sqlite"))
+}
 
 /// Sub-namespace inside `[sync] drive_subpath` so memhub owns its own
 /// folder even when the synced directory is shared with other tools.
@@ -250,6 +277,17 @@ fn hash_len_prefixed(hasher: &mut Sha256, bytes: &[u8]) {
     hasher.update(bytes);
 }
 
+/// Compact, human-readable one-line summary of a [`LogicalVersion`] for
+/// error messages: the writes-log signal plus a short digest prefix.
+/// Not a stable format — diagnostics only.
+fn describe_logical(v: &LogicalVersion) -> String {
+    let short: String = v.digest.chars().take(12).collect();
+    format!(
+        "writes {}/{}, digest {}…",
+        v.writes_log_max_id, v.writes_log_count, short
+    )
+}
+
 /// Sidecar written next to a snapshot in the Drive folder. Carries the
 /// logical version (divergence), schema version (the §6 upgrade
 /// guard), and the file checksum (integrity against a torn download).
@@ -262,6 +300,14 @@ pub struct Manifest {
     pub schema_version: String,
     pub logical_version: LogicalVersion,
     pub file_sha256: String,
+    /// The snapshot file this manifest references, relative to the manifest's
+    /// own directory. Additive (`#[serde(default)]`): a manifest written by a
+    /// pre-versioning binary omits it, and the reader falls back to the
+    /// legacy bare `SNAPSHOT_FILENAME` — so old Drive layouts stay readable
+    /// and an older binary reading a new manifest simply ignores the field.
+    /// Always a plain filename (validated on read in [`resolve_snapshot_file`]).
+    #[serde(default)]
+    pub snapshot_filename: String,
     pub machine_id: String,
     pub created_at: String,
     pub memhub_version: String,
@@ -326,15 +372,37 @@ pub fn snapshot(start: &Path, out_dir: &Path, force: bool) -> Result<SnapshotSum
         .query_row("SELECT CURRENT_TIMESTAMP", [], |row| row.get(0))?;
 
     fs::create_dir_all(out_dir)?;
-    let snapshot_path = out_dir.join(SNAPSHOT_FILENAME);
-    // `VACUUM INTO` refuses to overwrite an existing file; clear any
-    // stale snapshot from a previous run first.
+
+    // ── Publish atomically (audit F6/X5) ─────────────────────────────
+    // The previous scheme deleted the old remote `project.sqlite` before
+    // `VACUUM INTO` wrote the new one and then overwrote `manifest.json`
+    // in place, so a crash mid-sequence could lose the last valid remote
+    // copy or pair new bytes with a stale manifest. Instead:
+    //   1. `VACUUM INTO` a same-dir temp (VACUUM refuses to overwrite).
+    //   2. Rename it to an immutable content-addressed name — a *new*
+    //      file that never overwrites the snapshot the live manifest
+    //      still points at.
+    //   3. Write `manifest.json` via same-dir temp + atomic rename LAST:
+    //      that single rename is the publication point that swings the
+    //      pointer to the new snapshot.
+    //   4. GC snapshots the freshly-published manifest no longer names.
+    // At every boundary the remote holds a valid, adoptable snapshot +
+    // manifest pair — the previous one until step 3's rename lands.
+    let tmp_snapshot = out_dir.join(format!(".{SNAPSHOT_FILENAME}.{}.tmp", std::process::id()));
+    if tmp_snapshot.exists() {
+        fs::remove_file(&tmp_snapshot)?;
+    }
+    vacuum_into(&ctx.conn, &tmp_snapshot)?;
+
+    let file_sha256 = sha256_file(&tmp_snapshot)?;
+    let snapshot_filename = versioned_snapshot_filename(&file_sha256);
+    let snapshot_path = out_dir.join(&snapshot_filename);
+    // A byte-identical prior snapshot would already carry this exact name;
+    // replace it (same content) so the rename below always succeeds.
     if snapshot_path.exists() {
         fs::remove_file(&snapshot_path)?;
     }
-    vacuum_into(&ctx.conn, &snapshot_path)?;
-
-    let file_sha256 = sha256_file(&snapshot_path)?;
+    fs::rename(&tmp_snapshot, &snapshot_path)?;
     let bytes = fs::metadata(&snapshot_path)?.len();
 
     let manifest = Manifest {
@@ -343,12 +411,20 @@ pub fn snapshot(start: &Path, out_dir: &Path, force: bool) -> Result<SnapshotSum
         schema_version: schema_version.clone(),
         logical_version: logical_version.clone(),
         file_sha256: file_sha256.clone(),
+        snapshot_filename: snapshot_filename.clone(),
         machine_id: machine_id(),
         created_at,
         memhub_version: env!("CARGO_PKG_VERSION").to_string(),
     };
     let manifest_path = out_dir.join(MANIFEST_FILENAME);
-    fs::write(&manifest_path, serde_json::to_string_pretty(&manifest)?)?;
+    // The atomic rename here is the publication point. Until it lands, the
+    // prior manifest (and the snapshot it names) is what any reader sees.
+    write_atomic(&manifest_path, serde_json::to_string_pretty(&manifest)?.as_bytes())?;
+
+    // Publication succeeded: reclaim snapshots (and interrupted temps) the
+    // new manifest no longer references. Best-effort — an orphan left by a
+    // failed delete is harmless, and the push itself has already committed.
+    gc_unreferenced_snapshots(out_dir, &snapshot_filename);
 
     // A snapshot written into the repo's *canonical* remote dir just
     // pushed the DB to the shared destination -- record the same
@@ -440,15 +516,117 @@ pub fn load_marker(memhub_dir: &Path) -> Result<Option<SyncMarker>> {
     if !path.exists() {
         return Ok(None);
     }
-    Ok(Some(serde_json::from_str(&fs::read_to_string(&path)?)?))
+    // An IO error (permissions, a mid-read vanish) still fails loudly: the
+    // caller cannot know the sync baseline, so it must not proceed blind.
+    let raw = fs::read_to_string(&path)?;
+    // A *parse* failure degrades instead of blocking every sync op (X5). A
+    // torn/truncated marker — a crash mid-write before the temp+rename in
+    // `save_marker` existed, or an externally corrupted file — must not
+    // wedge sync. We warn and treat it as "no baseline" (None); the next
+    // successful sync rewrites it atomically. A missing marker is already
+    // None above, and a valid one parses to Some.
+    match serde_json::from_str(&raw) {
+        Ok(marker) => Ok(Some(marker)),
+        Err(err) => {
+            log::warn!(
+                "sync marker at {} is unreadable ({err}); ignoring it and treating this as no \
+                 baseline. Sync stays usable — the next successful sync rewrites the marker.",
+                path.display()
+            );
+            Ok(None)
+        }
+    }
 }
 
 pub fn save_marker(memhub_dir: &Path, marker: &SyncMarker) -> Result<()> {
-    fs::write(
-        marker_path(memhub_dir),
-        serde_json::to_string_pretty(marker)?,
-    )?;
+    // Same-dir temp + atomic rename (X5): a crash mid-write can never leave
+    // a half-written marker that `load_marker` would then have to degrade —
+    // a reader sees either the previous marker or the fully-written new one.
+    write_atomic(
+        &marker_path(memhub_dir),
+        serde_json::to_string_pretty(marker)?.as_bytes(),
+    )
+}
+
+/// Write `bytes` to `path` atomically: write a sibling temp file in the
+/// **same directory**, fsync it, then rename it over `path`. `std::fs::rename`
+/// replaces an existing destination on both Windows (`MoveFileEx` with
+/// `REPLACE_EXISTING`) and POSIX, so the swap is atomic — a concurrent
+/// reader observes either the old file or the new one, never a torn write.
+/// Same-dir keeps the rename a metadata-only move on one filesystem (a
+/// cross-device rename would fail). The temp name carries the pid so two
+/// writers don't fight over one temp before their renames.
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    let dir = path.parent().ok_or_else(|| {
+        MemhubError::InvalidInput(format!(
+            "cannot atomically write {}: it has no parent directory",
+            path.display()
+        ))
+    })?;
+    let stem = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("write");
+    let tmp = dir.join(format!(".{stem}.{}.tmp", std::process::id()));
+    {
+        let mut f = File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+    }
+    if let Err(e) = fs::rename(&tmp, path) {
+        // Don't leave the temp behind on a failed swap.
+        let _ = fs::remove_file(&tmp);
+        return Err(e.into());
+    }
     Ok(())
+}
+
+/// After a successful publication, delete snapshot files the current
+/// manifest no longer references — previous versioned snapshots, a legacy
+/// bare `project.sqlite`, and any leftover `.tmp` artifacts from an
+/// interrupted run. Never touches `keep` (the just-published snapshot) or
+/// `manifest.json`. Best-effort and infallible by contract: the push has
+/// already committed at the manifest rename, so a failed cleanup leaves
+/// only a harmless orphan and must not turn a successful push into an
+/// error. Per-file and whole-directory failures are logged, not raised.
+fn gc_unreferenced_snapshots(out_dir: &Path, keep: &str) {
+    let entries = match fs::read_dir(out_dir) {
+        Ok(e) => e,
+        Err(err) => {
+            log::warn!(
+                "sync publication GC: could not scan {} ({err}); leaving orphan snapshots in place",
+                out_dir.display()
+            );
+            return;
+        }
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if name == keep || name == MANIFEST_FILENAME {
+            continue;
+        }
+        // Only reclaim our own artifacts: an unreferenced snapshot DB, or a
+        // stray temp from an interrupted snapshot/manifest write. The temp
+        // match is scoped to memhub's own `.<stem>.<pid>.tmp` names so a
+        // shared folder's unrelated `.tmp` files are never touched.
+        let is_own_temp = name.ends_with(".tmp")
+            && (name.starts_with(&format!(".{SNAPSHOT_FILENAME}."))
+                || name.starts_with(&format!(".{MANIFEST_FILENAME}.")));
+        if !is_snapshot_filename(name) && !is_own_temp {
+            continue;
+        }
+        if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            continue;
+        }
+        if let Err(err) = fs::remove_file(entry.path()) {
+            log::warn!(
+                "sync publication GC: could not remove orphan {} ({err}); it is harmless and \
+                 will be retried on the next push",
+                entry.path().display()
+            );
+        }
+    }
 }
 
 /// Fast-forward verdict of the local DB against a Drive snapshot, by
@@ -630,14 +808,38 @@ fn schema_ordinal(schema_version: &str) -> Result<u32> {
         })
 }
 
-/// The snapshot file paired with a `remote` argument: inside it when a
-/// directory, or its sibling `project.sqlite` when a manifest path.
-fn remote_snapshot_file(remote: &Path) -> PathBuf {
-    if remote.is_dir() {
-        remote.join(SNAPSHOT_FILENAME)
+/// The snapshot file a `manifest` references, resolved against `remote`
+/// (a directory holding the manifest, or a `manifest.json` path itself).
+/// The name comes from the manifest's `snapshot_filename`; a manifest
+/// written by a pre-versioning binary omits it, so we fall back to the
+/// legacy bare `SNAPSHOT_FILENAME` and old Drive layouts stay readable.
+///
+/// The filename is **untrusted** (it rides in a manifest on shared Drive
+/// storage), so it must be a single plain path component: a value with a
+/// separator or `..` is refused rather than joined, so a hostile manifest
+/// cannot steer `adopt` at a file outside the remote folder.
+fn resolve_snapshot_file(remote: &Path, manifest: &Manifest) -> Result<PathBuf> {
+    let dir = if remote.is_dir() {
+        remote.to_path_buf()
     } else {
-        remote.with_file_name(SNAPSHOT_FILENAME)
+        remote.parent().map(Path::to_path_buf).unwrap_or_default()
+    };
+    let candidate = manifest.snapshot_filename.trim();
+    if candidate.is_empty() {
+        return Ok(dir.join(SNAPSHOT_FILENAME));
     }
+    let is_plain = Path::new(candidate)
+        .file_name()
+        .and_then(|f| f.to_str())
+        .map(|f| f == candidate)
+        .unwrap_or(false);
+    if !is_plain {
+        return Err(MemhubError::InvalidInput(format!(
+            "manifest 'snapshot_filename' = '{candidate}' is not a plain filename; refusing to \
+             resolve a snapshot path outside the remote folder"
+        )));
+    }
+    Ok(dir.join(candidate))
 }
 
 /// Name of the local staging copy `adopt` writes before hashing and
@@ -764,11 +966,14 @@ pub fn adopt(start: &Path, remote: &Path, force: bool) -> Result<AdoptSummary> {
     let manifest = read_remote_manifest(remote)?.ok_or_else(|| {
         MemhubError::InvalidInput("no snapshot manifest found at the given path".into())
     })?;
-    let snapshot_file = remote_snapshot_file(remote);
+    let snapshot_file = resolve_snapshot_file(remote, &manifest)?;
     if !snapshot_file.exists() {
         return Err(MemhubError::InvalidInput(format!(
-            "manifest present but {} is missing at {}",
-            SNAPSHOT_FILENAME,
+            "manifest present but its snapshot {} is missing at {}",
+            snapshot_file
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(SNAPSHOT_FILENAME),
             snapshot_file.display()
         )));
     }
@@ -945,6 +1150,30 @@ pub fn commit(start: &Path, remote: &Path) -> Result<CommitSummary> {
             manifest.project_id, project_id
         )));
     }
+
+    // commit() records "local now EQUALS what the remote holds" — so it
+    // MUST verify that equality (Claude-sweep finding). Without this check
+    // commit() would stamp the remote's logical version as the baseline
+    // even when local has diverged from it; a subsequent plain
+    // `sync snapshot` would then read LocalAhead and sail through the
+    // push-side clobber gate, silently overwriting another machine's push
+    // that this machine never adopted. Refuse instead: the operator must
+    // reconcile (adopt to take the remote, or re-push to publish local)
+    // before a baseline can be recorded. (Decision 161: this local==manifest
+    // check IS the fix — no confirm gate is added.)
+    let local_logical = LogicalVersion::read(&ctx.conn)?;
+    if local_logical != manifest.logical_version {
+        return Err(MemhubError::InvalidInput(format!(
+            "refusing to record a push baseline: local state does not match the remote manifest. \
+             commit() records that local EQUALS the pushed snapshot, but local is [{}] and the \
+             manifest is [{}]. The remote has moved on (another machine pushed) or local changed \
+             since the push — run `memhub sync check` and reconcile (adopt to take the remote, or \
+             `sync snapshot` to re-push local) before committing.",
+            describe_logical(&local_logical),
+            describe_logical(&manifest.logical_version),
+        )));
+    }
+
     let synced_at: String = ctx
         .conn
         .query_row("SELECT CURRENT_TIMESTAMP", [], |row| row.get(0))?;
@@ -1530,6 +1759,9 @@ mod tests {
             schema_version: schema.to_string(),
             logical_version: logical,
             file_sha256: "deadbeef".into(),
+            // Legacy-shaped fixture: no versioned name, resolves to the
+            // bare SNAPSHOT_FILENAME. check() tests never read the snapshot.
+            snapshot_filename: String::new(),
             machine_id: "other-machine".into(),
             created_at: "2026-05-22 00:00:00".into(),
             memhub_version: "0.1.0".into(),
@@ -1774,14 +2006,16 @@ mod tests {
             "newer schema refused"
         );
 
-        // Checksum disagreement (tampered snapshot).
+        // Checksum disagreement (tampered snapshot). The snapshot now lives
+        // at a versioned `project-<sha>.sqlite` name; tamper with the exact
+        // file the summary reports, not the legacy bare name.
         let tampered = a.path().join("tampered");
-        snapshot(a.path(), &tampered, false).expect("snapshot");
+        let tampered_summary = snapshot(a.path(), &tampered, false).expect("snapshot");
         {
             use std::io::Write;
             let mut f = fs::OpenOptions::new()
                 .append(true)
-                .open(tampered.join(SNAPSHOT_FILENAME))
+                .open(&tampered_summary.snapshot_path)
                 .expect("open snapshot");
             f.write_all(b"corruption").expect("tamper");
         }
@@ -1941,6 +2175,9 @@ mod tests {
             schema_version: schema,
             logical_version: local,
             file_sha256: garbage_sha,
+            // Legacy-shaped: the garbage snapshot is written at the bare
+            // SNAPSHOT_FILENAME, so an empty field resolves adopt to it.
+            snapshot_filename: String::new(),
             machine_id: "other-machine".into(),
             created_at: "2026-05-22 00:00:00".into(),
             memhub_version: "0.1.0".into(),
@@ -2512,5 +2749,340 @@ mod tests {
             SyncVerdict::Diverged,
             "a doc only one side ingested must read as divergence, not up-to-date (F2)"
         );
+    }
+
+    // ── Marker robustness (audit X5) ──────────────────────────────────────
+
+    #[test]
+    fn load_marker_degrades_torn_marker_to_no_baseline() {
+        // A truncated/corrupted marker must NOT block sync: load_marker
+        // warns and returns None (no baseline), and sync keeps working —
+        // instead of the old hard error that wedged every sync op.
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        enable_sync(temp.path());
+        let ctx = db::open_project(temp.path()).expect("open");
+
+        // A valid marker truncated mid-object — unparseable JSON.
+        fs::write(marker_path(&ctx.paths.memhub_dir), b"{\"project_id\":\"tes")
+            .expect("write torn marker");
+
+        let loaded = load_marker(&ctx.paths.memhub_dir).expect("must not error on torn marker");
+        assert!(loaded.is_none(), "an unparseable marker degrades to no baseline");
+
+        // Sync stays usable: a first-sync check against an equal remote
+        // still reads up-to-date despite the torn marker.
+        let (local, schema) = local_state(temp.path());
+        let remote = temp.path().join("remote");
+        write_remote_manifest(&remote, "test-proj-abcd1234", local, &schema);
+        assert_eq!(
+            check(temp.path(), &remote).expect("check usable despite torn marker").verdict,
+            SyncVerdict::UpToDate,
+            "sync remains usable with a torn marker (treated as no baseline)"
+        );
+    }
+
+    #[test]
+    fn save_marker_is_atomic_and_round_trips_without_leaving_a_temp() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let ctx = db::open_project(temp.path()).expect("open");
+        let marker = SyncMarker {
+            project_id: "test-proj-abcd1234".into(),
+            baseline: LogicalVersion {
+                writes_log_max_id: 3,
+                writes_log_count: 3,
+                digest: "abc123".into(),
+            },
+            baseline_file_sha256: "deadbeef".into(),
+            synced_at: "2026-05-22 00:00:00".into(),
+            last_action: "pull".into(),
+        };
+        save_marker(&ctx.paths.memhub_dir, &marker).expect("save");
+        let loaded = load_marker(&ctx.paths.memhub_dir)
+            .expect("load")
+            .expect("present");
+        assert_eq!(loaded.baseline, marker.baseline, "marker round-trips");
+
+        // No `.tmp` sidecar is left behind after the atomic rename.
+        let leftover = fs::read_dir(&ctx.paths.memhub_dir)
+            .expect("read dir")
+            .filter_map(|e| e.ok())
+            .any(|e| e.file_name().to_string_lossy().ends_with(".tmp"));
+        assert!(!leftover, "atomic save leaves no temp file behind");
+    }
+
+    // ── Remote publication atomicity (audit F6/X5) ───────────────────────
+
+    #[test]
+    fn snapshot_publishes_versioned_snapshot_referenced_by_manifest() {
+        let a = new_synced_repo();
+        fact::add(a.path(), "alpha", "1", "user", "cli:user").expect("fact");
+        let drive = a.path().join("drive");
+        let summary = snapshot(a.path(), &drive, false).expect("snapshot");
+
+        let fname = summary
+            .snapshot_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("snapshot file name");
+        assert!(
+            fname.starts_with("project-") && fname.ends_with(".sqlite"),
+            "snapshot is published under an immutable content-addressed name: {fname}"
+        );
+        let manifest = Manifest::load(&summary.manifest_path).expect("load manifest");
+        assert_eq!(
+            manifest.snapshot_filename, fname,
+            "the manifest carries the exact snapshot filename it references"
+        );
+
+        // Exactly one snapshot DB in the folder — no bare legacy leftover.
+        let count = fs::read_dir(&drive)
+            .expect("read dir")
+            .filter_map(|e| e.ok())
+            .filter(|e| is_snapshot_filename(&e.file_name().to_string_lossy()))
+            .count();
+        assert_eq!(count, 1, "exactly one published snapshot, no orphans");
+    }
+
+    #[test]
+    fn second_push_gcs_previous_snapshot_and_stays_adoptable() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let drive_root = tempdir().expect("drive tempdir");
+        enable_sync_with_drive_subpath(temp.path(), drive_root.path());
+        fact::add(temp.path(), "alpha", "1", "user", "cli:user").expect("fact");
+
+        let remote_dir = default_remote_dir(temp.path()).expect("resolve remote dir");
+        let s1 = snapshot(temp.path(), &remote_dir, false).expect("first push");
+
+        // A durable local write changes content → a distinct versioned name.
+        fact::add(temp.path(), "beta", "2", "user", "cli:user").expect("fact");
+        let s2 = snapshot(temp.path(), &remote_dir, false).expect("second push");
+
+        assert_ne!(
+            s1.snapshot_path, s2.snapshot_path,
+            "changed content publishes under a new immutable name"
+        );
+        assert!(
+            !s1.snapshot_path.exists(),
+            "the previous snapshot is garbage-collected after publication"
+        );
+        assert!(s2.snapshot_path.exists(), "the current snapshot survives GC");
+        let count = fs::read_dir(&remote_dir)
+            .expect("read dir")
+            .filter_map(|e| e.ok())
+            .filter(|e| is_snapshot_filename(&e.file_name().to_string_lossy()))
+            .count();
+        assert_eq!(count, 1, "GC leaves exactly the one referenced snapshot");
+
+        // The published pair is adoptable on another machine.
+        let b = new_synced_repo();
+        adopt(b.path(), &remote_dir, true).expect("adopt latest published snapshot");
+        assert_eq!(
+            fact_keys(b.path()),
+            vec!["alpha", "beta"],
+            "adopted the latest pushed content"
+        );
+    }
+
+    #[test]
+    fn interrupted_second_push_leaves_previous_pair_adoptable_then_gc_reclaims() {
+        // Simulate a second push interrupted AFTER a new snapshot file
+        // landed but BEFORE the manifest rename: the live manifest still
+        // names the previous snapshot, so the remote stays adoptable. A
+        // later successful push then reclaims the orphan + any stray temp.
+        let a = new_synced_repo();
+        fact::add(a.path(), "alpha", "1", "user", "cli:user").expect("fact");
+        let drive = a.path().join("drive");
+        let s1 = snapshot(a.path(), &drive, false).expect("first push");
+
+        let orphan = drive.join("project-deadbeefdeadbeefdeadbeefdeadbeef.sqlite");
+        fs::copy(&s1.snapshot_path, &orphan).expect("drop orphan snapshot");
+        let stray_tmp = drive.join(".manifest.json.999999.tmp");
+        fs::write(&stray_tmp, b"partial-interrupted-write").expect("drop stray temp");
+
+        // The manifest still points at the v1 snapshot, which exists →
+        // adoptable throughout the interruption.
+        let b = new_synced_repo();
+        adopt(b.path(), &drive, true).expect("previous pair adoptable mid-interruption");
+        assert_eq!(fact_keys(b.path()), vec!["alpha"], "adopted the still-referenced v1");
+
+        // A later successful push (content unchanged → same name as v1)
+        // reclaims the orphan snapshot and the stray temp.
+        let s2 = snapshot(a.path(), &drive, false).expect("re-push reclaims orphans");
+        assert!(s2.snapshot_path.exists(), "current snapshot present");
+        assert!(!orphan.exists(), "orphan snapshot reclaimed by publication GC");
+        assert!(!stray_tmp.exists(), "stray temp reclaimed by publication GC");
+    }
+
+    #[test]
+    fn legacy_remote_layout_without_filename_field_is_adoptable() {
+        // A Drive folder last written by a pre-versioning binary: a bare
+        // `project.sqlite` plus a manifest.json with NO `snapshot_filename`
+        // field. Reading must fall back to the legacy name so the layout
+        // stays adoptable.
+        let a = new_synced_repo();
+        fact::add(a.path(), "alpha", "1", "user", "cli:user").expect("fact");
+        let drive = a.path().join("drive");
+        let summary = snapshot(a.path(), &drive, false).expect("snapshot");
+
+        // Rewrite to the legacy shape: rename the versioned snapshot to the
+        // bare name and strip `snapshot_filename` from the manifest JSON.
+        let legacy_snap = drive.join(SNAPSHOT_FILENAME);
+        fs::rename(&summary.snapshot_path, &legacy_snap).expect("rename to legacy name");
+        let mpath = drive.join(MANIFEST_FILENAME);
+        let mut val: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&mpath).expect("read")).expect("parse");
+        val.as_object_mut()
+            .expect("object")
+            .remove("snapshot_filename");
+        fs::write(&mpath, serde_json::to_string_pretty(&val).expect("ser")).expect("write legacy");
+        assert!(
+            !fs::read_to_string(&mpath).expect("read").contains("snapshot_filename"),
+            "legacy manifest must lack the field for a faithful fixture"
+        );
+
+        let b = new_synced_repo();
+        adopt(b.path(), &drive, true).expect("legacy layout must remain adoptable");
+        assert_eq!(
+            fact_keys(b.path()),
+            vec!["alpha"],
+            "adopted a's data via the legacy bare-name fallback"
+        );
+    }
+
+    #[test]
+    fn resolve_snapshot_file_rejects_non_plain_filename() {
+        // The snapshot filename rides in an untrusted manifest on shared
+        // storage; a separator or `..` must be refused, never joined.
+        let dir = tempdir().expect("tempdir");
+        let mut manifest = Manifest {
+            manifest_version: MANIFEST_VERSION,
+            project_id: "p".into(),
+            schema_version: "0001_x".into(),
+            logical_version: LogicalVersion {
+                writes_log_max_id: 0,
+                writes_log_count: 0,
+                digest: "d".into(),
+            },
+            file_sha256: "s".into(),
+            snapshot_filename: "../escape.sqlite".into(),
+            machine_id: "m".into(),
+            created_at: "t".into(),
+            memhub_version: "0.1.0".into(),
+        };
+        assert!(
+            resolve_snapshot_file(dir.path(), &manifest).is_err(),
+            "a `..` traversal filename must be refused"
+        );
+        manifest.snapshot_filename = "sub/child.sqlite".into();
+        assert!(
+            resolve_snapshot_file(dir.path(), &manifest).is_err(),
+            "a subdirectory filename must be refused"
+        );
+        manifest.snapshot_filename = "project-abc123.sqlite".into();
+        assert_eq!(
+            resolve_snapshot_file(dir.path(), &manifest).expect("plain name ok"),
+            dir.path().join("project-abc123.sqlite"),
+            "a plain filename resolves inside the remote dir"
+        );
+        manifest.snapshot_filename = String::new();
+        assert_eq!(
+            resolve_snapshot_file(dir.path(), &manifest).expect("empty ok"),
+            dir.path().join(SNAPSHOT_FILENAME),
+            "an empty field falls back to the legacy bare name"
+        );
+    }
+
+    // ── commit() verifies local state (Claude-sweep clobber finding) ─────
+
+    #[test]
+    fn commit_refuses_local_mismatch_blocking_ungated_clobber() {
+        // The clobber sequence the fix closes: the remote is Diverged from
+        // local. Old behavior: commit() stamped the remote's logical as the
+        // baseline, check() then read LocalAhead, and a plain (force=false)
+        // snapshot sailed through the push clobber gate — silently
+        // overwriting another machine's push this machine never adopted.
+        // commit() must refuse when local != the manifest's logical version.
+        let temp = new_synced_repo();
+        fact::add(temp.path(), "local-only", "1", "user", "cli:user").expect("fact");
+        let (local, schema) = local_state(temp.path());
+
+        // A shared baseline both sides have since moved off of → Diverged.
+        let ctx = db::open_project(temp.path()).expect("open");
+        save_marker(
+            &ctx.paths.memhub_dir,
+            &SyncMarker {
+                project_id: "test-proj-abcd1234".into(),
+                baseline: LogicalVersion {
+                    writes_log_max_id: 0,
+                    writes_log_count: 0,
+                    digest: "shared-baseline-neither-side-still-holds".into(),
+                },
+                baseline_file_sha256: "deadbeef".into(),
+                synced_at: "2026-01-01 00:00:00".into(),
+                last_action: "pull".into(),
+            },
+        )
+        .expect("save marker");
+
+        // The remote holds a logical version different from BOTH local and
+        // the baseline (another machine pushed it).
+        let remote = temp.path().join("remote");
+        let remote_logical = LogicalVersion {
+            writes_log_max_id: local.writes_log_max_id + 7,
+            writes_log_count: local.writes_log_count + 7,
+            digest: "another-machine-pushed-this".into(),
+        };
+        write_remote_manifest(&remote, "test-proj-abcd1234", remote_logical, &schema);
+
+        // Precondition: the remote reads Diverged.
+        assert_eq!(
+            check(temp.path(), &remote).expect("check").verdict,
+            SyncVerdict::Diverged,
+            "precondition: remote is diverged from local"
+        );
+
+        // commit() MUST refuse — local does not equal the manifest.
+        let err = commit(temp.path(), &remote).expect_err("commit must refuse on mismatch");
+        match err {
+            MemhubError::InvalidInput(msg) => assert!(
+                msg.contains("does not match the remote manifest"),
+                "refusal names the mismatch clearly: {msg}"
+            ),
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+
+        // No baseline was stamped, so the verdict is STILL Diverged — the
+        // ungated-overwrite path stays closed.
+        assert_eq!(
+            check(temp.path(), &remote).expect("check").verdict,
+            SyncVerdict::Diverged,
+            "a refused commit must not have moved the baseline"
+        );
+
+        // And a plain (force=false) snapshot into that remote still refuses,
+        // so no ungated overwrite of the other machine's push is possible.
+        let err2 = snapshot(temp.path(), &remote, false)
+            .expect_err("plain snapshot must still refuse a diverged remote");
+        assert!(matches!(err2, MemhubError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn commit_succeeds_when_local_equals_the_pushed_snapshot() {
+        // The normal path: commit right after a push, when local still
+        // equals what was pushed, records the baseline as before.
+        let a = new_synced_repo();
+        fact::add(a.path(), "alpha", "1", "user", "cli:user").expect("fact");
+        let drive = a.path().join("drive");
+        snapshot(a.path(), &drive, false).expect("snapshot");
+
+        commit(a.path(), &drive).expect("commit must succeed when local == pushed");
+        let ctx = db::open_project(a.path()).expect("open");
+        let marker = load_marker(&ctx.paths.memhub_dir)
+            .expect("load")
+            .expect("marker present");
+        assert_eq!(marker.last_action, "push", "baseline recorded on a matching commit");
     }
 }

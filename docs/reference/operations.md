@@ -77,7 +77,9 @@ the export/import flow above, automated and made fast-forward-aware.
 
 **Model (decisions 102/103/104).** Whole-DB **snapshot**, not row
 merge: each push writes a consistent single-file DB copy (`VACUUM
-INTO`) plus a `manifest.json`. Divergence is decided from a **logical
+INTO`) plus a `manifest.json` (the exact on-disk files and the
+crash-safe write order are in "Remote layout and publication
+atomicity" below). Divergence is decided from a **logical
 version** (a digest of the durable content tables, never file bytes —
 SQLite is byte-unstable), so `check` reports a git-style verdict:
 `up-to-date` / `local-ahead` / `drive-ahead` / `diverged` /
@@ -116,8 +118,13 @@ Surfaces:
   copy, a test fixture dir — leaves the marker untouched, the
   pre-existing fail-closed behavior.) `commit` is no longer part of
   the routine push; it exists to verify or repair a baseline after
-  the fact. A pull is `check` then `adopt --yes`. `status` shows the
-  resolved `remote dir`.
+  the fact, and **refuses when local's logical version does not equal
+  the remote manifest's** — recording "local equals the pushed
+  snapshot" as a baseline when that is false would let a later plain
+  `snapshot` read `local-ahead` and clobber another machine's push
+  through the gate (so `commit` on a diverged remote errors; reconcile
+  with `adopt`/`snapshot` first). A pull is `check` then `adopt --yes`.
+  `status` shows the resolved `remote dir`.
 - MCP (the agent-first surface): `memhub.sync_status`,
   `memhub.sync_snapshot`, `memhub.sync_check`, `memhub.sync_commit`,
   and `memhub.sync_adopt`. All default the target to the canonical
@@ -149,6 +156,28 @@ locking. If the live DB is held open by another writer for the whole
 restore window, adopt retries briefly and then refuses cleanly, leaving
 the original DB — and the pre-adopt backup — intact; nothing torn or
 half-replaced is ever observable.
+
+**Remote layout and publication atomicity (audit F6/X5).** A push no
+longer overwrites a single fixed `project.sqlite`. It writes an
+**immutable, content-addressed** snapshot named `project-<sha256>.sqlite`
+(the sha is the snapshot file's own hash), and `manifest.json` carries
+the exact `snapshot_filename` it references. The write order is
+crash-safe: `VACUUM INTO` a same-dir temp → rename it to the versioned
+name (a *new* file, so the snapshot the live manifest still points at is
+untouched) → write `manifest.json` via same-dir temp + atomic rename
+**last**. That final rename is the single publication point; interrupt
+anywhere before it and the remote still holds the *previous* valid
+snapshot + manifest pair. After a successful publication, snapshots the
+new manifest no longer names (older versioned files, a legacy bare
+`project.sqlite`, interrupted temps) are garbage-collected best-effort.
+Reads resolve the snapshot through the manifest's `snapshot_filename`;
+the field is additive (`#[serde(default)]`), so a **legacy** Drive
+folder — a bare `project.sqlite` with a manifest that lacks the field —
+falls back to that legacy name and stays readable/adoptable, and an
+older binary reading a new manifest simply ignores the extra field. The
+`sync_marker.json` baseline is likewise written same-dir temp + atomic
+rename, and a torn/unparseable marker degrades to a logged warning plus
+"no baseline" (sync stays usable) rather than hard-erroring every op.
 
 `known_projects`/registry membership and the M9 global store are
 **unrelated** to sync. Sync state (`[sync]`, the `sync_marker.json`
@@ -536,7 +565,7 @@ docs from repo A (issue #123; the store's `documents` table spans every
 opted-in repo, so store-emptiness is not "first add for this repo").
 
 Because `config.toml` never travels through Drive sync — a sync
-snapshot is the DB only (`VACUUM INTO project.sqlite` + manifest; see
+snapshot is the DB only (a `VACUUM INTO` snapshot + manifest; see
 "Cross-machine Drive sync" above) — a machine that `sync adopt`s a
 snapshot containing global docs does not gain
 `[global] include_docs_in_default` locally. Re-run `doc add --global`
