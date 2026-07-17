@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -12,7 +13,7 @@ use crate::metrics::formatter::render_period_block;
 use crate::models::{
     Decision, FACT_STALE_AFTER_DAYS, Fact, NarrativeEntry, RenderResult, SessionNote, Task,
 };
-use crate::sync_md;
+use crate::MemhubError;
 
 const PROJECT_FILENAME: &str = "PROJECT.md";
 const LEDGER_FILENAME: &str = "PROJECT_LEDGER.md";
@@ -117,12 +118,12 @@ fn stage_rendered_file(path: &Path, content: &str, backup_dir: &Path) -> Result<
     }
 
     let backup_path = if path.exists() {
-        Some(sync_md::create_backup(path, backup_dir)?)
+        Some(create_backup(path, backup_dir)?)
     } else {
         None
     };
 
-    let temp_path = sync_md::temp_path_for(path)?;
+    let temp_path = temp_path_for(path)?;
     fs::write(&temp_path, content)?;
 
     Ok(StagedFile {
@@ -130,6 +131,62 @@ fn stage_rendered_file(path: &Path, content: &str, backup_dir: &Path) -> Result<
         temp_path,
         backup_path,
     })
+}
+
+/// Copy `path` into `backup_dir` under a timestamped name before it gets
+/// overwritten, so a prior rendered file is always recoverable. Moved here
+/// from the retired `sync_md` channel (audit C5 / task 119) — render is now
+/// the sole consumer of this backup/temp-write machinery.
+fn create_backup(path: &Path, backup_dir: &Path) -> Result<PathBuf> {
+    fs::create_dir_all(backup_dir)?;
+
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            MemhubError::InvalidInput(format!("invalid rendered filename: {}", path.display()))
+        })?;
+    let stamp = backup_stamp()?;
+
+    for attempt in 0..1000 {
+        let suffix = if attempt == 0 {
+            String::new()
+        } else {
+            format!("-{attempt}")
+        };
+        let backup_path = backup_dir.join(format!("{stamp}{suffix}-{file_name}.bak"));
+        if !backup_path.exists() {
+            let _ = fs::copy(path, &backup_path)?;
+            return Ok(backup_path);
+        }
+    }
+
+    Err(MemhubError::InvalidInput(format!(
+        "failed to allocate a backup path for {}",
+        path.display()
+    )))
+}
+
+fn backup_stamp() -> Result<String> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|err| {
+            MemhubError::InvalidInput(format!("system clock is before unix epoch: {err}"))
+        })?;
+    Ok(format!("{}-{:09}", now.as_secs(), now.subsec_nanos()))
+}
+
+/// A staged temp path alongside `path` (same directory, dotfile-prefixed)
+/// that the caller writes to before an atomic `fs::rename` into place.
+fn temp_path_for(path: &Path) -> Result<PathBuf> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            MemhubError::InvalidInput(format!("invalid rendered filename: {}", path.display()))
+        })?;
+    let stamp = backup_stamp()?;
+    Ok(path.with_file_name(format!(".{file_name}.{stamp}.tmp")))
 }
 
 fn build_snapshot(
