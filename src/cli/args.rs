@@ -49,7 +49,6 @@ pub enum TopLevelCommand {
         #[arg(long)]
         json: bool,
     },
-    SyncMd,
     Serve,
     #[cfg(feature = "viz")]
     Viz {

@@ -370,23 +370,6 @@ pub fn run(cli: Cli) -> Result<()> {
                 print_stats_human(&summary);
             }
         }
-        TopLevelCommand::SyncMd => {
-            let result = commands::sync_md::run(&cwd)?;
-            if result.updated_files.is_empty() {
-                println!("Rendered markdown is already up to date.");
-            } else {
-                println!("Updated rendered markdown:");
-                for path in result.updated_files {
-                    println!("  {}", path.display());
-                }
-                if !result.backup_files.is_empty() {
-                    println!("Backups created:");
-                    for path in result.backup_files {
-                        println!("  {}", path.display());
-                    }
-                }
-            }
-        }
         TopLevelCommand::Serve => {
             crate::mcp::serve(&cwd)?;
         }

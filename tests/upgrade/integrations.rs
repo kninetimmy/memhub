@@ -7,23 +7,22 @@ use memhub::db;
 use tempfile::tempdir;
 
 // `integrations::enable_k9`, `integrations::disable_k9`, and `status::run`
-// all call `db::open_project` directly as their first fallible step.
-// `memhub::commands::init::run` — called by every test in this file —
-// ALSO reaches `db::open_project` transitively, via its trailing
-// `sync_md::sync_project` call. All resolve `db::home_dir()`
-// unconditionally, in-process (Wave 5 U4, issue #90; see
-// `upgrade/support.rs`'s reader-trigger closure doc). Every test in this
-// file therefore takes `support::env_read_lock()` for the whole test,
-// guarding against a concurrent writer test's `HOME`/`USERPROFILE`
-// override elsewhere in this shared harness binary — there is no test
-// here that skips `init::run` (this comment previously claimed the
-// `init::run`-plus-`read_config`-only tests didn't need it, which was
-// wrong: `init::run` itself is not free of this). `read_config` itself
-// remains genuinely clean in isolation — it bottoms out in
-// `ProjectConfig::load`/`fs::read_to_string` and
-// `db::ProjectPaths::for_repo_root`, neither of which touches `home_dir` —
-// it is `init::run`, not `read_config`, that puts every test here in the
-// closure.
+// all call `db::open_project` directly as their first fallible step, which
+// resolves `db::home_dir()` unconditionally, in-process (Wave 5 U4, issue
+// #90; see `upgrade/support.rs`'s reader-trigger closure doc).
+// `memhub::commands::init::run` — called by every test in this file — used
+// to ALSO reach `db::open_project` transitively, via a trailing
+// `sync_md::sync_project` call; that call was removed with the `sync_md`
+// channel's retirement (audit C5 / task 119), so `init::run` alone no
+// longer needs the guard. Every test in this file still takes
+// `support::env_read_lock()` for the whole test regardless — cheap and
+// harmless even for the `init::run`-plus-`read_config`-only tests, where it
+// is no longer load-bearing on its own — guarding against a concurrent
+// writer test's `HOME`/`USERPROFILE` override elsewhere in this shared
+// harness binary. `read_config` itself remains genuinely clean in
+// isolation — it bottoms out in `ProjectConfig::load`/`fs::read_to_string`
+// and `db::ProjectPaths::for_repo_root`, neither of which touches
+// `home_dir`.
 
 fn write_k9_marker(repo_root: &Path) {
     let dir = repo_root.join("agent_docs");

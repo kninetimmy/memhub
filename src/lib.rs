@@ -15,7 +15,6 @@ pub mod metrics;
 pub mod models;
 pub mod render;
 pub mod retrieval;
-pub mod sync_md;
 pub mod transcript_files;
 
 pub use errors::{MemhubError, Result};

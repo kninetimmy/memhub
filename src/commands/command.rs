@@ -6,7 +6,6 @@ use crate::Result;
 use crate::db;
 use crate::errors::MemhubError;
 use crate::models::CommandRecord;
-use crate::sync_md;
 
 pub fn list(start: &Path) -> Result<Vec<CommandRecord>> {
     let ctx = db::open_project(start)?;
@@ -132,7 +131,6 @@ pub fn verify(
     db::log_write(&tx, actor, "commands", Some(row_id), action, &reason)?;
 
     tx.commit()?;
-    sync_md::sync_if_enabled(start)?;
     Ok((row_id, created))
 }
 

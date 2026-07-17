@@ -4,7 +4,6 @@ use crate::commands::import::{self, ImportSummary};
 use crate::commands::integrations;
 use crate::db;
 use crate::models::InitResult;
-use crate::sync_md;
 use crate::{MemhubError, Result};
 
 pub fn run(repo_root: &Path) -> Result<InitResult> {
@@ -16,7 +15,6 @@ pub fn run(repo_root: &Path) -> Result<InitResult> {
         }
     }
     drop(ctx);
-    let _ = sync_md::sync_project(repo_root)?;
     Ok(result)
 }
 

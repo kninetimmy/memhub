@@ -6,7 +6,6 @@ use crate::Result;
 use crate::commands::search;
 use crate::db;
 use crate::models::Decision;
-use crate::sync_md;
 
 pub fn add(start: &Path, title: &str, rationale: &str, source: &str, actor: &str) -> Result<i64> {
     add_with_decided_at(start, title, rationale, None, None, source, actor)
@@ -28,7 +27,6 @@ pub fn add_with_decided_at(
         &tx, title, rationale, decided_at, summary, source, actor, mode,
     )?;
     tx.commit()?;
-    sync_md::sync_if_enabled(start)?;
     Ok(row_id)
 }
 
@@ -137,7 +135,6 @@ pub fn set_summary(start: &Path, id: i64, summary: Option<&str>, actor: &str) ->
     )?;
 
     tx.commit()?;
-    sync_md::sync_if_enabled(start)?;
     Ok(())
 }
 
@@ -373,8 +370,8 @@ pub fn supersede_in_tx(
     })
 }
 
-/// CLI wrapper around [`supersede_in_tx`]: open the project, run the
-/// supersession in one transaction, then re-render markdown if enabled.
+/// CLI wrapper around [`supersede_in_tx`]: open the project and run the
+/// supersession in one transaction.
 pub fn supersede(
     start: &Path,
     old_id: i64,
@@ -385,7 +382,6 @@ pub fn supersede(
     let tx = ctx.conn.transaction()?;
     let outcome = supersede_in_tx(&tx, old_id, new_id, actor)?;
     tx.commit()?;
-    sync_md::sync_if_enabled(start)?;
     Ok(outcome)
 }
 

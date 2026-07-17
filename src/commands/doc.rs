@@ -25,7 +25,6 @@ use crate::Result;
 use crate::db;
 use crate::models::{DocChunk, Document};
 use crate::retrieval::util::sha256_hex;
-use crate::sync_md;
 
 /// Largest chunk body (in chars) before a section is soft-split on
 /// paragraph boundaries. Generous enough that well-structured docs chunk
@@ -204,7 +203,6 @@ pub fn add(start: &Path, file: &Path, title: Option<&str>, actor: &str) -> Resul
     tx.commit()?;
 
     let enabled_default_recall = r.was_first_doc && maybe_enable_default_doc_recall(&mut ctx)?;
-    sync_md::sync_if_enabled(start)?;
 
     Ok(DocAddOutcome {
         doc_id: r.doc_id,
@@ -433,7 +431,6 @@ pub fn remove(start: &Path, ident: &str, actor: &str) -> Result<bool> {
         return Ok(false);
     }
     tx.commit()?;
-    sync_md::sync_if_enabled(start)?;
     Ok(true)
 }
 

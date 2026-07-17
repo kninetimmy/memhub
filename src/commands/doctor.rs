@@ -372,6 +372,13 @@ fn check_writes_log_recency(conn: &Connection) -> Check {
 /// Keys `ProjectConfig` actually understands, as dotted leaf paths.
 /// Kept in sync by hand with `src/config/mod.rs` — a new field there
 /// needs a new entry here or it reads as "unknown".
+///
+/// `auto_sync_md` stays listed even though `ProjectConfig` no longer has
+/// that field (the `sync_md` channel it gated was retired — audit C5,
+/// task 119): a local `config.toml` written before the retirement can
+/// still carry the stale key, and it is inert (ignored on load), not a
+/// misconfiguration worth a fresh "unknown key" warning on every
+/// pre-existing install.
 const KNOWN_LEAVES: &[&str] = &[
     "project_name",
     "auto_sync_md",

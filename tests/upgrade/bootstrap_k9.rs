@@ -33,13 +33,15 @@ fn write_agent_docs(repo: &Path, decisions: &str, backlog: &str) {
     }
 }
 
-// `count()` calls `db::open_project` directly, and every test in this file
-// ALSO calls `init::run`, which reaches `db::home_dir()` transitively via
-// its trailing `sync_md::sync_project` -> `db::open_project` call — neither
-// is safe to call without `support::env_read_lock()` in this shared harness
-// binary (Wave 5 U4, issue #90; see `upgrade/support.rs`'s reader-trigger
-// closure doc for the full picture — this comment previously claimed
-// `init::run`-only tests didn't need it, which was wrong).
+// `count()` calls `db::open_project` directly, which is not safe to call
+// without `support::env_read_lock()` in this shared harness binary (Wave 5
+// U4, issue #90; see `upgrade/support.rs`'s reader-trigger closure doc for
+// the full picture). Every test in this file also calls `init::run`, which
+// used to reach `db::home_dir()` transitively via a trailing
+// `sync_md::sync_project` call; that call was removed with the `sync_md`
+// channel's retirement (audit C5 / task 119), so `init::run` alone no
+// longer needs the guard — but `count()`'s direct `open_project` call still
+// does, so every test here keeps taking the lock regardless.
 fn count(repo: &Path, sql: &str) -> i64 {
     let ctx = db::open_project(repo).expect("open project");
     ctx.conn
@@ -181,9 +183,10 @@ fn bootstrap_k9_refuses_on_non_empty_db() {
 
 #[test]
 fn bootstrap_k9_refuses_when_k9_disabled() {
-    // `init::run` itself reaches `db::home_dir()` via its trailing
-    // `sync_md::sync_project` -> `db::open_project` call — see
-    // `upgrade/support.rs`'s reader-trigger closure.
+    // Conservative lock: `init::run` no longer reaches `db::home_dir()`
+    // itself post-`sync_md` retirement (see the module comment above), but
+    // this guard is cheap and harmless to keep — see `upgrade/support.rs`'s
+    // reader-trigger closure doc.
     let _env_guard = crate::support::env_read_lock();
 
     let temp = tempdir().expect("tempdir");
@@ -251,9 +254,10 @@ Body without a date.
 
 #[test]
 fn bootstrap_k9_refuses_when_no_source_files() {
-    // `init::run` itself reaches `db::home_dir()` via its trailing
-    // `sync_md::sync_project` -> `db::open_project` call — see
-    // `upgrade/support.rs`'s reader-trigger closure.
+    // Conservative lock: `init::run` no longer reaches `db::home_dir()`
+    // itself post-`sync_md` retirement (see the module comment above), but
+    // this guard is cheap and harmless to keep — see `upgrade/support.rs`'s
+    // reader-trigger closure doc.
     let _env_guard = crate::support::env_read_lock();
 
     let temp = tempdir().expect("tempdir");

@@ -5,7 +5,6 @@ use rusqlite::{OptionalExtension, Transaction, params};
 use crate::Result;
 use crate::db;
 use crate::models::{FACT_STALE_AFTER_DAYS, Fact};
-use crate::sync_md;
 
 pub fn add(start: &Path, key: &str, value: &str, source: &str, actor: &str) -> Result<(i64, bool)> {
     add_with_kind(start, key, value, None, source, actor)
@@ -32,7 +31,6 @@ pub fn add_with_kind(
     let tx = ctx.conn.transaction()?;
     let outcome = add_with_kind_in_tx(&tx, key, value, kind, source, actor, mode)?;
     tx.commit()?;
-    sync_md::sync_if_enabled(start)?;
     Ok(outcome)
 }
 
@@ -272,7 +270,6 @@ pub fn verify(start: &Path, ident: &str, actor: &str) -> Result<Option<(i64, Str
     )?;
 
     tx.commit()?;
-    sync_md::sync_if_enabled(start)?;
     Ok(Some((id, key)))
 }
 
@@ -368,8 +365,8 @@ pub fn supersede_in_tx(
     })
 }
 
-/// CLI wrapper around [`supersede_in_tx`]: open the project, run the
-/// supersession in one transaction, then re-render markdown if enabled.
+/// CLI wrapper around [`supersede_in_tx`]: open the project and run the
+/// supersession in one transaction.
 pub fn supersede(
     start: &Path,
     old_ident: &str,
@@ -380,7 +377,6 @@ pub fn supersede(
     let tx = ctx.conn.transaction()?;
     let outcome = supersede_in_tx(&tx, old_ident, new_ident, actor)?;
     tx.commit()?;
-    sync_md::sync_if_enabled(start)?;
     Ok(outcome)
 }
 

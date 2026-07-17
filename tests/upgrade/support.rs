@@ -55,15 +55,6 @@
 //! - `db::home_dir`, `db::global_db_path`, `db::global_store_exists`
 //! - `db::discover_paths`, `db::open_project`, `db::open_global`
 //! - `db::registry::{record_open_best_effort, register, list_known}`
-//! - `commands::init::run` — **not obviously part of this closure**: it
-//!   calls `sync_md::sync_project` as its last step, which calls
-//!   `db::open_project` as ITS first line. (`db::init_project` alone, the
-//!   part of `init::run` that actually creates `.memhub/`, is clean in
-//!   isolation — the exposure is entirely from the trailing sync call, but
-//!   `init::run` cannot be called without it.) This was the second missed
-//!   spot in this harness's env-race fix: almost every test in this binary
-//!   calls `init::run` to set up its fixture, so this one entry covers most
-//!   of the closure's practical reach.
 //! - `commands::audit_md::run`, `commands::upgrade::check_audit_md`
 //! - `commands::global::{begin_write, enable, status}`
 //! - `commands::status::run`
@@ -78,7 +69,14 @@
 //! list, not a default: `db::ProjectPaths::for_repo_root` (pure path join),
 //! `ProjectConfig::load`/`::save` (plain `fs`+`toml`, no path resolution),
 //! `db::init_project` **called on its own** (it never is, in this harness),
-//! any `memhub::*` function whose signature takes no repo `Path` at all
+//! `commands::init::run` (as of the `sync_md` channel's retirement — audit
+//! C5 / task 119 — its only step that reaches `db::home_dir()` was the
+//! trailing `sync_md::sync_project` call, now gone; `db::init_project`
+//! plus the K9-detection step it also runs are both clean in isolation).
+//! Tests that still wrap an `init::run`-only setup in `env_read_lock()` are
+//! being conservative, not wrong — the guard is harmless, just no longer
+//! load-bearing for that call alone. Also outside the closure: any
+//! `memhub::*` function whose signature takes no repo `Path` at all
 //! (e.g. `agents_md::generate_agents_md`, `managed_block::parse_managed_block`
 //! — pure string transforms), raw `std::fs`/`tempfile` calls on a path the
 //! test already has in hand, and spawning the compiled binary as a child

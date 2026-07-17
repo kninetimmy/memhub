@@ -50,7 +50,6 @@
 #
 # Fields that are per-machine preferences (override locally without
 # committing back to the example):
-#   - auto_sync_md
 #   - log_level
 #   - retrieval.default_max_results
 #   - retrieval.accepted_only_by_default
@@ -95,7 +94,6 @@
 #                                       as the baseline default here)
 
 project_name = "memhub"
-auto_sync_md = false
 log_level = "info"
 
 [deny_list]
