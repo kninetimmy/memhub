@@ -1,0 +1,77 @@
+name: CI
+
+# Build/test gate only. fmt and clippy are knowingly red repo-wide (task 116
+# tracks the one-shot rustfmt adoption + lint cleanup) and are intentionally
+# not run here.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-test:
+    name: build+test (${{ matrix.os }}${{ matrix.features && format(', --features {0}', matrix.features) || '' }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            features: ""
+          - os: macos-latest
+            features: ""
+          # One feature-enabled lane so the hibernated metrics/viz surface
+          # (axum + tower-http, gated behind `viz` which implies `metrics`)
+          # still builds and tests instead of quietly rotting.
+          - os: macos-latest
+            features: viz
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Standard crates.io/registry cache, keyed on the lockfile only — this
+      # is independent of the pinned model-asset hashes below.
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-registry-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-registry-${{ runner.os }}-
+
+      # build.rs downloads and SHA-256-verifies the bundled BGE-small +
+      # ms-marco-MiniLM model assets into OUT_DIR (under target/) on a cold
+      # build, then reuses them whenever the staged file's hash still
+      # matches the pinned constant. Caching `target/` and keying on a hash
+      # of build.rs itself means the cache is invalidated exactly when
+      # build.rs's pinned SHA-256 values (or anything else about how the
+      # assets are fetched/staged) change, and otherwise hits — reusing both
+      # the ~150 MB of downloaded model bytes and prior compiled build
+      # output. Keyed per OS and per feature set so the `viz` lane (extra
+      # axum/tower-http deps) doesn't collide with the default-feature lane.
+      - name: Cache build output and pinned model assets
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: cargo-target-${{ runner.os }}-${{ matrix.features }}-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('build.rs') }}
+          restore-keys: |
+            cargo-target-${{ runner.os }}-${{ matrix.features }}-${{ hashFiles('Cargo.lock') }}-
+            cargo-target-${{ runner.os }}-${{ matrix.features }}-
+
+      - name: cargo build --locked
+        run: cargo build --locked ${{ matrix.features && format('--features {0}', matrix.features) || '' }}
+
+      - name: cargo test --locked
+        run: cargo test --locked ${{ matrix.features && format('--features {0}', matrix.features) || '' }}
