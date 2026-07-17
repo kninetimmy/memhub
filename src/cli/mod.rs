@@ -19,9 +19,10 @@ use output::{
     locate_response_to_json, narrative_entry_to_json,
     pending_write_record_to_json, print_audit_md_report_human, print_code_status,
     print_doctor_report_human, print_eval_summary, print_index_status, print_init_result,
-    print_locate, print_locate_eval_summary, print_recall_human,
-    print_review_stale_report_human, print_stats_human, print_stats_json,
-    print_status_checks_human, print_wrapup_policy_human, recall_response_to_json,
+    print_locate, print_locate_eval_summary, print_not_carried_checklist, print_recall_human,
+    print_retained_docs_hint, print_review_stale_report_human, print_stats_human,
+    print_stats_json, print_status_checks_human, print_wrapup_policy_human,
+    recall_response_to_json,
     review_stale_report_to_json, status_checks_to_json, status_summary_to_json,
     wrapup_policy_report_to_json,
 };
@@ -230,6 +231,8 @@ pub fn run(cli: Cli) -> Result<()> {
                     println!("  commands: {}", import_summary.commands);
                     println!("  pending writes: {}", import_summary.pending_writes);
                     println!("  writes log entries: {}", import_summary.writes_log);
+                    print_retained_docs_hint(import_summary.retained_doc_chunks);
+                    print_not_carried_checklist();
                 }
             }
         },
@@ -1067,19 +1070,14 @@ pub fn run(cli: Cli) -> Result<()> {
             println!("  session notes: {}", summary.session_notes);
             println!("  project state entries: {}", summary.project_state);
             println!("  project arch entries: {}", summary.project_arch);
-            if summary.retained_doc_chunks > 0 {
-                println!(
-                    "  retained doc chunks: {} (pre-existing ingested docs; \
-                     import does not carry or wipe docs — re-run `memhub doc add` to refresh)",
-                    summary.retained_doc_chunks
-                );
-            }
+            print_retained_docs_hint(summary.retained_doc_chunks);
             println!();
             println!("Next steps:");
             println!(
                 "  Embeddings for imported rows are not yet built. Run `memhub index rebuild`"
             );
             println!("  to enable vector recall on this machine.");
+            print_not_carried_checklist();
         }
         TopLevelCommand::Command { command } => match command {
             CommandCommand::List { json: as_json } => {
