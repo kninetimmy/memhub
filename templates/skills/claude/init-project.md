@@ -197,10 +197,9 @@ check whether one exists at repo root:
   Approval gate before writing. If the user is on Codex, offer
   `AGENTS.md` with identical body.
 
-- **One exists already.** Leave it alone. `memhub sync-md` does not
-  edit it — it only writes the rendered twins at
-  `.memhub/rendered/CLAUDE.md` and `.memhub/rendered/AGENTS.md`, the
-  same local generated output as `PROJECT.md`.
+- **One exists already.** Leave it alone. memhub never writes to it —
+  the only local generated output lives at `.memhub/rendered/PROJECT.md`
+  and `.memhub/rendered/PROJECT_LEDGER.md`, written by `memhub render`.
 
 ## Summary
 

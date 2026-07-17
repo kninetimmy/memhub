@@ -1477,7 +1477,7 @@ prune_superseded_incremental = true
         let memhub_dir = root.join(".memhub");
         fs::create_dir_all(&memhub_dir).unwrap();
         // Valid TOML, but not a valid ProjectConfig shape (missing the
-        // required project_name/auto_sync_md/log_level fields).
+        // required project_name/log_level fields).
         fs::write(memhub_dir.join("config.toml"), "not_a_real_config = true\n").unwrap();
 
         let out = run_hermetic(root, false).unwrap();

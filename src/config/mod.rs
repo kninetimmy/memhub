@@ -731,7 +731,6 @@ impl Default for WrapUpConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectConfig {
     pub project_name: String,
-    pub auto_sync_md: bool,
     pub log_level: String,
     #[serde(default)]
     pub deny_list: DenyList,
@@ -763,7 +762,6 @@ impl ProjectConfig {
     pub fn default_for_repo_name(repo_name: &str) -> Self {
         Self {
             project_name: repo_name.to_string(),
-            auto_sync_md: false,
             log_level: "info".to_string(),
             deny_list: DenyList::default(),
             integrations: IntegrationsConfig::default(),

@@ -6,7 +6,6 @@ use rusqlite::{Transaction, params};
 use crate::commands::search;
 use crate::db;
 use crate::export::{EXPORT_VERSION, Export, v1};
-use crate::sync_md;
 use crate::{MemhubError, Result};
 
 pub struct ImportSummary {
@@ -96,8 +95,6 @@ pub fn run(start: &Path, source: &Path, force: bool) -> Result<ImportSummary> {
     db::log_write(&tx, "cli:user", "import", None, "import", &reason)?;
 
     tx.commit()?;
-
-    sync_md::sync_project(&ctx.paths.repo_root)?;
 
     Ok(ImportSummary {
         source: source.to_path_buf(),

@@ -17,7 +17,6 @@ fn init_seeds_local_config_from_tracked_example_when_present() {
     fs::create_dir_all(&memhub_dir).expect("create .memhub");
 
     let example = r#"project_name = "from-example"
-auto_sync_md = true
 log_level = "debug"
 
 [deny_list]
@@ -51,7 +50,6 @@ min_vector_score = 0.6
     let config: ProjectConfig = toml::from_str(&raw).expect("parse local config");
 
     assert_eq!(config.project_name, "from-example");
-    assert!(config.auto_sync_md);
     assert_eq!(config.log_level, "debug");
     assert_eq!(config.retrieval.default_max_results, 9);
     assert_eq!(config.retrieval.scoring.fts_weight, 0.3);
@@ -81,7 +79,6 @@ fn init_falls_back_to_code_defaults_when_no_example_present() {
         .and_then(|name| name.to_str())
         .expect("tempdir basename");
     assert_eq!(config.project_name, repo_name);
-    assert!(!config.auto_sync_md);
     assert_eq!(config.log_level, "info");
 }
 

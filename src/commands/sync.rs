@@ -25,7 +25,6 @@ use sha2::{Digest, Sha256};
 
 use crate::config::SyncConfig;
 use crate::db;
-use crate::sync_md;
 use crate::{MemhubError, Result};
 
 /// File names inside a `<project-id>` Drive folder.
@@ -1360,9 +1359,6 @@ pub fn adopt(start: &Path, remote: &Path, force: bool) -> Result<AdoptSummary> {
             last_action: "pull".into(),
         },
     )?;
-
-    // Refresh the local managed markdown view from the adopted DB.
-    sync_md::sync_project(&repo_root)?;
 
     Ok(AdoptSummary {
         project_id,

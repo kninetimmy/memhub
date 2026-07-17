@@ -153,12 +153,6 @@ pub struct SearchResponse {
 }
 
 #[derive(Debug)]
-pub struct MarkdownSyncResult {
-    pub updated_files: Vec<PathBuf>,
-    pub backup_files: Vec<PathBuf>,
-}
-
-#[derive(Debug)]
 pub struct RenderResult {
     pub output_dir: PathBuf,
     pub project_md_path: PathBuf,

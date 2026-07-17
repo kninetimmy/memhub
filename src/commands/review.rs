@@ -9,7 +9,6 @@ use crate::db;
 use crate::models::{PendingWriteRecord, ReviewExpireSummary};
 use crate::retrieval::rerank;
 use crate::retrieval::util::sha256_hex;
-use crate::sync_md;
 use crate::{MemhubError, Result};
 
 pub const DEFAULT_LIST_LIMIT: usize = 25;
@@ -555,7 +554,6 @@ pub fn accept(
     )?;
 
     tx.commit()?;
-    sync_md::sync_if_enabled(start)?;
 
     Ok(AcceptOutcome {
         pending_id: id,

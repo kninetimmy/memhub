@@ -36,22 +36,26 @@ fn run_cli_expecting_success(repo: &Path, args: &[&str]) -> Value {
 
 // `last_writes_log_row` (below) and `memhub::commands::pending_write::
 // propose_fact` (called directly, in-process, by several tests) both reach
-// `db::open_project` directly. `memhub::commands::init::run` — called by
-// every test in this file except `check_k9_exits_nonzero_when_not_initialized`
-// — ALSO reaches it transitively, via its trailing `sync_md::sync_project`
-// call. All three resolve `db::home_dir()` unconditionally, in-process
-// (Wave 5 U4, issue #90; see `upgrade/support.rs`'s reader-trigger closure
-// doc). Every test that calls `init::run`, `last_writes_log_row`, or
-// `propose_fact` takes `support::env_read_lock()` for the whole test,
-// guarding against a concurrent writer test's `HOME`/`USERPROFILE` override
-// elsewhere in this shared harness binary. `run_cli`/`run_cli_expecting_success`
-// themselves don't need it — a spawned child process gets its own
-// independent snapshot of the environment at spawn time, so nothing it
-// does in-process can race the parent test's threads — but that only makes
-// a WHOLE test safe if it also never calls `init::run` or one of the two
-// above in-process, which is why `check_k9_exits_nonzero_when_not_initialized`
-// (the one test here with no setup at all — it deliberately runs against a
-// directory with no project) is the sole exception in this file.
+// `db::open_project` directly, which resolves `db::home_dir()`
+// unconditionally, in-process (Wave 5 U4, issue #90; see
+// `upgrade/support.rs`'s reader-trigger closure doc). `memhub::commands::
+// init::run` used to ALSO reach it transitively via a trailing
+// `sync_md::sync_project` call; that call was removed with the `sync_md`
+// channel's retirement (audit C5 / task 119), so `init::run` alone no
+// longer needs the guard. Every test that calls `init::run`,
+// `last_writes_log_row`, or `propose_fact` still takes
+// `support::env_read_lock()` for the whole test regardless — cheap and
+// harmless even where `init::run` is now the only reason a given test
+// looks like it needs it — guarding against a concurrent writer test's
+// `HOME`/`USERPROFILE` override elsewhere in this shared harness binary.
+// `run_cli`/`run_cli_expecting_success` themselves don't need it — a
+// spawned child process gets its own independent snapshot of the
+// environment at spawn time, so nothing it does in-process can race the
+// parent test's threads — but that only makes a WHOLE test safe if it also
+// never calls `init::run` or one of the two above in-process, which is why
+// `check_k9_exits_nonzero_when_not_initialized` (the one test here with no
+// setup at all — it deliberately runs against a directory with no project)
+// is the sole exception in this file.
 fn last_writes_log_row(repo: &Path) -> (String, String, String) {
     let ctx = db::open_project(repo).expect("open project");
     ctx.conn
