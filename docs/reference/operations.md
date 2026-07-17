@@ -67,6 +67,40 @@ for every machine. Fields that should not drift (deny_list, retrieval
 weights, render output dir, integrations) are documented at the top
 of the example as commit-back-here fields.
 
+## Maintenance-on-open contract
+
+`db::open_project` performs full maintenance as a side effect of every
+call, not only when a command is about to write (decision 161; audit
+C6, task 120). On every open it: applies any pending schema migrations
+(see above), upserts the project's `projects` row, records the open in
+the machine-wide upgrade registry (best-effort, debounced; see
+"Machine-wide upgrade" below), runs the opportunistic metrics
+scrape/maintenance pass when the `metrics` feature is enabled, and
+auto-expires aged `pending_writes` rows via the same logic `memhub
+review expire` runs manually (Wave 3 Q6, PRD §11.3; see
+`commands::review::auto_expire_best_effort`).
+
+This is intentional, not an oversight: every command goes through the
+same `open_project` path, including read-only commands — `recall`,
+`status`, `doctor`, `eval` — so they perform the same maintenance a
+write command would. The migration apply and the `projects` upsert are
+load-bearing and fail-closed by design: an error from either one
+propagates and fails the calling command, read or not — that is the
+project's "fail loudly" guardrail, not an oversight to fix. Only the
+upgrade-registry recording, the metrics scrape/maintenance, and the
+pending-write auto-expiry are best-effort, either idempotent or
+debounced, so none of those three can turn a read into a failure; a
+`memhub status` or `memhub recall` call that happens to run right
+after a schema bump, or with a 31-day-old pending write sitting
+around, quietly brings the DB up to date as a byproduct once the
+migration itself has succeeded. There is deliberately no
+`open_project_readonly` / `open_project_maintained` split — one open
+path keeps every command's behavior consistent and is simpler to
+reason about than a two-path one, at the cost of a read command
+occasionally doing the small amount of writing (a migration, a
+registry upsert, an expiry pass) that a purist "reads never write"
+rule would forbid.
+
 ## Cross-machine Drive sync
 
 Milestone 10 (design anchor:

@@ -120,6 +120,29 @@ fn init_project_inner(
     ))
 }
 
+/// Open an existing project, performing full maintenance on every call —
+/// not only when a command is about to write.
+///
+/// This is intentional design (decision 161; audit C6, task 120), not an
+/// oversight: on every invocation `open_project` applies any pending
+/// schema migrations, upserts the `projects` row, records the open in
+/// the machine-wide upgrade registry (best-effort), runs the
+/// opportunistic metrics scrape/maintenance pass when the `metrics`
+/// feature is enabled, and auto-expires aged `pending_writes` rows
+/// (reusing the same logic `memhub review expire` runs manually). Every
+/// command goes through this single path, including read-only ones —
+/// `recall`, `status`, `doctor`, `eval` — so they perform the same
+/// maintenance a write command would. The migration apply and the
+/// `projects` upsert are load-bearing and fail-closed: either one
+/// returning an error propagates via `?` and fails the calling command,
+/// by design — a read command is not exempt. Only the registry
+/// recording, the metrics scrape/maintenance, and the pending-write
+/// auto-expiry are best-effort and idempotent/debounced, so none of
+/// those three can turn a read into a failure. There is deliberately no
+/// `open_project_readonly` / `open_project_maintained` split: one
+/// maintained-open contract is simpler to reason about than a two-path
+/// one. See "Maintenance-on-open contract" in
+/// `docs/reference/operations.md` for the full rationale.
 pub fn open_project(start: &Path) -> Result<ProjectContext> {
     let paths = discover_paths(start)?;
 

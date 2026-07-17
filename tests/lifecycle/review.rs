@@ -387,6 +387,42 @@ fn open_project_auto_expires_aged_pending_writes() {
 }
 
 #[test]
+fn status_command_auto_expires_aged_pending_writes() {
+    // Contract test (audit C6, task 120): maintenance-on-open is
+    // intentional design (decision 161) — `open_project` performs its
+    // full maintenance pass (migrations, registry, auto-expiry, ...) on
+    // every open, including read commands. This drives the expiry
+    // through the `status` command entry point rather than a direct
+    // `memhub::db::open_project` call, to prove the read path itself
+    // (not just the underlying open function in isolation) performs the
+    // maintenance — see `open_project_auto_expires_aged_pending_writes`
+    // above for the direct-`open_project` version of this same pass.
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    let old_id = stage_fact(temp.path(), "old-fact", "value", "Old proposal.");
+
+    let ctx = memhub::db::open_project(temp.path()).expect("open to backdate");
+    ctx.conn
+        .execute(
+            "UPDATE pending_writes
+             SET created_at = datetime('now', '-45 days')
+             WHERE id = ?1",
+            params![old_id],
+        )
+        .expect("backdate row");
+    drop(ctx);
+
+    // No `review expire` and no direct `db::open_project` call here — a
+    // plain read command is what triggers the expiry.
+    status::run(temp.path()).expect("status");
+
+    let old = review::show(temp.path(), old_id).expect("show old");
+    assert_eq!(old.status, "expired");
+    assert!(old.reviewed_at.is_some());
+}
+
+#[test]
 fn review_list_rejects_unknown_status_filter() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
