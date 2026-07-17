@@ -112,16 +112,23 @@ Please install memhub for me, then turn on hybrid recall.
 
 6. cd back to this repo and run `memhub init`, then `memhub status`.
    Tell me what status reports.
-7. Ask me: hybrid recall (recommended — semantic + keyword) or FTS-only
+7. Run `memhub code index` to build the local code index, then tell me
+   `memhub locate "<query>"` and the `/locate` skill can now answer
+   "where is X" questions with ranked file:line breadcrumbs. Report how
+   many files were indexed.
+8. Ask me: hybrid recall (recommended — semantic + keyword) or FTS-only
    (lighter, keyword search only)?
      - If I say hybrid: set `mode = "hybrid"` under the existing
        `[retrieval]` table in .memhub/config.toml (memhub init already
        wrote that table), then run `memhub index rebuild --actor
-       claude-code:reindex`. Report how many rows were embedded.
+       claude-code:reindex`. Report how many rows were embedded. Note
+       that hybrid mode already runs a bundled cross-encoder re-ranker
+       over the blended FTS+vector results by default — nothing extra
+       to turn on.
      - If I say FTS: nothing to do; the default is already FTS.
-8. Run `memhub recall "<some keyword from my project>" --max-results 3`
+9. Run `memhub recall "<some keyword from my project>" --max-results 3`
    so I can see the recall surface working end-to-end.
-9. Tell me about the optional machine-global store: a second SQLite at
+10. Tell me about the optional machine-global store: a second SQLite at
    ~/.memhub/global.sqlite, shared by every repo on this machine, for
    machine/toolchain facts and standing engineering policy — it's the
    global-vs-repo CLAUDE.md idea, made retrievable. Off by default and
@@ -132,14 +139,14 @@ Please install memhub for me, then turn on hybrid recall.
        default.
      - If I say no: just note `/global` and `memhub global enable` are
        available anytime.
-10. Tell me memhub can also ingest long reference docs (design specs,
+11. Tell me memhub can also ingest long reference docs (design specs,
    API contracts) as RAG-searchable material. After the first doc add,
    relevant doc chunks automatically surface in plain recall — gated by
    a relevance threshold so off-topic docs stay silent. Ask whether I
    want to ingest one now — if I give you a path, run
    `memhub doc add "<path>" --json` and report the chunk count;
    if not, just note `/doc` is available anytime.
-11. Tell me memhub can sync this repo's memory between my own machines
+12. Tell me memhub can sync this repo's memory between my own machines
     through a folder that already syncs (Google Drive for Desktop, or an
     rclone mount on Linux) — memhub stays offline and only reads/writes a
     local path. It's off by default and opt-in per repo. Ask whether I
@@ -155,8 +162,8 @@ Please install memhub for me, then turn on hybrid recall.
 
 Don't touch any files in this repo other than what `memhub init` writes
 (.memhub/ and the generated-output .gitignore entries), the
-.memhub/config.toml edits in steps 7, 9, and 11, and — only if I opt in
-at step 9 — the machine-global store at ~/.memhub/global.sqlite (outside
+.memhub/config.toml edits in steps 8, 10, and 12, and — only if I opt in
+at step 10 — the machine-global store at ~/.memhub/global.sqlite (outside
 this repo, in my home directory; that is expected).
 ```
 
@@ -200,34 +207,41 @@ Please install memhub for me, then turn on hybrid recall.
 
 6. cd back to this repo and run `memhub init`, then `memhub status`.
    Tell me what status reports.
-7. Ask me: hybrid recall (recommended — semantic + keyword) or FTS-only
+7. Run `memhub code index` to build the local code index, then tell me
+   `memhub locate "<query>"` and the `/locate` skill can now answer
+   "where is X" questions with ranked file:line breadcrumbs. Report how
+   many files were indexed.
+8. Ask me: hybrid recall (recommended — semantic + keyword) or FTS-only
    (lighter, keyword search only)?
      - If I say hybrid: set `mode = "hybrid"` under the existing
        `[retrieval]` table in .memhub/config.toml (memhub init already
        wrote that table), then run `memhub index rebuild --actor
-       codex:reindex`. Report how many rows were embedded.
+       codex:reindex`. Report how many rows were embedded. Note that
+       hybrid mode already runs a bundled cross-encoder re-ranker over
+       the blended FTS+vector results by default — nothing extra to
+       turn on.
      - If I say FTS: nothing to do; the default is already FTS.
-8. Run `memhub recall "<some keyword from my project>" --max-results 3`
+9. Run `memhub recall "<some keyword from my project>" --max-results 3`
    so I can see the recall surface working end-to-end.
-9. Tell me about the optional machine-global store: a second SQLite at
-   ~/.memhub/global.sqlite, shared by every repo on this machine, for
-   machine/toolchain facts and standing engineering policy — it's the
-   global-vs-repo AGENTS.md idea, made retrievable. Off by default and
-   per-repo opt-in. Ask whether to enable it for this repo:
-     - If I say yes: run `memhub global enable` and report the store
-       path. Note that writing to global is always a deliberate human
-       action — never promote to global on your own; repo is the safe
-       default.
-     - If I say no: just note `/global` and `memhub global enable` are
-       available anytime.
-10. Tell me memhub can also ingest long reference docs (design specs,
+10. Tell me about the optional machine-global store: a second SQLite at
+    ~/.memhub/global.sqlite, shared by every repo on this machine, for
+    machine/toolchain facts and standing engineering policy — it's the
+    global-vs-repo AGENTS.md idea, made retrievable. Off by default and
+    per-repo opt-in. Ask whether to enable it for this repo:
+      - If I say yes: run `memhub global enable` and report the store
+        path. Note that writing to global is always a deliberate human
+        action — never promote to global on your own; repo is the safe
+        default.
+      - If I say no: just note `/global` and `memhub global enable` are
+        available anytime.
+11. Tell me memhub can also ingest long reference docs (design specs,
     API contracts) as RAG-searchable material. After the first doc add,
     relevant doc chunks automatically surface in plain recall — gated by
     a relevance threshold so off-topic docs stay silent. Ask whether I
     want to ingest one now — if I give you a path, run
     `memhub doc add "<path>" --json` and report the chunk count;
     if not, just note `/doc` is available anytime.
-11. Tell me memhub can sync this repo's memory between my own machines
+12. Tell me memhub can sync this repo's memory between my own machines
     through a folder that already syncs (Google Drive for Desktop, or an
     rclone mount on Linux) — memhub stays offline and only reads/writes a
     local path. The `memhub.sync_*` MCP tools are the agent-first
@@ -244,8 +258,8 @@ Please install memhub for me, then turn on hybrid recall.
 
 Don't touch any files in this repo other than what `memhub init` writes
 (.memhub/ and the generated-output .gitignore entries), the
-.memhub/config.toml edits in steps 7, 9, and 11, and — only if I opt in
-at step 9 — the machine-global store at ~/.memhub/global.sqlite (outside
+.memhub/config.toml edits in steps 8, 10, and 12, and — only if I opt in
+at step 10 — the machine-global store at ~/.memhub/global.sqlite (outside
 this repo, in my home directory; that is expected).
 ```
 
@@ -293,16 +307,23 @@ Please install memhub for me, then turn on hybrid recall.
 6. Restart OpenCode so it reloads config, skills, and commands.
 7. cd back to this repo and run `memhub init`, then `memhub status`.
    Tell me what status reports.
-8. Ask me: hybrid recall (recommended — semantic + keyword) or FTS-only
+8. Run `memhub code index` to build the local code index, then tell me
+   `memhub locate "<query>"` and the `/locate` skill can now answer
+   "where is X" questions with ranked file:line breadcrumbs. Report how
+   many files were indexed.
+9. Ask me: hybrid recall (recommended — semantic + keyword) or FTS-only
    (lighter, keyword search only)?
      - If I say hybrid: set `mode = "hybrid"` under the existing
        `[retrieval]` table in .memhub/config.toml (memhub init already
        wrote that table), then run `memhub index rebuild --actor
-       opencode:reindex`. Report how many rows were embedded.
+       opencode:reindex`. Report how many rows were embedded. Note that
+       hybrid mode already runs a bundled cross-encoder re-ranker over
+       the blended FTS+vector results by default — nothing extra to
+       turn on.
      - If I say FTS: nothing to do; the default is already FTS.
-9. Run `memhub recall "<some keyword from my project>" --max-results 3`
-   so I can see the recall surface working end-to-end.
-10. Tell me about the optional machine-global store: a second SQLite at
+10. Run `memhub recall "<some keyword from my project>" --max-results 3`
+    so I can see the recall surface working end-to-end.
+11. Tell me about the optional machine-global store: a second SQLite at
     ~/.memhub/global.sqlite, shared by every repo on this machine, for
     machine/toolchain facts and standing engineering policy — it's the
     global-vs-repo AGENTS.md idea, made retrievable. Off by default and
@@ -313,14 +334,14 @@ Please install memhub for me, then turn on hybrid recall.
         default.
       - If I say no: just note `/global` and `memhub global enable` are
         available anytime.
-11. Tell me memhub can also ingest long reference docs (design specs,
+12. Tell me memhub can also ingest long reference docs (design specs,
     API contracts) as RAG-searchable material. After the first doc add,
     relevant doc chunks automatically surface in plain recall — gated by
     a relevance threshold so off-topic docs stay silent. Ask whether I
     want to ingest one now — if I give you a path, run
     `memhub doc add "<path>" --json` and report the chunk count;
     if not, just note `/doc` is available anytime.
-12. Tell me memhub can sync this repo's memory between my own machines
+13. Tell me memhub can sync this repo's memory between my own machines
     through a folder that already syncs (Google Drive for Desktop, or an
     rclone mount on Linux) — memhub stays offline and only reads/writes a
     local path. The `memhub.sync_*` MCP tools are the agent-first
@@ -337,8 +358,8 @@ Please install memhub for me, then turn on hybrid recall.
 
 Don't touch any files in this repo other than what `memhub init` writes
 (.memhub/ and the generated-output .gitignore entries), the
-.memhub/config.toml edits in steps 8, 10, and 12, and — only if I opt in
-at step 10 — the machine-global store at ~/.memhub/global.sqlite (outside
+.memhub/config.toml edits in steps 9, 11, and 13, and — only if I opt in
+at step 11 — the machine-global store at ~/.memhub/global.sqlite (outside
 this repo, in my home directory; that is expected).
 ```
 
@@ -360,14 +381,20 @@ cd /path/to/your/project
 memhub init
 memhub status
 
-# 4. Agent skills / command wrappers (Claude + Codex + OpenCode)
+# 4. Warm up the code locator — builds a local index so `memhub locate`
+#    (and the /locate skill) can answer "where is X" with ranked
+#    file:line breadcrumbs instead of grepping around.
+memhub code index
+memhub code status   # confirm files indexed
+
+# 5. Agent skills / command wrappers (Claude + Codex + OpenCode)
 cp ~/src/memhub/templates/skills/claude/*.md ~/.claude/commands/
 cp -R ~/src/memhub/templates/skills/codex/*  ~/.codex/skills/
 mkdir -p ~/.config/opencode/skills ~/.config/opencode/commands
 cp -R ~/src/memhub/templates/skills/opencode/* ~/.config/opencode/skills/
 cp ~/src/memhub/templates/commands/opencode/*.md ~/.config/opencode/commands/
 
-# 5. MCP for Codex — append to ~/.codex/config.toml (Codex has no repo
+# 6. MCP for Codex — append to ~/.codex/config.toml (Codex has no repo
 #    scope, so this is a per-machine step, and it also needs this repo
 #    trusted or the MCP-first skill instructions won't reliably fire —
 #    accept Codex's trust prompt on first run here, or add
@@ -379,7 +406,9 @@ cp ~/src/memhub/templates/commands/opencode/*.md ~/.config/opencode/commands/
 # MCP for OpenCode — merge into ~/.config/opencode/opencode.json:
 #   { "mcp": { "memhub": { "type": "local", "command": ["memhub", "serve"], "enabled": true } } }
 
-# 6. (Recommended) Turn on hybrid recall
+# 7. (Recommended) Turn on hybrid recall — FTS + semantic search, with a
+#    bundled cross-encoder re-ranker over the blended results on by
+#    default; nothing extra to enable once hybrid mode is set.
 #    In .memhub/config.toml, set mode under the existing [retrieval]
 #    table (memhub init already writes it):
 #       mode = "hybrid"
@@ -387,22 +416,22 @@ cp ~/src/memhub/templates/commands/opencode/*.md ~/.config/opencode/commands/
 memhub index rebuild --actor cli:user
 memhub index status   # confirm Missing: 0
 
-# 7. (Optional) Machine-wide memory: a second store at
+# 8. (Optional) Machine-wide memory: a second store at
 #    ~/.memhub/global.sqlite shared by every repo on this machine.
 #    Off by default; opt this repo in, then write/promote with --global.
 memhub global enable
 memhub global status
 
-# 8. (Optional) Ingest a reference doc — after first add, relevant chunks
+# 9. (Optional) Ingest a reference doc — after first add, relevant chunks
 #    automatically surface in plain recall (relevance-gated; off-topic
 #    docs stay silent). /doc wraps this as a slash command.
 memhub doc add path/to/design-spec.md --json
 
-# 9. (Optional) Cross-machine sync via a synced folder (Google Drive for
-#    Desktop, or an rclone mount on Linux). memhub stays offline and only
-#    reads/writes a local path. Opt in per repo, then set [sync]
-#    drive_subpath in .memhub/config.toml to the absolute synced-folder
-#    path. /catch-up pulls at session start; /wrap-up pushes at the end.
+# 10. (Optional) Cross-machine sync via a synced folder (Google Drive for
+#     Desktop, or an rclone mount on Linux). memhub stays offline and only
+#     reads/writes a local path. Opt in per repo, then set [sync]
+#     drive_subpath in .memhub/config.toml to the absolute synced-folder
+#     path. /catch-up pulls at session start; /wrap-up pushes at the end.
 memhub sync enable
 #    .memhub/config.toml:
 #       [sync]
@@ -411,6 +440,38 @@ memhub sync status   # confirms enablement + the resolved remote dir
 ```
 
 </details>
+
+---
+
+## Project status
+
+A point-in-time snapshot pulled from the memhub task DB on **2026-07-17** — not a live feed. Run `memhub task list` or `memhub recall "sync hardening"` in this repo for the current picture.
+
+### Known issues (hardening in flight)
+
+- **Sync divergence detection has blind spots.** Doc ingests and fact kind/supersede changes don't advance the logical version, so two machines that have actually diverged can still compare as up-to-date (task 113).
+- **Sync adopt needs more hardening.** An unparseable manifest schema version bypasses the pre-swap "newer schema" refusal, there's a TOCTOU window between hashing and copying the snapshot, and adopt doesn't coordinate with a live memhub process on the machine (task 112).
+- **Sync publication isn't fully atomic.** A torn baseline marker can block sync ops outright, a snapshot write that fails mid-sequence can lose the last valid remote copy, and the ungated `sync_commit` can re-baseline over a remote that has already diverged (task 114).
+- **Corrupt or truncated embedding blobs degrade silently.** Recall falls back to FTS-only without raising the `stale_embeddings` warning, so the degradation is invisible (task 117).
+- **`memhub audit md` can panic** on a `CLAUDE.md` whose only `##` heading sits inside the managed block (task 117).
+- **`memhub import` without `--force` can wipe the `writes_log` audit trail** of a fresh-init DB (task 117).
+- **Export isn't written atomically** — a crash mid-write truncates a previous good export instead of leaving it intact (task 117).
+- **Non-blocking transcript-archive residual races**, noted during review but not yet acted on (task 122).
+
+### Roadmap (open tasks)
+
+- CI workflow with Windows and macOS lanes plus model-asset caching (task 115)
+- One-shot mechanical `rustfmt` adoption and CI formatting gates (task 116)
+- Docs/roadmap reconciliation pass (task 118)
+- Retire the `sync_md` channel (task 119)
+- Codify and test the maintenance-on-open contract (task 120)
+- Branch protection on `main` once CI is stable (task 121)
+- Onboarding / install-prompt feature-coverage audit (task 95)
+- README visual assets — diagrams and screenshots (task 96)
+- Storage-category review and user-defined categories (task 97)
+- Optional Haiku recall reranker with local fallback (task 98)
+- Transcript content-level secret redaction (task 103)
+- Metrics follow-on read attribution (task 92)
 
 ---
 
@@ -501,28 +562,6 @@ A few things that keep it honest and cheap:
 - **Freshness is automatic.** Every `locate` first does a lazy staleness check against the working tree — unchanged files are skipped (stat-only), edited ones re-chunk transparently. You don't have to remember to re-index after editing.
 
 Surfaces: `memhub code index|status|rm` and `memhub locate` (CLI) · `memhub.locate` (MCP) · `/locate` (Claude Code / Codex / OpenCode skill).
-
----
-
-## The web dashboard
-
-The dashboard is preserved but **hibernated**. Normal builds do not contain
-`memhub viz` or install `/viz`. To reactivate it deliberately, build with
-`cargo build --features viz`; `viz` implies the dormant `metrics` feature.
-The server remains localhost-only, read-only, and never writes anything.
-
-Six tabs:
-
-- **Overview** — open tasks, recent decisions, pending writes, and current project state at a glance
-- **Embedding Map** — a 2D PCA projection of your semantic memory space; points are facts and decisions, clustered by meaning
-- **Recall Inspector** — type any query and see per-row scores in real time: FTS score, vector score, and final re-ranked position
-- **Activity** — a write-history feed with actor attribution
-- **Audit** — the full `writes_log`, every write ever, with source and actor
-- **Token Metrics** — input/output/cache token totals from your Claude Code sessions, a cumulative per-turn burn-up chart, and a context-offset estimate comparing targeted recall bundles vs. loading the full project ledger
-
-<!-- TODO: add screenshot of Overview tab here -->
-<!-- TODO: add screenshot of Embedding Map tab here -->
-<!-- TODO: add screenshot of Token Metrics tab here -->
 
 ---
 
@@ -885,31 +924,6 @@ The `[projects.*]` table has to be re-added on every machine (and after a repo m
 
 Run `memhub doctor` (or `memhub doctor --json`) any time to confirm registration status per CLI — it reports a `mcp_registration_claude` / `mcp_registration_codex` / `mcp_registration_opencode` check for each.
 
-### Token accounting
-
-The complete subsystem is **hibernated in normal builds**. Its implementation,
-configuration, schema, and existing rows are preserved, but the default binary
-contains no metrics CLI or MCP surface and performs no recall logging,
-transcript scraping, maintenance, rendering, calibration, or dashboard work.
-An existing `[metrics] enabled = true` is deliberately inert.
-
-To reactivate it for investigation, build with `cargo build --features metrics`.
-Add `--features viz` for the dashboard (`viz` implies `metrics`). Only those
-explicit builds expose `memhub metrics`, `metrics calibrate`, `memhub viz`, and
-the `memhub.metrics` MCP tool. The historical behavior retained behind that
-feature is documented below.
-
-Two independent sub-switches under `[metrics]`:
-- `recall_proxy = true` — logs one row to `recall_metrics` per `memhub recall` call: actual bundle size vs a full-ledger counterfactual.
-- `session_accounting = true` — scrapes Claude Code transcript JSONL into `session_metrics` for real input/output/cache token totals.
-
-Three refinements layer on top once accounting is on:
-- **Measured baseline.** Alongside the assumed full-ledger counterfactual, each session records its real session-start prompt size, so the rendered "context offset" can be reported against what you *actually* loaded — not just an estimate.
-- **Cache churn.** Each rendered period block reports the share of cache tokens spent *rebuilding* the prompt prefix versus *reusing* it — the honest signal for "we kept busting the cache" at a large context window.
-- **Tokenizer calibration.** `memhub metrics calibrate` corrects the ~10% gap between the bundled tiktoken estimate and Anthropic's real tokenizer. It sends a fixed built-in corpus (never your project's content) to Anthropic's `count_tokens` endpoint — **the only command in all of memhub that touches the network**, one-time, needs `ANTHROPIC_API_KEY`, and refuses cleanly without it. Offline-first otherwise holds.
-
-The dashboard Token Metrics panel and `memhub metrics status` surface all of this. `memhub render` appends a 7-day digest to `PROJECT.md` when enabled.
-
 ### Backup and restore
 
 ```bash
@@ -968,6 +982,18 @@ memhub CLI / MCP
 
 ---
 
+## Hibernated: token metrics & web dashboard
+
+Two subsystems are fully implemented but compiled out of normal builds — the default binary contains no metrics CLI/MCP surface and no dashboard, and performs no recall logging, transcript scraping, or calibration.
+
+- **Token metrics** — `[metrics]` config, schema, and rows are preserved; `recall_proxy` logs a bundle-size-vs-full-ledger comparison per recall, `session_accounting` scrapes Claude Code transcripts into real input/output/cache token totals. Reactivate with `cargo build --features metrics`.
+- **Web dashboard** — a localhost-only, read-only UI over the same DB (Overview, Embedding Map, Recall Inspector, Activity, Audit, Token Metrics tabs). It never writes anything. Reactivate with `cargo build --features viz` (`viz` implies `metrics`).
+- **The one network call in either build:** `metrics calibrate` sends a fixed built-in corpus (never your project's content) to Anthropic's `count_tokens` endpoint to correct tokenizer drift — opt-in, needs `ANTHROPIC_API_KEY`, refuses cleanly without it. Offline-first otherwise holds even in a `metrics`/`viz` build.
+
+See `memhub metrics enable/status` and `memhub viz` in the command table below.
+
+---
+
 ## Principles
 
 - **Local-first.** No network, no daemon, no account, no runtime model download.
@@ -982,8 +1008,12 @@ memhub CLI / MCP
 ## Further reading
 
 - [Product PRD (verbatim)](docs/reference/memhub-prd.md)
+- [Operations reference](docs/reference/operations.md) — retrieval, token accounting, doc ingestion, the code index, machine-global memory, cross-machine sync, and upgrade/GC, in operational detail
 - [M8 hybrid retrieval addendum](docs/reference/memhub-prd-addendum-m8-retrieval.md)
 - [M9 machine-global memory addendum](docs/reference/memhub-prd-addendum-m9-machine-global-memory.md)
+- [M10 Drive sync addendum](docs/reference/memhub-prd-addendum-m10-drive-sync.md)
+- [M11 code locator addendum](docs/reference/memhub-prd-addendum-m11-code-locator.md)
 - [Source vocabulary addendum](docs/reference/memhub-prd-source-vocabulary-addendum.md)
 - [K9 deprecation addendum](docs/reference/memhub-prd-deprecation-addendum.md)
+- Superseded design docs live in `docs/archive/` (folder added by a sibling issue)
 - Local project state: run `memhub render`, then read `.memhub/rendered/PROJECT.md`
