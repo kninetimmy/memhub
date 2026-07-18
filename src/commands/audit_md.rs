@@ -24,7 +24,7 @@
 use std::fs;
 use std::path::Path;
 
-use crate::agents_md::{CLAUDE_TITLE, generate_agents_md};
+use crate::agents_md::{CLAUDE_TITLE, generate_agents_md, split_trailing_managed_block};
 use crate::commands::sync::expand_home;
 use crate::config::ProjectConfig;
 use crate::db;
@@ -190,8 +190,17 @@ fn check_size(id: &'static str, label: &str, content: &str) -> Option<Finding> {
 /// malformed `CLAUDE.md` must be caught *before* calling it rather than
 /// letting a read-only linter crash the CLI on a programmer-error-style
 /// `assert!`.
+///
+/// Checks the *stripped* text — after a trailing Orch-managed block is
+/// split off via [`split_trailing_managed_block`] — because that's what
+/// `generate_agents_md` actually runs its `## ` search against (its own
+/// step 0 does the same split). Checking the raw file here previously let
+/// a `CLAUDE.md` whose only `## ` heading lived inside that managed block
+/// pass this precondition and then panic inside `generate_agents_md`,
+/// where the block (and its heading) had already been stripped off
+/// (issue #148 / audit C3).
 fn generate_agents_md_preconditions_met(claude_md: &str) -> bool {
-    let claude = claude_md.replace("\r\n", "\n");
+    let (claude, _) = split_trailing_managed_block(claude_md);
     let Some((first_line, rest)) = claude.split_once('\n') else {
         return false;
     };
@@ -389,6 +398,43 @@ mod tests {
     #[test]
     fn preconditions_fail_without_a_section_marker() {
         assert!(!generate_agents_md_preconditions_met("# memhub\n\nno sections here\n"));
+    }
+
+    /// Regression (issue #148 / audit C3): a CLAUDE.md whose only `## `
+    /// heading lives inside the trailing Orch-managed block used to pass
+    /// this precondition check (which scanned the raw file) and then
+    /// panic inside `generate_agents_md`, which strips the managed block
+    /// (and, with it, that heading) before searching for `## `.
+    #[test]
+    fn preconditions_fail_when_only_heading_is_inside_managed_block() {
+        let claude = "# memhub\n\nIntro.\n\n\
+             <!-- orchestrator:managed:start version=1 -->\n\
+             ## Inside the block\nmanaged line\n\
+             <!-- orchestrator:managed:end -->\n";
+        assert!(!generate_agents_md_preconditions_met(claude));
+    }
+
+    /// End-to-end regression for the same bug: `memhub audit md` must
+    /// report `claude_md_malformed`, not panic, on such a file.
+    #[test]
+    fn audit_md_does_not_panic_when_only_heading_is_inside_managed_block() {
+        let temp = tempdir().expect("tempdir");
+        crate::commands::init::run(temp.path()).expect("init");
+        let claude = "# memhub\n\nIntro.\n\n\
+             <!-- orchestrator:managed:start version=1 -->\n\
+             ## Inside the block\nmanaged line\n\
+             <!-- orchestrator:managed:end -->\n";
+        fs::write(temp.path().join(CLAUDE_MD_FILENAME), claude).expect("write claude");
+
+        let report = run(temp.path(), false).expect("audit");
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.id == "claude_md_malformed"),
+            "{:#?}",
+            report.findings
+        );
     }
 
     #[test]
