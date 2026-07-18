@@ -201,10 +201,10 @@ fn owned_stems(root: &Path) -> BTreeSet<String> {
         };
         for entry in rd.flatten() {
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    set.insert(stem.to_string());
-                }
+            if path.extension().and_then(|e| e.to_str()) == Some("rs")
+                && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+            {
+                set.insert(stem.to_string());
             }
         }
     }
@@ -336,11 +336,9 @@ fn finalize_groups(
                 if fp.is_dir() {
                     group_bytes += dir_size(&fp);
                     group_dirs += 1;
-                    if !dry_run {
-                        if let Err(e) = fs::remove_dir_all(&fp) {
-                            out.details
-                                .push(format!("warn: could not remove {}: {e}", fp.display()));
-                        }
+                    if !dry_run && let Err(e) = fs::remove_dir_all(&fp) {
+                        out.details
+                            .push(format!("warn: could not remove {}: {e}", fp.display()));
                     }
                 }
             }
@@ -599,11 +597,9 @@ fn prune_incremental(profile: &str, incremental: &Path, dry_run: bool, out: &mut
         }
         group_bytes += a.size;
         group_dirs += 1;
-        if !dry_run {
-            if let Err(e) = fs::remove_dir_all(&a.path) {
-                out.details
-                    .push(format!("warn: could not remove {}: {e}", a.path.display()));
-            }
+        if !dry_run && let Err(e) = fs::remove_dir_all(&a.path) {
+            out.details
+                .push(format!("warn: could not remove {}: {e}", a.path.display()));
         }
     }
 
@@ -654,13 +650,11 @@ fn sweep_stale_staging(temp_dir: &Path, dry_run: bool, out: &mut GcOutcome) {
         }
         count += 1;
         bytes += md.len();
-        if !dry_run {
-            if let Err(e) = fs::remove_file(entry.path()) {
-                out.details.push(format!(
-                    "warn: could not remove {}: {e}",
-                    entry.path().display()
-                ));
-            }
+        if !dry_run && let Err(e) = fs::remove_file(entry.path()) {
+            out.details.push(format!(
+                "warn: could not remove {}: {e}",
+                entry.path().display()
+            ));
         }
     }
 
@@ -713,7 +707,7 @@ fn backups_retention(root: &Path, dry_run: bool, delete: bool, out: &mut GcOutco
         }
 
         // Newest first; the tail beyond the retention count is stale.
-        files.sort_by(|a, b| b.1.cmp(&a.1));
+        files.sort_by_key(|f| std::cmp::Reverse(f.1));
         let stale = &files[BACKUPS_RETENTION_COUNT..];
         let stale_bytes: u64 = stale.iter().map(|(_, _, len)| len).sum();
 

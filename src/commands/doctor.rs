@@ -125,20 +125,13 @@ pub fn run(start: &Path, strict: bool) -> Result<DoctorReport> {
 /// `cargo test`.
 fn run_with_home(start: &Path, strict: bool, home: Option<PathBuf>) -> Result<DoctorReport> {
     let ctx = db::open_project(start)?;
-    let mut checks = Vec::new();
-
     // Project (absorbs /check-init).
-    checks.push(check_schema(&ctx.conn));
-    checks.push(check_render_freshness(
-        &ctx.conn,
-        &ctx.paths.repo_root,
-        &ctx.config,
-    ));
-    checks.push(check_k9_coexistence(
-        &ctx.paths.repo_root,
-        &ctx.config.integrations,
-    ));
-    checks.push(check_writes_log_recency(&ctx.conn));
+    let mut checks = vec![
+        check_schema(&ctx.conn),
+        check_render_freshness(&ctx.conn, &ctx.paths.repo_root, &ctx.config),
+        check_k9_coexistence(&ctx.paths.repo_root, &ctx.config.integrations),
+        check_writes_log_recency(&ctx.conn),
+    ];
 
     // Config.
     checks.extend(check_config(&ctx.paths.config_path, &ctx.paths.memhub_dir));

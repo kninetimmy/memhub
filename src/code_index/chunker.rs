@@ -245,11 +245,11 @@ fn push_leading_comment_doc(
             }
             break;
         }
-        if let Some(prev_end) = prev_end_row {
-            if child.start_position().row as i64 - prev_end as i64 > 1 {
-                after_run = Some(child);
-                break;
-            }
+        if let Some(prev_end) = prev_end_row
+            && child.start_position().row as i64 - prev_end as i64 > 1
+        {
+            after_run = Some(child);
+            break;
         }
         prev_end_row = Some(child.end_position().row);
         run.push(child);

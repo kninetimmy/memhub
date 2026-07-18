@@ -55,13 +55,13 @@ pub enum MemhubError {
 // wraps into `Sqlite` unchanged.
 impl From<rusqlite::Error> for MemhubError {
     fn from(err: rusqlite::Error) -> Self {
-        if let rusqlite::Error::SqliteFailure(ref ffi_err, _) = err {
-            if matches!(
+        if let rusqlite::Error::SqliteFailure(ref ffi_err, _) = err
+            && matches!(
                 ffi_err.code,
                 rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
-            ) {
-                return MemhubError::DatabaseBusy { source: err };
-            }
+            )
+        {
+            return MemhubError::DatabaseBusy { source: err };
         }
         MemhubError::Sqlite(err)
     }

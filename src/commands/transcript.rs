@@ -31,6 +31,7 @@
 //!   - **excluded from `memhub export` / import** — the `Export` shape is a
 //!     fixed field list with no `session_transcripts`, so an archive can
 //!     never leave the machine via a memhub export.
+//!
 //! These are enforced by construction and asserted in
 //! `tests/lifecycle/transcript_archive.rs`.
 //!
@@ -645,7 +646,7 @@ fn split_path_components(raw: &str) -> Vec<String> {
         .or_else(|| raw.strip_prefix(r"\\?\"))
         .unwrap_or(raw);
     stripped
-        .split(|c| c == '/' || c == '\\')
+        .split(['/', '\\'])
         .filter(|seg| !seg.is_empty() && *seg != ".")
         .map(|seg| seg.to_string())
         .collect()

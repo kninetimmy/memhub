@@ -2000,10 +2000,10 @@ pub fn sync_skills(source_repo: &Path, dry: bool) -> ResyncReport {
     // Carry the existing manifest slice forward for every un-enumerated
     // agent, so its ownership survives the transient failure.
     for key in manifest.keys() {
-        if under_any(key, &carried_prefixes) {
-            if let Some(hash) = manifest.recorded(key) {
-                next.record(key.clone(), hash.to_string());
-            }
+        if under_any(key, &carried_prefixes)
+            && let Some(hash) = manifest.recorded(key)
+        {
+            next.record(key.clone(), hash.to_string());
         }
     }
 
@@ -2031,10 +2031,11 @@ pub fn sync_skills(source_repo: &Path, dry: bool) -> ResyncReport {
     // conservatively re-derives ownership next run. Only write when memhub
     // actually owns something, so a machine with no agent dirs set up does
     // not get `~/.memhub/` created for an empty manifest.
-    if !dry && !next.is_empty() {
-        if let Err(e) = next.save() {
-            log::debug!("install manifest save skipped: {e}");
-        }
+    if !dry
+        && !next.is_empty()
+        && let Err(e) = next.save()
+    {
+        log::debug!("install manifest save skipped: {e}");
     }
 
     ResyncReport {
@@ -2345,10 +2346,10 @@ fn install_one_file(
             if dry {
                 return (FileAction::Wrote, Some(template_hash));
             }
-            if let Some(parent) = to.parent() {
-                if let Err(e) = std::fs::create_dir_all(parent) {
-                    return (FileAction::Failed(format!("mkdir: {e}")), None);
-                }
+            if let Some(parent) = to.parent()
+                && let Err(e) = std::fs::create_dir_all(parent)
+            {
+                return (FileAction::Failed(format!("mkdir: {e}")), None);
             }
             match std::fs::write(to, &template) {
                 Ok(()) => (FileAction::Wrote, Some(template_hash)),
@@ -2520,10 +2521,10 @@ fn parse_install_root_toml(text: &str) -> Option<String> {
 /// as cargo itself) exists directly inside `config_dir`.
 fn read_install_root_from_config_dir(config_dir: &Path) -> Option<String> {
     for name in ["config.toml", "config"] {
-        if let Ok(text) = std::fs::read_to_string(config_dir.join(name)) {
-            if let Some(root) = parse_install_root_toml(&text) {
-                return Some(root);
-            }
+        if let Ok(text) = std::fs::read_to_string(config_dir.join(name))
+            && let Some(root) = parse_install_root_toml(&text)
+        {
+            return Some(root);
         }
     }
     None

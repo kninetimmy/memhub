@@ -1111,8 +1111,8 @@ const RESTORE_BUSY_PAUSE: Duration = Duration::from_millis(100);
 ///   the long-lived MCP server) holds open cannot be renamed or deleted —
 ///   the OS raises a sharing violation, so the old delete-`-wal`/`-shm`
 ///   + `rename` swap would fail outright. The backup API instead writes
-///   *through* SQLite's own file locking, so a concurrent process is
-///   serialized against and always sees a coherent DB.
+///     *through* SQLite's own file locking, so a concurrent process is
+///     serialized against and always sees a coherent DB.
 /// * **POSIX:** renaming over an open DB there does *not* error; it
 ///   silently orphans the other process onto the old (now-unlinked)
 ///   inode, and unlinking `-wal`/`-shm` beside a live connection lets it

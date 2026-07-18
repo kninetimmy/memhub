@@ -14,16 +14,16 @@
 //!   - `minimal`    — `state set` + task closures only.
 //!   - `standard`   — today's eight-item flow, unchanged.
 //!   - `full`       — standard, with the decision `--summary` field
-//!                    (decision 72) promoted to mandatory whenever a
-//!                    decision is drafted, plus pending-write triage
-//!                    and the architecture-drift check promoted to
-//!                    always-run. Facts have no `--summary` field to
-//!                    promote (decision 72 is decisions-only).
+//!     (decision 72) promoted to mandatory whenever a
+//!     decision is drafted, plus pending-write triage
+//!     and the architecture-drift check promoted to
+//!     always-run. Facts have no `--summary` field to
+//!     promote (decision 72 is decisions-only).
 //!   - `transcript` — full + a named transcript-archive step. The
-//!                    archiver itself is issue #96 (W3); this level
-//!                    only needs the step to exist in the policy text,
-//!                    and renders gracefully whether or not the
-//!                    archiver is implemented yet.
+//!     archiver itself is issue #96 (W3); this level
+//!     only needs the step to exist in the policy text,
+//!     and renders gracefully whether or not the
+//!     archiver is implemented yet.
 
 use std::path::Path;
 

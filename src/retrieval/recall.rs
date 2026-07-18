@@ -819,11 +819,14 @@ struct VectorHit {
     cosine: f64,
 }
 
+/// `(matching vector hits, source keys whose stored vector was corrupt)`.
+type VectorLookupResult = (Vec<VectorHit>, HashSet<(SourceType, i64)>);
+
 fn vector_lookup(
     conn: &Connection,
     source_types: &[SourceType],
     query_vec: &[f32],
-) -> Result<(Vec<VectorHit>, HashSet<(SourceType, i64)>)> {
+) -> Result<VectorLookupResult> {
     let mut stmt = conn.prepare(
         "SELECT source_type, source_id, vector \
          FROM embeddings \
