@@ -22,10 +22,6 @@ log_level = "debug"
 [deny_list]
 patterns = ["custom-secret.*"]
 
-[integrations.k9]
-enabled = false
-agent_docs_path = "agent_docs"
-
 [render]
 output_dir = ".memhub/rendered"
 

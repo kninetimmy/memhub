@@ -1,6 +1,6 @@
 ---
 name: check-init
-description: Read-only health check of the memhub project in this repo — schema version, render freshness, K9 coexistence, write-log activity
+description: Read-only health check of the memhub project in this repo — schema version, render freshness, write-log activity
 framework: memhub
 framework_version: 1.0.0
 last_updated: 2026-07-14
@@ -59,8 +59,8 @@ report **Red** with that single finding.
 
 If the installed binary doesn't support `doctor` yet (older build,
 predates issue #21), fall back to `memhub status` and report on
-schema version, K9 flags, and row counts from that instead — the
-pre-doctor behavior this skill used to implement directly.
+schema version and row counts from that instead — the pre-doctor
+behavior this skill used to implement directly.
 
 ## Report
 

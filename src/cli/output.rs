@@ -932,10 +932,6 @@ pub(crate) fn status_summary_to_json(s: &StatusSummary) -> serde_json::Value {
         "writes_logged": s.writes_logged,
         "deny_patterns": s.deny_patterns,
         "stale_queue": s.stale_queue,
-        "k9_detected": s.k9_detected,
-        "k9_enabled": s.k9_enabled,
-        "k9_agent_docs_path": s.k9_agent_docs_path,
-        "k9_drift": s.k9_drift,
     })
 }
 
@@ -950,10 +946,10 @@ pub(crate) fn status_checks_to_json(checks: &[Check]) -> serde_json::Value {
 /// Human-readable subsystem-state lines for `status` (issue #22).
 /// Unlike `print_doctor_report_human`, `Skipped` checks are omitted
 /// entirely rather than shown with a `·` glyph — `status` is the quick
-/// overview, so a not-applicable/disabled subsystem (K9 not detected,
-/// sync/metrics disabled, embeddings n/a in fts mode, ...) says
-/// nothing rather than spraying placeholder lines. Nothing is printed
-/// at all if every check is skipped.
+/// overview, so a not-applicable/disabled subsystem (sync/metrics
+/// disabled, embeddings n/a in fts mode, ...) says nothing rather than
+/// spraying placeholder lines. Nothing is printed at all if every check
+/// is skipped.
 pub(crate) fn print_status_checks_human(checks: &[Check]) {
     let visible: Vec<&Check> = checks
         .iter()

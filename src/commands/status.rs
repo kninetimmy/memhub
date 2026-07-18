@@ -3,7 +3,6 @@ use std::path::Path;
 use crate::Result;
 use crate::commands::doctor;
 use crate::commands::fact;
-use crate::commands::integrations;
 use crate::commands::review;
 use crate::db;
 use crate::models::StatusSummary;
@@ -44,7 +43,6 @@ pub fn run(start: &Path) -> Result<StatusSummary> {
     let stale_queue = review::count_stale_queue(start)?;
 
     let deny_patterns = ctx.config.deny_list.patterns.len();
-    let k9_state = integrations::k9_state(&ctx.paths.repo_root, &ctx.config.integrations);
     let project_name = ctx.config.project_name;
     let repo_root = ctx.paths.repo_root;
     let db_path = ctx.paths.db_path;
@@ -69,10 +67,6 @@ pub fn run(start: &Path) -> Result<StatusSummary> {
         writes_logged,
         deny_patterns,
         stale_queue,
-        k9_detected: k9_state.detected,
-        k9_enabled: k9_state.enabled,
-        k9_agent_docs_path: k9_state.agent_docs_path,
-        k9_drift: k9_state.drift,
     })
 }
 
@@ -85,17 +79,11 @@ pub fn run(start: &Path) -> Result<StatusSummary> {
 ///
 /// Order mirrors `doctor::run`'s own ordering for the same checks, so
 /// a user who runs both commands sees the same relative placement.
-/// K9 is included via `check_k9_coexistence` itself rather than the
-/// raw `k9_detected` flag: that function already reports `Skipped`
-/// when K9 isn't present (or is present-but-disabled), so a caller
-/// that hides `Skipped` checks — as `status`'s own human view does —
-/// naturally shows K9 output only when there's something to say.
 pub fn checks(start: &Path) -> Result<Vec<doctor::Check>> {
     let ctx = db::open_project(start)?;
     Ok(vec![
         doctor::check_schema(&ctx.conn),
         doctor::check_render_freshness(&ctx.conn, &ctx.paths.repo_root, &ctx.config),
-        doctor::check_k9_coexistence(&ctx.paths.repo_root, &ctx.config.integrations),
         doctor::check_retrieval_mode(&ctx.config),
         doctor::check_embeddings_freshness(start, &ctx.config),
         doctor::check_metrics_health(&ctx.conn, &ctx.config),
@@ -121,26 +109,12 @@ mod tests {
             vec![
                 "schema",
                 "render_freshness",
-                "k9_coexistence",
                 "retrieval_mode",
                 "embeddings_freshness",
                 "metrics_health",
                 "sync_freshness",
             ]
         );
-    }
-
-    #[test]
-    fn checks_k9_is_skipped_when_not_detected() {
-        let temp = tempdir().expect("tempdir");
-        init::run(temp.path()).expect("init");
-
-        let result = checks(temp.path()).expect("status checks");
-        let k9 = result
-            .iter()
-            .find(|c| c.id == "k9_coexistence")
-            .expect("k9_coexistence check present");
-        assert_eq!(k9.status, doctor::Status::Skipped);
     }
 
     // Wave 3 L4 (issue #47): `status` gains a one-line stale-queue count,

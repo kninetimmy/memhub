@@ -168,9 +168,6 @@ history is in-window. Run, in order, and keep the JSON for draft assembly:
    row), `git log --since=<that timestamp> --oneline`.
 7. `git status --porcelain` -- uncommitted changes worth surfacing.
 
-If `memhub status --json`'s `k9_detected` is true and the operator hasn't migrated,
-note it informationally -- it never blocks.
-
 "
         .to_string(),
     }

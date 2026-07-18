@@ -298,8 +298,4 @@ pub struct StatusSummary {
     /// on-disk hash has drifted from `documents.content_hash`. Read-only
     /// visibility only; `status` never acts on this count itself.
     pub stale_queue: i64,
-    pub k9_detected: bool,
-    pub k9_enabled: bool,
-    pub k9_agent_docs_path: String,
-    pub k9_drift: Option<String>,
 }

@@ -34,8 +34,7 @@ checked as part of the policy text itself, not here.
    - POSIX shell (bash/zsh): `test -d .memhub && echo present || echo absent`
    - Windows PowerShell: `if (Test-Path .memhub -PathType Container) { "present" } else { "absent" }`
    `absent` → stop. Tell me: "No `.memhub/` in this repo. Run
-   `memhub init` first, or invoke a different wrap-up command if this
-   repo uses K9 markdown directly." Do not proceed.
+   `memhub init` first." Do not proceed.
 2. Check whether `memhub` is on PATH.
    - POSIX shell (bash/zsh): `command -v memhub >/dev/null 2>&1 && echo present || echo absent`
    - Windows PowerShell: `if (Get-Command memhub -ErrorAction SilentlyContinue) { "present" } else { "absent" }`

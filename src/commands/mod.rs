@@ -1,5 +1,4 @@
 pub mod audit_md;
-pub mod bootstrap_k9;
 pub mod command;
 pub mod decision;
 pub mod doc;
@@ -14,7 +13,6 @@ pub mod index;
 pub mod ingest_git;
 pub mod init;
 pub mod install_manifest;
-pub mod integrations;
 #[cfg(feature = "metrics")]
 pub mod metrics;
 pub mod narrative;

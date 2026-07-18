@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::Path;
 use std::process::Command;
 
@@ -52,10 +51,8 @@ fn run_cli_expecting_success(repo: &Path, args: &[&str]) -> Value {
 // spawned child process gets its own independent snapshot of the
 // environment at spawn time, so nothing it does in-process can race the
 // parent test's threads — but that only makes a WHOLE test safe if it also
-// never calls `init::run` or one of the two above in-process, which is why
-// `check_k9_exits_nonzero_when_not_initialized` (the one test here with no
-// setup at all — it deliberately runs against a directory with no project)
-// is the sole exception in this file.
+// never calls `init::run` or one of the two above in-process. Every test in
+// this file does, so every test takes the guard.
 fn last_writes_log_row(repo: &Path) -> (String, String, String) {
     let ctx = db::open_project(repo).expect("open project");
     ctx.conn
@@ -68,12 +65,6 @@ fn last_writes_log_row(repo: &Path) -> (String, String, String) {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .expect("writes_log row exists")
-}
-
-fn write_k9_marker(repo: &Path) {
-    let dir = repo.join("agent_docs");
-    fs::create_dir_all(&dir).expect("create agent_docs");
-    fs::write(dir.join("project_state.md"), "# state").expect("write marker");
 }
 
 #[test]
@@ -92,7 +83,7 @@ fn fact_add_json_emits_contract_shape() {
             "cargo build",
             "--json",
             "--actor",
-            "k9:wrap-up",
+            "agent:wrap-up",
         ],
     );
 
@@ -103,7 +94,7 @@ fn fact_add_json_emits_contract_shape() {
     assert!(payload["id"].as_i64().expect("id is i64") > 0);
 
     let (actor, table, action) = last_writes_log_row(temp.path());
-    assert_eq!(actor, "k9:wrap-up");
+    assert_eq!(actor, "agent:wrap-up");
     assert_eq!(table, "facts");
     assert_eq!(action, "insert");
 }
@@ -124,7 +115,7 @@ fn fact_add_json_marks_upsert_as_not_created() {
             "v1",
             "--json",
             "--actor",
-            "k9:wrap-up",
+            "agent:wrap-up",
         ],
     );
     let second = run_cli_expecting_success(
@@ -136,7 +127,7 @@ fn fact_add_json_marks_upsert_as_not_created() {
             "v2",
             "--json",
             "--actor",
-            "k9:wrap-up",
+            "agent:wrap-up",
         ],
     );
 
@@ -161,7 +152,7 @@ fn decision_add_json_emits_contract_shape() {
             "Local-first builds.",
             "--json",
             "--actor",
-            "k9:wrap-up",
+            "agent:wrap-up",
         ],
     );
 
@@ -169,7 +160,7 @@ fn decision_add_json_emits_contract_shape() {
     assert!(payload["id"].as_i64().expect("id") > 0);
 
     let (actor, table, _) = last_writes_log_row(temp.path());
-    assert_eq!(actor, "k9:wrap-up");
+    assert_eq!(actor, "agent:wrap-up");
     assert_eq!(table, "decisions");
 }
 
@@ -188,7 +179,7 @@ fn task_add_and_done_json_round_trip() {
             "Ship contract",
             "--json",
             "--actor",
-            "k9:wrap-up",
+            "agent:wrap-up",
         ],
     );
     let task_id = added["id"].as_i64().expect("task id");
@@ -202,7 +193,7 @@ fn task_add_and_done_json_round_trip() {
             &task_id.to_string(),
             "--json",
             "--actor",
-            "k9:wrap-up",
+            "agent:wrap-up",
         ],
     );
     assert_eq!(done["id"], task_id);
@@ -246,7 +237,7 @@ fn review_accept_json_emits_contract_shape() {
             &pending_id.to_string(),
             "--json",
             "--actor",
-            "k9:wrap-up",
+            "agent:wrap-up",
         ],
     );
     assert_eq!(payload["pending_id"], pending_id);
@@ -294,68 +285,10 @@ fn review_reject_json_emits_contract_shape() {
             "Untrusted source",
             "--json",
             "--actor",
-            "k9:wrap-up",
+            "agent:wrap-up",
         ],
     );
     assert_eq!(payload["pending_id"], pending_id);
-}
-
-#[test]
-fn check_k9_exits_zero_when_enabled() {
-    let _env_guard = crate::support::env_read_lock();
-
-    let temp = tempdir().expect("tempdir");
-    write_k9_marker(temp.path());
-    init::run(temp.path()).expect("init");
-
-    let output = run_cli(temp.path(), &["integrations", "check-k9"]);
-    assert!(
-        output.status.success(),
-        "check-k9 should exit 0 when enabled; stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        output.stdout.is_empty(),
-        "check-k9 must not write stdout: {}",
-        String::from_utf8_lossy(&output.stdout)
-    );
-}
-
-#[test]
-fn check_k9_exits_nonzero_when_section_missing() {
-    let _env_guard = crate::support::env_read_lock();
-
-    let temp = tempdir().expect("tempdir");
-    init::run(temp.path()).expect("init");
-
-    let output = run_cli(temp.path(), &["integrations", "check-k9"]);
-    assert!(!output.status.success());
-    assert_eq!(output.status.code(), Some(1));
-}
-
-#[test]
-fn check_k9_exits_nonzero_when_disabled() {
-    let _env_guard = crate::support::env_read_lock();
-
-    let temp = tempdir().expect("tempdir");
-    write_k9_marker(temp.path());
-    init::run(temp.path()).expect("init");
-
-    let disable = run_cli(temp.path(), &["integrations", "disable-k9"]);
-    assert!(disable.status.success());
-
-    let output = run_cli(temp.path(), &["integrations", "check-k9"]);
-    assert!(!output.status.success());
-}
-
-#[test]
-fn check_k9_exits_nonzero_when_not_initialized() {
-    let temp = tempdir().expect("tempdir");
-
-    let output = run_cli(temp.path(), &["integrations", "check-k9"]);
-    assert!(!output.status.success());
-    // No .memhub/ in the directory — the command must fail quietly, not panic.
-    assert_eq!(output.status.code(), Some(1));
 }
 
 #[test]

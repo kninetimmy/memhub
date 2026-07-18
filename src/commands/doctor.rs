@@ -25,8 +25,8 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, params};
 
 use crate::Result;
-use crate::commands::{index, integrations, sync};
-use crate::config::{IntegrationsConfig, ProjectConfig, RetrievalMode};
+use crate::commands::{index, sync};
+use crate::config::{ProjectConfig, RetrievalMode};
 use crate::db;
 
 /// Ordered worst-to-best so `overall` is `checks.iter().map(|c|
@@ -129,7 +129,6 @@ fn run_with_home(start: &Path, strict: bool, home: Option<PathBuf>) -> Result<Do
     let mut checks = vec![
         check_schema(&ctx.conn),
         check_render_freshness(&ctx.conn, &ctx.paths.repo_root, &ctx.config),
-        check_k9_coexistence(&ctx.paths.repo_root, &ctx.config.integrations),
         check_writes_log_recency(&ctx.conn),
     ];
 
@@ -301,49 +300,6 @@ pub(crate) fn check_render_freshness(
     }
 }
 
-pub(crate) fn check_k9_coexistence(
-    repo_root: &Path,
-    integrations_cfg: &IntegrationsConfig,
-) -> Check {
-    let state = integrations::k9_state(repo_root, integrations_cfg);
-
-    // `drift` is checked before `detected`: the one case it fires with
-    // `detected == false` (K9 enabled in config but the markdown is
-    // missing) is a real, actionable mismatch, not a "nothing to see
-    // here" state — it must not be swallowed by the not-detected skip.
-    if let Some(drift) = &state.drift {
-        return Check::new(
-            "k9_coexistence",
-            Group::Project,
-            Status::Warn,
-            drift.clone(),
-        );
-    }
-    if !state.detected {
-        return Check::new(
-            "k9_coexistence",
-            Group::Project,
-            Status::Skipped,
-            "K9 not detected",
-        );
-    }
-    if state.enabled {
-        Check::new(
-            "k9_coexistence",
-            Group::Project,
-            Status::Ok,
-            format!("K9 integrated (agent_docs_path: {})", state.agent_docs_path),
-        )
-    } else {
-        Check::new(
-            "k9_coexistence",
-            Group::Project,
-            Status::Skipped,
-            "K9 detected but integration disabled (archived; markdown no longer authoritative)",
-        )
-    }
-}
-
 fn check_writes_log_recency(conn: &Connection) -> Check {
     let total: i64 = conn
         .query_row("SELECT COUNT(*) FROM writes_log", [], |r| r.get(0))
@@ -389,12 +345,17 @@ fn check_writes_log_recency(conn: &Connection) -> Check {
 /// task 119): a local `config.toml` written before the retirement can
 /// still carry the stale key, and it is inert (ignored on load), not a
 /// misconfiguration worth a fresh "unknown key" warning on every
-/// pre-existing install.
+/// pre-existing install. The two `integrations.k9.*` leaves below are the
+/// same story for the K9 integration subsystem's retirement (issue #163):
+/// `ProjectConfig` no longer has an `integrations` field at all, but a
+/// pre-existing `[integrations.k9]` table is inert, not a misconfiguration.
 const KNOWN_LEAVES: &[&str] = &[
     "project_name",
     "auto_sync_md",
     "log_level",
     "deny_list.patterns",
+    // Retired with the K9 integration subsystem (issue #163) — kept as
+    // inert legacy keys, same precedent as `auto_sync_md` above.
     "integrations.k9.enabled",
     "integrations.k9.agent_docs_path",
     "render.output_dir",
@@ -442,6 +403,8 @@ const KNOWN_LEAVES: &[&str] = &[
 /// key at one of these paths is walked one level deeper).
 const KNOWN_TABLES: &[&str] = &[
     "deny_list",
+    // Retired with the K9 integration subsystem (issue #163) — kept as
+    // inert legacy table paths, same precedent as `auto_sync_md` above.
     "integrations",
     "integrations.k9",
     "render",
@@ -674,16 +637,14 @@ fn check_config_types(raw: &str) -> Check {
 
 /// Commit-back-here fields per the header comment in
 /// `.memhub/config.example.toml` — recall/locate behavior + security-relevant
-/// settings that should be identical on every machine. `integrations.k9.*`
-/// is listed there as a commit-back project property, so `k9.enabled` is
-/// the one `enabled` toggle included here; `metrics.enabled` and the
-/// `global`/`sync` `enabled` flags stay excluded — the header documents
-/// those three as fields a machine legitimately diverges on and does not
-/// commit back. `doc.allowed_dirs` is excluded for the same per-machine
-/// reason. `wrap_up.verbosity` (Wave 6, issue #95) is excluded too, for a
-/// related but distinct reason: Q7 rules it a repo baseline (seeded in
-/// the tracked example) whose canonical value a machine may still
-/// legitimately raise locally — most notably to `transcript`, an
+/// settings that should be identical on every machine. `metrics.enabled`
+/// and the `global`/`sync` `enabled` flags stay excluded — the header
+/// documents those three as fields a machine legitimately diverges on and
+/// does not commit back. `doc.allowed_dirs` is excluded for the same
+/// per-machine reason. `wrap_up.verbosity` (Wave 6, issue #95) is excluded
+/// too, for a related but distinct reason: Q7 rules it a repo baseline
+/// (seeded in the tracked example) whose canonical value a machine may
+/// still legitimately raise locally — most notably to `transcript`, an
 /// explicitly sanctioned per-machine opt-in — so treating any local
 /// divergence as drift would warn on exactly the behavior Q7 permits.
 /// `wrap_up.transcript_retention_days` (Wave 6 W3, issue #96) is the
@@ -691,12 +652,13 @@ fn check_config_types(raw: &str) -> Check {
 /// repo-wide policy value seeded in the tracked example, not a
 /// per-machine toggle, so a local change to it is legitimate drift to
 /// surface — even though the `transcript` verbosity that activates it is
-/// itself a per-machine opt-in.
+/// itself a per-machine opt-in. `integrations.k9.*` was here before the K9
+/// integration subsystem's retirement (issue #163); it is gone from
+/// `.memhub/config.example.toml` now, so it dropped out of this list too —
+/// see `KNOWN_LEAVES` above for where the now-inert keys still live.
 const BASELINE_FIELDS: &[&str] = &[
     "deny_list.patterns",
     "render.output_dir",
-    "integrations.k9.enabled",
-    "integrations.k9.agent_docs_path",
     "retrieval.mode",
     "retrieval.fact_stale_after_days",
     "retrieval.use_reranker",
@@ -1835,89 +1797,6 @@ transcript_retention_days = 99999999
 
         let check = check_baseline_drift(&local, temp.path());
         assert_eq!(check.status, Status::Skipped);
-    }
-
-    #[test]
-    fn baseline_drift_detects_a_changed_k9_enabled() {
-        let local: toml::Value =
-            toml::from_str("[integrations.k9]\nenabled = true\nagent_docs_path = \"agent_docs\"\n")
-                .expect("local");
-        let example: toml::Value = toml::from_str(
-            "[integrations.k9]\nenabled = false\nagent_docs_path = \"agent_docs\"\n",
-        )
-        .expect("example");
-
-        let temp = tempdir().expect("tempdir");
-        fs::write(
-            temp.path().join(db::CONFIG_EXAMPLE_FILENAME),
-            toml::to_string(&example).unwrap(),
-        )
-        .expect("write example");
-
-        let check = check_baseline_drift(&local, temp.path());
-        assert_eq!(check.status, Status::Warn);
-        assert!(
-            check
-                .detail
-                .unwrap_or_default()
-                .contains("integrations.k9.enabled")
-        );
-    }
-
-    // -- K9 coexistence ------------------------------------------------------
-
-    #[test]
-    fn k9_not_detected_is_skipped() {
-        let temp = tempdir().expect("tempdir");
-        let check = check_k9_coexistence(temp.path(), &IntegrationsConfig::default());
-        assert_eq!(check.status, Status::Skipped);
-    }
-
-    #[test]
-    fn k9_detected_and_enabled_is_ok() {
-        let temp = tempdir().expect("tempdir");
-        let dir = temp.path().join("agent_docs");
-        fs::create_dir_all(&dir).expect("mkdir");
-        fs::write(dir.join("project_state.md"), "# state").expect("write");
-
-        let cfg = IntegrationsConfig {
-            k9: Some(crate::config::K9Config {
-                enabled: true,
-                agent_docs_path: "agent_docs".to_string(),
-            }),
-        };
-        let check = check_k9_coexistence(temp.path(), &cfg);
-        assert_eq!(check.status, Status::Ok);
-    }
-
-    #[test]
-    fn k9_detected_but_disabled_is_archived_and_skipped() {
-        let temp = tempdir().expect("tempdir");
-        let dir = temp.path().join("agent_docs");
-        fs::create_dir_all(&dir).expect("mkdir");
-        fs::write(dir.join("project_state.md"), "# state").expect("write");
-
-        let cfg = IntegrationsConfig {
-            k9: Some(crate::config::K9Config {
-                enabled: false,
-                agent_docs_path: "agent_docs".to_string(),
-            }),
-        };
-        let check = check_k9_coexistence(temp.path(), &cfg);
-        assert_eq!(check.status, Status::Skipped);
-    }
-
-    #[test]
-    fn k9_enabled_but_path_missing_is_a_warn() {
-        let temp = tempdir().expect("tempdir");
-        let cfg = IntegrationsConfig {
-            k9: Some(crate::config::K9Config {
-                enabled: true,
-                agent_docs_path: "agent_docs".to_string(),
-            }),
-        };
-        let check = check_k9_coexistence(temp.path(), &cfg);
-        assert_eq!(check.status, Status::Warn);
     }
 
     // -- Render freshness ------------------------------------------------------
