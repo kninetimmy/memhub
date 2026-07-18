@@ -1597,6 +1597,10 @@ struct LocateToolResponse {
     chunks_total: i64,
     /// Indexed `HEAD` after the refresh, if resolvable.
     head: Option<String>,
+    /// Count of `code_embeddings` rows in scope for this query whose
+    /// stored vector blob was the wrong byte length (corrupt/truncated)
+    /// and so were skipped for scoring. Always 0 in `fts` mode.
+    corrupt_embeddings: i64,
     elapsed_ms: i64,
 }
 
@@ -1656,6 +1660,7 @@ impl From<LocateResponse> for LocateToolResponse {
             files_total: usize_to_i64(value.files_total),
             chunks_total: usize_to_i64(value.chunks_total),
             head: value.head,
+            corrupt_embeddings: usize_to_i64(value.corrupt_embeddings),
             elapsed_ms: u128_to_i64(value.elapsed_ms),
         }
     }

@@ -9,7 +9,7 @@
 //! Stays read-only: never writes to durable tables, never writes to
 //! pending_writes, never records to `writes_log`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Instant;
 
@@ -431,7 +431,7 @@ fn gather_scored(
         // No vector-path floor — D70/D71 retired `min_vector_score` after
         // the MiniLM bundle landed. Nonsense rejection now lives in the
         // rerank-score filter applied below.
-        let vector_hits = vector_lookup(conn, &opts.source_types, query_vec)?;
+        let (vector_hits, corrupt_vectors) = vector_lookup(conn, &opts.source_types, query_vec)?;
         for hit in &vector_hits {
             let entry = candidates
                 .entry((hit.source_type, hit.source_id))
@@ -440,9 +440,13 @@ fn gather_scored(
         }
 
         // Stale-embedding detection: across the candidate set, count rows
-        // that are missing an embedding or whose content_hash doesn't
-        // match the current body.
-        let stale = detect_stale_candidates(conn, &candidates)?;
+        // that are missing an embedding, whose content_hash doesn't match
+        // the current body, or whose stored vector blob is the wrong
+        // length (a corrupt/truncated write that `content_hash` alone
+        // can't catch, since the hash covers the source text, not the
+        // vector bytes — `vector_lookup` skips these for scoring but
+        // reports them here rather than silently degrading to FTS-only).
+        let stale = detect_stale_candidates(conn, &candidates, &corrupt_vectors)?;
         if stale.stale_count > 0 {
             warnings.push(RecallWarning {
                 kind: "stale_embeddings".to_string(),
@@ -814,7 +818,7 @@ fn vector_lookup(
     conn: &Connection,
     source_types: &[SourceType],
     query_vec: &[f32],
-) -> Result<Vec<VectorHit>> {
+) -> Result<(Vec<VectorHit>, HashSet<(SourceType, i64)>)> {
     let mut stmt = conn.prepare(
         "SELECT source_type, source_id, vector \
          FROM embeddings \
@@ -832,6 +836,12 @@ fn vector_lookup(
     )?;
 
     let mut out = Vec::new();
+    // Rows whose stored vector blob is the wrong byte length for
+    // `EMBEDDING_DIMENSION` -- a corrupt or truncated write. These are
+    // skipped for scoring (there's nothing to compute cosine similarity
+    // against) but the caller folds them into the `stale_embeddings`
+    // warning rather than letting them vanish silently.
+    let mut corrupt = HashSet::new();
     for row in rows {
         let (st, id, blob) = row?;
         if !allowed.contains(&st.as_str()) {
@@ -842,6 +852,7 @@ fn vector_lookup(
             None => continue,
         };
         if blob.len() != EMBEDDING_DIMENSION * 4 {
+            corrupt.insert((source_type, id));
             continue;
         }
         let candidate_vec = bytes_to_vector(&blob);
@@ -860,7 +871,7 @@ fn vector_lookup(
             cosine,
         });
     }
-    Ok(out)
+    Ok((out, corrupt))
 }
 
 struct StaleSummary {
@@ -872,8 +883,16 @@ struct StaleSummary {
 fn detect_stale_candidates(
     conn: &Connection,
     candidates: &HashMap<(SourceType, i64), CandidateRow>,
+    corrupt_vectors: &HashSet<(SourceType, i64)>,
 ) -> Result<StaleSummary> {
-    if candidates.is_empty() {
+    // Union of this query's candidates with any corrupt-length embedding
+    // rows `vector_lookup` found in the requested source types -- the
+    // latter may include rows this query never matched via FTS, since
+    // that scan covers every embedding row in scope, not just the
+    // candidate set.
+    let mut keys: HashSet<(SourceType, i64)> = candidates.keys().copied().collect();
+    keys.extend(corrupt_vectors.iter().copied());
+    if keys.is_empty() {
         return Ok(StaleSummary {
             stale_count: 0,
             total_count: 0,
@@ -882,16 +901,25 @@ fn detect_stale_candidates(
     }
 
     let mut stale_count = 0;
-    let total_count = candidates.len();
+    let total_count = keys.len();
     let mut reason_missing = false;
     let mut reason_drift = false;
+    let mut reason_corrupt = false;
 
     let mut stmt = conn.prepare(
         "SELECT content_hash FROM embeddings \
          WHERE source_type = ?1 AND source_id = ?2 AND model_name = ?3",
     )?;
 
-    for key in candidates.keys() {
+    for key in &keys {
+        if corrupt_vectors.contains(key) {
+            // A length-mismatched blob is decisively stale regardless of
+            // what content_hash says -- the hash covers the source text,
+            // not the vector bytes, so it can't detect this corruption.
+            stale_count += 1;
+            reason_corrupt = true;
+            continue;
+        }
         let current_text = match current_embed_text(conn, key.0, key.1)? {
             Some(t) => t,
             None => continue,
@@ -916,11 +944,15 @@ fn detect_stale_candidates(
         }
     }
 
-    let reason = match (reason_missing, reason_drift) {
-        (true, true) => "missing_or_drift".to_string(),
-        (true, false) => "missing_embeddings".to_string(),
-        (false, true) => "content_drift".to_string(),
-        (false, false) => String::new(),
+    let reason = match (reason_missing, reason_drift, reason_corrupt) {
+        (false, false, false) => String::new(),
+        (true, false, false) => "missing_embeddings".to_string(),
+        (false, true, false) => "content_drift".to_string(),
+        (false, false, true) => "corrupt_length_mismatch".to_string(),
+        (true, true, false) => "missing_or_drift".to_string(),
+        (true, false, true) => "missing_or_corrupt".to_string(),
+        (false, true, true) => "drift_or_corrupt".to_string(),
+        (true, true, true) => "missing_drift_or_corrupt".to_string(),
     };
 
     Ok(StaleSummary {
@@ -2255,6 +2287,78 @@ mod tests {
             .find(|w| w.kind == "stale_embeddings")
             .expect("warning present");
         assert!(warn.stale_count >= 1);
+    }
+
+    #[test]
+    fn hybrid_mode_flags_corrupt_length_embedding_as_stale() {
+        // A vector blob whose byte length doesn't match
+        // EMBEDDING_DIMENSION*4 is silently skipped by `vector_lookup`
+        // (nothing to compute cosine against) -- but `content_hash` still
+        // matches the source text, so the old `detect_stale_candidates`
+        // never saw it. Regression for the bug where a corrupt/truncated
+        // vector quietly degraded recall to FTS-only with no
+        // `stale_embeddings` warning.
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let cfg_path = temp.path().join(".memhub/config.toml");
+        let mut cfg = ProjectConfig::load(&cfg_path).expect("load");
+        cfg.retrieval.mode = RetrievalMode::Hybrid;
+        cfg.save(&cfg_path).expect("save");
+
+        fact::add(
+            temp.path(),
+            "build-command",
+            "cargo build",
+            "user",
+            "cli:user",
+        )
+        .expect("seed fact");
+
+        // Corrupt the stored vector's byte length while leaving
+        // content_hash untouched, simulating a truncated/corrupted write.
+        let ctx = crate::db::open_project(temp.path()).expect("open");
+        let updated = ctx
+            .conn
+            .execute(
+                "UPDATE embeddings SET vector = ?1 WHERE source_type = 'fact'",
+                params![vec![0u8; 4]],
+            )
+            .expect("corrupt vector");
+        assert_eq!(updated, 1, "exactly one fact embedding row to corrupt");
+        drop(ctx);
+
+        let response = recall(
+            temp.path(),
+            RecallOptions {
+                query: "cargo build".to_string(),
+                mode: Some(RetrievalMode::Hybrid),
+                max_results: 5,
+                source_types: vec![SourceType::Fact],
+                include_stale: None,
+                accepted_only: None,
+                use_reranker: None,
+                min_rerank_score: None,
+                log_metrics: false,
+                surface: None,
+            },
+        )
+        .expect("recall");
+
+        assert!(
+            !response.results.is_empty(),
+            "FTS should still surface the row"
+        );
+        let warn = response
+            .warnings
+            .iter()
+            .find(|w| w.kind == "stale_embeddings")
+            .expect("stale_embeddings warning must fire for a corrupt-length vector");
+        assert!(warn.stale_count >= 1);
+        assert!(
+            warn.reason.contains("corrupt"),
+            "reason should surface the corrupt-length signal, got {:?}",
+            warn.reason
+        );
     }
 
     #[test]

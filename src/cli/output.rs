@@ -983,6 +983,7 @@ pub(crate) fn locate_response_to_json(response: &LocateResponse) -> serde_json::
         "files_total": response.files_total,
         "chunks_total": response.chunks_total,
         "head": response.head,
+        "corrupt_embeddings": response.corrupt_embeddings,
         "elapsed_ms": response.elapsed_ms,
     })
 }
@@ -996,6 +997,12 @@ pub(crate) fn print_locate(response: &LocateResponse) {
         response.files_total,
         response.chunks_total,
     );
+    if response.corrupt_embeddings > 0 {
+        println!(
+            "Note: {} corrupt-length embedding(s) in scope were skipped — re-run `memhub code index --rebuild` to refresh.",
+            response.corrupt_embeddings,
+        );
+    }
     if response.results.is_empty() {
         println!("  no matches.");
         return;

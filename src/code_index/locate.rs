@@ -113,6 +113,15 @@ pub struct LocateResponse {
     pub chunks_total: usize,
     /// Indexed `HEAD` after the refresh, if resolvable.
     pub head: Option<String>,
+    /// Count of `code_embeddings` rows in scope for this query whose
+    /// stored vector blob is the wrong byte length for
+    /// `EMBEDDING_DIMENSION` -- a corrupt or truncated write. These chunks
+    /// are silently degraded to FTS-only for this call (there's nothing
+    /// to compute cosine similarity against); this count is the caller's
+    /// only signal that degradation happened, since the code index has
+    /// no `stale_embeddings`-style warning list of its own. Always 0 in
+    /// `fts` mode (the vector path never runs).
+    pub corrupt_embeddings: usize,
     pub elapsed_ms: u128,
 }
 
@@ -168,7 +177,7 @@ pub fn locate(start: &Path, options: LocateOptions) -> Result<LocateResponse> {
         None => index_snapshot(&conn)?,
     };
 
-    let mut candidates = gather_candidates(&conn, &options.query, mode)?;
+    let (mut candidates, corrupt_embeddings) = gather_candidates(&conn, &options.query, mode)?;
     let candidate_count = candidates.len();
 
     // Blend + sort by descending fusion score.
@@ -245,6 +254,7 @@ pub fn locate(start: &Path, options: LocateOptions) -> Result<LocateResponse> {
         files_total,
         chunks_total,
         head,
+        corrupt_embeddings,
         elapsed_ms: started.elapsed().as_millis(),
     })
 }
@@ -295,12 +305,16 @@ fn is_test_path(path: &str) -> bool {
 }
 
 /// Gather the union of FTS and (hybrid only) vector matches keyed by chunk.
+/// Returns the candidates plus a count of length-mismatched embedding
+/// blobs found while scanning `code_embeddings` (see [`LocateResponse::
+/// corrupt_embeddings`]).
 fn gather_candidates(
     conn: &Connection,
     query: &str,
     mode: RetrievalMode,
-) -> Result<Vec<Candidate>> {
+) -> Result<(Vec<Candidate>, usize)> {
     let mut map: HashMap<i64, Candidate> = HashMap::new();
+    let mut corrupt_embeddings = 0usize;
 
     if let Some(match_expr) = build_fts_match(query) {
         let mut stmt = conn.prepare(
@@ -346,6 +360,12 @@ fn gather_candidates(
             for row in rows {
                 let (chunk_id, blob, path) = row?;
                 if blob.len() != EMBEDDING_DIMENSION * 4 {
+                    // Corrupt or truncated write: nothing to compute
+                    // cosine similarity against. Skipped for scoring but
+                    // counted so the caller isn't told the pool is clean
+                    // when it silently degraded to FTS-only for this
+                    // chunk.
+                    corrupt_embeddings += 1;
                     continue;
                 }
                 let cosine = cosine_similarity(&query_vec, &bytes_to_vector(&blob));
@@ -356,7 +376,7 @@ fn gather_candidates(
         }
     }
 
-    Ok(map.into_values().collect())
+    Ok((map.into_values().collect(), corrupt_embeddings))
 }
 
 fn new_candidate(chunk_id: i64, path: String) -> Candidate {
@@ -500,6 +520,47 @@ fn read_snippet(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression for the bug this fix addresses: a `code_embeddings` row
+    /// whose vector blob is the wrong byte length (corrupt/truncated) was
+    /// silently skipped with no signal at all -- unlike recall's
+    /// `stale_embeddings` warning, locate had no staleness surface
+    /// whatsoever. `gather_candidates` must now count it.
+    #[test]
+    fn gather_candidates_counts_corrupt_length_embeddings() {
+        let conn = Connection::open_in_memory().expect("open");
+        crate::code_index::schema::bootstrap(&conn).expect("bootstrap");
+
+        conn.execute(
+            "INSERT INTO indexed_files(path, mtime, size, content_hash, language) \
+             VALUES ('src/lib.rs', 0, 0, 'h', 'rust')",
+            [],
+        )
+        .expect("insert file");
+        conn.execute(
+            "INSERT INTO code_chunks(\
+                file_id, start_line, end_line, symbol, kind, content_hash, embed_text\
+             ) VALUES (1, 1, 5, 'foo', 'function', 'h', 'fn foo() {}')",
+            [],
+        )
+        .expect("insert chunk");
+        // Corrupt-length vector: 4 bytes instead of EMBEDDING_DIMENSION * 4.
+        conn.execute(
+            "INSERT INTO code_embeddings(chunk_id, model_name, dimension, vector, content_hash) \
+             VALUES (1, ?1, ?2, ?3, 'h')",
+            params![EMBEDDING_MODEL_NAME, EMBEDDING_DIMENSION as i64, vec![0u8; 4]],
+        )
+        .expect("insert embedding");
+
+        let (candidates, corrupt) =
+            gather_candidates(&conn, "foo", RetrievalMode::Hybrid).expect("gather");
+
+        assert_eq!(corrupt, 1, "corrupt-length blob must be counted");
+        assert!(
+            candidates.iter().all(|c| c.cosine.is_none()),
+            "corrupt blob must not contribute a vector score"
+        );
+    }
 
     #[test]
     fn is_test_path_classifies_top_level_dirs() {
