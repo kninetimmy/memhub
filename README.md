@@ -445,29 +445,21 @@ memhub sync status   # confirms enablement + the resolved remote dir
 
 ## Project status
 
-A point-in-time snapshot pulled from the memhub task DB, current as of audit Run B's merge on **2026-07-17** — not a live feed. Run `memhub task list` or `memhub recall "sync hardening"` in this repo for the current picture.
+A point-in-time snapshot pulled from the memhub task DB, current as of audit Run C's merge on **2026-07-18** — not a live feed. Run `memhub task list` or `memhub recall "sync hardening"` in this repo for the current picture.
 
 ### Recently fixed
 
+- **Run C (2026-07-17–18, PRs #151–#156): audit remediation and CI baseline.** The maintenance-on-open contract is now codified with tests (task 120, #151). Initial CI landed: Windows/macOS build+test lanes, a `--features viz` lane, hash-keyed model-asset caching, and a weekly scheduled `cargo audit` (task 115, #152). The `sync_md` channel is retired, with `memhub upgrade` now purging stale rendered CLAUDE/AGENTS twins (task 119, #153). A small-hardening batch closed four known issues: a corrupt-embedding staleness warning replacing silent FTS-only degradation, the `memhub audit md` panic fix, an import `writes_log` guard, and atomic export (task 117, #154). A docs/roadmap reconciliation pass followed (task 118, #155), and a mechanical `rustfmt` + `clippy` adoption pass added the ubuntu fmt+clippy CI lint gate (task 116, decision 160, #156).
 - **Run B (2026-07-17, PRs #138–#142): sync divergence blind spots closed.** The sync logical-version digest now covers doc ingests and fact kind/supersede changes, with a schema-drift test guarding it (task 113, #140). Sync adopt is hardened: a fail-closed manifest schema parse, staged-hash install closing the hash/copy TOCTOU window, and local DB replacement via SQLite's online-backup API (task 112, #139). Sync publication is now atomic: content-addressed versioned snapshots with manifest-last publication, torn-marker degrade, and `sync_commit` refusing to re-baseline over a remote that has already diverged (task 114, #141). Also landed: `sync check --diff` per-table divergence detail since baseline (#142), and an import retained-docs checklist with the inverted docs-hint fix (#138).
 - **Run A (2026-07-15, PRs #124–#128):** transcript deletion containment, export of `facts.kind`, repo-first doc default flip, dual-shell preflights, and upgrade aside-restore (tasks 101/102/104/109/110/111).
 
-### Known issues (hardening in flight)
+### Known issues (non-blocking)
 
-- **Corrupt or truncated embedding blobs degrade silently.** Recall falls back to FTS-only without raising the `stale_embeddings` warning, so the degradation is invisible (task 117).
-- **`memhub audit md` can panic** on a `CLAUDE.md` whose only `##` heading sits inside the managed block (task 117).
-- **`memhub import` without `--force` can wipe the `writes_log` audit trail** of a fresh-init DB (task 117).
-- **Export isn't written atomically** — a crash mid-write truncates a previous good export instead of leaving it intact (task 117).
 - **Non-blocking transcript-archive residual races**, noted during review but not yet acted on (task 122).
 
 ### Roadmap (open tasks)
 
-- CI workflow with Windows and macOS lanes plus model-asset caching (task 115)
-- One-shot mechanical `rustfmt` adoption and CI formatting gates (task 116)
-- Docs/roadmap reconciliation pass (task 118)
-- Retire the `sync_md` channel (task 119)
-- Codify and test the maintenance-on-open contract (task 120)
-- Branch protection on `main` once CI is stable (task 121)
+- Branch protection on `main` now that CI is live and stable (task 121)
 - Onboarding / install-prompt feature-coverage audit (task 95)
 - README visual assets — diagrams and screenshots (task 96)
 - Storage-category review and user-defined categories (task 97)
