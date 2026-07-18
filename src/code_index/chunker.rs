@@ -24,7 +24,9 @@
 
 use tree_sitter::{Node, Parser};
 
-use super::grammar::{self, DocFold, FunctionNaming, GrammarSpec, MethodContainer, MethodNaming, ModuleDoc};
+use super::grammar::{
+    self, DocFold, FunctionNaming, GrammarSpec, MethodContainer, MethodNaming, ModuleDoc,
+};
 
 /// Lines per window. A placeholder value — tuned for retrieval in PR5.
 pub const WINDOW_LINES: usize = 50;
@@ -112,10 +114,18 @@ fn chunk_with_grammar(path: &str, content: &str, spec: &GrammarSpec) -> Vec<Chun
     // Task 85/87: capture the file-level module doc as a `module-doc` chunk
     // before all item chunks. Variant determines the capture strategy.
     match spec.module_doc {
-        ModuleDoc::LeadingInnerComments => push_module_doc_chunk(&mut chunks, path, src, tree.root_node()),
-        ModuleDoc::LeadingFileDoc(markers) => push_leading_comment_doc(&mut chunks, path, src, tree.root_node(), spec, markers),
-        ModuleDoc::GoPackageDoc => push_go_package_doc(&mut chunks, path, src, tree.root_node(), spec),
-        ModuleDoc::PythonModuleDocstring => push_python_module_docstring(&mut chunks, path, src, tree.root_node()),
+        ModuleDoc::LeadingInnerComments => {
+            push_module_doc_chunk(&mut chunks, path, src, tree.root_node())
+        }
+        ModuleDoc::LeadingFileDoc(markers) => {
+            push_leading_comment_doc(&mut chunks, path, src, tree.root_node(), spec, markers)
+        }
+        ModuleDoc::GoPackageDoc => {
+            push_go_package_doc(&mut chunks, path, src, tree.root_node(), spec)
+        }
+        ModuleDoc::PythonModuleDocstring => {
+            push_python_module_docstring(&mut chunks, path, src, tree.root_node())
+        }
         ModuleDoc::None => {}
     }
 
@@ -177,11 +187,26 @@ fn push_module_doc_chunk(out: &mut Vec<Chunk>, path: &str, src: &[u8], root: Nod
 
 /// Shared helper: push a `module-doc` chunk for the byte range
 /// `[start_byte, end_byte)` with the given `(start_row, end_row)` (0-indexed).
-fn push_doc_chunk(out: &mut Vec<Chunk>, path: &str, src: &[u8], start_byte: usize, end_byte: usize, start_row: usize, end_row: usize) {
+fn push_doc_chunk(
+    out: &mut Vec<Chunk>,
+    path: &str,
+    src: &[u8],
+    start_byte: usize,
+    end_byte: usize,
+    start_row: usize,
+    end_row: usize,
+) {
     let raw = std::str::from_utf8(&src[start_byte..end_byte]).unwrap_or("");
     let body = raw.replace("\r\n", "\n");
     let embed_text = format!("{path}\nmodule-doc\n\n{body}");
-    out.push(Chunk { start_line: start_row + 1, end_line: end_row + 1, symbol: None, kind: "module-doc".to_string(), embed_text, body });
+    out.push(Chunk {
+        start_line: start_row + 1,
+        end_line: end_row + 1,
+        symbol: None,
+        kind: "module-doc".to_string(),
+        embed_text,
+        body,
+    });
 }
 
 /// Collect the leading run of comment nodes (from `spec.comment_kinds`) whose
@@ -193,7 +218,14 @@ fn push_doc_chunk(out: &mut Vec<Chunk>, path: &str, src: &[u8], start_byte: usiz
 /// into its chunk by `fold_preceding_siblings` — so no module-doc chunk is
 /// emitted. Only a blank-line gap, a preamble node (package/using/import), or
 /// EOF marks it as a true file-level doc.
-fn push_leading_comment_doc(out: &mut Vec<Chunk>, path: &str, src: &[u8], root: Node<'_>, spec: &GrammarSpec, markers: &[&str]) {
+fn push_leading_comment_doc(
+    out: &mut Vec<Chunk>,
+    path: &str,
+    src: &[u8],
+    root: Node<'_>,
+    spec: &GrammarSpec,
+    markers: &[&str],
+) {
     let mut run: Vec<Node<'_>> = Vec::new();
     let mut prev_end_row: Option<usize> = None;
     let mut after_run: Option<Node<'_>> = None;
@@ -201,12 +233,16 @@ fn push_leading_comment_doc(out: &mut Vec<Chunk>, path: &str, src: &[u8], root: 
     for child in root.named_children(&mut cursor) {
         let k = child.kind();
         if !spec.comment_kinds.contains(&k) {
-            if !run.is_empty() { after_run = Some(child); }
+            if !run.is_empty() {
+                after_run = Some(child);
+            }
             break;
         }
         let text = child.utf8_text(src).unwrap_or("");
         if !markers.iter().any(|m| text.starts_with(m)) {
-            if !run.is_empty() { after_run = Some(child); }
+            if !run.is_empty() {
+                after_run = Some(child);
+            }
             break;
         }
         if let Some(prev_end) = prev_end_row {
@@ -218,17 +254,29 @@ fn push_leading_comment_doc(out: &mut Vec<Chunk>, path: &str, src: &[u8], root: 
         prev_end_row = Some(child.end_position().row);
         run.push(child);
     }
-    if run.is_empty() { return; }
+    if run.is_empty() {
+        return;
+    }
     // Gap gate: an adjacent following declaration absorbs this comment as its
     // own doc, so it is not a standalone module doc.
     if let Some(next) = after_run {
         let run_last_end = run.last().unwrap().end_position().row;
         let gap = next.start_position().row as i64 - run_last_end as i64;
-        if gap <= 1 && is_decl_kind(spec, next.kind()) { return; }
+        if gap <= 1 && is_decl_kind(spec, next.kind()) {
+            return;
+        }
     }
     let first = run.first().unwrap();
     let last = run.last().unwrap();
-    push_doc_chunk(out, path, src, first.start_byte(), last.end_byte(), first.start_position().row, last.end_position().row);
+    push_doc_chunk(
+        out,
+        path,
+        src,
+        first.start_byte(),
+        last.end_byte(),
+        first.start_position().row,
+        last.end_position().row,
+    );
 }
 
 /// `true` when `kind` is in any declaration role set — the kinds whose
@@ -246,7 +294,13 @@ fn is_decl_kind(spec: &GrammarSpec, kind: &str) -> bool {
 /// block is the last contiguous run of comment siblings before `package_clause`;
 /// if no such block exists (or only unrelated comments with a gap > 1 row), no
 /// chunk is emitted.
-fn push_go_package_doc(out: &mut Vec<Chunk>, path: &str, src: &[u8], root: Node<'_>, spec: &GrammarSpec) {
+fn push_go_package_doc(
+    out: &mut Vec<Chunk>,
+    path: &str,
+    src: &[u8],
+    root: Node<'_>,
+    spec: &GrammarSpec,
+) {
     // Walk named children to locate `package_clause` and collect preceding
     // comment nodes. We collect ALL named children in order, then scan backward
     // from `package_clause`.
@@ -261,16 +315,30 @@ fn push_go_package_doc(out: &mut Vec<Chunk>, path: &str, src: &[u8], root: Node<
     let mut next_start_row = children[pkg_idx].start_position().row;
     for node in children[..pkg_idx].iter().rev() {
         let k = node.kind();
-        if !spec.comment_kinds.contains(&k) { break; }
-        if (next_start_row as i64 - node.end_position().row as i64) > 1 { break; }
+        if !spec.comment_kinds.contains(&k) {
+            break;
+        }
+        if (next_start_row as i64 - node.end_position().row as i64) > 1 {
+            break;
+        }
         next_start_row = node.start_position().row;
         run.push(*node);
     }
-    if run.is_empty() { return; }
+    if run.is_empty() {
+        return;
+    }
     run.reverse();
     let first = run.first().unwrap();
     let last = run.last().unwrap();
-    push_doc_chunk(out, path, src, first.start_byte(), last.end_byte(), first.start_position().row, last.end_position().row);
+    push_doc_chunk(
+        out,
+        path,
+        src,
+        first.start_byte(),
+        last.end_byte(),
+        first.start_position().row,
+        last.end_position().row,
+    );
 }
 
 /// Emit the Python module docstring: the first named child of `root` that is
@@ -288,7 +356,15 @@ fn push_python_module_docstring(out: &mut Vec<Chunk>, path: &str, src: &[u8], ro
         Some(n) if n.kind() == "string" => {}
         _ => return,
     }
-    push_doc_chunk(out, path, src, stmt.start_byte(), stmt.end_byte(), stmt.start_position().row, stmt.end_position().row);
+    push_doc_chunk(
+        out,
+        path,
+        src,
+        stmt.start_byte(),
+        stmt.end_byte(),
+        stmt.start_position().row,
+        stmt.end_position().row,
+    );
 }
 
 /// Recursively collect item chunks from `node`'s named children.
@@ -322,7 +398,15 @@ fn collect_items(
             // each member becomes its own `Type::member` chunk.
             let name = field_text(&child, "name", src);
             let qualified = qualify(type_prefix, name);
-            push_type_header(out, path, src, spec, child, qualified.clone(), kind_label(kind));
+            push_type_header(
+                out,
+                path,
+                src,
+                spec,
+                child,
+                qualified.clone(),
+                kind_label(kind),
+            );
             if let Some(body) = child.child_by_field_name(spec.body_field) {
                 collect_items(body, src, path, spec, qualified.as_deref(), out);
             }
@@ -372,8 +456,8 @@ fn collect_items(
             // `name`, JS `field_definition` as `property`), qualified to
             // `Type::handle`. Plain (non-function) fields fall through and
             // stay in the type header only.
-            let name = field_text(&child, "name", src)
-                .or_else(|| field_text(&child, "property", src));
+            let name =
+                field_text(&child, "name", src).or_else(|| field_text(&child, "property", src));
             let symbol = qualify(type_prefix, name);
             push_symbol(out, path, src, spec, child, symbol, "method");
         }
@@ -883,7 +967,14 @@ mod inner {
         let chunks = rust(FREEZE_FIXTURE);
         let got: Vec<(&str, Option<&str>, usize, usize)> = chunks
             .iter()
-            .map(|c| (c.kind.as_str(), c.symbol.as_deref(), c.start_line, c.end_line))
+            .map(|c| {
+                (
+                    c.kind.as_str(),
+                    c.symbol.as_deref(),
+                    c.start_line,
+                    c.end_line,
+                )
+            })
             .collect();
         // Task 85 added module-doc capture: the leading `//!` comment on
         // line 1 now becomes the first chunk before all item chunks.
@@ -959,7 +1050,10 @@ public class Widget {
     #[test]
     fn csharp_class_header_is_signature_only() {
         let chunks = chunk_file("Widget.cs", CS_FIXTURE, Some("csharp"));
-        let header = chunks.iter().find(|c| c.kind == "class").expect("class chunk");
+        let header = chunks
+            .iter()
+            .find(|c| c.kind == "class")
+            .expect("class chunk");
         // Folded class doc and non-method members are kept verbatim.
         assert!(header.body.contains("A widget."), "class doc folded in");
         assert!(header.body.contains("private int _count;"), "field kept");
@@ -967,7 +1061,10 @@ public class Widget {
         assert!(header.body.contains("{ ... }"), "bodies excised");
         assert!(!header.body.contains("_count++"), "method body excised");
         assert!(!header.body.contains("_count = count"), "ctor body excised");
-        assert!(!header.body.contains("Deep() {}"), "nested-type body excised");
+        assert!(
+            !header.body.contains("Deep() {}"),
+            "nested-type body excised"
+        );
     }
 
     #[test]
@@ -986,21 +1083,31 @@ public class Widget {
     #[test]
     fn java_class_header_folds_javadoc_and_excises_bodies() {
         let chunks = chunk_file("Widget.java", JAVA_FIXTURE, Some("java"));
-        let header = chunks.iter().find(|c| c.kind == "class").expect("class chunk");
+        let header = chunks
+            .iter()
+            .find(|c| c.kind == "class")
+            .expect("class chunk");
         assert!(header.body.contains("A widget."), "javadoc folded in");
         assert!(header.body.contains("private int count;"), "field kept");
         assert!(header.body.contains("{ ... }"), "bodies excised");
         assert!(!header.body.contains("return count"), "method body excised");
-        assert!(!header.body.contains("this.count = count"), "ctor body excised");
+        assert!(
+            !header.body.contains("this.count = count"),
+            "ctor body excised"
+        );
     }
 
     // M11 review M2: multiple methods in a single class produce multiple
     // excision ranges; verify each body is replaced and no panic occurs.
     #[test]
     fn csharp_class_header_excises_all_member_bodies() {
-        let src = "class Foo {\n  void A() { doA(); }\n  void B() { doB(); }\n  void C() { doC(); }\n}\n";
+        let src =
+            "class Foo {\n  void A() { doA(); }\n  void B() { doB(); }\n  void C() { doC(); }\n}\n";
         let chunks = chunk_file("Foo.cs", src, Some("csharp"));
-        let header = chunks.iter().find(|c| c.kind == "class").expect("class chunk");
+        let header = chunks
+            .iter()
+            .find(|c| c.kind == "class")
+            .expect("class chunk");
         // None of the concrete body statements should survive into the header.
         assert!(!header.body.contains("doA()"), "A body must be excised");
         assert!(!header.body.contains("doB()"), "B body must be excised");
@@ -1024,7 +1131,10 @@ public class Widget {
         let src = "interface IFoo { void Method(); }\n";
         let chunks = chunk_file("IFoo.cs", src, Some("csharp"));
         // The interface header chunk must contain the method signature verbatim.
-        let header = chunks.iter().find(|c| c.kind == "interface").expect("interface chunk");
+        let header = chunks
+            .iter()
+            .find(|c| c.kind == "interface")
+            .expect("interface chunk");
         assert!(
             header.body.contains("void Method()"),
             "body-less method must stay verbatim in header; got: {}",
@@ -1032,7 +1142,9 @@ public class Widget {
         );
         // The method must also be emitted as its own chunk.
         assert!(
-            chunks.iter().any(|c| c.symbol.as_deref() == Some("IFoo::Method")),
+            chunks
+                .iter()
+                .any(|c| c.symbol.as_deref() == Some("IFoo::Method")),
             "body-less method must still get its own member chunk; chunks: {chunks:?}"
         );
         // No placeholder was inserted (there was nothing to excise).
@@ -1077,7 +1189,10 @@ class Counter {
         assert!(got.contains(&("class", Some("Counter"))), "{got:?}");
         assert!(got.contains(&("method", Some("Counter::inc"))), "{got:?}");
         // A class-field arrow is a qualified method, too.
-        assert!(got.contains(&("method", Some("Counter::onClick"))), "{got:?}");
+        assert!(
+            got.contains(&("method", Some("Counter::onClick"))),
+            "{got:?}"
+        );
     }
 
     // `export` wraps nearly every top-level declaration; the walker must see
@@ -1112,7 +1227,10 @@ export function add(a, b) { return a + b; }
             .expect("add chunk");
         assert_eq!(c.start_line, 1, "chunk should start at the JSDoc line");
         assert!(c.body.contains("Adds two numbers."), "JSDoc folded in");
-        assert!(c.body.contains("export function add"), "export kept in body");
+        assert!(
+            c.body.contains("export function add"),
+            "export kept in body"
+        );
     }
 
     // In a multi-binding statement only the function declarator is chunked,
@@ -1162,8 +1280,14 @@ export abstract class Widget {
         let chunks = ts(src);
         let got = symbols(&chunks);
         assert!(got.contains(&("abstract_class", Some("Widget"))), "{got:?}");
-        assert!(got.contains(&("method", Some("Widget::constructor"))), "{got:?}");
-        assert!(got.contains(&("method", Some("Widget::increment"))), "{got:?}");
+        assert!(
+            got.contains(&("method", Some("Widget::constructor"))),
+            "{got:?}"
+        );
+        assert!(
+            got.contains(&("method", Some("Widget::increment"))),
+            "{got:?}"
+        );
         assert!(got.contains(&("method", Some("Widget::handle"))), "{got:?}");
     }
 
@@ -1200,7 +1324,10 @@ export class Service {
             .expect("class chunk");
         assert!(header.body.contains("private url"), "field kept in header");
         assert!(header.body.contains("{ ... }"), "method body excised");
-        assert!(!header.body.contains("doFetch"), "method body must be excised");
+        assert!(
+            !header.body.contains("doFetch"),
+            "method body must be excised"
+        );
     }
 
     fn py(content: &str) -> Vec<Chunk> {
@@ -1227,7 +1354,10 @@ class Widget:
         let got = symbols(&chunks);
         assert!(got.contains(&("function", Some("top_level"))), "{got:?}");
         assert!(got.contains(&("class", Some("Widget"))), "{got:?}");
-        assert!(got.contains(&("method", Some("Widget::__init__"))), "{got:?}");
+        assert!(
+            got.contains(&("method", Some("Widget::__init__"))),
+            "{got:?}"
+        );
         // `async def` is still a `function_definition`.
         assert!(got.contains(&("method", Some("Widget::fetch"))), "{got:?}");
     }
@@ -1249,7 +1379,11 @@ def handler(req):
             .find(|c| c.symbol.as_deref() == Some("handler"))
             .expect("handler chunk");
         assert_eq!(c.start_line, 1, "chunk should start at the first decorator");
-        assert!(c.body.contains("@app.route"), "decorator folded in: {}", c.body);
+        assert!(
+            c.body.contains("@app.route"),
+            "decorator folded in: {}",
+            c.body
+        );
         assert!(c.body.contains("@cached"), "second decorator folded in");
         assert!(c.body.contains("def handler"), "def kept in body");
     }
@@ -1295,15 +1429,30 @@ class Widget:
             .iter()
             .find(|c| c.kind == "class")
             .expect("class chunk");
-        assert!(header.body.contains("A widget."), "docstring kept in header");
+        assert!(
+            header.body.contains("A widget."),
+            "docstring kept in header"
+        );
         assert!(header.body.contains("count = 0"), "class field kept");
-        assert!(header.body.contains("@property"), "decorator kept in header");
+        assert!(
+            header.body.contains("@property"),
+            "decorator kept in header"
+        );
         assert!(!header.body.contains("self.n = n"), "ctor body excised");
-        assert!(!header.body.contains("self.n * 2"), "decorated method body excised");
-        assert!(header.body.contains("{ ... }"), "bodies excised to placeholder");
+        assert!(
+            !header.body.contains("self.n * 2"),
+            "decorated method body excised"
+        );
+        assert!(
+            header.body.contains("{ ... }"),
+            "bodies excised to placeholder"
+        );
         // The decorated method is still addressable as its own chunk.
         let got = symbols(&chunks);
-        assert!(got.contains(&("method", Some("Widget::doubled"))), "{got:?}");
+        assert!(
+            got.contains(&("method", Some("Widget::doubled"))),
+            "{got:?}"
+        );
     }
 
     // A decorated class at module level: the walker recurses through the
@@ -1323,7 +1472,10 @@ class Point:
             .expect("Point chunk");
         assert_eq!(header.kind, "class");
         assert_eq!(header.start_line, 1, "chunk starts at the @dataclass line");
-        assert!(header.body.contains("@dataclass"), "class decorator folded in");
+        assert!(
+            header.body.contains("@dataclass"),
+            "class decorator folded in"
+        );
     }
 
     fn go(content: &str) -> Vec<Chunk> {
@@ -1394,8 +1546,14 @@ type Shape interface {
             .iter()
             .find(|c| c.symbol.as_deref() == Some("Widget"))
             .expect("Widget chunk");
-        assert!(widget.body.contains("count int"), "struct body kept verbatim");
-        assert!(!widget.body.contains("{ ... }"), "no excision for a leaf type");
+        assert!(
+            widget.body.contains("count int"),
+            "struct body kept verbatim"
+        );
+        assert!(
+            !widget.body.contains("{ ... }"),
+            "no excision for a leaf type"
+        );
     }
 
     // Package-level const/var, including grouped `( … )` forms — grouped `var`
@@ -1444,7 +1602,10 @@ func Dist(a, b int) int { return b - a }
             .find(|c| c.symbol.as_deref() == Some("Dist"))
             .expect("Dist chunk");
         assert_eq!(c.start_line, 3, "chunk should start at the godoc line");
-        assert!(c.body.contains("Dist returns the distance"), "godoc folded in");
+        assert!(
+            c.body.contains("Dist returns the distance"),
+            "godoc folded in"
+        );
         assert!(c.body.contains("func Dist"), "func kept in body");
     }
 
@@ -1613,8 +1774,15 @@ mod inner {
         let src = "/// <summary>File-level doc.</summary>\nusing System;\npublic class Foo {}\n";
         let chunks = chunk_file("Foo.cs", src, Some("csharp"));
         let doc = chunks.iter().find(|c| c.kind == "module-doc");
-        assert!(doc.is_some(), "expected a module-doc chunk; got: {chunks:?}");
-        assert!(doc.unwrap().body.contains("File-level doc."), "module-doc body: {}", doc.unwrap().body);
+        assert!(
+            doc.is_some(),
+            "expected a module-doc chunk; got: {chunks:?}"
+        );
+        assert!(
+            doc.unwrap().body.contains("File-level doc."),
+            "module-doc body: {}",
+            doc.unwrap().body
+        );
         assert_eq!(doc.unwrap().start_line, 1, "module-doc starts at line 1");
     }
 
@@ -1623,14 +1791,20 @@ mod inner {
         // Adjacent to a class_declaration → that class's doc (gap gate), not a file doc.
         let src = "/// <summary>Class doc.</summary>\npublic class Foo {}\n";
         let chunks = chunk_file("Foo.cs", src, Some("csharp"));
-        assert!(!chunks.iter().any(|c| c.kind == "module-doc"), "adjacent /// must fold into the class, not emit module-doc; got: {chunks:?}");
+        assert!(
+            !chunks.iter().any(|c| c.kind == "module-doc"),
+            "adjacent /// must fold into the class, not emit module-doc; got: {chunks:?}"
+        );
     }
 
     #[test]
     fn csharp_plain_comment_does_not_become_module_doc() {
         let src = "// plain comment\npublic class Foo {}\n";
         let chunks = chunk_file("Foo.cs", src, Some("csharp"));
-        assert!(!chunks.iter().any(|c| c.kind == "module-doc"), "plain // comment must not emit module-doc; got: {chunks:?}");
+        assert!(
+            !chunks.iter().any(|c| c.kind == "module-doc"),
+            "plain // comment must not emit module-doc; got: {chunks:?}"
+        );
     }
 
     #[test]
@@ -1639,22 +1813,35 @@ mod inner {
         let src = "/** File-level Javadoc. */\npackage app;\npublic class Foo {}\n";
         let chunks = chunk_file("Foo.java", src, Some("java"));
         let doc = chunks.iter().find(|c| c.kind == "module-doc");
-        assert!(doc.is_some(), "expected a module-doc chunk; got: {chunks:?}");
-        assert!(doc.unwrap().body.contains("File-level Javadoc."), "module-doc body: {}", doc.unwrap().body);
+        assert!(
+            doc.is_some(),
+            "expected a module-doc chunk; got: {chunks:?}"
+        );
+        assert!(
+            doc.unwrap().body.contains("File-level Javadoc."),
+            "module-doc body: {}",
+            doc.unwrap().body
+        );
     }
 
     #[test]
     fn java_javadoc_adjacent_to_class_is_not_module_doc() {
         let src = "/** Class doc. */\npublic class Foo {}\n";
         let chunks = chunk_file("Foo.java", src, Some("java"));
-        assert!(!chunks.iter().any(|c| c.kind == "module-doc"), "adjacent /** must fold into the class, not emit module-doc; got: {chunks:?}");
+        assert!(
+            !chunks.iter().any(|c| c.kind == "module-doc"),
+            "adjacent /** must fold into the class, not emit module-doc; got: {chunks:?}"
+        );
     }
 
     #[test]
     fn java_plain_comment_does_not_become_module_doc() {
         let src = "// plain comment\npackage app;\npublic class Foo {}\n";
         let chunks = chunk_file("Foo.java", src, Some("java"));
-        assert!(!chunks.iter().any(|c| c.kind == "module-doc"), "plain // comment must not emit module-doc; got: {chunks:?}");
+        assert!(
+            !chunks.iter().any(|c| c.kind == "module-doc"),
+            "plain // comment must not emit module-doc; got: {chunks:?}"
+        );
     }
 
     #[test]
@@ -1663,8 +1850,15 @@ mod inner {
         let src = "/** @module geo - 2D geometry. */\n\nexport function dist(a: number, b: number): number { return b - a; }\n";
         let chunks = chunk_file("geo.ts", src, Some("typescript"));
         let doc = chunks.iter().find(|c| c.kind == "module-doc");
-        assert!(doc.is_some(), "expected a module-doc chunk; got: {chunks:?}");
-        assert!(doc.unwrap().body.contains("2D geometry."), "module-doc body: {}", doc.unwrap().body);
+        assert!(
+            doc.is_some(),
+            "expected a module-doc chunk; got: {chunks:?}"
+        );
+        assert!(
+            doc.unwrap().body.contains("2D geometry."),
+            "module-doc body: {}",
+            doc.unwrap().body
+        );
     }
 
     #[test]
@@ -1673,14 +1867,20 @@ mod inner {
         // a transparent decl kind), so the gap gate suppresses a module-doc.
         let src = "/** Returns the distance. */\nexport function dist(a: number, b: number): number { return b - a; }\n";
         let chunks = chunk_file("geo.ts", src, Some("typescript"));
-        assert!(!chunks.iter().any(|c| c.kind == "module-doc"), "adjacent /** must not be promoted to module-doc; got: {chunks:?}");
+        assert!(
+            !chunks.iter().any(|c| c.kind == "module-doc"),
+            "adjacent /** must not be promoted to module-doc; got: {chunks:?}"
+        );
     }
 
     #[test]
     fn ts_plain_comment_does_not_become_module_doc() {
         let src = "// plain comment\nexport function dist(a: number, b: number): number { return b - a; }\n";
         let chunks = chunk_file("geo.ts", src, Some("typescript"));
-        assert!(!chunks.iter().any(|c| c.kind == "module-doc"), "plain // comment must not emit module-doc; got: {chunks:?}");
+        assert!(
+            !chunks.iter().any(|c| c.kind == "module-doc"),
+            "plain // comment must not emit module-doc; got: {chunks:?}"
+        );
     }
 
     #[test]
@@ -1688,22 +1888,35 @@ mod inner {
         let src = "/** @module utils - Utility functions. */\n\nexport function add(a, b) { return a + b; }\n";
         let chunks = chunk_file("utils.js", src, Some("javascript"));
         let doc = chunks.iter().find(|c| c.kind == "module-doc");
-        assert!(doc.is_some(), "expected a module-doc chunk; got: {chunks:?}");
-        assert!(doc.unwrap().body.contains("Utility functions."), "module-doc body: {}", doc.unwrap().body);
+        assert!(
+            doc.is_some(),
+            "expected a module-doc chunk; got: {chunks:?}"
+        );
+        assert!(
+            doc.unwrap().body.contains("Utility functions."),
+            "module-doc body: {}",
+            doc.unwrap().body
+        );
     }
 
     #[test]
     fn js_jsdoc_adjacent_to_function_is_not_module_doc() {
         let src = "/** Adds two numbers. */\nexport function add(a, b) { return a + b; }\n";
         let chunks = chunk_file("utils.js", src, Some("javascript"));
-        assert!(!chunks.iter().any(|c| c.kind == "module-doc"), "adjacent /** must not be promoted to module-doc; got: {chunks:?}");
+        assert!(
+            !chunks.iter().any(|c| c.kind == "module-doc"),
+            "adjacent /** must not be promoted to module-doc; got: {chunks:?}"
+        );
     }
 
     #[test]
     fn js_plain_comment_does_not_become_module_doc() {
         let src = "// plain comment\nexport function add(a, b) { return a + b; }\n";
         let chunks = chunk_file("utils.js", src, Some("javascript"));
-        assert!(!chunks.iter().any(|c| c.kind == "module-doc"), "plain // comment must not emit module-doc; got: {chunks:?}");
+        assert!(
+            !chunks.iter().any(|c| c.kind == "module-doc"),
+            "plain // comment must not emit module-doc; got: {chunks:?}"
+        );
     }
 
     #[test]
@@ -1711,15 +1924,25 @@ mod inner {
         let src = "\"\"\"Module-level docstring.\"\"\"\n\ndef foo():\n    pass\n";
         let chunks = chunk_file("app.py", src, Some("python"));
         let doc = chunks.iter().find(|c| c.kind == "module-doc");
-        assert!(doc.is_some(), "expected a module-doc chunk; got: {chunks:?}");
-        assert!(doc.unwrap().body.contains("Module-level docstring."), "module-doc body: {}", doc.unwrap().body);
+        assert!(
+            doc.is_some(),
+            "expected a module-doc chunk; got: {chunks:?}"
+        );
+        assert!(
+            doc.unwrap().body.contains("Module-level docstring."),
+            "module-doc body: {}",
+            doc.unwrap().body
+        );
     }
 
     #[test]
     fn python_hash_comment_does_not_become_module_doc() {
         let src = "# plain hash comment\n\ndef foo():\n    pass\n";
         let chunks = chunk_file("app.py", src, Some("python"));
-        assert!(!chunks.iter().any(|c| c.kind == "module-doc"), "hash comment must not emit module-doc; got: {chunks:?}");
+        assert!(
+            !chunks.iter().any(|c| c.kind == "module-doc"),
+            "hash comment must not emit module-doc; got: {chunks:?}"
+        );
     }
 
     #[test]
@@ -1727,8 +1950,15 @@ mod inner {
         let src = "// Package geo provides 2D geometry.\npackage geo\n\nfunc Dist(a, b int) int { return b - a }\n";
         let chunks = chunk_file("geo.go", src, Some("go"));
         let doc = chunks.iter().find(|c| c.kind == "module-doc");
-        assert!(doc.is_some(), "expected a module-doc chunk; got: {chunks:?}");
-        assert!(doc.unwrap().body.contains("2D geometry."), "module-doc body: {}", doc.unwrap().body);
+        assert!(
+            doc.is_some(),
+            "expected a module-doc chunk; got: {chunks:?}"
+        );
+        assert!(
+            doc.unwrap().body.contains("2D geometry."),
+            "module-doc body: {}",
+            doc.unwrap().body
+        );
         assert_eq!(doc.unwrap().start_line, 1, "module-doc starts at line 1");
     }
 
@@ -1736,6 +1966,9 @@ mod inner {
     fn go_no_package_doc_no_module_doc() {
         let src = "package geo\n\nfunc Dist(a, b int) int { return b - a }\n";
         let chunks = chunk_file("geo.go", src, Some("go"));
-        assert!(!chunks.iter().any(|c| c.kind == "module-doc"), "no preceding comment means no module-doc; got: {chunks:?}");
+        assert!(
+            !chunks.iter().any(|c| c.kind == "module-doc"),
+            "no preceding comment means no module-doc; got: {chunks:?}"
+        );
     }
 }

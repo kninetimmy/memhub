@@ -805,7 +805,9 @@ mod tests {
         assert!(is_vendored("src/dashboard/static/vendor/uplot.min.js"));
         assert!(is_vendored("uplot.min.css"));
         assert!(is_vendored("dist/app.min.mjs"));
-        assert!(!is_indexable_source("src/dashboard/static/vendor/uplot.min.js"));
+        assert!(!is_indexable_source(
+            "src/dashboard/static/vendor/uplot.min.js"
+        ));
         // Hand-written code is not minified, even under a vendor-ish path.
         assert!(!is_vendored("src/vendor/adapter.js"));
         assert!(is_indexable_source("src/vendor/adapter.js"));

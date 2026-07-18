@@ -75,13 +75,9 @@ pub fn status(start: &Path) -> Result<IndexStatusSummary> {
         |row| row.get(0),
     )?;
 
-    let source_rows =
-        facts_total + decisions_total + tasks_total + doc_chunks_total + notes_total;
-    let current_rows = facts_embedded
-        + decisions_embedded
-        + tasks_embedded
-        + doc_chunks_embedded
-        + notes_embedded;
+    let source_rows = facts_total + decisions_total + tasks_total + doc_chunks_total + notes_total;
+    let current_rows =
+        facts_embedded + decisions_embedded + tasks_embedded + doc_chunks_embedded + notes_embedded;
     let missing_count = (source_rows - current_rows).max(0);
     let stale_ratio = if source_rows == 0 {
         0.0
@@ -692,7 +688,11 @@ mod tests {
                 )
                 .expect("count note embeddings")
         };
-        assert_eq!(count_note_embeddings(temp.path()), 1, "eager-embedded on add");
+        assert_eq!(
+            count_note_embeddings(temp.path()),
+            1,
+            "eager-embedded on add"
+        );
 
         let summary = rebuild(temp.path(), "cli:user").expect("rebuild");
         assert_eq!(

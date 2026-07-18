@@ -501,8 +501,9 @@ impl MemhubServer {
         let out_dir = self.resolve_sync_remote(params.remote.as_deref())?;
         // Push-side clobber gate (F12): without `force` the snapshot refuses
         // to overwrite a remote that is drive-ahead of or diverged from local.
-        let summary = commands::sync::snapshot(&self.start, &out_dir, params.force.unwrap_or(false))
-            .map_err(map_tool_error)?;
+        let summary =
+            commands::sync::snapshot(&self.start, &out_dir, params.force.unwrap_or(false))
+                .map_err(map_tool_error)?;
         Ok(Json(SyncSnapshotToolResponse::from(summary)))
     }
 
@@ -2010,7 +2011,10 @@ fn normalize_client_name(name: &str) -> String {
             // An unmapped client still works (it buckets under its own
             // name); the warning surfaces the missing alias so it can be
             // added rather than silently fragmenting the metrics.
-            log::warn!("mcp: unmapped client name '{}' — bucketing verbatim", sanitize_for_log(other));
+            log::warn!(
+                "mcp: unmapped client name '{}' — bucketing verbatim",
+                sanitize_for_log(other)
+            );
             other.to_string()
         }
     }
@@ -3271,11 +3275,13 @@ mod tests {
             .enable_all()
             .build()
             .expect("runtime")
-            .block_on(server.archive_transcript_impl(Parameters(ArchiveTranscriptParams {
-                agent: "claude".to_string(),
-                session_id: "whatever".to_string(),
-                confirm: None,
-            })))
+            .block_on(
+                server.archive_transcript_impl(Parameters(ArchiveTranscriptParams {
+                    agent: "claude".to_string(),
+                    session_id: "whatever".to_string(),
+                    confirm: None,
+                })),
+            )
             .expect("archive_transcript");
 
         // Fail closed: no archive without confirm=true, and the refusal
@@ -3304,12 +3310,17 @@ mod tests {
             .enable_all()
             .build()
             .expect("runtime")
-            .block_on(server.archive_transcript_impl(Parameters(ArchiveTranscriptParams {
-                agent: "emacs".to_string(),
-                session_id: "x".to_string(),
-                confirm: Some(true),
-            })));
-        assert!(result.is_err(), "unknown agent must be an invalid-params error");
+            .block_on(
+                server.archive_transcript_impl(Parameters(ArchiveTranscriptParams {
+                    agent: "emacs".to_string(),
+                    session_id: "x".to_string(),
+                    confirm: Some(true),
+                })),
+            );
+        assert!(
+            result.is_err(),
+            "unknown agent must be an invalid-params error"
+        );
     }
 
     fn doc_add_actor() -> ClientIdentity {

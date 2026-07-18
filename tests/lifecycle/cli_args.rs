@@ -150,7 +150,9 @@ fn init_from_backup_combines_with_json() {
 fn fact_add_kind_flag_parses() {
     match parse(&["fact", "add", "my-key", "my-value", "--kind", "gotcha"]) {
         TopLevelCommand::Fact { command } => match command {
-            FactCommand::Add { key, value, kind, .. } => {
+            FactCommand::Add {
+                key, value, kind, ..
+            } => {
                 assert_eq!(key, "my-key");
                 assert_eq!(value, "my-value");
                 assert_eq!(kind.as_deref(), Some("gotcha"));
@@ -197,7 +199,14 @@ fn fact_list_without_json_defaults_to_false() {
 /// Wave 3 L1 / issue #41: `memhub fact verify <id|key> [--json] [--actor]`.
 #[test]
 fn fact_verify_parses_ident_json_and_actor() {
-    match parse(&["fact", "verify", "my-key", "--json", "--actor", "cli:script"]) {
+    match parse(&[
+        "fact",
+        "verify",
+        "my-key",
+        "--json",
+        "--actor",
+        "cli:script",
+    ]) {
         TopLevelCommand::Fact { command } => match command {
             FactCommand::Verify { ident, json, actor } => {
                 assert_eq!(ident, "my-key");

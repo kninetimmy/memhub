@@ -17,8 +17,8 @@ use rusqlite::{Connection, params};
 use crate::Result;
 use crate::config::MetricsConfig;
 use crate::metrics::tokenizer::{set_calibration_factor, tokens_of};
-use crate::retrieval::{RecallResponse, RecallSurface};
 use crate::retrieval::util::sha256_hex;
+use crate::retrieval::{RecallResponse, RecallSurface};
 
 /// Process-wide ledger token cache. CLI one-shots build it once per
 /// invocation; the MCP server amortizes the read across calls.

@@ -1,10 +1,10 @@
 use serde_json::json;
 
 use crate::code_index::CodeIndexStatus;
-use crate::commands::audit_md::{AuditMdReport, Finding, Severity};
-use crate::commands::doctor::{Check, DoctorReport, Group, Status};
 use crate::code_index::locate::LocateResponse;
 use crate::commands;
+use crate::commands::audit_md::{AuditMdReport, Finding, Severity};
+use crate::commands::doctor::{Check, DoctorReport, Group, Status};
 use crate::commands::import::ImportSummary;
 use crate::commands::review::{StaleCategory, StaleReport};
 use crate::commands::wrapup_policy::WrapupPolicyReport;
@@ -857,7 +857,9 @@ pub(crate) fn print_not_carried_checklist() {
     println!(
         "  - Machine-global memory store (~/.memhub/global.sqlite): opt in via `memhub global enable`"
     );
-    println!("  - Metrics collection: enable via `memhub metrics enable` ([metrics] in .memhub/config.toml)");
+    println!(
+        "  - Metrics collection: enable via `memhub metrics enable` ([metrics] in .memhub/config.toml)"
+    );
     println!("  - Drive sync: enable via `memhub sync enable` ([sync] in .memhub/config.toml)");
     println!("  - Code index: run `memhub code index` to build it here");
 }
@@ -1274,7 +1276,11 @@ pub(crate) fn print_review_stale_report_human(r: &StaleReport) {
         if in_category.is_empty() {
             continue;
         }
-        println!("{} ({})", stale_category_heading(category), in_category.len());
+        println!(
+            "{} ({})",
+            stale_category_heading(category),
+            in_category.len()
+        );
         for item in in_category {
             println!("  #{} {}", item.source_id, item.message);
             println!("      fix: {}", item.verb);

@@ -109,8 +109,7 @@ pub struct ArchiveReport {
 }
 
 /// The one-line, unmissable secret warning every archive surface prints.
-pub const UNREDACTED_WARNING: &str =
-    "WARNING: memhub transcript archive stores the RAW, UNREDACTED session \
+pub const UNREDACTED_WARNING: &str = "WARNING: memhub transcript archive stores the RAW, UNREDACTED session \
      transcript. It may contain secrets, tokens, or private data pasted or \
      printed during the session. The archive lands in gitignored, \
      export-excluded .memhub/transcripts/ and is never embedded, recalled, \
@@ -537,9 +536,7 @@ pub(crate) fn prune(conn: &Connection, memhub_dir: &Path, retention_days: u32) -
         "session_transcripts",
         None,
         "prune",
-        &format!(
-            "pruned {removed} transcript archive(s) older than {retention_days} day(s)"
-        ),
+        &format!("pruned {removed} transcript archive(s) older than {retention_days} day(s)"),
     );
 
     Ok(removed)
@@ -713,10 +710,7 @@ mod tests {
 
     #[test]
     fn normalize_session_id_prefixes_bare_codex_ids_only() {
-        assert_eq!(
-            normalize_session_id(Agent::Codex, "uuid-1"),
-            "codex:uuid-1"
-        );
+        assert_eq!(normalize_session_id(Agent::Codex, "uuid-1"), "codex:uuid-1");
         assert_eq!(
             normalize_session_id(Agent::Codex, "codex:uuid-1"),
             "codex:uuid-1",
@@ -756,13 +750,8 @@ mod tests {
     fn archive_refuses_without_explicit_approval() {
         // The fail-closed guard fires before any project is opened, so a
         // bogus path is fine — we only assert the refusal.
-        let err = archive(
-            Path::new("/nonexistent"),
-            Agent::Claude,
-            "sess-1",
-            false,
-        )
-        .expect_err("must refuse without approval");
+        let err = archive(Path::new("/nonexistent"), Agent::Claude, "sess-1", false)
+            .expect_err("must refuse without approval");
         let msg = err.to_string();
         assert!(msg.contains("explicit approval"), "unexpected: {msg}");
     }
@@ -976,7 +965,10 @@ mod tests {
         let pruned = prune(&ctx.conn, &ctx.paths.memhub_dir, 30).expect("prune");
 
         assert!(victim_abs.exists(), "absolute-escape target must survive");
-        assert!(victim_rel.exists(), "..-relative-escape target must survive");
+        assert!(
+            victim_rel.exists(),
+            "..-relative-escape target must survive"
+        );
         assert_eq!(pruned, 0, "no in-root archive was removed");
         assert_eq!(
             row_count(&ctx.conn),
@@ -1047,7 +1039,10 @@ mod tests {
         seed_stale_row(&ctx.conn, "blocked", &blocked.to_string_lossy());
 
         let pruned = prune(&ctx.conn, &ctx.paths.memhub_dir, 30).expect("prune");
-        assert_eq!(pruned, 0, "the undeletable archive was not counted as removed");
+        assert_eq!(
+            pruned, 0,
+            "the undeletable archive was not counted as removed"
+        );
         assert!(blocked.exists(), "the undeletable file survives");
         assert_eq!(
             row_count(&ctx.conn),
@@ -1110,10 +1105,24 @@ mod tests {
 
         // Two DISTINCT session ids that sanitize to the same filename: `a:b`
         // and `a_b` both map to `a_b` (decision 161: reject loudly).
-        archive_into(&ctx.conn, &ctx.paths.memhub_dir, Agent::Claude, "a_b", &source, 0)
-            .expect("first archive");
-        let err = archive_into(&ctx.conn, &ctx.paths.memhub_dir, Agent::Claude, "a:b", &source, 0)
-            .expect_err("colliding filename must be refused");
+        archive_into(
+            &ctx.conn,
+            &ctx.paths.memhub_dir,
+            Agent::Claude,
+            "a_b",
+            &source,
+            0,
+        )
+        .expect("first archive");
+        let err = archive_into(
+            &ctx.conn,
+            &ctx.paths.memhub_dir,
+            Agent::Claude,
+            "a:b",
+            &source,
+            0,
+        )
+        .expect_err("colliding filename must be refused");
         let msg = err.to_string();
         assert!(
             msg.contains("collides") && msg.contains("a_b"),
@@ -1215,8 +1224,14 @@ mod tests {
         let escape = split_path_components(r"\\?\C:\Windows\System32\evil.txt");
         let inside = split_path_components(r"\\?\C:\repo\.memhub\transcripts\2026-a.jsonl.zst");
         let inside_ci = split_path_components(r"\\?\c:\REPO\.memhub\TRANSCRIPTS\x.zst");
-        assert!(!components_contained(&root, &escape, true), "escape rejected");
-        assert!(components_contained(&root, &inside, true), "in-root accepted");
+        assert!(
+            !components_contained(&root, &escape, true),
+            "escape rejected"
+        );
+        assert!(
+            components_contained(&root, &inside, true),
+            "in-root accepted"
+        );
         assert!(
             components_contained(&root, &inside_ci, true),
             "case-folded in-root path is still contained on Windows"

@@ -175,9 +175,9 @@ impl GrammarSpec {
             self.method_naming,
             MethodNaming::Standard | MethodNaming::GoReceiver
         ) && matches!(
-                self.doc_fold,
-                DocFold::PrecedingSiblings | DocFold::None | DocFold::PythonDocstring
-            )
+            self.doc_fold,
+            DocFold::PrecedingSiblings | DocFold::None | DocFold::PythonDocstring
+        )
     }
 }
 
@@ -481,7 +481,15 @@ mod tests {
     // hooks implemented so no live row can reach a `todo!()` in the walker.
     #[test]
     fn all_registered_grammars_have_fully_implemented_hooks() {
-        for lang in ["rust", "csharp", "java", "typescript", "javascript", "python", "go"] {
+        for lang in [
+            "rust",
+            "csharp",
+            "java",
+            "typescript",
+            "javascript",
+            "python",
+            "go",
+        ] {
             let spec = grammar_for(Some(lang)).expect(lang);
             assert!(
                 spec.hooks_implemented(),

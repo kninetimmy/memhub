@@ -128,7 +128,9 @@ fn transcript_level_names_the_archive_step_and_issue_96() {
     let output = run_cli(temp.path(), &["wrapup-policy", "--json"]);
     assert!(output.status.success());
     let wrapup_policy = wrapup_policy_json(&output);
-    let instructions = wrapup_policy["instructions"].as_str().expect("instructions");
+    let instructions = wrapup_policy["instructions"]
+        .as_str()
+        .expect("instructions");
     assert!(instructions.contains("Transcript archive"));
     assert!(instructions.contains("issue #96"));
 }

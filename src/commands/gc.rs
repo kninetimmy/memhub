@@ -906,7 +906,12 @@ fn run_with_options_in_temp(
     sweep_stale_staging(temp_dir, options.dry_run, &mut out);
 
     // U8: backups retention — report-only unless delete_stale_backups.
-    backups_retention(&root, options.dry_run, options.delete_stale_backups, &mut out);
+    backups_retention(
+        &root,
+        options.dry_run,
+        options.delete_stale_backups,
+        &mut out,
+    );
 
     Ok(out)
 }

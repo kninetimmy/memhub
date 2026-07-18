@@ -93,7 +93,10 @@ fn status_json_adds_checks_and_keeps_existing_keys() {
     assert!(
         !checks.iter().any(|c| c["id"] == "integrity_check"
             || c["id"] == "config_parse"
-            || c["id"].as_str().unwrap_or("").starts_with("mcp_registration")),
+            || c["id"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("mcp_registration")),
         "status leaked a doctor-only check: {checks:#?}"
     );
 }

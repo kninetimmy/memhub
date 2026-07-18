@@ -170,7 +170,10 @@ fn fact_verify_refreshes_verified_at_without_upsert_side_effects() {
         .find(|f| f.id == id)
         .expect("verified fact present");
     assert!(!verified.is_stale, "verify should clear staleness");
-    assert_eq!(verified.value, "cargo clippy", "verify must not touch value");
+    assert_eq!(
+        verified.value, "cargo clippy",
+        "verify must not touch value"
+    );
     assert_eq!(
         verified.source, "user+agent:codex",
         "verify must not overwrite source (unlike `fact add`, which does — see \

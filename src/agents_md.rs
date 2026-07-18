@@ -97,12 +97,14 @@ pub(crate) fn split_trailing_managed_block(claude_md: &str) -> (String, Option<S
     let claude = claude_md.replace("\r\n", "\n");
     let trimmed = claude.trim_end_matches('\n');
     let managed_block = trimmed.rfind(MANAGED_BLOCK_START).and_then(|start| {
-        let end =
-            start + trimmed[start..].find(MANAGED_BLOCK_END)? + MANAGED_BLOCK_END.len();
+        let end = start + trimmed[start..].find(MANAGED_BLOCK_END)? + MANAGED_BLOCK_END.len();
         (end == trimmed.len()).then(|| (start, trimmed[start..end].to_string()))
     });
     match managed_block {
-        Some((start, block)) => (trimmed[..start].trim_end_matches('\n').to_string(), Some(block)),
+        Some((start, block)) => (
+            trimmed[..start].trim_end_matches('\n').to_string(),
+            Some(block),
+        ),
         None => (claude, None),
     }
 }
@@ -194,7 +196,10 @@ mod tests {
         let last_body = out.find("## Build / Test / Run").expect("body section");
         assert!(last_body < attrib, "injected sections come after the body");
         assert!(attrib < routing, "attribution precedes routing");
-        assert!(out.ends_with("delivery spike.)\n"), "single trailing newline");
+        assert!(
+            out.ends_with("delivery spike.)\n"),
+            "single trailing newline"
+        );
     }
 
     #[test]

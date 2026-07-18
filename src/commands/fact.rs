@@ -417,8 +417,14 @@ mod tests {
     fn supersede_links_old_to_new_without_deleting() {
         let temp = tempdir().expect("tempdir");
         init::run(temp.path()).expect("init");
-        let (old_id, _) =
-            add(temp.path(), "deploy-cmd", "kubectl apply v1", "user", "cli:user").expect("old");
+        let (old_id, _) = add(
+            temp.path(),
+            "deploy-cmd",
+            "kubectl apply v1",
+            "user",
+            "cli:user",
+        )
+        .expect("old");
         let (new_id, _) = add(
             temp.path(),
             "deploy-cmd-v2",
@@ -454,10 +460,8 @@ mod tests {
     fn supersede_resolves_by_key() {
         let temp = tempdir().expect("tempdir");
         init::run(temp.path()).expect("init");
-        let (old_id, _) =
-            add(temp.path(), "old-key", "v1", "user", "cli:user").expect("old");
-        let (new_id, _) =
-            add(temp.path(), "new-key", "v2", "user", "cli:user").expect("new");
+        let (old_id, _) = add(temp.path(), "old-key", "v1", "user", "cli:user").expect("old");
+        let (new_id, _) = add(temp.path(), "new-key", "v2", "user", "cli:user").expect("new");
 
         let outcome =
             supersede(temp.path(), "old-key", "new-key", "cli:user").expect("supersede by key");
@@ -506,9 +510,22 @@ mod tests {
     fn add_logs_prior_value_on_same_key_overwrite() {
         let temp = tempdir().expect("tempdir");
         init::run(temp.path()).expect("init");
-        add(temp.path(), "deploy-cmd", "kubectl apply v1", "user", "cli:user").expect("v1");
-        add(temp.path(), "deploy-cmd", "kubectl apply v2", "user", "cli:user")
-            .expect("v2 overwrite");
+        add(
+            temp.path(),
+            "deploy-cmd",
+            "kubectl apply v1",
+            "user",
+            "cli:user",
+        )
+        .expect("v1");
+        add(
+            temp.path(),
+            "deploy-cmd",
+            "kubectl apply v2",
+            "user",
+            "cli:user",
+        )
+        .expect("v2 overwrite");
 
         let ctx = db::open_project(temp.path()).expect("open");
         // The overwrite is an `update`; its reason must carry the prior value.
@@ -547,7 +564,14 @@ mod tests {
     fn add_without_kind_leaves_it_untagged() {
         let temp = tempdir().expect("tempdir");
         init::run(temp.path()).expect("init");
-        add(temp.path(), "build-command", "cargo build", "user", "cli:user").expect("fact");
+        add(
+            temp.path(),
+            "build-command",
+            "cargo build",
+            "user",
+            "cli:user",
+        )
+        .expect("fact");
 
         let fact = list(temp.path()).expect("list").into_iter().next().unwrap();
         assert_eq!(fact.kind, None, "plain `add` must leave kind untagged");
@@ -637,7 +661,14 @@ mod tests {
 
         // Re-adding without --kind clears the tag (None overwrites, same
         // as every other field on a same-key `add`).
-        add(temp.path(), "deploy-cmd", "kubectl apply v3", "user", "cli:user").expect("v3");
+        add(
+            temp.path(),
+            "deploy-cmd",
+            "kubectl apply v3",
+            "user",
+            "cli:user",
+        )
+        .expect("v3");
         let fact = list(temp.path()).expect("list").into_iter().next().unwrap();
         assert_eq!(fact.kind, None);
     }

@@ -1,11 +1,11 @@
 use std::fs;
 
 use memhub::MemhubError;
-use memhub::db;
 use memhub::commands::{
     decision, doc, export, fact, import, init, narrative, pending_write, review, search,
     session_note, task,
 };
+use memhub::db;
 use memhub::export::v1;
 use memhub::models::NarrativeKind;
 use tempfile::tempdir;
@@ -172,8 +172,14 @@ fn export_overwrites_existing_destination_via_atomic_rename_leaving_no_temp_file
     export::run(temp.path(), &dest).expect("first export succeeds");
     let first = fs::read_to_string(&dest).expect("read first export");
 
-    fact::add(temp.path(), "extra-command", "cargo check", "user", "cli:user")
-        .expect("seed extra fact");
+    fact::add(
+        temp.path(),
+        "extra-command",
+        "cargo check",
+        "user",
+        "cli:user",
+    )
+    .expect("seed extra fact");
     export::run(temp.path(), &dest).expect("second export succeeds");
     let second = fs::read_to_string(&dest).expect("read second export");
 
@@ -345,8 +351,14 @@ fn export_import_round_trips_fact_kind() {
         "cli:user",
     )
     .expect("fact add with kind");
-    fact::add(source.path(), "untagged", "no kind here", "user", "cli:user")
-        .expect("fact add without kind");
+    fact::add(
+        source.path(),
+        "untagged",
+        "no kind here",
+        "user",
+        "cli:user",
+    )
+    .expect("fact add without kind");
 
     let export_path = source.path().join("export.json");
     export::run(source.path(), &export_path).expect("export succeeds");
@@ -369,7 +381,10 @@ fn export_import_round_trips_fact_kind() {
         .iter()
         .find(|f| f.key == "untagged")
         .expect("untagged fact present in export");
-    assert_eq!(untagged.kind, None, "untagged fact should export kind: None");
+    assert_eq!(
+        untagged.kind, None,
+        "untagged fact should export kind: None"
+    );
 
     let target = tempdir().expect("target tempdir");
     init::run(target.path()).expect("target init");

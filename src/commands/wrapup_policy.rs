@@ -506,8 +506,7 @@ mod tests {
     /// verify` (CLI) / `record_command` (MCP) instead, go-forward only. Skips
     /// `minimal`, which drafts no facts at all.
     #[test]
-    fn facts_item_routes_verified_commands_away_from_facts_at_every_level_that_drafts_them()
-     {
+    fn facts_item_routes_verified_commands_away_from_facts_at_every_level_that_drafts_them() {
         for level in [
             WrapUpVerbosity::Standard,
             WrapUpVerbosity::Full,
@@ -526,10 +525,7 @@ mod tests {
                 text.contains("memhub command verify") && text.contains("record_command"),
                 "level {level:?} missing Q11 routing to command verify/record_command: {text}"
             );
-            assert!(
-                text.contains("go-forward only"),
-                "level {level:?}: {text}"
-            );
+            assert!(text.contains("go-forward only"), "level {level:?}: {text}");
         }
     }
 

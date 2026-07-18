@@ -584,7 +584,11 @@ fn cargo_install_with_retry_for(
             std::thread::sleep(std::time::Duration::from_secs(attempt as u64));
         }
     }
-    Err(install_failed_after_retries(cargo_bin, renamed_old, attempts))
+    Err(install_failed_after_retries(
+        cargo_bin,
+        renamed_old,
+        attempts,
+    ))
 }
 
 /// Build the terminal error once every install attempt has failed. A
@@ -1053,13 +1057,12 @@ fn verify_last() -> Result<()> {
         .unwrap_or("(no summary)");
     // Prefer the explicit `state`; fall back to the legacy `ok` bool for a
     // file written by an older binary (it never carried "pending").
-    let state = parsed
-        .get("state")
-        .and_then(|v| v.as_str())
-        .unwrap_or(match parsed.get("ok").and_then(|v| v.as_bool()) {
+    let state = parsed.get("state").and_then(|v| v.as_str()).unwrap_or(
+        match parsed.get("ok").and_then(|v| v.as_bool()) {
             Some(true) => "ok",
             _ => "failed",
-        });
+        },
+    );
     match state {
         "ok" => {
             println!("memhub upgrade: SUCCESS — {summary}");
@@ -2566,10 +2569,7 @@ fn find_install_root_override(cwd: &Path, cargo_home: &Path) -> Option<(String, 
 /// default and `cargo_bin_path()` can be trusted.
 fn install_root_override(cwd: &Path) -> Option<String> {
     if let Some(v) = std::env::var_os("CARGO_INSTALL_ROOT").filter(|s| !s.is_empty()) {
-        return Some(format!(
-            "CARGO_INSTALL_ROOT={}",
-            PathBuf::from(v).display()
-        ));
+        return Some(format!("CARGO_INSTALL_ROOT={}", PathBuf::from(v).display()));
     }
     let cargo_home = match std::env::var_os("CARGO_HOME").filter(|v| !v.is_empty()) {
         Some(h) => PathBuf::from(h),
@@ -2834,7 +2834,10 @@ mod tests {
         // Parent dir intentionally does not exist yet: relink must create it.
         let shadow = dir.path().join("nested").join("memhub");
         let kind = relink(&cargo_bin, &shadow).expect("relink");
-        assert!(shadow.exists(), "relink must create the shadow at {shadow:?}");
+        assert!(
+            shadow.exists(),
+            "relink must create the shadow at {shadow:?}"
+        );
         #[cfg(unix)]
         assert_eq!(kind, LinkKind::Symlink, "unix always symlinks");
         // On Windows the result is Symlink or Copy depending on privilege;
@@ -2847,7 +2850,10 @@ mod tests {
     #[test]
     fn shadow_or_warn_degrades_errors_to_a_warning() {
         let degraded = shadow_or_warn(Err(MemhubError::InvalidInput("disk full".to_string())));
-        assert!(degraded.warn, "an error must produce a warn outcome, not abort");
+        assert!(
+            degraded.warn,
+            "an error must produce a warn outcome, not abort"
+        );
         assert!(
             degraded.message.contains("skipped") && degraded.message.contains("disk full"),
             "the warning must explain what was skipped and why: {}",
@@ -2920,7 +2926,10 @@ mod tests {
         // The manual workaround's leftover from the 2026-07-13 incident
         // uses a non-numeric suffix; the predicate must not care what
         // follows the prefix, only that it's there.
-        assert!(is_old_exe_name(&format!("{}upgrade-20260713", old_exe_prefix())));
+        assert!(is_old_exe_name(&format!(
+            "{}upgrade-20260713",
+            old_exe_prefix()
+        )));
         // The bare install destination is not itself a leftover.
         assert!(!is_old_exe_name(bin_name()));
         // A different sweep's prefix (the staged %TEMP% shim) must never
@@ -3040,14 +3049,18 @@ mod tests {
 
         let err = install_failed_after_retries(&cargo_bin, Some(old.clone()), 1);
 
-        assert!(!cargo_bin.exists(), "nothing to restore from, so still absent");
+        assert!(
+            !cargo_bin.exists(),
+            "nothing to restore from, so still absent"
+        );
         let msg = err.to_string();
         assert!(
             msg.contains("could NOT be restored") || msg.contains("could not be restored"),
             "{msg}"
         );
         assert!(
-            msg.contains(&old.display().to_string()) && msg.contains(&cargo_bin.display().to_string()),
+            msg.contains(&old.display().to_string())
+                && msg.contains(&cargo_bin.display().to_string()),
             "the exact aside path and destination must both be named so a human can \
              restore it by hand: {msg}"
         );
@@ -3169,7 +3182,8 @@ mod tests {
             "{msg}"
         );
         assert!(
-            msg.contains(&old.display().to_string()) && msg.contains(&cargo_bin.display().to_string()),
+            msg.contains(&old.display().to_string())
+                && msg.contains(&cargo_bin.display().to_string()),
             "{msg}"
         );
         assert!(msg.contains("mv "), "{msg}");
@@ -3241,8 +3255,7 @@ mod tests {
         let child = root.path().join("nested").join("repo");
         std::fs::create_dir_all(&child).unwrap();
 
-        let found =
-            find_install_root_override(&child, cargo_home.path()).expect("must be found");
+        let found = find_install_root_override(&child, cargo_home.path()).expect("must be found");
         assert_eq!(found.0, "/from/ancestor");
     }
 
@@ -3326,7 +3339,11 @@ mod tests {
 
         let removed = cleanup_stale_sync_md_twins(repo.path());
 
-        assert_eq!(removed.len(), 2, "both twins should be removed: {removed:?}");
+        assert_eq!(
+            removed.len(),
+            2,
+            "both twins should be removed: {removed:?}"
+        );
         assert!(!rendered_dir.join("AGENTS.md").exists());
         assert!(!rendered_dir.join("CLAUDE.md").exists());
     }
@@ -3343,7 +3360,10 @@ mod tests {
 
         let removed = cleanup_stale_sync_md_twins(repo.path());
 
-        assert!(removed.is_empty(), "unrecognized content must be left alone: {removed:?}");
+        assert!(
+            removed.is_empty(),
+            "unrecognized content must be left alone: {removed:?}"
+        );
         assert!(rendered_dir.join("AGENTS.md").exists());
     }
 

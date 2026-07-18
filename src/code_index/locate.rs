@@ -327,7 +327,11 @@ fn gather_candidates(
              LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![match_expr, FTS_CANDIDATE_LIMIT], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?, row.get::<_, String>(2)?))
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, f64>(1)?,
+                row.get::<_, String>(2)?,
+            ))
         })?;
         for row in rows {
             let (chunk_id, bm25, path) = row?;
@@ -548,7 +552,11 @@ mod tests {
         conn.execute(
             "INSERT INTO code_embeddings(chunk_id, model_name, dimension, vector, content_hash) \
              VALUES (1, ?1, ?2, ?3, 'h')",
-            params![EMBEDDING_MODEL_NAME, EMBEDDING_DIMENSION as i64, vec![0u8; 4]],
+            params![
+                EMBEDDING_MODEL_NAME,
+                EMBEDDING_DIMENSION as i64,
+                vec![0u8; 4]
+            ],
         )
         .expect("insert embedding");
 
@@ -624,7 +632,10 @@ auto_sync_md = false
 log_level = "info"
 "#;
         let cfg: ProjectConfig = toml::from_str(raw).expect("parse");
-        assert_eq!(cfg.code_index.fts_weight, crate::config::DEFAULT_CODE_INDEX_FTS_WEIGHT);
+        assert_eq!(
+            cfg.code_index.fts_weight,
+            crate::config::DEFAULT_CODE_INDEX_FTS_WEIGHT
+        );
         assert_eq!(
             cfg.code_index.vector_weight,
             crate::config::DEFAULT_CODE_INDEX_VECTOR_WEIGHT

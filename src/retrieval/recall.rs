@@ -1346,8 +1346,7 @@ fn score(rows: &[CandidateRow], scoring: &RetrievalScoringConfig) -> Vec<ScoredH
             // enter the rerank pool rather than the final reranked order
             // (`finalize`).
             let age_decay = age_decay_multiplier(c.age_days, scoring.age_half_life_days);
-            let relevance =
-                scoring.fts_weight * fts_score + scoring.vector_weight * vector_score;
+            let relevance = scoring.fts_weight * fts_score + scoring.vector_weight * vector_score;
             let score = relevance * age_decay - stale_penalty - superseded_penalty;
             ScoredHit {
                 source_type: c.source_type,
@@ -2027,7 +2026,10 @@ mod tests {
         );
         let old_rank = response.results.iter().position(|h| h.source_id == old_id);
         let new_rank = response.results.iter().position(|h| h.source_id == new_id);
-        assert!(new_rank < old_rank, "replacement must rank above the superseded row");
+        assert!(
+            new_rank < old_rank,
+            "replacement must rank above the superseded row"
+        );
     }
 
     // ------------------------------------------------------------------
@@ -2056,7 +2058,10 @@ mod tests {
         let one = age_decay_multiplier(Some(30.0), 30);
         assert!((one - 0.5).abs() < 1e-9, "one half-life => 0.5, got {one}");
         let two = age_decay_multiplier(Some(60.0), 30);
-        assert!((two - 0.25).abs() < 1e-9, "two half-lives => 0.25, got {two}");
+        assert!(
+            (two - 0.25).abs() < 1e-9,
+            "two half-lives => 0.25, got {two}"
+        );
         // Fresh (age 0), decisions/docs/non-done tasks (None), and future
         // timestamps (negative age) all stay at exactly 1.0.
         assert_eq!(age_decay_multiplier(Some(0.0), 30), 1.0);
@@ -2079,8 +2084,18 @@ mod tests {
         let scoring = RetrievalScoringConfig::default(); // age_half_life_days = 0
         assert_eq!(scoring.age_half_life_days, 0, "default must be off");
         let hits = score(&[fresh, aged], &scoring);
-        let fresh_bits = hits.iter().find(|h| h.source_id == 1).unwrap().score.to_bits();
-        let aged_bits = hits.iter().find(|h| h.source_id == 2).unwrap().score.to_bits();
+        let fresh_bits = hits
+            .iter()
+            .find(|h| h.source_id == 1)
+            .unwrap()
+            .score
+            .to_bits();
+        let aged_bits = hits
+            .iter()
+            .find(|h| h.source_id == 2)
+            .unwrap()
+            .score
+            .to_bits();
         assert_eq!(
             fresh_bits, aged_bits,
             "age must not affect scoring when the knob is 0 (byte-identical)"
@@ -2108,8 +2123,18 @@ mod tests {
 
         let scoring = RetrievalScoringConfig::default();
         let hits = score(&[untagged, tagged], &scoring);
-        let untagged_bits = hits.iter().find(|h| h.source_id == 1).unwrap().score.to_bits();
-        let tagged_bits = hits.iter().find(|h| h.source_id == 2).unwrap().score.to_bits();
+        let untagged_bits = hits
+            .iter()
+            .find(|h| h.source_id == 1)
+            .unwrap()
+            .score
+            .to_bits();
+        let tagged_bits = hits
+            .iter()
+            .find(|h| h.source_id == 2)
+            .unwrap()
+            .score
+            .to_bits();
         assert_eq!(
             untagged_bits, tagged_bits,
             "kind must not affect scoring, tagged or not (byte-identical)"
@@ -2118,12 +2143,13 @@ mod tests {
         assert_eq!(untagged_bits, expected.to_bits());
 
         // The tag itself still rides through to the returned hit untouched.
+        assert_eq!(hits.iter().find(|h| h.source_id == 1).unwrap().kind, None);
         assert_eq!(
-            hits.iter().find(|h| h.source_id == 1).unwrap().kind,
-            None
-        );
-        assert_eq!(
-            hits.iter().find(|h| h.source_id == 2).unwrap().kind.as_deref(),
+            hits.iter()
+                .find(|h| h.source_id == 2)
+                .unwrap()
+                .kind
+                .as_deref(),
             Some("gotcha")
         );
     }
