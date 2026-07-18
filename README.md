@@ -449,6 +449,7 @@ A point-in-time snapshot pulled from the memhub task DB, current as of the K9-re
 
 ### Recently fixed
 
+- **Branch protection on `main` is live (2026-07-18, task 121).** PRs are now required to merge, with the lint lane (fmt+clippy) and Windows/macOS build+test as required status checks, and `enforce_admins` on — merges wait on CI, not just local preflight.
 - **K9 removal and onboarding parity (2026-07-18, PRs #161, #162, #165).** The K9 integration subsystem is removed entirely — config model, init detection, the `memhub integrations` verb group, and all `k9_*` status/JSON/MCP/doctor surfaces are gone (task 123, #165). The README gained a Drive-sync model diagram (`docs/images/sync-model.svg`) in the sync section (task 96, #161). Onboarding surfaces now offer all five current runtime toggles, the import checklist's metrics bullet is cfg-gated, install-by-hand skips the hibernated metrics/viz skills, and the deprecated K9 interview step is stripped from `/init-project` (task 95, #162).
 - **Run C (2026-07-17–18, PRs #151–#156): audit remediation and CI baseline.** The maintenance-on-open contract is now codified with tests (task 120, #151). Initial CI landed: Windows/macOS build+test lanes, a `--features viz` lane, hash-keyed model-asset caching, and a weekly scheduled `cargo audit` (task 115, #152). The `sync_md` channel is retired, with `memhub upgrade` now purging stale rendered CLAUDE/AGENTS twins (task 119, #153). A small-hardening batch closed four known issues: a corrupt-embedding staleness warning replacing silent FTS-only degradation, the `memhub audit md` panic fix, an import `writes_log` guard, and atomic export (task 117, #154). A docs/roadmap reconciliation pass followed (task 118, #155), and a mechanical `rustfmt` + `clippy` adoption pass added the ubuntu fmt+clippy CI lint gate (task 116, decision 160, #156).
 - **Run B (2026-07-17, PRs #138–#142): sync divergence blind spots closed.** The sync logical-version digest now covers doc ingests and fact kind/supersede changes, with a schema-drift test guarding it (task 113, #140). Sync adopt is hardened: a fail-closed manifest schema parse, staged-hash install closing the hash/copy TOCTOU window, and local DB replacement via SQLite's online-backup API (task 112, #139). Sync publication is now atomic: content-addressed versioned snapshots with manifest-last publication, torn-marker degrade, and `sync_commit` refusing to re-baseline over a remote that has already diverged (task 114, #141). Also landed: `sync check --diff` per-table divergence detail since baseline (#142), and an import retained-docs checklist with the inverted docs-hint fix (#138).
@@ -460,7 +461,6 @@ A point-in-time snapshot pulled from the memhub task DB, current as of the K9-re
 
 ### Roadmap (open tasks)
 
-- Branch protection on `main` now that CI is live and stable (task 121)
 - Optional Haiku recall reranker with local fallback (task 98)
 - Transcript content-level secret redaction (task 103)
 - Metrics follow-on read attribution (task 92)
