@@ -1232,6 +1232,9 @@ fn smoke(root: &Path) -> Result<()> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LinkKind {
     Symlink,
+    // Only constructed in relink()'s #[cfg(windows)] arm, so a non-Windows
+    // lib build never constructs it — silence the resulting dead-code lint.
+    #[cfg_attr(not(windows), allow(dead_code))]
     Copy,
 }
 
