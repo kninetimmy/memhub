@@ -282,7 +282,9 @@ Please install memhub for me, then turn on hybrid recall.
    embedding model into the binary.
 3. Run `memhub --version` to verify.
 4. Register memhub as an MCP server so you can call it as a structured
-   tool. Add this to ~/.config/opencode/opencode.json:
+   tool. Add this to ~/.config/opencode/opencode.jsonc (or
+   opencode.json — OpenCode reads either extension; use whichever
+   already exists on this machine):
 
        {
          "$schema": "https://opencode.ai/config.json",
@@ -843,7 +845,7 @@ include_docs_in_default = false  # auto-flips on first `doc add --global`
 
 - Reads `CLAUDE.md` at session start.
 - MCP server registered repo-scoped via the committed [`.mcp.json`](.mcp.json) — nothing to set up per machine.
-- User-level slash commands at `~/.claude/commands/`: `/wrap-up`, `/catch-up`, `/check-init`, `/init-project`, `/recall`, `/locate`, `/reindex`, `/eval-recall`, `/doc`, `/global`, `/upgrade`. Dormant `/metrics` and `/viz` templates are retained for feature builds but are not installed by default.
+- User-level slash commands at `~/.claude/commands/`: `/wrap-up`, `/catch-up`, `/check-init`, `/init-project`, `/recall`, `/locate`, `/reindex`, `/eval-recall`, `/doc`, `/global`, `/audit-md`, `/upgrade`. Dormant `/metrics` and `/viz` templates are retained for feature builds but are not installed by default.
 - Skill writes are attributed `actor=claude:wrap-up`, `source=user+agent:claude-code`.
 
 **Codex CLI**
@@ -860,6 +862,7 @@ include_docs_in_default = false  # auto-flips on first `doc add --global`
 - User-level slash-command wrappers at `~/.config/opencode/commands/`: same command names as above.
 - MCP server registered repo-scoped via the `mcp.memhub` block in the tracked `opencode.json` — nothing to set up per machine. OpenCode's MCP client identifies as `opencode`; memhub auto-attributes writes accordingly.
 - Skill writes are attributed `actor=opencode:wrap-up`, `source=user+agent:opencode`.
+- Non-interactive `opencode run` needs a default model configured (`opencode config`) or an explicit `-m <provider/model>` flag on the invocation — without one it errors before it ever reaches a skill or the MCP server.
 
 **All three at once**
 
