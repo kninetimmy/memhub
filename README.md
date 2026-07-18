@@ -652,6 +652,12 @@ This is for one person across their own laptop and desktop, not a team. It's off
 
 ### How it works
 
+<br>
+
+<p align="center">
+  <img src="docs/images/sync-model.svg" alt="memhub cross-machine Drive sync model" width="960"/>
+</p>
+
 - **Transport is an OS-level synced folder — not a memhub network call.** You point memhub at a local path that Google Drive for Desktop (macOS/Windows) or an rclone mount (Linux) already mirrors to the cloud. memhub only ever reads and writes that local path; Google's app moves the bytes in the background. memhub itself stays fully offline — no account, no API, no base64-over-the-wire.
 - **It syncs a whole-DB snapshot, not a row-by-row merge.** A push writes one consistent single-file copy of your database (via SQLite `VACUUM INTO`) plus a small `manifest.json` into the synced folder. There's no half-written file to sync up.
 - **Divergence is detected like git.** memhub compares a *logical version* — a digest of your durable content, not the raw file bytes (SQLite files aren't byte-stable) — and reports one of five verdicts:
