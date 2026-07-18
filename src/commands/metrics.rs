@@ -6,8 +6,7 @@
 //! The subsystem is off by default; all reads and writes are gated on
 //! `MetricsConfig.enabled`. Config mutations are written back to the
 //! machine-local `config.toml` via `ProjectConfig::save` so each
-//! invocation inherits the updated state, exactly as the integrations
-//! commands do.
+//! invocation inherits the updated state.
 //!
 //! `db::open_project` already runs `scrape_if_enabled` and
 //! `maintenance::run_if_enabled` opportunistically on every `memhub`
