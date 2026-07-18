@@ -82,6 +82,31 @@ const MANAGED_BLOCK_START: &str = "<!-- orchestrator:managed:start";
 /// Closing marker of the Orch-managed block; see [`MANAGED_BLOCK_START`].
 const MANAGED_BLOCK_END: &str = "<!-- orchestrator:managed:end -->";
 
+/// Split `claude_md` into `(body, managed_block)`: `body` is the content
+/// before a trailing Orch-managed block (line-ending-normalized to `\n`),
+/// and `managed_block` is that block's verbatim text when the input ends
+/// (modulo trailing newlines) with one, `None` otherwise.
+///
+/// `pub(crate)` and shared between [`generate_agents_md`]'s step 0 and
+/// `commands::audit_md`'s precondition check (issue #148 / audit C3) — the
+/// two must agree on exactly what "the managed block" is, or a `CLAUDE.md`
+/// whose only `## ` heading lives inside that block can pass the
+/// precondition check against the raw text while `generate_agents_md`
+/// still panics against the stripped text it actually transforms.
+pub(crate) fn split_trailing_managed_block(claude_md: &str) -> (String, Option<String>) {
+    let claude = claude_md.replace("\r\n", "\n");
+    let trimmed = claude.trim_end_matches('\n');
+    let managed_block = trimmed.rfind(MANAGED_BLOCK_START).and_then(|start| {
+        let end =
+            start + trimmed[start..].find(MANAGED_BLOCK_END)? + MANAGED_BLOCK_END.len();
+        (end == trimmed.len()).then(|| (start, trimmed[start..end].to_string()))
+    });
+    match managed_block {
+        Some((start, block)) => (trimmed[..start].trim_end_matches('\n').to_string(), Some(block)),
+        None => (claude, None),
+    }
+}
+
 /// Transform `CLAUDE.md` content into the `AGENTS.md` content.
 ///
 /// Pure string work, no dependencies. Line-ending-agnostic: the input is
@@ -89,22 +114,10 @@ const MANAGED_BLOCK_END: &str = "<!-- orchestrator:managed:end -->";
 /// `AGENTS.md` compares equal to this on every platform (this repo checks
 /// out CRLF on Windows under `core.autocrlf=true`).
 pub fn generate_agents_md(claude_md: &str) -> String {
-    let claude = claude_md.replace("\r\n", "\n");
-
-    // 0. Split off a trailing Orch-managed block, if the input ends (modulo
-    //    trailing newlines) with one, so it can be re-appended last after
-    //    the Codex/OpenCode-only sections rather than getting pushed out of
-    //    EOF position by step 3.
-    let trimmed = claude.trim_end_matches('\n');
-    let managed_block = trimmed.rfind(MANAGED_BLOCK_START).and_then(|start| {
-        let end =
-            start + trimmed[start..].find(MANAGED_BLOCK_END)? + MANAGED_BLOCK_END.len();
-        (end == trimmed.len()).then(|| (start, trimmed[start..end].to_string()))
-    });
-    let claude = match &managed_block {
-        Some((start, _)) => trimmed[..*start].trim_end_matches('\n').to_string(),
-        None => claude,
-    };
+    // 0. Split off a trailing Orch-managed block, if present, so it can be
+    //    re-appended last after the Codex/OpenCode-only sections rather
+    //    than getting pushed out of EOF position by step 3.
+    let (claude, managed_block) = split_trailing_managed_block(claude_md);
 
     // 1. Swap the H1 title line.
     let (first_line, rest) = claude.split_once('\n').unwrap_or((claude.as_str(), ""));
@@ -129,7 +142,7 @@ pub fn generate_agents_md(claude_md: &str) -> String {
     //    through verbatim and re-appended last of all, so it stays at EOF.
     let body = with_note.trim_end_matches('\n');
     match managed_block {
-        Some((_, block)) => {
+        Some(block) => {
             format!("{body}\n\n{AGENT_ATTRIBUTION}\n\n{ROUTING_BLOCK}\n\n{block}\n")
         }
         None => format!("{body}\n\n{AGENT_ATTRIBUTION}\n\n{ROUTING_BLOCK}\n"),

@@ -159,6 +159,42 @@ fn export_creates_parent_directory_when_missing() {
 }
 
 #[test]
+fn export_overwrites_existing_destination_via_atomic_rename_leaving_no_temp_file() {
+    // Regression (issue #148 / audit C3): export previously wrote directly
+    // via fs::write, so a crash mid-write could leave truncated JSON over a
+    // previous good export. It now stages a temp file and atomically
+    // renames it into place -- verify a pre-existing export is cleanly
+    // replaced and no stray temp file is left behind.
+    let temp = tempdir().expect("tempdir");
+    seed_project(temp.path());
+    let dest = temp.path().join("export.json");
+
+    export::run(temp.path(), &dest).expect("first export succeeds");
+    let first = fs::read_to_string(&dest).expect("read first export");
+
+    fact::add(temp.path(), "extra-command", "cargo check", "user", "cli:user")
+        .expect("seed extra fact");
+    export::run(temp.path(), &dest).expect("second export succeeds");
+    let second = fs::read_to_string(&dest).expect("read second export");
+
+    assert_ne!(first, second, "second export should reflect the new fact");
+    let parsed: v1::Export = serde_json::from_str(&second).expect("parse second export");
+    assert_eq!(parsed.facts.len(), 3);
+
+    let leftovers: Vec<_> = fs::read_dir(temp.path())
+        .expect("read dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with('.') && name.ends_with(".tmp"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "no stray temp file should remain after export: {:?}",
+        leftovers
+    );
+}
+
+#[test]
 fn import_restores_data_into_empty_target() {
     let source = tempdir().expect("source tempdir");
     seed_project(source.path());
@@ -676,6 +712,44 @@ fn import_accepts_legacy_export_without_session_notes_or_narratives() {
     assert_eq!(summary.session_notes, 0);
     assert_eq!(summary.project_state, 0);
     assert_eq!(summary.project_arch, 0);
+}
+
+#[test]
+fn import_reports_overwritten_writes_log_for_docs_only_target() {
+    // Regression (issue #148 / audit C3): `doc::add` itself logs a
+    // writes_log row, so a docs-only target (decisions 86/90: docs aren't
+    // durable rows, so this import must still proceed without --force)
+    // nonetheless has audit history that `wipe_durable_tables` destroys.
+    // The guard intentionally does not block on it (that would break the
+    // docs-only no-force path), but the summary must surface the loss.
+    let source = tempdir().expect("source tempdir");
+    seed_project(source.path());
+    let export_path = source.path().join("backup.json");
+    export::run(source.path(), &export_path).expect("export succeeds");
+
+    let target = tempdir().expect("target tempdir");
+    init::run(target.path()).expect("target init");
+
+    let doc_path = target.path().join("design-spec.md");
+    fs::write(&doc_path, "# Design spec\n\nBody.\n").expect("write doc");
+    doc::add(target.path(), &doc_path, Some("Design spec"), "cli:user").expect("doc add");
+
+    // Sanity: doc::add already left a writes_log row behind, and the
+    // no-force guard still lets the import proceed.
+    let ctx = db::open_project(target.path()).expect("open target");
+    let pre_count: i64 = ctx
+        .conn
+        .query_row("SELECT COUNT(*) FROM writes_log", [], |r| r.get(0))
+        .expect("count writes_log");
+    assert!(pre_count > 0, "doc add should have logged a writes_log row");
+    drop(ctx);
+
+    let summary = import::run(target.path(), &export_path, false)
+        .expect("import should proceed; docs are not durable rows");
+    assert!(
+        summary.overwritten_writes_log > 0,
+        "summary must surface the pre-existing writes_log rows the wipe destroyed"
+    );
 }
 
 #[test]

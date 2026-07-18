@@ -31,6 +31,18 @@ pub struct ImportSummary {
     /// the guidance most) tells them docs were never carried and how to
     /// re-ingest via `memhub doc add`.
     pub retained_doc_chunks: usize,
+    /// Pre-existing target `writes_log` rows destroyed by this import's
+    /// wipe (issue #148 / audit C3). `writes_log` is the audit trail of
+    /// every prior write to this target; `wipe_durable_tables` deletes it
+    /// unconditionally, but it is deliberately NOT counted by
+    /// `count_durable_rows` -- counting it would mean a target whose only
+    /// content is e.g. ingested docs (which themselves log a `writes_log`
+    /// row on `doc add`) could no longer pass the docs-only no-`--force`
+    /// path guaranteed by decisions 86/90. Instead this is the loud,
+    /// non-blocking counterpart: nonzero here means real audit history was
+    /// just overwritten, `--force` or not, and the CLI surfaces it
+    /// unconditionally rather than letting it vanish with no signal at all.
+    pub overwritten_writes_log: usize,
 }
 
 pub fn run(start: &Path, source: &Path, force: bool) -> Result<ImportSummary> {
@@ -47,6 +59,9 @@ pub fn run(start: &Path, source: &Path, force: bool) -> Result<ImportSummary> {
     let mut ctx = db::open_project(start)?;
 
     let retained_doc_chunks = count_doc_chunks(&ctx.conn)?;
+    // Snapshot BEFORE the wipe -- this is what the import is about to
+    // destroy, whether or not `--force` was needed to get here.
+    let overwritten_writes_log = count_writes_log(&ctx.conn)?;
 
     if !force {
         let total = count_durable_rows(&ctx.conn)?;
@@ -110,12 +125,22 @@ pub fn run(start: &Path, source: &Path, force: bool) -> Result<ImportSummary> {
         project_state: summary_counts.7,
         project_arch: summary_counts.8,
         retained_doc_chunks,
+        overwritten_writes_log,
     })
 }
 
 fn count_doc_chunks(conn: &rusqlite::Connection) -> Result<usize> {
     let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM doc_chunks WHERE project_id = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(count as usize)
+}
+
+fn count_writes_log(conn: &rusqlite::Connection) -> Result<usize> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM writes_log WHERE project_id = 1",
         [],
         |row| row.get(0),
     )?;

@@ -1199,6 +1199,7 @@ mod tests {
             files_total: 0,
             chunks_total: 0,
             head: None,
+            corrupt_embeddings: 0,
             elapsed_ms: 0,
         }
     }

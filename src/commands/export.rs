@@ -6,6 +6,7 @@ use rusqlite::Connection;
 use crate::Result;
 use crate::db;
 use crate::export::{EXPORT_VERSION, Export, v1};
+use crate::render::temp_path_for;
 
 pub struct ExportSummary {
     pub destination: PathBuf,
@@ -77,7 +78,20 @@ pub fn run(start: &Path, destination: &Path) -> Result<ExportSummary> {
     }
 
     let json = serde_json::to_string_pretty(&payload)?;
-    fs::write(destination, json)?;
+
+    // Temp file + atomic rename (the same discipline `render` uses, see
+    // `crate::render::temp_path_for`): a crash mid-write can now only ever
+    // leave a stray `.tmp` file behind, never a truncated `destination`
+    // over a previous good export (issue #148 / audit C3).
+    let temp_path = temp_path_for(destination)?;
+    if let Err(err) = fs::write(&temp_path, &json) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(err.into());
+    }
+    if let Err(err) = fs::rename(&temp_path, destination) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(err.into());
+    }
 
     Ok(summary)
 }
