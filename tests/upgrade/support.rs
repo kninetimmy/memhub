@@ -58,7 +58,6 @@
 //! - `commands::audit_md::run`, `commands::upgrade::check_audit_md`
 //! - `commands::global::{begin_write, enable, status}`
 //! - `commands::status::run`
-//! - `commands::integrations::{enable_k9, disable_k9}`
 //! - `commands::pending_write::{insert_pending_write, propose_fact, ...}`
 //! - `commands::upgrade::{sync_skills, verify_global, verify_last,
 //!   write_last_upgrade, cargo_bin_path, local_bin_shadow, abbrev,
@@ -71,8 +70,8 @@
 //! `db::init_project` **called on its own** (it never is, in this harness),
 //! `commands::init::run` (as of the `sync_md` channel's retirement — audit
 //! C5 / task 119 — its only step that reaches `db::home_dir()` was the
-//! trailing `sync_md::sync_project` call, now gone; `db::init_project`
-//! plus the K9-detection step it also runs are both clean in isolation).
+//! trailing `sync_md::sync_project` call, now gone; `db::init_project`,
+//! which it calls, is clean in isolation).
 //! Tests that still wrap an `init::run`-only setup in `env_read_lock()` are
 //! being conservative, not wrong — the guard is harmless, just no longer
 //! load-bearing for that call alone. Also outside the closure: any

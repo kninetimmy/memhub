@@ -101,10 +101,6 @@ pub enum TopLevelCommand {
         #[command(subcommand)]
         command: ReviewCommand,
     },
-    Integrations {
-        #[command(subcommand)]
-        command: IntegrationsCommand,
-    },
     Note {
         #[command(subcommand)]
         command: NoteCommand,
@@ -665,25 +661,6 @@ pub enum NoteCommand {
         actor: Option<String>,
         #[arg(long, value_name = "DAYS")]
         since_days: Option<i64>,
-        #[arg(long)]
-        json: bool,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-pub enum IntegrationsCommand {
-    Status,
-    EnableK9 {
-        #[arg(long, value_name = "PATH")]
-        agent_docs_path: Option<String>,
-        #[arg(long)]
-        force: bool,
-    },
-    DisableK9,
-    CheckK9,
-    BootstrapK9 {
-        #[arg(long)]
-        dry_run: bool,
         #[arg(long)]
         json: bool,
     },

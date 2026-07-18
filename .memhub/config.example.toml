@@ -17,7 +17,6 @@
 #                                       from retrieval.scoring.* in R11 /
 #                                       issue #73 — locate and recall no
 #                                       longer share weights)
-#   - integrations.k9.*                (project property)
 #   - render.output_dir                (project property)
 #   - metrics.enabled = false          (off by default; changes here set
 #                                       the canonical install default)
@@ -117,10 +116,6 @@ patterns = [
     ".gcloud/credentials*",
     ".gnupg/**",
 ]
-
-[integrations.k9]
-enabled = false
-agent_docs_path = "agent_docs"
 
 [render]
 output_dir = ".memhub/rendered"

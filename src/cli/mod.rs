@@ -9,9 +9,9 @@ mod output;
 pub use args::MetricsCommand;
 pub use args::{
     AuditCommand, Cli, CodeCommand, CommandCommand, CommandKind, DecisionCommand, DocCommand,
-    EvalCommand, FactCommand, GlobalCommand, IndexCommand, IntegrationsCommand, NarrativeCommand,
-    NoteCommand, PendingStatus, RecallModeArg, RecallSourceTypeArg, ReviewCommand, StatsWindowArg,
-    SyncCommand, TaskCommand, TaskStatus, TopLevelCommand, TranscriptAgentArg, TranscriptCommand,
+    EvalCommand, FactCommand, GlobalCommand, IndexCommand, NarrativeCommand, NoteCommand,
+    PendingStatus, RecallModeArg, RecallSourceTypeArg, ReviewCommand, StatsWindowArg, SyncCommand,
+    TaskCommand, TaskStatus, TopLevelCommand, TranscriptAgentArg, TranscriptCommand,
 };
 use output::{
     audit_md_report_to_json, code_status_to_json, doctor_report_to_json, eval_summary_to_json,
@@ -342,11 +342,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 println!("Stale queue: {}", summary.stale_queue);
                 // Subsystem-state lines (issue #22): schema, render
                 // freshness, retrieval mode, embeddings, sync (when
-                // enabled), metrics (when enabled), and K9 — K9 only
-                // appears here when `check_k9_coexistence` finds
-                // something to report, replacing the old unconditional
-                // "K9 detected: no" / "K9 integration: disabled" lines
-                // that sprayed on every clean, non-K9 repo.
+                // enabled), metrics (when enabled).
                 print_status_checks_human(&checks);
             }
         }
@@ -1319,76 +1315,6 @@ pub fn run(cli: Cli) -> Result<()> {
                     );
                 } else {
                     print_review_stale_report_human(&report);
-                }
-            }
-        },
-        TopLevelCommand::Integrations { command } => match command {
-            IntegrationsCommand::Status => {
-                let status = commands::integrations::status(&cwd)?;
-                println!(
-                    "K9: detected={}, enabled={}, agent_docs_path={}",
-                    if status.k9.detected { "yes" } else { "no" },
-                    if status.k9.enabled { "yes" } else { "no" },
-                    status.k9.agent_docs_path
-                );
-                if let Some(drift) = status.k9.drift {
-                    println!("  note: {drift}");
-                }
-            }
-            IntegrationsCommand::EnableK9 {
-                agent_docs_path,
-                force,
-            } => {
-                commands::integrations::enable_k9(&cwd, agent_docs_path.as_deref(), force)?;
-                println!("K9 integration enabled.");
-            }
-            IntegrationsCommand::DisableK9 => {
-                commands::integrations::disable_k9(&cwd)?;
-                println!("K9 integration disabled.");
-            }
-            IntegrationsCommand::CheckK9 => {
-                let enabled = commands::integrations::check_k9(&cwd);
-                process::exit(if enabled { 0 } else { 1 });
-            }
-            IntegrationsCommand::BootstrapK9 {
-                dry_run,
-                json: as_json,
-            } => {
-                let summary = commands::bootstrap_k9::run(&cwd, dry_run)?;
-                if as_json {
-                    let payload = json!({
-                        "dry_run": summary.dry_run,
-                        "agent_docs_path": summary.agent_docs_path.display().to_string(),
-                        "decisions_imported": summary.decisions.len(),
-                        "tasks_imported": summary.tasks.len(),
-                        "tasks_skipped_completed": summary.tasks_skipped_completed,
-                        "files_read": summary.files_read.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
-                        "files_missing": summary.files_missing.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
-                        "actor": commands::bootstrap_k9::BOOTSTRAP_ACTOR,
-                    });
-                    println!("{payload}");
-                } else {
-                    println!(
-                        "Bootstrap from K9 at {} ({})",
-                        summary.agent_docs_path.display(),
-                        if summary.dry_run {
-                            "dry run"
-                        } else {
-                            "applied"
-                        }
-                    );
-                    println!(
-                        "  decisions: {} | tasks: {} (skipped completed: {})",
-                        summary.decisions.len(),
-                        summary.tasks.len(),
-                        summary.tasks_skipped_completed
-                    );
-                    for p in &summary.files_read {
-                        println!("  read: {}", p.display());
-                    }
-                    for p in &summary.files_missing {
-                        println!("  missing: {}", p.display());
-                    }
                 }
             }
         },

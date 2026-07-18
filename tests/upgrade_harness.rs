@@ -12,16 +12,12 @@
 #[path = "upgrade/support.rs"]
 mod support;
 
-#[path = "upgrade/bootstrap_k9.rs"]
-mod bootstrap_k9;
 #[path = "upgrade/discover_outside_repo.rs"]
 mod discover_outside_repo;
 #[path = "upgrade/global_memory.rs"]
 mod global_memory;
-#[path = "upgrade/integrations.rs"]
-mod integrations;
-#[path = "upgrade/k9_contract.rs"]
-mod k9_contract;
+#[path = "upgrade/json_contracts.rs"]
+mod json_contracts;
 #[path = "upgrade/migrations_auto_apply.rs"]
 mod migrations_auto_apply;
 #[path = "upgrade/skill_parity.rs"]

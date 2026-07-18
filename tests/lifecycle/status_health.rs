@@ -1,13 +1,13 @@
 //! CLI-level tests for the `status` subsystem-state refresh (Wave 1·C,
-//! issue #22): the human view's new "Subsystems:" block, K9 lines
-//! appearing only when K9 is actually detected, and `status --json`
-//! staying superset-compatible with F1's existing keys while adding a
-//! new `checks` array reused from `doctor`'s own check functions.
+//! issue #22): the human view's new "Subsystems:" block, and
+//! `status --json` staying superset-compatible with F1's existing keys
+//! while adding a new `checks` array reused from `doctor`'s own check
+//! functions.
 
 use std::path::Path;
 use std::process::Command;
 
-use memhub::commands::{init, integrations};
+use memhub::commands::init;
 use serde_json::Value;
 use tempfile::tempdir;
 
@@ -67,17 +67,12 @@ fn status_json_adds_checks_and_keeps_existing_keys() {
         "pending_writes",
         "writes_logged",
         "deny_patterns",
-        "k9_detected",
-        "k9_enabled",
-        "k9_agent_docs_path",
-        "k9_drift",
     ] {
         assert!(
             status.get(key).is_some(),
             "expected pre-existing key {key:?} to survive, got {status}"
         );
     }
-    assert_eq!(status["k9_detected"], false);
 
     // New: a `checks` array reusing doctor's per-check JSON shape
     // (id/group/status/message) for a curated subset of subsystems.
@@ -85,9 +80,6 @@ fn status_json_adds_checks_and_keeps_existing_keys() {
     assert_eq!(find_check(checks, "schema")["status"], "ok");
     assert_eq!(find_check(checks, "render_freshness")["status"], "warn");
     assert_eq!(find_check(checks, "retrieval_mode")["status"], "ok");
-    // Not detected on a clean repo -> still present in JSON (complete
-    // data); the human view is what hides skipped checks (see below).
-    assert_eq!(find_check(checks, "k9_coexistence")["status"], "skipped");
     // Heavy doctor-only checks (integrity, config, MCP registration)
     // must NOT leak into status's fast path.
     assert!(
@@ -102,7 +94,7 @@ fn status_json_adds_checks_and_keeps_existing_keys() {
 }
 
 #[test]
-fn status_human_shows_subsystems_and_hides_k9_when_not_detected() {
+fn status_human_shows_subsystems_block() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
@@ -118,33 +110,4 @@ fn status_human_shows_subsystems_and_hides_k9_when_not_detected() {
     assert!(stdout.contains("schema:"), "stdout: {stdout}");
     assert!(stdout.contains("render_freshness:"), "stdout: {stdout}");
     assert!(stdout.contains("retrieval_mode:"), "stdout: {stdout}");
-
-    // The bug this issue fixes: a clean, non-K9 repo must not spray
-    // any K9 text into the human view (today's `k9_detected:false`
-    // used to print "K9 detected: no" / "K9 integration: disabled"
-    // unconditionally).
-    assert!(!stdout.contains("K9"), "unexpected K9 output: {stdout}");
-}
-
-#[test]
-fn status_human_shows_k9_line_once_detected() {
-    let temp = tempdir().expect("tempdir");
-    init::run(temp.path()).expect("init");
-    let agent_docs = temp.path().join("agent_docs");
-    std::fs::create_dir_all(&agent_docs).expect("create agent_docs");
-    std::fs::write(agent_docs.join("project_state.md"), "# state").expect("write marker");
-    integrations::enable_k9(temp.path(), None, false).expect("enable k9");
-
-    let output = run_cli(temp.path(), &["status"]);
-    assert!(
-        output.status.success(),
-        "status failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    assert!(
-        stdout.contains("k9_coexistence: K9 integrated"),
-        "stdout: {stdout}"
-    );
 }
