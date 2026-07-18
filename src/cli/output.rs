@@ -850,18 +850,36 @@ pub(crate) fn print_overwritten_writes_log_warning(overwritten: usize) {
 /// 86/90 and friends) — printed after every successful `import` and
 /// `init --from-backup` so a fresh machine knows what it still needs to
 /// set up rather than discovering the gaps one command at a time.
+///
+/// Every bullet must name a subcommand that actually exists in the running
+/// binary (issue: onboarding surfaces must not offer hibernated toggles) —
+/// the metrics bullet is gated behind the `metrics` feature so a default
+/// build never tells a user to run `memhub metrics enable` when `metrics`
+/// isn't even a recognized subcommand.
+pub(crate) fn not_carried_checklist_lines() -> Vec<String> {
+    let mut lines = vec![
+        "  - Ingested reference docs: re-add via `memhub doc add <path>`".to_string(),
+        "  - Machine-global memory store (~/.memhub/global.sqlite): opt in via `memhub global enable`".to_string(),
+    ];
+    if cfg!(feature = "metrics") {
+        lines.push(
+            "  - Metrics collection: enable via `memhub metrics enable` ([metrics] in .memhub/config.toml)".to_string(),
+        );
+    }
+    lines.push(
+        "  - Drive sync: enable via `memhub sync enable` ([sync] in .memhub/config.toml)"
+            .to_string(),
+    );
+    lines.push("  - Code index: run `memhub code index` to build it here".to_string());
+    lines
+}
+
 pub(crate) fn print_not_carried_checklist() {
     println!();
     println!("Not carried by export/import — set these up on this machine if needed:");
-    println!("  - Ingested reference docs: re-add via `memhub doc add <path>`");
-    println!(
-        "  - Machine-global memory store (~/.memhub/global.sqlite): opt in via `memhub global enable`"
-    );
-    println!(
-        "  - Metrics collection: enable via `memhub metrics enable` ([metrics] in .memhub/config.toml)"
-    );
-    println!("  - Drive sync: enable via `memhub sync enable` ([sync] in .memhub/config.toml)");
-    println!("  - Code index: run `memhub code index` to build it here");
+    for line in not_carried_checklist_lines() {
+        println!("{line}");
+    }
 }
 
 pub(crate) fn init_result_to_json(result: &InitResult) -> serde_json::Value {
@@ -1399,5 +1417,34 @@ mod tests {
 
         let json = recall_response_to_json(&response);
         assert_eq!(json["results"][0]["kind"], "gotcha");
+    }
+
+    // A default build has no `Metrics` subcommand at all (it's gated
+    // `#[cfg(feature = "metrics")]` in `cli::args`), so the not-carried
+    // checklist printed after `import` / `init --from-backup` must never
+    // instruct a default build to run `memhub metrics enable`. This test
+    // runs under `cargo test --lib` (default features, no `metrics`), so
+    // the `cfg!(feature = "metrics")` branch below always takes the "off"
+    // path here -- it fails if the metrics bullet is ever re-added
+    // unconditionally.
+    #[test]
+    fn not_carried_checklist_never_names_a_hibernated_metrics_command_in_default_build() {
+        let lines = not_carried_checklist_lines();
+        let names_metrics_enable = lines.iter().any(|l| l.contains("memhub metrics enable"));
+
+        if cfg!(feature = "metrics") {
+            assert!(
+                names_metrics_enable,
+                "a `metrics`-feature build should still tell the user how to \
+                 enable metrics, since the subcommand exists in this binary"
+            );
+        } else {
+            assert!(
+                !names_metrics_enable,
+                "default-build not-carried checklist must not instruct \
+                 `memhub metrics enable` -- that subcommand doesn't exist \
+                 in a default build. Got: {lines:?}"
+            );
+        }
     }
 }

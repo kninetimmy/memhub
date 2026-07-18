@@ -7,9 +7,8 @@ last_updated: 2026-07-14
 ---
 
 Set up memhub in the current repository: create `.memhub/project.sqlite`,
-seed `project_state` and `project_arch` with starter narratives, render
-the two agent_docs files, and (optionally) bootstrap from existing K9
-markdown.
+seed `project_state` and `project_arch` with starter narratives, and
+render the two agent_docs files.
 
 This is the Codex counterpart to the Claude Code `/init-project` skill.
 Writes from this skill are attributed as `codex:init-project`. The
@@ -53,34 +52,14 @@ Run: `git rev-parse --show-toplevel 2>/dev/null`
 ## Existing-context-system scan
 
 Look for signs the repo already uses a session-continuity system, so
-the bootstrap can coexist or migrate rather than ignoring prior work.
+the bootstrap can note it rather than ignoring prior work.
 
-1. **K9 markdown.** Check for `agent_docs/project_state.md` and
-   `agent_docs/project_backlog.md`. If both exist, K9 is in play.
-2. **Context files.** Check whether `AGENTS.md` or `CLAUDE.md` exists
+1. **Context files.** Check whether `AGENTS.md` or `CLAUDE.md` exists
    at repo root. Note presence; do not flag as foreign on its own.
-3. **Other systems.** Probe for `.cursor/`, `.aider*`,
+2. **Other systems.** Probe for `.cursor/`, `.aider*`,
    `memory-bank/`, `.gaai/`, `ai_docs/`, `context/`. Informational.
 
-If the K9 four-file set is present, ask the user which path to take:
-
-- **(a) Coexist with K9.** Run `memhub init`, then
-  `memhub integrations enable-k9 --agent-docs-path agent_docs` so
-  memhub records that K9 also lives here. If K9 has populated
-  history, offer `memhub integrations bootstrap-k9` to import
-  decisions and backlog.
-- **(b) Migrate fully.** Same flow as (a), plus a closing note
-  suggesting the user archive or delete the K9 four files once
-  they verify the migration in the rendered output.
-- **(c) Memhub-only.** Treat as brand-new. Do not enable K9
-  integration. Leave the K9 files alone (the user can clean them
-  up manually if desired).
-
-Wait for the user's choice before continuing.
-
 ## Detection + interview
-
-For brand-new and (c) above:
 
 - **Stack detection.** Lightweight repo scan:
   - Stack markers at root: `Cargo.toml`, `package.json`,
@@ -100,25 +79,18 @@ For brand-new and (c) above:
   4. Anything else worth recording in the starter narrative
      (constraints, deadlines, key collaborators).
 
-For (a) and (b): read `agent_docs/project_state.md` and
-`agent_docs/project_arch.md` to seed the starter narratives. Do NOT
-parse `project_backlog.md` or `project_decisions.md` inline — those
-flow through `memhub integrations bootstrap-k9` after `memhub init`.
-
 ## Draft starter narratives
 
 Produce two drafts, kept separate so each can be approved on its own.
 
 1. **`state` body.** Currently building / next up / open questions /
-   last session. Under ~50 lines for a fresh project. For brand-new:
-   one "Initialized memhub on YYYY-MM-DD" entry and 1–3 tentative
-   next-up items pulled from the interview. For K9 coexist/migrate:
-   distil the current focus from `project_state.md`.
+   last session. Under ~50 lines for a fresh project: one "Initialized
+   memhub on YYYY-MM-DD" entry and 1–3 tentative next-up items pulled
+   from the interview.
 
 2. **`arch` body.** Purpose / stack / layout / key subsystems /
-   known gaps. Sparse for brand-new (purpose + stack + folder
-   inventory is enough); richer when seeded from K9
-   `project_arch.md`. Match the section style used by
+   known gaps. Sparse is fine for a fresh project — purpose + stack +
+   folder inventory is enough. Match the section style used by
    `memhub render` so PROJECT.md stays readable: short paragraphs,
    bullet lists for layout and subsystems.
 
@@ -150,19 +122,6 @@ memhub arch set --from-file /tmp/memhub-init-arch.md \
   --actor codex:init-project --json
 ```
 
-For coexist/migrate paths, ask before each integration step:
-
-```bash
-memhub integrations enable-k9 --agent-docs-path agent_docs
-# Offer bootstrap-k9 separately, only if K9 decisions/backlog have content
-memhub integrations bootstrap-k9 --dry-run --json    # preview parsed rows
-memhub integrations bootstrap-k9 --json              # apply
-```
-
-Halt on first non-zero exit and surface stderr. Do not retry, do not
-skip. The rows that landed before the failure are durable in
-`writes_log`; the user can fix and re-run.
-
 ## Render
 
 ```bash
@@ -172,6 +131,53 @@ memhub render
 Verify both `.memhub/rendered/PROJECT.md` and
 `.memhub/rendered/PROJECT_LEDGER.md` exist, unless the project config
 sets a different `[render].output_dir`. Surface the paths to the user.
+
+## Runtime toggles
+
+memhub ships several opt-in toggles off by default. Offer each one at
+a time now, while the repo is fresh — skip any the user waves off.
+
+1. **Retrieval mode.** Ask whether to turn on hybrid recall (semantic
+   + keyword, recommended) or stay on the default FTS-only (lighter,
+   keyword-only search).
+   - Hybrid: set `mode = "hybrid"` under the existing `[retrieval]`
+     table in `.memhub/config.toml` (memhub init already wrote that
+     table), then run `memhub index rebuild --actor
+     codex:init-project` to backfill embeddings for existing rows.
+     Note that switching between `fts` and `hybrid` later always
+     needs a rebuild to bring rows in sync — a config edit alone
+     isn't enough. Hybrid mode already runs a bundled cross-encoder
+     re-ranker over the blended results by default, nothing extra to
+     turn on.
+   - FTS: nothing to do; it's already the default.
+2. **Code index.** Offer to run `memhub code index` now so
+   `memhub locate` (and the `/locate` skill) can answer "where is X"
+   with ranked file:line breadcrumbs right away instead of on first
+   use.
+3. **Machine-global memory.** Ask whether to opt this repo into the
+   shared `~/.memhub/global.sqlite` store — a second SQLite for
+   machine/toolchain facts and standing engineering policy, distinct
+   from this repo's project memory. Off by default and per-repo
+   opt-in. If yes, run `memhub global enable` and report the store
+   path; note that writing to global is always a deliberate human
+   action, never something to do on your own. If no, just note
+   `/global` and `memhub global enable` are available anytime.
+4. **Doc ingestion.** Ask whether there's a reference doc (design
+   spec, API contract) to ingest now. After the first doc add,
+   relevant chunks automatically surface in plain recall, gated by a
+   relevance threshold so off-topic docs stay silent. If given a
+   path, run `memhub doc add "<path>" --json` and report the chunk
+   count; if not, just note `/doc` is available anytime.
+5. **Drive sync.** Ask whether the user works across machines. The
+   `memhub.sync_*` MCP tools are the agent-first surface here; they
+   default to the canonical synced folder. If yes, run `memhub sync
+   enable`, then ask for the absolute path of a folder that already
+   syncs (Google Drive for Desktop, an rclone mount on Linux, etc.)
+   and set it as `[sync] drive_subpath` in `.memhub/config.toml`. Run
+   `memhub.sync_status` and report the resolved remote dir. Note that
+   `/catch-up` pulls at session start and `/wrap-up` pushes at the
+   end. If no, just note `/catch-up`, `/wrap-up`, and `memhub sync
+   enable` are available anytime.
 
 ## Optional context-file update
 
@@ -218,8 +224,10 @@ check whether one exists at repo root:
 
 Tell the user:
 - `.memhub/project.sqlite` was created at schema version X. Row
-  counts: state=1, arch=1 (or 0 if skipped), facts=N, decisions=N,
-  tasks=N (only N > 0 if `bootstrap-k9` ran).
+  counts: state=1, arch=1 (or 0 if skipped).
+- Which runtime toggles were turned on (retrieval mode, code index,
+  global memory, doc ingestion, Drive sync) and which were left for
+  later.
 - `.memhub/rendered/PROJECT.md` and
   `.memhub/rendered/PROJECT_LEDGER.md` are local generated output.
   `.memhub/` and the legacy `agent_docs/PROJECT*.md` render paths are

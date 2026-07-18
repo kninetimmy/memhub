@@ -388,11 +388,11 @@ memhub code index
 memhub code status   # confirm files indexed
 
 # 5. Agent skills / command wrappers (Claude + Codex + OpenCode)
-cp ~/src/memhub/templates/skills/claude/*.md ~/.claude/commands/
-cp -R ~/src/memhub/templates/skills/codex/*  ~/.codex/skills/
+for f in ~/src/memhub/templates/skills/claude/*.md; do case "$(basename "$f")" in metrics.md|viz.md) continue;; esac; cp "$f" ~/.claude/commands/; done
+for d in ~/src/memhub/templates/skills/codex/*; do case "$(basename "$d")" in metrics|viz) continue;; esac; cp -R "$d" ~/.codex/skills/; done
 mkdir -p ~/.config/opencode/skills ~/.config/opencode/commands
-cp -R ~/src/memhub/templates/skills/opencode/* ~/.config/opencode/skills/
-cp ~/src/memhub/templates/commands/opencode/*.md ~/.config/opencode/commands/
+for d in ~/src/memhub/templates/skills/opencode/*; do case "$(basename "$d")" in metrics|viz) continue;; esac; cp -R "$d" ~/.config/opencode/skills/; done
+for f in ~/src/memhub/templates/commands/opencode/*.md; do case "$(basename "$f")" in metrics.md|viz.md) continue;; esac; cp "$f" ~/.config/opencode/commands/; done
 
 # 6. MCP for Codex — append to ~/.codex/config.toml (Codex has no repo
 #    scope, so this is a per-machine step, and it also needs this repo
