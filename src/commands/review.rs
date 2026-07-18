@@ -868,7 +868,9 @@ fn expired_pending_writes(conn: &Connection) -> Result<(usize, Vec<StaleItem>)> 
     let mut items = Vec::new();
     for row in rows {
         let (id, kind, reviewed_at) = row?;
-        let when = reviewed_at.map(|ts| format!(" at {ts}")).unwrap_or_default();
+        let when = reviewed_at
+            .map(|ts| format!(" at {ts}"))
+            .unwrap_or_default();
         items.push(StaleItem {
             category: StaleCategory::PendingExpired,
             source_id: id,
@@ -887,9 +889,8 @@ fn expired_pending_writes(conn: &Connection) -> Result<(usize, Vec<StaleItem>)> 
 /// propagated error: surfacing exactly that is this category's job, not
 /// a failure of this command.
 fn drifted_documents(conn: &Connection) -> Result<(usize, Vec<StaleItem>)> {
-    let mut stmt = conn.prepare(
-        "SELECT id, path, content_hash FROM documents WHERE project_id = 1 ORDER BY id",
-    )?;
+    let mut stmt = conn
+        .prepare("SELECT id, path, content_hash FROM documents WHERE project_id = 1 ORDER BY id")?;
     let rows = stmt.query_map([], |row| {
         let id: i64 = row.get(0)?;
         let path: String = row.get(1)?;
@@ -1094,8 +1095,15 @@ fn write_durable_global(
             // #97). Named `fact_kind` to avoid shadowing this function's
             // own `kind: &str` pending-write-kind parameter.
             let fact_kind = payload.get("kind").and_then(Value::as_str);
-            let (fact_id, _) =
-                fact::add_with_kind_in_tx(&gtx, key, value, fact_kind, derived_source, actor, mode)?;
+            let (fact_id, _) = fact::add_with_kind_in_tx(
+                &gtx,
+                key,
+                value,
+                fact_kind,
+                derived_source,
+                actor,
+                mode,
+            )?;
             (fact_id, "facts")
         }
         "decision" => {
@@ -1285,7 +1293,14 @@ mod tests {
         use crate::commands::{fact, init, pending_write};
         let temp = tempfile::tempdir().expect("tempdir");
         init::run(temp.path()).expect("init");
-        fact::add(temp.path(), "deploy-cmd", "kubectl apply v1", "user", "cli:user").expect("v1");
+        fact::add(
+            temp.path(),
+            "deploy-cmd",
+            "kubectl apply v1",
+            "user",
+            "cli:user",
+        )
+        .expect("v1");
         let pid = pending_write::propose_fact(
             temp.path(),
             "deploy-cmd",
@@ -1300,8 +1315,14 @@ mod tests {
         let err = super::accept(temp.path(), pid, "cli:user", None, false)
             .expect_err("same-key contradiction must block");
         let msg = err.to_string();
-        assert!(msg.contains("deploy-cmd"), "advisory must name the row: {msg}");
-        assert!(msg.contains("--force"), "advisory must name the escape: {msg}");
+        assert!(
+            msg.contains("deploy-cmd"),
+            "advisory must name the row: {msg}"
+        );
+        assert!(
+            msg.contains("--force"),
+            "advisory must name the escape: {msg}"
+        );
 
         // Durable value untouched, and the proposal stays pending (retryable).
         assert_eq!(
@@ -1313,7 +1334,10 @@ mod tests {
                 .value,
             "kubectl apply v1"
         );
-        assert_eq!(super::show(temp.path(), pid).expect("show").status, "pending");
+        assert_eq!(
+            super::show(temp.path(), pid).expect("show").status,
+            "pending"
+        );
     }
 
     // The `--force` escape proceeds with the overwrite, and the prior value is
@@ -1323,7 +1347,14 @@ mod tests {
         use crate::commands::{fact, init, pending_write};
         let temp = tempfile::tempdir().expect("tempdir");
         init::run(temp.path()).expect("init");
-        fact::add(temp.path(), "deploy-cmd", "kubectl apply v1", "user", "cli:user").expect("v1");
+        fact::add(
+            temp.path(),
+            "deploy-cmd",
+            "kubectl apply v1",
+            "user",
+            "cli:user",
+        )
+        .expect("v1");
         let pid = pending_write::propose_fact(
             temp.path(),
             "deploy-cmd",
@@ -1404,9 +1435,14 @@ mod tests {
         );
 
         // Proceed branch: acknowledge by retiring the old row in favor of this.
-        let outcome =
-            super::accept(temp.path(), pid, "cli:user", Some(&old_id.to_string()), false)
-                .expect("supersede accept");
+        let outcome = super::accept(
+            temp.path(),
+            pid,
+            "cli:user",
+            Some(&old_id.to_string()),
+            false,
+        )
+        .expect("supersede accept");
         assert_eq!(outcome.durable_table, "facts");
         let facts = fact::list(temp.path()).expect("list");
         let new = facts
@@ -1432,7 +1468,14 @@ mod tests {
         use crate::commands::{fact, init, pending_write};
         let temp = tempfile::tempdir().expect("tempdir");
         init::run(temp.path()).expect("init");
-        fact::add(temp.path(), "build-command", "cargo build", "user", "cli:user").expect("f1");
+        fact::add(
+            temp.path(),
+            "build-command",
+            "cargo build",
+            "user",
+            "cli:user",
+        )
+        .expect("f1");
         fact::add(temp.path(), "favorite-color", "blue", "user", "cli:user").expect("f2");
         let pid = pending_write::propose_fact(
             temp.path(),
@@ -1503,9 +1546,14 @@ mod tests {
         use crate::commands::{decision, init, pending_write};
         let temp = tempfile::tempdir().expect("tempdir");
         init::run(temp.path()).expect("init");
-        let old_id =
-            decision::add(temp.path(), "Use JSON config", "chosen early", "user", "cli:user")
-                .expect("old");
+        let old_id = decision::add(
+            temp.path(),
+            "Use JSON config",
+            "chosen early",
+            "user",
+            "cli:user",
+        )
+        .expect("old");
         let pid = pending_write::propose_decision(
             temp.path(),
             "Use TOML config",
@@ -1516,9 +1564,14 @@ mod tests {
         )
         .expect("propose");
 
-        let outcome =
-            super::accept(temp.path(), pid, "cli:user", Some(&old_id.to_string()), false)
-                .expect("decision supersede accept");
+        let outcome = super::accept(
+            temp.path(),
+            pid,
+            "cli:user",
+            Some(&old_id.to_string()),
+            false,
+        )
+        .expect("decision supersede accept");
         assert_eq!(outcome.durable_table, "decisions");
         let all = decision::list(temp.path()).expect("list");
         let old = all.iter().find(|d| d.id == old_id).unwrap();
@@ -1633,8 +1686,7 @@ mod tests {
 
         let old_done = task::add(temp.path(), "old done task", None, "cli:user").expect("add");
         task::done(temp.path(), old_done, "cli:user").expect("done");
-        let fresh_done =
-            task::add(temp.path(), "fresh done task", None, "cli:user").expect("add");
+        let fresh_done = task::add(temp.path(), "fresh done task", None, "cli:user").expect("add");
         task::done(temp.path(), fresh_done, "cli:user").expect("done");
         let old_open = task::add(temp.path(), "old open task", None, "cli:user").expect("add");
 
@@ -1691,11 +1743,8 @@ mod tests {
         assert_eq!(item.source_id, expired_id);
         assert_eq!(item.verb, format!("memhub review show {expired_id}"));
         assert!(
-            !report
-                .items
-                .iter()
-                .any(|i| i.source_id == still_pending
-                    && i.category == super::StaleCategory::PendingExpired),
+            !report.items.iter().any(|i| i.source_id == still_pending
+                && i.category == super::StaleCategory::PendingExpired),
             "a still-pending row must not surface as expired"
         );
     }
@@ -1747,9 +1796,8 @@ mod tests {
         let (fact_id, _) = fact::add(temp, "k", "v", "user", "cli:user").expect("fact");
         let task_id = task::add(temp, "t", None, "cli:user").expect("task");
         task::done(temp, task_id, "cli:user").expect("done");
-        let pending_id =
-            pending_write::propose_fact(temp, "k2", "v2", "r", "codex", "codex", "{}")
-                .expect("propose");
+        let pending_id = pending_write::propose_fact(temp, "k2", "v2", "r", "codex", "codex", "{}")
+            .expect("propose");
         let doc_path = temp.join("d.md");
         fs::write(&doc_path, "# D\n\nbody\n").expect("write");
         doc::add(temp, &doc_path, None, "cli:user").expect("doc");

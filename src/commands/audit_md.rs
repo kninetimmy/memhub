@@ -24,13 +24,13 @@
 use std::fs;
 use std::path::Path;
 
+use crate::Result;
 use crate::agents_md::{CLAUDE_TITLE, generate_agents_md, split_trailing_managed_block};
 use crate::commands::sync::expand_home;
 use crate::config::ProjectConfig;
 use crate::db;
 use crate::managed_block::{self, parse_managed_block};
 use crate::metrics::tokenizer::tokens_of;
-use crate::Result;
 
 const CLAUDE_MD_FILENAME: &str = "CLAUDE.md";
 const AGENTS_MD_FILENAME: &str = "AGENTS.md";
@@ -143,7 +143,10 @@ fn repo_name(repo_root: &Path) -> &str {
 
 fn build_report(findings: Vec<Finding>, strict: bool) -> AuditMdReport {
     let exit_code = if strict && !findings.is_empty() { 1 } else { 0 };
-    AuditMdReport { findings, exit_code }
+    AuditMdReport {
+        findings,
+        exit_code,
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -165,7 +168,11 @@ fn classify_size(tokens: usize, target: usize, ceiling: usize) -> Option<Severit
 
 fn check_size(id: &'static str, label: &str, content: &str) -> Option<Finding> {
     let tokens = tokens_of(content);
-    let severity = classify_size(tokens, CLAUDE_MD_TARGET_TOKENS, CLAUDE_MD_HARD_CEILING_TOKENS)?;
+    let severity = classify_size(
+        tokens,
+        CLAUDE_MD_TARGET_TOKENS,
+        CLAUDE_MD_HARD_CEILING_TOKENS,
+    )?;
     let message = match severity {
         Severity::Error => format!(
             "{label} is {tokens} cl100k tokens — over the {CLAUDE_MD_HARD_CEILING_TOKENS} hard \
@@ -344,20 +351,18 @@ mod tests {
     #[test]
     fn classify_size_boundaries() {
         assert_eq!(classify_size(0, 2_500, 2_600), None);
-        assert_eq!(classify_size(2_500, 2_500, 2_600), None, "at target: not over");
         assert_eq!(
-            classify_size(2_501, 2_500, 2_600),
-            Some(Severity::Warn)
+            classify_size(2_500, 2_500, 2_600),
+            None,
+            "at target: not over"
         );
+        assert_eq!(classify_size(2_501, 2_500, 2_600), Some(Severity::Warn));
         assert_eq!(
             classify_size(2_600, 2_500, 2_600),
             Some(Severity::Warn),
             "at ceiling: not over yet"
         );
-        assert_eq!(
-            classify_size(2_601, 2_500, 2_600),
-            Some(Severity::Error)
-        );
+        assert_eq!(classify_size(2_601, 2_500, 2_600), Some(Severity::Error));
     }
 
     #[test]
@@ -397,7 +402,9 @@ mod tests {
 
     #[test]
     fn preconditions_fail_without_a_section_marker() {
-        assert!(!generate_agents_md_preconditions_met("# memhub\n\nno sections here\n"));
+        assert!(!generate_agents_md_preconditions_met(
+            "# memhub\n\nno sections here\n"
+        ));
     }
 
     /// Regression (issue #148 / audit C3): a CLAUDE.md whose only `## `
@@ -465,7 +472,8 @@ mod tests {
     #[test]
     fn malformed_claude_md_short_circuits_before_reading_agents_md() {
         let temp = tempdir().expect("tempdir");
-        let finding = check_agents_md_drift(temp.path(), "not a valid claude md\n").expect("finding");
+        let finding =
+            check_agents_md_drift(temp.path(), "not a valid claude md\n").expect("finding");
         assert_eq!(finding.id, "claude_md_malformed");
     }
 
@@ -490,8 +498,7 @@ mod tests {
 
     #[test]
     fn managed_block_old_version_is_a_warn() {
-        let claude =
-            "<!-- memhub:managed-block v=0 -->\nk: v\n<!-- /memhub:managed-block -->\n";
+        let claude = "<!-- memhub:managed-block v=0 -->\nk: v\n<!-- /memhub:managed-block -->\n";
         let finding = check_managed_block(claude).expect("finding");
         assert_eq!(finding.id, "managed_block_version");
         assert_eq!(finding.severity, Severity::Warn);

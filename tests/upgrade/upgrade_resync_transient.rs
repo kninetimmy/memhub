@@ -45,12 +45,20 @@ fn transient_source_failure_preserves_ownership_and_first_run_is_flagged() {
     write(&claude_tpl.join("user.md"), b"memhub user (canonical)");
     // A second agent that will keep succeeding, so the rebuilt manifest is
     // non-empty and `save()` runs even while claude's source is unreadable.
-    let oc_tpl = repo.path().join("templates").join("commands").join("opencode");
+    let oc_tpl = repo
+        .path()
+        .join("templates")
+        .join("commands")
+        .join("opencode");
     write(&oc_tpl.join("oc.md"), b"memhub oc v1");
 
     let commands = home.path().join(".claude").join("commands");
     std::fs::create_dir_all(&commands).expect("mk claude commands");
-    let oc_commands = home.path().join(".config").join("opencode").join("commands");
+    let oc_commands = home
+        .path()
+        .join(".config")
+        .join("opencode")
+        .join("commands");
     std::fs::create_dir_all(&oc_commands).expect("mk oc commands");
     // Pre-existing user file, same name as a template memhub ships.
     write(&commands.join("user.md"), b"the user's own user.md");

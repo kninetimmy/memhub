@@ -427,7 +427,10 @@ fn previously_indexed_non_source_is_pruned_on_reindex() {
     assert!(file_indexed(&db, "NOTES.md"), "stale row planted");
 
     let summary = code_index::refresh(root).expect("second refresh");
-    assert!(!file_indexed(&db, "NOTES.md"), "stale doc row must be pruned");
+    assert!(
+        !file_indexed(&db, "NOTES.md"),
+        "stale doc row must be pruned"
+    );
     assert!(summary.deleted_files >= 1, "the doc row is dropped");
     assert!(file_indexed(&db, "src/a.rs"), "real source stays indexed");
 }

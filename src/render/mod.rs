@@ -4,6 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
+use crate::MemhubError;
 use crate::Result;
 #[cfg(feature = "metrics")]
 use crate::commands::metrics::query_period_totals;
@@ -13,7 +14,6 @@ use crate::metrics::formatter::render_period_block;
 use crate::models::{
     Decision, FACT_STALE_AFTER_DAYS, Fact, NarrativeEntry, RenderResult, SessionNote, Task,
 };
-use crate::MemhubError;
 
 const PROJECT_FILENAME: &str = "PROJECT.md";
 const LEDGER_FILENAME: &str = "PROJECT_LEDGER.md";
@@ -889,7 +889,12 @@ _1 fact(s), 0 stale._
     /// A tagged corpus adds the "Kind" column; the tag surfaces in its row.
     #[test]
     fn ledger_facts_block_adds_kind_column_when_tagged() {
-        let snapshot = minimal_snapshot(vec![fact(1, "build-command", "cargo build", Some("command"))]);
+        let snapshot = minimal_snapshot(vec![fact(
+            1,
+            "build-command",
+            "cargo build",
+            Some("command"),
+        )]);
         let ledger = format_ledger_md(&snapshot);
 
         let expected_block = "\

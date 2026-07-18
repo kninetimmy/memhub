@@ -1,8 +1,5 @@
 name: CI
 
-# Build/test gate only. fmt and clippy are knowingly red repo-wide (task 116
-# tracks the one-shot rustfmt adoption + lint cleanup) and are intentionally
-# not run here.
 on:
   push:
     branches: [main]
@@ -19,6 +16,45 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  lint:
+    name: lint (fmt + clippy)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      # Standard crates.io/registry cache, keyed on the lockfile only — this
+      # is independent of the pinned model-asset hashes below.
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-registry-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-registry-${{ runner.os }}-
+
+      # clippy --all-features needs build.rs to run (same pinned BGE-small +
+      # ms-marco-MiniLM model assets as the build+test lanes above), so this
+      # reuses the exact same target/ cache pattern to avoid a cold ~150 MB
+      # download on every run. Keyed with a fixed "all-features" slot,
+      # distinct from the build-test job's per-matrix feature keys.
+      - name: Cache build output and pinned model assets
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: cargo-target-${{ runner.os }}-all-features-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('build.rs') }}
+          restore-keys: |
+            cargo-target-${{ runner.os }}-all-features-${{ hashFiles('Cargo.lock') }}-
+            cargo-target-${{ runner.os }}-all-features-
+
+      - name: cargo clippy --all-targets --all-features
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
   build-test:
     name: build+test (${{ matrix.os }}${{ matrix.features && format(', --features {0}', matrix.features) || '' }})
     runs-on: ${{ matrix.os }}

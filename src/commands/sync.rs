@@ -221,8 +221,7 @@ impl LogicalVersion {
                 .map(|c| format!("CAST({c} AS TEXT)"))
                 .collect::<Vec<_>>()
                 .join(", ");
-            let sql =
-                format!("SELECT {select_list} FROM {table} WHERE project_id = 1 ORDER BY id");
+            let sql = format!("SELECT {select_list} FROM {table} WHERE project_id = 1 ORDER BY id");
             let mut stmt = conn.prepare(&sql)?;
             let mut rows = stmt.query([])?;
             while let Some(row) = rows.next()? {
@@ -418,7 +417,10 @@ pub fn snapshot(start: &Path, out_dir: &Path, force: bool) -> Result<SnapshotSum
     let manifest_path = out_dir.join(MANIFEST_FILENAME);
     // The atomic rename here is the publication point. Until it lands, the
     // prior manifest (and the snapshot it names) is what any reader sees.
-    write_atomic(&manifest_path, serde_json::to_string_pretty(&manifest)?.as_bytes())?;
+    write_atomic(
+        &manifest_path,
+        serde_json::to_string_pretty(&manifest)?.as_bytes(),
+    )?;
 
     // Publication succeeded: reclaim snapshots (and interrupted temps) the
     // new manifest no longer references. Best-effort — an orphan left by a
@@ -562,10 +564,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
             path.display()
         ))
     })?;
-    let stem = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("write");
+    let stem = path.file_name().and_then(|n| n.to_str()).unwrap_or("write");
     let tmp = dir.join(format!(".{stem}.{}.tmp", std::process::id()));
     {
         let mut f = File::create(&tmp)?;
@@ -1112,8 +1111,8 @@ const RESTORE_BUSY_PAUSE: Duration = Duration::from_millis(100);
 ///   the long-lived MCP server) holds open cannot be renamed or deleted —
 ///   the OS raises a sharing violation, so the old delete-`-wal`/`-shm`
 ///   + `rename` swap would fail outright. The backup API instead writes
-///   *through* SQLite's own file locking, so a concurrent process is
-///   serialized against and always sees a coherent DB.
+///     *through* SQLite's own file locking, so a concurrent process is
+///     serialized against and always sees a coherent DB.
 /// * **POSIX:** renaming over an open DB there does *not* error; it
 ///   silently orphans the other process onto the old (now-unlinked)
 ///   inode, and unlinking `-wal`/`-shm` beside a live connection lets it
@@ -2375,8 +2374,8 @@ mod tests {
             .execute_batch("BEGIN IMMEDIATE;")
             .expect("hold the write lock");
 
-        let err = restore_into_live_db(&staged, &db_path)
-            .expect_err("a locked destination must refuse");
+        let err =
+            restore_into_live_db(&staged, &db_path).expect_err("a locked destination must refuse");
         assert!(matches!(err, MemhubError::InvalidInput(_)));
 
         blocker.execute_batch("ROLLBACK;").expect("release");
@@ -2433,11 +2432,17 @@ mod tests {
         let err = adopt(b.path(), &drive, true).expect_err("restore of a non-DB must fail");
         assert!(matches!(
             err,
-            MemhubError::Sqlite(_) | MemhubError::InvalidInput(_) | MemhubError::DatabaseBusy { .. }
+            MemhubError::Sqlite(_)
+                | MemhubError::InvalidInput(_)
+                | MemhubError::DatabaseBusy { .. }
         ));
 
         // Original DB intact.
-        assert_eq!(fact_keys(b.path()), vec!["beta"], "failed restore left b intact");
+        assert_eq!(
+            fact_keys(b.path()),
+            vec!["beta"],
+            "failed restore left b intact"
+        );
 
         // The pre-adopt backup was taken before the doomed restore and is
         // a real, VACUUM-INTO'd SQLite file (WAL-inclusive), and the
@@ -2448,7 +2453,10 @@ mod tests {
             .join("backups")
             .join("sync")
             .join("last-replaced.sqlite");
-        assert!(backup.exists(), "pre-adopt backup survives a failed restore");
+        assert!(
+            backup.exists(),
+            "pre-adopt backup survives a failed restore"
+        );
         let head = fs::read(&backup).expect("read backup");
         assert!(
             head.starts_with(b"SQLite format 3\0"),
@@ -2561,12 +2569,18 @@ mod tests {
         let after = load_marker(&ctx.paths.memhub_dir)
             .expect("load")
             .expect("marker still present");
-        assert_eq!(after.baseline, existing.baseline, "existing marker untouched");
+        assert_eq!(
+            after.baseline, existing.baseline,
+            "existing marker untouched"
+        );
         assert_eq!(
             after.baseline_file_sha256, existing.baseline_file_sha256,
             "existing marker untouched"
         );
-        assert_eq!(after.synced_at, existing.synced_at, "existing marker untouched");
+        assert_eq!(
+            after.synced_at, existing.synced_at,
+            "existing marker untouched"
+        );
     }
 
     #[test]
@@ -2880,7 +2894,10 @@ mod tests {
             .query_row("SELECT id FROM facts WHERE key = 'b'", [], |r| r.get(0))
             .expect("b id");
         ctx.conn
-            .execute("UPDATE facts SET superseded_by = ?1 WHERE key = 'a'", [b_id])
+            .execute(
+                "UPDATE facts SET superseded_by = ?1 WHERE key = 'a'",
+                [b_id],
+            )
             .expect("set superseded_by");
         let with_supersede = LogicalVersion::read(&ctx.conn).expect("read").digest;
         assert_ne!(
@@ -2909,9 +2926,17 @@ mod tests {
             "two fresh repos have identical (empty) digests"
         );
 
-        let doc_a = write_doc(a.path(), "spec.md", "# A\n\nalpha body paragraph to chunk.\n");
+        let doc_a = write_doc(
+            a.path(),
+            "spec.md",
+            "# A\n\nalpha body paragraph to chunk.\n",
+        );
         doc::add(a.path(), &doc_a, None, "cli:user").expect("ingest a");
-        let doc_b = write_doc(b.path(), "notes.md", "# B\n\nbeta body, different entirely.\n");
+        let doc_b = write_doc(
+            b.path(),
+            "notes.md",
+            "# B\n\nbeta body, different entirely.\n",
+        );
         doc::add(b.path(), &doc_b, None, "cli:user").expect("ingest b");
         assert_ne!(
             local_state(a.path()).0.digest,
@@ -2929,7 +2954,11 @@ mod tests {
         // digest hashes content, never file bytes. Exercised WITH documents
         // in play so the widened digest is covered end to end.
         let a = new_synced_repo();
-        let doc_a = write_doc(a.path(), "spec.md", "# Title\n\nbody paragraph to chunk here.\n");
+        let doc_a = write_doc(
+            a.path(),
+            "spec.md",
+            "# Title\n\nbody paragraph to chunk here.\n",
+        );
         doc::add(a.path(), &doc_a, None, "cli:user").expect("ingest");
         let a_digest = local_state(a.path()).0.digest;
 
@@ -2962,7 +2991,11 @@ mod tests {
         let before = local_state(temp.path()).0.digest;
 
         // Overwrite the same path with new content and re-ingest.
-        write_doc(temp.path(), "spec.md", "# V2\n\ncompletely rewritten body text.\n");
+        write_doc(
+            temp.path(),
+            "spec.md",
+            "# V2\n\ncompletely rewritten body text.\n",
+        );
         doc::add(temp.path(), &path, None, "cli:user").expect("re-ingest v2");
         let after = local_state(temp.path()).0.digest;
 
@@ -3010,7 +3043,10 @@ mod tests {
             .expect("write torn marker");
 
         let loaded = load_marker(&ctx.paths.memhub_dir).expect("must not error on torn marker");
-        assert!(loaded.is_none(), "an unparseable marker degrades to no baseline");
+        assert!(
+            loaded.is_none(),
+            "an unparseable marker degrades to no baseline"
+        );
 
         // Sync stays usable: a first-sync check against an equal remote
         // still reads up-to-date despite the torn marker.
@@ -3018,7 +3054,9 @@ mod tests {
         let remote = temp.path().join("remote");
         write_remote_manifest(&remote, "test-proj-abcd1234", local, &schema);
         assert_eq!(
-            check(temp.path(), &remote).expect("check usable despite torn marker").verdict,
+            check(temp.path(), &remote)
+                .expect("check usable despite torn marker")
+                .verdict,
             SyncVerdict::UpToDate,
             "sync remains usable with a torn marker (treated as no baseline)"
         );
@@ -3110,7 +3148,10 @@ mod tests {
             !s1.snapshot_path.exists(),
             "the previous snapshot is garbage-collected after publication"
         );
-        assert!(s2.snapshot_path.exists(), "the current snapshot survives GC");
+        assert!(
+            s2.snapshot_path.exists(),
+            "the current snapshot survives GC"
+        );
         let count = fs::read_dir(&remote_dir)
             .expect("read dir")
             .filter_map(|e| e.ok())
@@ -3148,14 +3189,24 @@ mod tests {
         // adoptable throughout the interruption.
         let b = new_synced_repo();
         adopt(b.path(), &drive, true).expect("previous pair adoptable mid-interruption");
-        assert_eq!(fact_keys(b.path()), vec!["alpha"], "adopted the still-referenced v1");
+        assert_eq!(
+            fact_keys(b.path()),
+            vec!["alpha"],
+            "adopted the still-referenced v1"
+        );
 
         // A later successful push (content unchanged → same name as v1)
         // reclaims the orphan snapshot and the stray temp.
         let s2 = snapshot(a.path(), &drive, false).expect("re-push reclaims orphans");
         assert!(s2.snapshot_path.exists(), "current snapshot present");
-        assert!(!orphan.exists(), "orphan snapshot reclaimed by publication GC");
-        assert!(!stray_tmp.exists(), "stray temp reclaimed by publication GC");
+        assert!(
+            !orphan.exists(),
+            "orphan snapshot reclaimed by publication GC"
+        );
+        assert!(
+            !stray_tmp.exists(),
+            "stray temp reclaimed by publication GC"
+        );
     }
 
     #[test]
@@ -3181,7 +3232,9 @@ mod tests {
             .remove("snapshot_filename");
         fs::write(&mpath, serde_json::to_string_pretty(&val).expect("ser")).expect("write legacy");
         assert!(
-            !fs::read_to_string(&mpath).expect("read").contains("snapshot_filename"),
+            !fs::read_to_string(&mpath)
+                .expect("read")
+                .contains("snapshot_filename"),
             "legacy manifest must lack the field for a faithful fixture"
         );
 
@@ -3325,7 +3378,10 @@ mod tests {
         let marker = load_marker(&ctx.paths.memhub_dir)
             .expect("load")
             .expect("marker present");
-        assert_eq!(marker.last_action, "push", "baseline recorded on a matching commit");
+        assert_eq!(
+            marker.last_action, "push",
+            "baseline recorded on a matching commit"
+        );
     }
 
     #[test]
@@ -3376,7 +3432,10 @@ mod tests {
             .iter()
             .find(|t| t.table == "facts")
             .expect("local facts delta present");
-        assert_eq!(facts_local.added, 1, "b added exactly one fact since baseline");
+        assert_eq!(
+            facts_local.added, 1,
+            "b added exactly one fact since baseline"
+        );
         assert_eq!(facts_local.updated, 0);
         assert_eq!(
             facts_local.changed,
@@ -3390,7 +3449,10 @@ mod tests {
             .iter()
             .find(|t| t.table == "facts")
             .expect("remote facts delta present");
-        assert_eq!(facts_remote.added, 1, "a added exactly one fact since baseline");
+        assert_eq!(
+            facts_remote.added, 1,
+            "a added exactly one fact since baseline"
+        );
         assert_eq!(facts_remote.updated, 0);
         assert_eq!(
             facts_remote.changed,
@@ -3448,7 +3510,8 @@ mod tests {
         // Snapshot every artifact `diff` must not touch: the remote
         // snapshot file's bytes, the manifest bytes, and the local
         // marker's bytes.
-        let remote_manifest_before = fs::read(drive.join(MANIFEST_FILENAME)).expect("read manifest");
+        let remote_manifest_before =
+            fs::read(drive.join(MANIFEST_FILENAME)).expect("read manifest");
         let latest_manifest = Manifest::load(&drive.join(MANIFEST_FILENAME)).expect("load");
         let snapshot_path = resolve_snapshot_file(&drive, &latest_manifest).expect("resolve");
         let remote_snapshot_sha_before = sha256_file(&snapshot_path).expect("hash remote before");

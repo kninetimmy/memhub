@@ -1107,8 +1107,9 @@ mod tests {
 
     #[test]
     fn codex_session_id_prefixes_and_takes_last_five_hyphen_groups() {
-        let path =
-            Path::new("/x/2026/07/09/rollout-2026-07-09T10-00-00-11111111-2222-3333-4444-555555555555.jsonl");
+        let path = Path::new(
+            "/x/2026/07/09/rollout-2026-07-09T10-00-00-11111111-2222-3333-4444-555555555555.jsonl",
+        );
         assert_eq!(
             codex_session_id_from_path(path).as_deref(),
             Some("codex:11111111-2222-3333-4444-555555555555")

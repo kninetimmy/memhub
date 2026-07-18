@@ -896,12 +896,11 @@ mod tests {
                 .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
                 .collect();
 
-            let expected =
-                crate::retrieval::embed_one(&crate::retrieval::doc_chunk_embed_text(
-                    heading_path,
-                    body,
-                ))
-                .expect("solo embed");
+            let expected = crate::retrieval::embed_one(&crate::retrieval::doc_chunk_embed_text(
+                heading_path,
+                body,
+            ))
+            .expect("solo embed");
 
             assert_eq!(stored.len(), expected.len());
             let max_delta = stored

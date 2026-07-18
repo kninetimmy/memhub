@@ -249,7 +249,8 @@ fn machine_global_memory_end_to_end() {
 
     // Re-accept. The marker is detected, so no second durable row is
     // written, and the repo-side flip now succeeds.
-    review::accept(repo_b.path(), dpid, "cli:user", None, false).expect("replayed accept must succeed");
+    review::accept(repo_b.path(), dpid, "cli:user", None, false)
+        .expect("replayed accept must succeed");
     assert_eq!(
         global::status(repo_b.path())
             .expect("status b dec2")
@@ -315,11 +316,8 @@ fn machine_global_memory_end_to_end() {
     // A repo whose config is already enabled: a further global doc add
     // is a no-op on the flag (no rewrite, no duplicate notice).
     let e_doc_file2 = repo_e.path().join("guide-e2.md");
-    std::fs::write(
-        &e_doc_file2,
-        "# Guide E2\n\n## Section\n\ne doc body two\n",
-    )
-    .expect("write e doc 2");
+    std::fs::write(&e_doc_file2, "# Guide E2\n\n## Section\n\ne doc body two\n")
+        .expect("write e doc 2");
     let e_added2 = doc::add_global(repo_e.path(), &e_doc_file2, None, "cli:user")
         .expect("repo_e second doc add_global");
     assert!(

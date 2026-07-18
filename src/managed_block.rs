@@ -138,7 +138,10 @@ config: .memhub/config.toml
 
     #[test]
     fn returns_none_when_absent() {
-        assert_eq!(parse_managed_block("# just a heading\nno block here\n"), None);
+        assert_eq!(
+            parse_managed_block("# just a heading\nno block here\n"),
+            None
+        );
     }
 
     #[test]
@@ -149,7 +152,8 @@ config: .memhub/config.toml
 
     #[test]
     fn returns_none_on_non_numeric_version() {
-        let md = "<!-- memhub:managed-block v=abc -->\nkey: value\n<!-- /memhub:managed-block -->\n";
+        let md =
+            "<!-- memhub:managed-block v=abc -->\nkey: value\n<!-- /memhub:managed-block -->\n";
         assert_eq!(parse_managed_block(md), None);
     }
 

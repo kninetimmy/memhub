@@ -230,7 +230,10 @@ fn polyglot_locate_recall_at_3_is_total() {
     let temp = polyglot_repo();
     let summary = run(&temp, false, None);
 
-    assert_eq!(summary.match_queries, 17, "golden match-query count drifted");
+    assert_eq!(
+        summary.match_queries, 17,
+        "golden match-query count drifted"
+    );
     let misses: Vec<String> = summary
         .outcomes
         .iter()

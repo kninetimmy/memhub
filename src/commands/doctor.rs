@@ -24,10 +24,10 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, params};
 
+use crate::Result;
 use crate::commands::{index, integrations, sync};
 use crate::config::{IntegrationsConfig, ProjectConfig, RetrievalMode};
 use crate::db;
-use crate::Result;
 
 /// Ordered worst-to-best so `overall` is `checks.iter().map(|c|
 /// c.status).max()`. Declaration order is the derive order:
@@ -125,16 +125,13 @@ pub fn run(start: &Path, strict: bool) -> Result<DoctorReport> {
 /// `cargo test`.
 fn run_with_home(start: &Path, strict: bool, home: Option<PathBuf>) -> Result<DoctorReport> {
     let ctx = db::open_project(start)?;
-    let mut checks = Vec::new();
-
     // Project (absorbs /check-init).
-    checks.push(check_schema(&ctx.conn));
-    checks.push(check_render_freshness(&ctx.conn, &ctx.paths.repo_root, &ctx.config));
-    checks.push(check_k9_coexistence(
-        &ctx.paths.repo_root,
-        &ctx.config.integrations,
-    ));
-    checks.push(check_writes_log_recency(&ctx.conn));
+    let mut checks = vec![
+        check_schema(&ctx.conn),
+        check_render_freshness(&ctx.conn, &ctx.paths.repo_root, &ctx.config),
+        check_k9_coexistence(&ctx.paths.repo_root, &ctx.config.integrations),
+        check_writes_log_recency(&ctx.conn),
+    ];
 
     // Config.
     checks.extend(check_config(&ctx.paths.config_path, &ctx.paths.memhub_dir));
@@ -201,9 +198,11 @@ fn build_report(project_name: &str, checks: Vec<Check>, strict: bool) -> DoctorR
 // internals (e.g. `check_sync_freshness`).
 pub(crate) fn check_schema(conn: &Connection) -> Check {
     let applied: String = conn
-        .query_row("SELECT schema_version FROM projects WHERE id = 1", [], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT schema_version FROM projects WHERE id = 1",
+            [],
+            |r| r.get(0),
+        )
         .unwrap_or_default();
     let head = db::latest_schema_version();
 
@@ -232,7 +231,11 @@ pub(crate) fn check_schema(conn: &Connection) -> Check {
 const RENDER_TABLE_NAME: &str = "render";
 const PROJECT_MD_FILENAME: &str = "PROJECT.md";
 
-pub(crate) fn check_render_freshness(conn: &Connection, repo_root: &Path, config: &ProjectConfig) -> Check {
+pub(crate) fn check_render_freshness(
+    conn: &Connection,
+    repo_root: &Path,
+    config: &ProjectConfig,
+) -> Check {
     let output_dir = repo_root.join(&config.render.output_dir);
     let exists = output_dir.join(PROJECT_MD_FILENAME).is_file();
 
@@ -298,7 +301,10 @@ pub(crate) fn check_render_freshness(conn: &Connection, repo_root: &Path, config
     }
 }
 
-pub(crate) fn check_k9_coexistence(repo_root: &Path, integrations_cfg: &IntegrationsConfig) -> Check {
+pub(crate) fn check_k9_coexistence(
+    repo_root: &Path,
+    integrations_cfg: &IntegrationsConfig,
+) -> Check {
     let state = integrations::k9_state(repo_root, integrations_cfg);
 
     // `drift` is checked before `detected`: the one case it fires with
@@ -306,7 +312,12 @@ pub(crate) fn check_k9_coexistence(repo_root: &Path, integrations_cfg: &Integrat
     // missing) is a real, actionable mismatch, not a "nothing to see
     // here" state — it must not be swallowed by the not-detected skip.
     if let Some(drift) = &state.drift {
-        return Check::new("k9_coexistence", Group::Project, Status::Warn, drift.clone());
+        return Check::new(
+            "k9_coexistence",
+            Group::Project,
+            Status::Warn,
+            drift.clone(),
+        );
     }
     if !state.detected {
         return Check::new(
@@ -450,10 +461,7 @@ fn check_config(config_path: &Path, memhub_dir: &Path) -> Vec<Check> {
     let raw = match fs::read_to_string(config_path) {
         Ok(s) => s,
         Err(e) => {
-            return skipped_config_group(format!(
-                "cannot read {}: {e}",
-                config_path.display()
-            ));
+            return skipped_config_group(format!("cannot read {}: {e}", config_path.display()));
         }
     };
 
@@ -569,7 +577,10 @@ fn check_config_types(raw: &str) -> Check {
 
     let mut problems = Vec::new();
     for (label, v) in [
-        ("retrieval.scoring.fts_weight", cfg.retrieval.scoring.fts_weight),
+        (
+            "retrieval.scoring.fts_weight",
+            cfg.retrieval.scoring.fts_weight,
+        ),
         (
             "retrieval.scoring.vector_weight",
             cfg.retrieval.scoring.vector_weight,
@@ -633,7 +644,8 @@ fn check_config_types(raw: &str) -> Check {
     // violation is a horizon so large it is almost certainly a fat-finger
     // (see MAX_WRAP_UP_TRANSCRIPT_RETENTION_DAYS). Matches the sanity-band
     // posture of the fact_stale_after_days / age_half_life_days guards.
-    if cfg.wrap_up.transcript_retention_days > crate::config::MAX_WRAP_UP_TRANSCRIPT_RETENTION_DAYS {
+    if cfg.wrap_up.transcript_retention_days > crate::config::MAX_WRAP_UP_TRANSCRIPT_RETENTION_DAYS
+    {
         problems.push(format!(
             "wrap_up.transcript_retention_days={} exceeds the sane maximum {} (0 = keep forever)",
             cfg.wrap_up.transcript_retention_days,
@@ -735,8 +747,10 @@ fn check_baseline_drift(local: &toml::Value, memhub_dir: &Path) -> Check {
 
     let mut drifted = Vec::new();
     for path in BASELINE_FIELDS {
-        if let (Some(l), Some(e)) = (lookup_toml_path(local, path), lookup_toml_path(&example, path))
-            && l != e
+        if let (Some(l), Some(e)) = (
+            lookup_toml_path(local, path),
+            lookup_toml_path(&example, path),
+        ) && l != e
         {
             drifted.push((*path).to_string());
         }
@@ -1143,7 +1157,11 @@ fn check_mcp_claude(repo_root: &Path, home: Option<&Path>) -> Check {
     let project_level = value
         .get("projects")
         .and_then(|p| p.as_object())
-        .and_then(|projects| projects.iter().find(|(k, _)| paths_equal_loose(k, &repo_key)))
+        .and_then(|projects| {
+            projects
+                .iter()
+                .find(|(k, _)| paths_equal_loose(k, &repo_key))
+        })
         .and_then(|(_, entry)| entry.get("mcpServers"))
         .and_then(|m| m.get("memhub"))
         .is_some();
@@ -1315,7 +1333,8 @@ fn normalize_slashes(path: &Path) -> String {
 }
 
 fn paths_equal_loose(a: &str, b: &str) -> bool {
-    a.replace('\\', "/").eq_ignore_ascii_case(&b.replace('\\', "/"))
+    a.replace('\\', "/")
+        .eq_ignore_ascii_case(&b.replace('\\', "/"))
 }
 
 pub(crate) fn check_sync_freshness(start: &Path, config: &ProjectConfig) -> Check {
@@ -1823,9 +1842,10 @@ transcript_retention_days = 99999999
         let local: toml::Value =
             toml::from_str("[integrations.k9]\nenabled = true\nagent_docs_path = \"agent_docs\"\n")
                 .expect("local");
-        let example: toml::Value =
-            toml::from_str("[integrations.k9]\nenabled = false\nagent_docs_path = \"agent_docs\"\n")
-                .expect("example");
+        let example: toml::Value = toml::from_str(
+            "[integrations.k9]\nenabled = false\nagent_docs_path = \"agent_docs\"\n",
+        )
+        .expect("example");
 
         let temp = tempdir().expect("tempdir");
         fs::write(
@@ -1991,11 +2011,8 @@ transcript_retention_days = 99999999
         let mut cfg = ctx.config.clone();
         cfg.metrics.enabled = true;
         cfg.metrics.session_accounting = true;
-        cfg.metrics.claude_transcripts_dir = temp
-            .path()
-            .join("does-not-exist")
-            .display()
-            .to_string();
+        cfg.metrics.claude_transcripts_dir =
+            temp.path().join("does-not-exist").display().to_string();
         cfg.save(&ctx.paths.config_path).expect("save config");
 
         let ctx = db::open_project(temp.path()).expect("reopen");

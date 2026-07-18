@@ -141,5 +141,8 @@ fn audit_error_degrades_to_a_warn_row_not_a_failure() {
     let dry_line = nag
         .nag_line(true)
         .expect("a Warn nag renders in dry-run too");
-    assert!(dry_line.starts_with("skipped"), "dry nag line: {dry_line:?}");
+    assert!(
+        dry_line.starts_with("skipped"),
+        "dry nag line: {dry_line:?}"
+    );
 }

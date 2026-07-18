@@ -110,7 +110,9 @@ pub struct EnvReadGuard {
 /// test body (e.g. `let _env_guard = crate::support::env_read_lock();` as
 /// the first line) so it spans every in-process call the test makes.
 pub fn env_read_lock() -> EnvReadGuard {
-    let guard = lock().read().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let guard = lock()
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     EnvReadGuard { _guard: guard }
 }
 

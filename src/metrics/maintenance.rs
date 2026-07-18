@@ -525,7 +525,10 @@ mod tests {
                 |r| r.get(0),
             )
             .expect("count attributed");
-        assert_eq!(attributed, 1, "first call must reconcile the pending recall");
+        assert_eq!(
+            attributed, 1,
+            "first call must reconcile the pending recall"
+        );
         let old_1_gone: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM session_metrics WHERE session_id = 'old-1'",

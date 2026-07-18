@@ -171,7 +171,8 @@ fn review_accept_promotes_decision_and_indexes_fts() {
         "Sea creatures organize concurrent workloads cleanly.",
     );
 
-    let outcome = review::accept(temp.path(), pending_id, "cli:user", None, false).expect("accept decision");
+    let outcome =
+        review::accept(temp.path(), pending_id, "cli:user", None, false).expect("accept decision");
     assert_eq!(outcome.kind, "decision");
     assert_eq!(outcome.durable_table, "decisions");
 

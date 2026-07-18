@@ -14,16 +14,16 @@
 //!   - `minimal`    — `state set` + task closures only.
 //!   - `standard`   — today's eight-item flow, unchanged.
 //!   - `full`       — standard, with the decision `--summary` field
-//!                    (decision 72) promoted to mandatory whenever a
-//!                    decision is drafted, plus pending-write triage
-//!                    and the architecture-drift check promoted to
-//!                    always-run. Facts have no `--summary` field to
-//!                    promote (decision 72 is decisions-only).
+//!     (decision 72) promoted to mandatory whenever a
+//!     decision is drafted, plus pending-write triage
+//!     and the architecture-drift check promoted to
+//!     always-run. Facts have no `--summary` field to
+//!     promote (decision 72 is decisions-only).
 //!   - `transcript` — full + a named transcript-archive step. The
-//!                    archiver itself is issue #96 (W3); this level
-//!                    only needs the step to exist in the policy text,
-//!                    and renders gracefully whether or not the
-//!                    archiver is implemented yet.
+//!     archiver itself is issue #96 (W3); this level
+//!     only needs the step to exist in the policy text,
+//!     and renders gracefully whether or not the
+//!     archiver is implemented yet.
 
 use std::path::Path;
 
@@ -506,8 +506,7 @@ mod tests {
     /// verify` (CLI) / `record_command` (MCP) instead, go-forward only. Skips
     /// `minimal`, which drafts no facts at all.
     #[test]
-    fn facts_item_routes_verified_commands_away_from_facts_at_every_level_that_drafts_them()
-     {
+    fn facts_item_routes_verified_commands_away_from_facts_at_every_level_that_drafts_them() {
         for level in [
             WrapUpVerbosity::Standard,
             WrapUpVerbosity::Full,
@@ -526,10 +525,7 @@ mod tests {
                 text.contains("memhub command verify") && text.contains("record_command"),
                 "level {level:?} missing Q11 routing to command verify/record_command: {text}"
             );
-            assert!(
-                text.contains("go-forward only"),
-                "level {level:?}: {text}"
-            );
+            assert!(text.contains("go-forward only"), "level {level:?}: {text}");
         }
     }
 

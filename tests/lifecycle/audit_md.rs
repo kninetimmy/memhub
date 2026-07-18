@@ -141,8 +141,11 @@ fn drifted_agents_md_is_a_finding() {
 
     let claude_md = clean_claude_md();
     std::fs::write(temp.path().join("CLAUDE.md"), &claude_md).expect("write CLAUDE.md");
-    std::fs::write(temp.path().join("AGENTS.md"), "stale, hand-edited content\n")
-        .expect("write stale AGENTS.md");
+    std::fs::write(
+        temp.path().join("AGENTS.md"),
+        "stale, hand-edited content\n",
+    )
+    .expect("write stale AGENTS.md");
 
     let output = run_cli(temp.path(), &["audit", "md", "--json"]);
     assert!(output.status.success());

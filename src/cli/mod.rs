@@ -16,14 +16,12 @@ pub use args::{
 use output::{
     audit_md_report_to_json, code_status_to_json, doctor_report_to_json, eval_summary_to_json,
     import_summary_to_json, index_status_to_json, init_result_to_json, locate_eval_summary_to_json,
-    locate_response_to_json, narrative_entry_to_json,
-    pending_write_record_to_json, print_audit_md_report_human, print_code_status,
-    print_doctor_report_human, print_eval_summary, print_index_status, print_init_result,
-    print_locate, print_locate_eval_summary, print_not_carried_checklist,
-    print_overwritten_writes_log_warning, print_recall_human,
-    print_retained_docs_hint, print_review_stale_report_human, print_stats_human,
-    print_stats_json, print_status_checks_human, print_wrapup_policy_human,
-    recall_response_to_json,
+    locate_response_to_json, narrative_entry_to_json, pending_write_record_to_json,
+    print_audit_md_report_human, print_code_status, print_doctor_report_human, print_eval_summary,
+    print_index_status, print_init_result, print_locate, print_locate_eval_summary,
+    print_not_carried_checklist, print_overwritten_writes_log_warning, print_recall_human,
+    print_retained_docs_hint, print_review_stale_report_human, print_stats_human, print_stats_json,
+    print_status_checks_human, print_wrapup_policy_human, recall_response_to_json,
     review_stale_report_to_json, status_checks_to_json, status_summary_to_json,
     wrapup_policy_report_to_json,
 };
@@ -264,7 +262,10 @@ fn print_sync_side_diff_human(label: &str, side: Option<&commands::sync::SideDif
         side.writes_since_baseline
     );
     for t in &side.tables {
-        println!("      {}: +{} added, {} updated", t.table, t.added, t.updated);
+        println!(
+            "      {}: +{} added, {} updated",
+            t.table, t.added, t.updated
+        );
         for title in &t.changed {
             println!("        - {title}");
         }
@@ -1312,7 +1313,10 @@ pub fn run(cli: Cli) -> Result<()> {
             ReviewCommand::Stale { json: as_json } => {
                 let report = commands::review::stale(&cwd)?;
                 if as_json {
-                    println!("{}", json!({ "review_stale": review_stale_report_to_json(&report) }));
+                    println!(
+                        "{}",
+                        json!({ "review_stale": review_stale_report_to_json(&report) })
+                    );
                 } else {
                     print_review_stale_report_human(&report);
                 }
@@ -2137,7 +2141,10 @@ pub fn run(cli: Cli) -> Result<()> {
             } => {
                 let report = commands::audit_md::run(&cwd, strict)?;
                 if as_json {
-                    println!("{}", json!({ "audit_md": audit_md_report_to_json(&report) }));
+                    println!(
+                        "{}",
+                        json!({ "audit_md": audit_md_report_to_json(&report) })
+                    );
                 } else {
                     print_audit_md_report_human(&report);
                 }
@@ -2156,12 +2163,13 @@ pub fn run(cli: Cli) -> Result<()> {
             }
         }
         TopLevelCommand::Transcript {
-            command: TranscriptCommand::Archive {
-                agent,
-                session_id,
-                yes,
-                json: as_json,
-            },
+            command:
+                TranscriptCommand::Archive {
+                    agent,
+                    session_id,
+                    yes,
+                    json: as_json,
+                },
         } => {
             // Loud, unmissable warning at the surface — always, before the
             // gate — because the archive is stored unredacted (Q8).
@@ -2175,8 +2183,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 ));
             }
 
-            let report =
-                commands::transcript::archive(&cwd, agent.to_agent(), &session_id, true)?;
+            let report = commands::transcript::archive(&cwd, agent.to_agent(), &session_id, true)?;
             if as_json {
                 println!(
                     "{}",
@@ -2206,7 +2213,10 @@ pub fn run(cli: Cli) -> Result<()> {
                     },
                 );
                 if report.pruned > 0 {
-                    println!("Pruned {} archive(s) past the retention horizon.", report.pruned);
+                    println!(
+                        "Pruned {} archive(s) past the retention horizon.",
+                        report.pruned
+                    );
                 }
             }
         }

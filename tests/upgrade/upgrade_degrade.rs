@@ -47,7 +47,11 @@ fn corrupt_registry_degrades_to_source_repo_only_plus_warning() {
         known.is_empty(),
         "a corrupt registry contributes no roots (source-repo-only continuation)"
     );
-    assert_eq!(warnings.len(), 1, "exactly one degrade warning: {warnings:?}");
+    assert_eq!(
+        warnings.len(),
+        1,
+        "exactly one degrade warning: {warnings:?}"
+    );
     assert!(
         warnings[0].contains("registry") && warnings[0].to_lowercase().contains("unreadable"),
         "the warning must name the corrupt registry: {}",

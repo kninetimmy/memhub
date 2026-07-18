@@ -84,10 +84,7 @@ fn review_stale_json_reports_empty_queue_on_a_clean_repo() {
     assert_eq!(report["counts"]["done_task_aged"], 0);
     assert_eq!(report["counts"]["pending_expired"], 0);
     assert_eq!(report["counts"]["doc_hash_drift"], 0);
-    assert_eq!(
-        report["items"].as_array().expect("items array").len(),
-        0
-    );
+    assert_eq!(report["items"].as_array().expect("items array").len(), 0);
 }
 
 #[test]
@@ -98,10 +95,7 @@ fn review_stale_human_reports_empty_queue_message_on_a_clean_repo() {
     let output = run_cli(temp.path(), &["review", "stale"]);
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("Stale queue is empty"),
-        "stdout: {stdout}"
-    );
+    assert!(stdout.contains("Stale queue is empty"), "stdout: {stdout}");
 }
 
 #[test]
@@ -173,9 +167,15 @@ fn review_stale_human_shows_category_headings_and_fix_lines() {
     assert!(stdout.contains("Facts near staleness horizon"), "{stdout}");
     assert!(stdout.contains("Done tasks aged out"), "{stdout}");
     assert!(stdout.contains("Expired pending writes"), "{stdout}");
-    assert!(stdout.contains("Docs drifted from on-disk file"), "{stdout}");
+    assert!(
+        stdout.contains("Docs drifted from on-disk file"),
+        "{stdout}"
+    );
     assert!(stdout.contains("fix: memhub fact verify k"), "{stdout}");
-    assert!(stdout.contains("fix: memhub task list --status done"), "{stdout}");
+    assert!(
+        stdout.contains("fix: memhub task list --status done"),
+        "{stdout}"
+    );
     assert!(stdout.contains("fix: memhub review show"), "{stdout}");
     assert!(stdout.contains("fix: memhub doc add"), "{stdout}");
     assert!(stdout.contains("Summary: 4 item(s)"), "{stdout}");
