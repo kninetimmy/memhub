@@ -178,7 +178,12 @@ fn backup_stamp() -> Result<String> {
 
 /// A staged temp path alongside `path` (same directory, dotfile-prefixed)
 /// that the caller writes to before an atomic `fs::rename` into place.
-fn temp_path_for(path: &Path) -> Result<PathBuf> {
+///
+/// `pub(crate)` so other writers of a single durable file can reuse the
+/// same discipline instead of a bare `fs::write` (issue #148 / audit C3 —
+/// `commands::export` is the first outside caller: a crash mid-write must
+/// never leave a previous good export truncated).
+pub(crate) fn temp_path_for(path: &Path) -> Result<PathBuf> {
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())

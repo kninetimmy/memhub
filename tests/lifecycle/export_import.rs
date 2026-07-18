@@ -159,6 +159,42 @@ fn export_creates_parent_directory_when_missing() {
 }
 
 #[test]
+fn export_overwrites_existing_destination_via_atomic_rename_leaving_no_temp_file() {
+    // Regression (issue #148 / audit C3): export previously wrote directly
+    // via fs::write, so a crash mid-write could leave truncated JSON over a
+    // previous good export. It now stages a temp file and atomically
+    // renames it into place -- verify a pre-existing export is cleanly
+    // replaced and no stray temp file is left behind.
+    let temp = tempdir().expect("tempdir");
+    seed_project(temp.path());
+    let dest = temp.path().join("export.json");
+
+    export::run(temp.path(), &dest).expect("first export succeeds");
+    let first = fs::read_to_string(&dest).expect("read first export");
+
+    fact::add(temp.path(), "extra-command", "cargo check", "user", "cli:user")
+        .expect("seed extra fact");
+    export::run(temp.path(), &dest).expect("second export succeeds");
+    let second = fs::read_to_string(&dest).expect("read second export");
+
+    assert_ne!(first, second, "second export should reflect the new fact");
+    let parsed: v1::Export = serde_json::from_str(&second).expect("parse second export");
+    assert_eq!(parsed.facts.len(), 3);
+
+    let leftovers: Vec<_> = fs::read_dir(temp.path())
+        .expect("read dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with('.') && name.ends_with(".tmp"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "no stray temp file should remain after export: {:?}",
+        leftovers
+    );
+}
+
+#[test]
 fn import_restores_data_into_empty_target() {
     let source = tempdir().expect("source tempdir");
     seed_project(source.path());
