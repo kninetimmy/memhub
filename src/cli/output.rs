@@ -830,6 +830,22 @@ pub(crate) fn print_retained_docs_hint(retained_doc_chunks: usize) {
     }
 }
 
+/// Loud, non-blocking warning (issue #148 / audit C3): nonzero means the
+/// target's pre-existing `writes_log` audit trail was destroyed by this
+/// import's wipe. `writes_log` isn't counted by the no-`--force` emptiness
+/// guard (a docs-only target must still pass it, decisions 86/90), so this
+/// is the only place that loss ever surfaces -- printed unconditionally,
+/// forced or not, since forcing doesn't make the loss less real.
+pub(crate) fn print_overwritten_writes_log_warning(overwritten: usize) {
+    if overwritten > 0 {
+        let plural = if overwritten == 1 { "entry" } else { "entries" };
+        println!(
+            "WARNING: {overwritten} pre-existing writes_log {plural} on this target were \
+             overwritten by this import — its audit trail from before this import is gone."
+        );
+    }
+}
+
 /// Tracker X2: the export/import format is deliberately narrow (decisions
 /// 86/90 and friends) — printed after every successful `import` and
 /// `init --from-backup` so a fresh machine knows what it still needs to
@@ -872,6 +888,7 @@ pub(crate) fn import_summary_to_json(summary: &ImportSummary) -> serde_json::Val
         "project_state": summary.project_state,
         "project_arch": summary.project_arch,
         "retained_doc_chunks": summary.retained_doc_chunks,
+        "overwritten_writes_log": summary.overwritten_writes_log,
     })
 }
 

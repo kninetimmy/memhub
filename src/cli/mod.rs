@@ -19,7 +19,8 @@ use output::{
     locate_response_to_json, narrative_entry_to_json,
     pending_write_record_to_json, print_audit_md_report_human, print_code_status,
     print_doctor_report_human, print_eval_summary, print_index_status, print_init_result,
-    print_locate, print_locate_eval_summary, print_not_carried_checklist, print_recall_human,
+    print_locate, print_locate_eval_summary, print_not_carried_checklist,
+    print_overwritten_writes_log_warning, print_recall_human,
     print_retained_docs_hint, print_review_stale_report_human, print_stats_human,
     print_stats_json, print_status_checks_human, print_wrapup_policy_human,
     recall_response_to_json,
@@ -302,6 +303,7 @@ pub fn run(cli: Cli) -> Result<()> {
                     println!("  pending writes: {}", import_summary.pending_writes);
                     println!("  writes log entries: {}", import_summary.writes_log);
                     print_retained_docs_hint(import_summary.retained_doc_chunks);
+                    print_overwritten_writes_log_warning(import_summary.overwritten_writes_log);
                     print_not_carried_checklist();
                 }
             }
@@ -1124,6 +1126,7 @@ pub fn run(cli: Cli) -> Result<()> {
             println!("  project state entries: {}", summary.project_state);
             println!("  project arch entries: {}", summary.project_arch);
             print_retained_docs_hint(summary.retained_doc_chunks);
+            print_overwritten_writes_log_warning(summary.overwritten_writes_log);
             println!();
             println!("Next steps:");
             println!(
