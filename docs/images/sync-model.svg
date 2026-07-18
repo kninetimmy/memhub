@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 330" width="960" height="330" style="max-width:100%;display:block;">
+  <defs>
+    <marker id="ah-right-green" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#1fe88a"/>
+    </marker>
+    <marker id="ah-right-blue" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#5b8def"/>
+    </marker>
+    <marker id="ah-right-orange" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#ff8a1f"/>
+    </marker>
+    <marker id="ah-down-dim" markerWidth="7" markerHeight="7" refX="3.5" refY="6" orient="auto">
+      <polygon points="0 0, 7 0, 3.5 7" fill="#4a5470"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="960" height="330" rx="14" fill="#0c0e18"/>
+  <rect width="960" height="330" rx="14" fill="none" stroke="#1e2435" stroke-width="1"/>
+
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- MACHINE A (push side)                                   -->
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <rect x="20" y="18" width="200" height="168" rx="10" fill="#111521" stroke="#242c3e" stroke-width="1"/>
+  <text x="120" y="40" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="10.5" fill="#5a6480" letter-spacing="1.2">MACHINE A</text>
+  <text x="120" y="66" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="17" font-weight="700" fill="#19e3ff" letter-spacing="1">memhub</text>
+  <rect x="34" y="78" width="172" height="26" rx="6" fill="#161c2c" stroke="#2a3248" stroke-width="1"/>
+  <text x="120" y="95" text-anchor="middle" font-family="ui-monospace,monospace" font-size="9.5" fill="#c8d0e4">.memhub/project.sqlite</text>
+  <text x="120" y="120" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="9.5" fill="#8892ac">pushes at /wrap-up</text>
+  <text x="120" y="133" text-anchor="middle" font-family="ui-monospace,monospace" font-size="8.5" fill="#4a5470">sync snapshot</text>
+  <text x="120" y="145" text-anchor="middle" font-family="ui-monospace,monospace" font-size="7.5" fill="#3a4560">(sync_snapshot)</text>
+  <text x="120" y="160" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="8.5" fill="#4a5470">(local-ahead &#8594; push)</text>
+
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- SYNCED FOLDER (transport, not memhub)                   -->
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <rect x="310" y="18" width="340" height="168" rx="10" fill="#111521" stroke="#19e3ff" stroke-width="1" opacity="0.9"/>
+  <text x="480" y="38" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="10.5" fill="#5a6480" letter-spacing="1.2">SYNCED FOLDER &#8212; DRIVE / RCLONE</text>
+  <text x="480" y="53" text-anchor="middle" font-family="ui-monospace,monospace" font-size="9" fill="#5a6480">&lt;drive_subpath&gt;/memhub/&lt;project_id&gt;</text>
+
+  <rect x="326" y="62" width="308" height="28" rx="7" fill="#0a1428" stroke="#19e3ff" stroke-width="1"/>
+  <text x="480" y="81" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11" font-weight="600" fill="#19e3ff">project-&lt;sha256&gt;.sqlite</text>
+  <text x="480" y="98" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="8.5" fill="#5a6480">content-addressed &#183; immutable snapshot</text>
+
+  <rect x="326" y="108" width="308" height="28" rx="7" fill="#201208" stroke="#ff8a1f" stroke-width="1"/>
+  <text x="480" y="127" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11" font-weight="600" fill="#ff8a1f">manifest.json</text>
+  <text x="480" y="144" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="8.5" fill="#5a6480">written last &#8212; atomic rename (publication point)</text>
+
+  <rect x="326" y="154" width="308" height="20" rx="6" fill="#0b1118" stroke="#242c3e" stroke-width="1"/>
+  <text x="480" y="168" text-anchor="middle" font-family="ui-monospace,monospace" font-size="9.5" fill="#7f93c8">sync_marker.json &#8212; baseline</text>
+  <text x="480" y="183" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="7.5" fill="#4a5470">commit &#8594; verify/repair baseline</text>
+
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- MACHINE B (pull side)                                   -->
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <rect x="740" y="18" width="200" height="168" rx="10" fill="#111521" stroke="#242c3e" stroke-width="1"/>
+  <text x="840" y="40" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="10.5" fill="#5a6480" letter-spacing="1.2">MACHINE B</text>
+  <text x="840" y="66" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="17" font-weight="700" fill="#19e3ff" letter-spacing="1">memhub</text>
+  <rect x="754" y="78" width="172" height="26" rx="6" fill="#161c2c" stroke="#2a3248" stroke-width="1"/>
+  <text x="840" y="95" text-anchor="middle" font-family="ui-monospace,monospace" font-size="9.5" fill="#c8d0e4">.memhub/project.sqlite</text>
+  <text x="840" y="120" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="9.5" fill="#8892ac">pulls at /catch-up</text>
+  <text x="840" y="133" text-anchor="middle" font-family="ui-monospace,monospace" font-size="8.5" fill="#4a5470">sync check &#8594; adopt</text>
+  <text x="840" y="145" text-anchor="middle" font-family="ui-monospace,monospace" font-size="7.5" fill="#3a4560">(sync_check / sync_adopt)</text>
+  <text x="840" y="160" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="8.5" fill="#4a5470">restored in place</text>
+
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- ARROWS: A -> folder (snapshot)                          -->
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <line x1="220" y1="76" x2="300" y2="76" stroke="#1fe88a" stroke-width="1.6" marker-end="url(#ah-right-green)"/>
+  <text x="260" y="65" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="10.5" font-weight="600" fill="#1fe88a">snapshot</text>
+  <text x="260" y="92" text-anchor="middle" font-family="ui-monospace,monospace" font-size="8" fill="#4a5470">VACUUM INTO &#8594; rename</text>
+
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- ARROWS: folder -> B (check, then adopt)                 -->
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <line x1="650" y1="76" x2="730" y2="76" stroke="#5b8def" stroke-width="1.6" marker-end="url(#ah-right-blue)"/>
+  <text x="690" y="65" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="10.5" font-weight="600" fill="#5b8def">check</text>
+  <text x="690" y="92" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="8" fill="#4a5470">compare digests</text>
+
+  <line x1="650" y1="122" x2="730" y2="122" stroke="#ff8a1f" stroke-width="1.6" stroke-dasharray="5,3" marker-end="url(#ah-right-orange)"/>
+  <text x="690" y="111" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="10.5" font-weight="600" fill="#ff8a1f">adopt</text>
+  <text x="690" y="138" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="8" fill="#4a5470">confirm-gated</text>
+  <text x="690" y="150" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="8" fill="#4a5470">backup-first</text>
+
+  <!-- Connector: folder -> verdict strip -->
+  <line x1="480" y1="186" x2="480" y2="205" stroke="#4a5470" stroke-width="1.2" stroke-dasharray="3,3" marker-end="url(#ah-down-dim)"/>
+  <text x="536" y="199" text-anchor="start" font-family="ui-sans-serif,system-ui,sans-serif" font-size="7.5" fill="#4a5470">&#8594; one of five verdicts</text>
+
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- VERDICT STRIP                                           -->
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <rect x="36" y="208" width="168" height="40" rx="8" fill="#0b1118" stroke="#4a5470" stroke-width="1"/>
+  <text x="120" y="228" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11" font-weight="600" fill="#8892ac">no-remote</text>
+  <text x="120" y="241" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="8" fill="#5a6480">nothing pushed yet</text>
+
+  <rect x="216" y="208" width="168" height="40" rx="8" fill="#0b1118" stroke="#1fe88a" stroke-width="1"/>
+  <text x="300" y="228" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11" font-weight="600" fill="#1fe88a">up-to-date</text>
+  <text x="300" y="241" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="8" fill="#5a6480">in sync &#183; nothing to do</text>
+
+  <rect x="396" y="208" width="168" height="40" rx="8" fill="#0b1118" stroke="#19e3ff" stroke-width="1"/>
+  <text x="480" y="228" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11" font-weight="600" fill="#19e3ff">local-ahead</text>
+  <text x="480" y="241" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="8" fill="#5a6480">push it (snapshot)</text>
+
+  <rect x="576" y="208" width="168" height="40" rx="8" fill="#0b1118" stroke="#a45cff" stroke-width="1"/>
+  <text x="660" y="228" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11" font-weight="600" fill="#a45cff">drive-ahead</text>
+  <text x="660" y="241" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="8" fill="#5a6480">pull it (adopt)</text>
+
+  <rect x="756" y="208" width="168" height="40" rx="8" fill="#0b1118" stroke="#ff8a1f" stroke-width="1.4"/>
+  <text x="840" y="228" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11" font-weight="600" fill="#ff8a1f">diverged</text>
+  <text x="840" y="241" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="8" fill="#5a6480">operator confirms</text>
+
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- BANNER: memhub never goes online                        -->
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <rect x="20" y="262" width="920" height="46" rx="10" fill="#0b1118" stroke="#e0a458" stroke-width="1.2"/>
+  <text x="480" y="284" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="12.5" font-weight="700" fill="#e0a458">memhub only reads and writes a local path</text>
+  <text x="480" y="300" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="10" fill="#c8d0e4">the OS sync client (Drive for Desktop / rclone) moves the bytes &#8212; memhub never makes a network call</text>
+</svg>
