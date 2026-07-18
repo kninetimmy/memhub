@@ -270,6 +270,50 @@ fn readme_install_blocks_enumerate_every_skill() {
     }
 }
 
+/// Onboarding surfaces must never install or offer the two hibernated
+/// subsystems (metrics, viz) in a default build. The three CLI quickstart
+/// blocks already skip them with a `case ... continue;;` guard on the
+/// `for`-loop that copies each skill; "Install by hand" used to copy the
+/// same globs with a bare `cp`, silently installing `metrics.md`/`viz.md`
+/// and the `codex`/`opencode` `metrics/`/`viz/` directories. This scans
+/// every skill/command-wrapper copy line in the whole README — including
+/// Install by hand — and fails if any of them lost the guard.
+#[test]
+fn readme_skill_copy_commands_skip_metrics_and_viz() {
+    let readme = fs::read_to_string(repo_root().join("README.md")).expect("read README.md");
+
+    let source_globs = [
+        "templates/skills/claude/*",
+        "templates/skills/codex/*",
+        "templates/skills/opencode/*",
+        "templates/commands/opencode/*",
+    ];
+
+    let mut checked = 0;
+    for line in readme.lines() {
+        if !line.contains("cp ") {
+            continue;
+        }
+        if !source_globs.iter().any(|glob| line.contains(glob)) {
+            continue;
+        }
+        checked += 1;
+        assert!(
+            line.contains("metrics") && line.contains("viz") && line.contains("continue"),
+            "README copies from a skill/command template glob without \
+             skipping metrics.md/viz.md (or metrics/viz dirs) — hibernated \
+             subsystems must never be installed by a default build: {line:?}"
+        );
+    }
+
+    assert!(
+        checked >= 8,
+        "expected every skill-copy command across the Claude/Codex/OpenCode \
+         quickstart blocks and Install by hand (8 lines total) to be found \
+         and checked; found {checked}"
+    );
+}
+
 /// Normalize line endings for a cross-platform byte comparison: this repo is
 /// `core.autocrlf=true`, so a Windows checkout has CRLF on disk while the
 /// generator emits LF.
