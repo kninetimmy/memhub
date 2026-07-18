@@ -599,12 +599,15 @@ docs from repo A (issue #123; the store's `documents` table spans every
 opted-in repo, so store-emptiness is not "first add for this repo").
 
 Because `config.toml` never travels through Drive sync — a sync
-snapshot is the DB only (a `VACUUM INTO` snapshot + manifest; see
-"Cross-machine Drive sync" above) — a machine that `sync adopt`s a
-snapshot containing global docs does not gain
-`[global] include_docs_in_default` locally. Re-run `doc add --global`
-(or set the flag by hand) on each machine that should see those docs
-in its own default recall.
+snapshot is this repo's `project.sqlite` only (a `VACUUM INTO`
+snapshot + manifest; see "Cross-machine Drive sync" above) — a
+machine that `sync adopt`s this repo's snapshot does not gain the
+source machine's `[global] include_docs_in_default` mirror. The
+machine-global store (`~/.memhub/global.sqlite`) is itself a separate
+per-machine file that Drive sync never touches at all (same as
+`memhub export`, above), so `sync adopt` cannot bring global docs
+along either way. Run `doc add --global` (or set the flag by hand) on
+each machine that should see those docs in its own default recall.
 
 ## Machine-wide upgrade
 

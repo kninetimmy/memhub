@@ -155,12 +155,17 @@ pub struct RecallResponse {
     pub matcher: String,
     pub elapsed_ms: u128,
     /// Count of ingested doc chunks that exist in this repo but were NOT
-    /// searched because `doc_chunk` was not in the requested source
-    /// types. Zero when docs were queried, when none are ingested, or
-    /// when the caller explicitly scoped to docs. A non-zero value is a
-    /// cheap cue for the agent to decide whether a follow-up doc-scoped
-    /// recall is worthwhile — docs are deliberately opt-in and never in
-    /// the default bundle (see migration 0014 / the doc-scope decision).
+    /// surfaced in `results` on this call. Zero when the caller explicitly
+    /// scoped to docs (`--source-type doc`), when none are ingested, or
+    /// when every ingested chunk made the returned bundle. A non-zero
+    /// value is a cheap cue for the agent to decide whether a follow-up
+    /// doc-scoped recall is worthwhile. Doc chunks join the *default*
+    /// bundle (no explicit `source_types`) only when `[retrieval]
+    /// include_docs_in_default` is set — auto-enabled by the first `doc
+    /// add` / `doc add --global` (decision 90) — and even then only past
+    /// the `doc_min_rerank_score` relevance floor (decisions 90/91), so
+    /// most ingested chunks still don't surface and this count stays
+    /// meaningfully non-zero.
     pub available_docs: usize,
 }
 
