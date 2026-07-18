@@ -26,11 +26,11 @@ numbers. Default-off config additions must keep an untouched install byte-identi
 | 4 | Retrieval performance | 12 / 12 | Q17–Q19 ✓ · Q24 ✓ · Q40 ✓ (complete) |
 | 5 | Upgrade / GC hardening | 8 / 8 | Q12–Q16 ✓ (complete) |
 | 6 | Wrap-up policy / verbosity | 6 / 6 | Q7–Q11 ✓ (complete) |
-| 7 | Cross-machine sync / metrics | 2 / 6 | Q30 ✓ · Q32 ✓ · Q31/Q33 open |
-| 8 | CI / infra / licensing | 0 / 2 | Q37–Q38 |
+| 7 | Cross-machine sync / metrics | 5 / 5 | Q30 ✓ · Q32 ✓ (complete) · Q31/Q33 open |
+| 8 | CI / infra / licensing | 0.5 / 2 | Q37 ✓ · Q38 open — G1 partial (CI landed PR #152; branch protection deferred to task 121) |
 | 9 | Housekeeping | 0 / 7 | Q26–Q27, Q36 |
 
-Decisions resolved: 31 / 56 (Q1, Q2, Q3, Q4, Q5, Q6, Q7, Q8, Q9, Q10, Q11, Q12, Q13, Q14, Q15, Q16, Q17, Q18, Q19, Q21, Q22, Q23, Q24, Q25, Q29, Q30, Q32, Q35, Q39, Q40, Q41).
+Decisions resolved: 32 / 56 (Q1, Q2, Q3, Q4, Q5, Q6, Q7, Q8, Q9, Q10, Q11, Q12, Q13, Q14, Q15, Q16, Q17, Q18, Q19, Q21, Q22, Q23, Q24, Q25, Q29, Q30, Q32, Q35, Q37, Q39, Q40, Q41).
 
 ---
 
@@ -464,25 +464,57 @@ teaching command-as-fact), and a transcript session-id path-traversal read.
   `--summary` drafting; docs/`--global` folded in; OpenCode real contract.
   — 2026-07-09, PR #103 / 2e58330 (issue #99).
 
-**Follow-ups (out of wave scope):** export/import does not carry fact `kind` (Drive
-sync via VACUUM INTO does) · transcript `writes_log` records the archived source
+**Follow-ups (out of wave scope):** ~~export/import does not carry fact `kind`~~
+**fixed** — see "Post-audit remediation" below (task 101, PR #124) — (Drive
+sync via VACUUM INTO always carried it) · transcript `writes_log` records the archived source
 path + byte sizes which cross machines via export (audit-log, acceptable) · orphan
-`.zst` can linger if the pointer-row INSERT fails after `fs::write` (low).
+`.zst` can linger if the pointer-row INSERT fails after `fs::write` (**fixed** —
+see "Post-audit remediation" below, task 102/109, PR #126).
 
-## Wave 7 — Cross-machine  (gating: Q30–Q33)
-- [ ] X1 `sync check --diff`
-- [ ] X2 import-time printed checklist (+ fix inverted docs hint)
+## Wave 7 — Cross-machine  (gating: Q30–Q33) — COMPLETE
+- [x] X1 `sync check --diff` — per-table added/updated counts + fact/decision/task
+  titles since the common baseline, both sides (local DB + downloaded snapshot).
+  — 2026-07-17, PR #142 / 7042923 (task 114).
+- [x] X2 import-time printed checklist (+ fix inverted docs hint) — `import`/
+  `init --from-backup` now print "not carried: docs → `doc add`, global store,
+  metrics enable, sync enable, code index"; fixed the inverted docs hint.
+  — 2026-07-17, PR #138 / afd8163 (task 113).
 - [x] X3 metrics hibernation: preserve config/schema/data/source, but compile the
   complete subsystem, `metrics calibrate`, dashboard, MCP tool, render digest,
   collection side effects, and `/metrics`+`/viz` skill installation out of default
   builds. Reactivate explicitly with `--features metrics|viz`; `viz` implies
   `metrics`. Transcript archiving was decoupled from metrics path helpers so it
   remains available. — 2026-07-09, Q30 user direction (memhub proposal #3 pending review).
-- [ ] X5 marker temp+rename; degrade unparseable marker
-- [ ] X6 adopt pre-swap `BEGIN IMMEDIATE` probe
+- [x] X5 marker temp+rename; degrade unparseable marker — same-directory temp
+  write + atomic rename for the sync marker; an unparseable marker degrades to
+  "no baseline" + warning instead of blocking. Bundled with remote snapshot/
+  manifest publication atomicity (audit F6) and `commit()` equality hardening.
+  — 2026-07-17, PR #141 / bfdf3c7 (task 112).
+- [x] X6 adopt pre-swap coordination — superseded the originally-proposed bare
+  `BEGIN IMMEDIATE` probe (decision 162): adopt now stages the remote snapshot,
+  hashes *that* staged copy against the manifest (closes a sha256 TOCTOU),
+  takes a WAL-inclusive `VACUUM INTO` backup, and restores the staged pages into
+  the live DB in place via SQLite's online-backup API — no DB/-wal/-shm file is
+  ever deleted or renamed while another process may hold it open. An
+  unparseable manifest `schema_version` also now fails closed instead of
+  collapsing to ordinal 0. — 2026-07-17, PR #139 / ebdb394 (task 112).
 
-## Wave 8 — Infra  (gating: Q37–Q38)
-- [ ] G1 CI (windows+macos build/test, SHA-keyed model cache, branch protection, cargo audit)
+**Audit note (F2):** the Codex Orch audit's F2 — `LogicalVersion`'s content
+digest omitted `documents`/`doc_chunks`, so two databases holding different
+ingested docs could still compare equal/`UpToDate` — was fixed alongside X5/X6
+in the same Run B batch (decision 163: digest now covers both tables, with a
+drift-proofing test). — 2026-07-17, PR #140 / 6acb62e (task 112).
+
+## Wave 8 — Infra  (gating: Q37 ✓ · Q38)
+- [~] G1 CI (windows+macos build/test, SHA-keyed model cache, branch
+  protection, cargo audit) — **partial:** `cargo build --locked` + `cargo test
+  --locked` on windows-latest/macos-latest, a macos `--features viz` lane, and
+  a weekly (not per-commit) `cargo audit` landed, with Cargo-registry +
+  target/ caching keyed on OS/features/Cargo.lock/build.rs so the pinned model
+  downloads are reused. No fmt/clippy gate (task 116, rustfmt debt still
+  unresolved) and no branch protection / release / repo-settings automation
+  (task 121, deferred pending explicit user go per the review's own
+  recommendation). — 2026-07-17, PR #152 / e6a486c (task 115).
 - [ ] G2 write-time secret-pattern warning
 
 ## Wave 9 — Housekeeping  (gating: Q26–Q27, Q36)
@@ -493,6 +525,95 @@ path + byte sizes which cross machines via export (audit-log, acceptable) · orp
 - [ ] D7 rendered-ledger cap
 - [ ] D8 migration sha256 checksums + drift warning
 - [ ] §10.6 minor gaps as judged (MEMHUB_LOG docs, fuzz tests, recovery runbook, file perms, SECURITY.md)
+
+---
+
+## Post-audit remediation — 2026-07-13 Codex Orch audit (memhub doc 6)
+
+A second, Codex-authored adversarial audit
+(`memhub-orch-audit-2026-07-13.md`, ingested as memhub doc 6 — **not** a
+tracked repo file) re-confirmed several Wave 7/8/9 findings above by their
+July-review IDs (X1/X2/X5/X6, G1) and surfaced new ones under its **own**
+F1–F12 numbering, which collides with the July review's F1–F17 IDs above —
+every reference below is prefixed **"audit F#"** to disambiguate. Folded into
+memhub tasks 109–121, executed as three sequential Orch Delivery runs. X1,
+X2, X5, X6, and G1's CI portion are tracked in Wave 7/8 above, not repeated
+here.
+
+**Run A — immediate safety and data fidelity** (tasks 101/102/104/109/110/111;
+PRs #124–#128) — COMPLETE 2026-07-15.
+- [x] audit F1 + F7 (transcript archive path containment + orphan-archive
+  cleanup) — prune/archive-cleanup route every stored `archive_path` through a
+  fail-closed canonicalized-containment classifier (rejects `..`, requires
+  component-wise prefix containment under `.memhub/transcripts`; Windows
+  `\\?\` prefixes stripped, case-insensitive compare); an out-of-root row is
+  never acted on (pointer row dropped + warned, file untouched). Archive write
+  is temp-then-publish so a failed pointer-row upsert cannot orphan an
+  unredacted `.zst`. Filename collisions across sessions now refuse loudly
+  (decision 161) instead of clobbering. — 2026-07-15, PR #126 / 5f97bfd
+  (tasks 102/109).
+- [x] audit F3 (= task 101; resolves the Wave 6 follow-up above) — `v1::Fact`
+  gained `kind` (`#[serde(default)]`, so pre-0021 backups still import), wired
+  through `read_facts`/`insert_facts`; round-trip + legacy-import tests.
+  — 2026-07-15, PR #124 / 879aa62 (task 101).
+- [x] audit F8 (= task 104, already flagged in the July review) — Claude/Codex
+  wrap-up, check-init, and init-project preflight checks gained a PowerShell
+  form alongside the POSIX `test -d`/`command -v` form. — 2026-07-15,
+  PR #128 / 97e5fa6 (task 104).
+- [x] task 110 — fixed `add_global`'s `[global] include_docs_in_default` flip
+  gating on the *calling repo's own* config state instead of global-store
+  emptiness; previously only the machine's first-ever `doc add --global` (any
+  repo) ever saw the flip, so a second opted-in repo's own first global doc
+  add silently never joined that repo's default recall (GH issue #123).
+  — 2026-07-15, PR #125 / f09ac74 (task 110).
+- [x] task 111 (+ follow-up 122) — `memhub upgrade` restores the renamed-aside
+  binary when every install attempt fails, including the cargo-launch-failure
+  path found on review; previously an exhausted-retries or launch failure
+  could strand a machine with no `memhub` on PATH. — 2026-07-15,
+  PR #127 / fb5a7e9 (task 111).
+
+**Run B — sync correctness** (tasks 112/113/114; PRs #138–#142, sequential
+same-file merges) — COMPLETE 2026-07-17. See Wave 7 above for X1/X2/X5/X6 and
+audit F2/F4/F6 detail (task 112 = F2/F4/F6/X5/X6 core sync.rs hardening,
+task 113 = X2, task 114 = X1).
+
+**Run C — infrastructure and cleanup** (tasks 115–120; audit labels C1–C6) —
+in progress.
+- [~] audit C1 (= task 115, = Wave 8 G1 above, partial) — see Wave 8.
+- [ ] audit C2 (= task 116) — rustfmt (40 files) + strict-Clippy (22 lints)
+  debt — not started.
+- [x] audit C3 (= task 117) — small-hardening batch: `writes_log` exempted
+  from the import no-force emptiness guard (loud `overwritten_writes_log`
+  warning instead of silent audit-trail loss); `export` now writes JSON via
+  temp-file + atomic rename; `audit md` panic fixed on a CLAUDE.md whose only
+  `##` heading lives inside the managed block (shared
+  `split_trailing_managed_block` helper); corrupt-length embedding blobs now
+  surface as `stale_embeddings` (recall) / `corrupt_embeddings` (locate)
+  instead of silently degrading to FTS-only. — 2026-07-17, PR #154 / 3d28cb6
+  (task 117).
+- [x] audit C4 (= task 118, = **this issue**, #149) — Q37 tracker
+  reconciliation, `recall.rs` `available_docs` doc-comment fix, these tracker
+  rows, and the operations.md global-docs sync/export wording fix.
+  — 2026-07-17, issue #149.
+- [x] audit F9 / C5 (= task 119) — sync-md architectural-debt finding
+  resolved by retirement (not the "rename output" alternative): deleted
+  `src/sync_md`, the `sync-md` CLI verb, the `auto_sync_md` config knob, and
+  every call site; `memhub upgrade --finish` actively deletes stale
+  sync_md-generated `AGENTS.md`/`CLAUDE.md` twins left under
+  `.memhub/rendered/` (a live correctness hazard, not harmless clutter).
+  — 2026-07-17, PR #153 / de75097 (task 119).
+- [x] audit F10 / C6 (= task 120) — resolved the "read surfaces mutate during
+  open" finding as a deliberate contract, not a bug: documented that
+  `open_project` performs migrations/project-upsert/registry-recording/
+  metrics-upkeep/pending-write-expiry on every open, including read commands
+  (decision 161); ruled out an `open_project_readonly`/
+  `open_project_maintained` split; added a contract test (expired pending
+  write auto-expires via a plain `status` call). — 2026-07-17,
+  PR #151 / a098f07 (task 120).
+
+**Still open:** task 116 (rustfmt/Clippy, C2) and task 121 (branch
+protection, deferred pending explicit user go) — both out of scope for this
+reconciliation issue.
 
 ---
 
@@ -508,5 +629,5 @@ Resolve per wave. Recommendations are in the review; mark here when the user rul
 **Surfaces:** [ ] Q26 [ ] Q27 [ ] Q28 [x] Q29 *(resolved 2026-07-05 — wrapped noun-keyed objects; `doc ls` migrated; PR #18)*
 **Cross-machine:** [x] Q30 *(resolved 2026-07-09 — hibernate the entire metrics/viz/calibrate subsystem behind off-by-default Cargo features; preserve implementation and data for explicit resurfacing; memhub proposal #3 pending review)* [ ] Q31 [x] Q32 *(resolved — decision 134; Mac lineage not adopted, ported as Windows 128–133)* [ ] Q33
 **DB:** [ ] Q34 [x] Q35 *(resolved 2026-07-05 — `synchronous = NORMAL` alongside WAL across all DB surfaces; memhub decision 140 / review D5)* [ ] Q36
-**Infra:** [ ] Q37 [ ] Q38 [x] Q39 *(resolved 2026-07-05 — repo-root + `[doc] allowed_dirs` allowlist for MCP `doc_add`; PR #17)*
+**Infra:** [x] Q37 *(resolved — LICENSE/NOTICES now: root `LICENSE` (MIT) + `THIRD-PARTY-NOTICES.md` landed in Wave 0 as F8; PR-A / wave0/pr-a-text. The July tracker had left this checkbox unticked despite F8 being done — reconciled 2026-07-17 per the 2026-07-13 Codex Orch audit's F12 finding)* [ ] Q38 [x] Q39 *(resolved 2026-07-05 — repo-root + `[doc] allowed_dirs` allowlist for MCP `doc_add`; PR #17)*
 **Parity/free-form:** [x] Q40 *(resolved 2026-07-08 as decision 148 — Wave 4: register `memhub serve` in all three CLIs, repo-scoped where supported — committed `.mcp.json` (Claude Code) + `mcp.memhub` in tracked `opencode.json` + per-machine `[mcp_servers.memhub]`/trust in `~/.codex/config.toml` for Codex + a per-CLI registration probe in doctor; PR #79)* [x] Q41 *(resolved 2026-07-06 — adopt fail-safe: keep a ~10-line compact routing block in AGENTS.md for Codex/OpenCode, trim CLAUDE.md's verbose routing; the per-CLI instructions-delivery spike is deferred — see Wave 4's still-open note)* [ ] Q42 [ ] Q43 [ ] Q44 [ ] Q45 [ ] Q46 [ ] Q47 [ ] Q48 [ ] Q49 [ ] Q50 [ ] Q51 [ ] Q52 [ ] Q53 [ ] Q54 [ ] Q55 [ ] Q56
