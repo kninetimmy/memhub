@@ -130,6 +130,11 @@ equivalents) follow the same pattern. None ship in v1.
 
 ## 6. K9 framework deprecation status
 
+> **Resolved 2026-07-18:** K9 support was removed entirely (task 123,
+> PR #165). The commands described below (`bootstrap-k9`,
+> `enable-k9`, `disable-k9`, `check-k9`) no longer exist; this section
+> is retained as history.
+
 The K9 Claude Framework is on a deprecation track. The end state has
 memhub as the single durable store; K9's slash commands, markdown
 templates, and routing brain retire.
@@ -190,6 +195,11 @@ These PRD-level commitments hold without modification:
   `memhub arch set` after import.
 
 ## 8. Migration path for existing repos
+
+> **Resolved 2026-07-18:** K9 support was removed entirely (task 123,
+> PR #165). The commands described below (`bootstrap-k9`,
+> `enable-k9`, `disable-k9`, `check-k9`) no longer exist; this section
+> is retained as history.
 
 For a fresh repo (no K9 history): `memhub init` then start using
 `memhub state set` / `memhub arch set` / `memhub decision add` /

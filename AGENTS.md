@@ -35,11 +35,12 @@ results stay usable in the meantime — the warning means hybrid
 scoring may be undercounting some rows, not that retrieval is
 broken.
 
-The four legacy K9 files (`agent_docs/project_state.md`,
+The K9 integration was removed entirely (task 123, PR #165,
+2026-07-18); nothing in memhub detects, reads, or configures K9
+anymore. The four legacy K9 files (`agent_docs/project_state.md`,
 `project_arch.md`, `project_decisions.md`, `project_backlog.md`) are
-historical archive — last accurate at commit `366cc1c`. Do not write
-to them; they are no longer authoritative. K9 integration is disabled
-in `.memhub/config.toml`.
+inert historical artifacts — last accurate at commit `366cc1c`. Do
+not write to them; ignore them.
 
 ## Project Guardrails
 

@@ -519,7 +519,7 @@ drift-proofing test). — 2026-07-17, PR #140 / 6acb62e (task 112).
 
 ## Wave 9 — Housekeeping  (gating: Q26–Q27, Q36)
 - [x] S5 docs prune (NEXT_STEPS.md, current-architecture.md, milestones.md, roadmap archive, Source PRD/) — 2026-07-17, archived to `docs/archive/` (issue #130).
-- [ ] G3 legacy surface disposition (`ingest-git`/`search`/`stats`/`bootstrap-k9`)
+- [ ] G3 legacy surface disposition (`ingest-git`/`search`/`stats`/`bootstrap-k9`) — `bootstrap-k9` resolved by task 123 (PR #165, removed 2026-07-18); `ingest-git`/`search`/`stats` dispositions remain open.
 - [ ] D10 retire `chunks`/`chunk_fts` (after G3)
 - [ ] D4 `memhub db maintain`
 - [ ] D7 rendered-ledger cap
