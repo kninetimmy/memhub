@@ -22,6 +22,8 @@ It's one offline binary and one `.sqlite` file next to your code. Claude Code, C
 
 When the agent needs context, it pulls a small, ranked bundle of just the relevant rows — not your whole README or project ledger — so prompts stay short and your token bill stays down. No cloud, no account, no daemon, no runtime model download. Everything, including semantic search, runs locally.
 
+**[Jump to Quickstart →](#quickstart)**
+
 <br>
 
 <p align="center">
@@ -108,7 +110,13 @@ Please install memhub for me, then turn on hybrid recall.
    /init-project, /recall, /locate, /reindex, /eval-recall, /doc,
    /global, /audit-md, and /upgrade all work as slash commands:
 
+       POSIX shell (bash/zsh):
+       mkdir -p ~/.claude/commands
        for f in ~/src/memhub/templates/skills/claude/*.md; do case "$(basename "$f")" in metrics.md|viz.md) continue;; esac; cp "$f" ~/.claude/commands/; done
+
+       Windows PowerShell:
+       New-Item -ItemType Directory -Force -Path "$HOME\.claude\commands" | Out-Null
+       Get-ChildItem "$HOME\src\memhub\templates\skills\claude\*.md" | Where-Object { $_.Name -notin 'metrics.md','viz.md' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.claude\commands\" }
 
 6. cd back to this repo and run `memhub init`, then `memhub status`.
    Tell me what status reports.
@@ -203,7 +211,13 @@ Please install memhub for me, then turn on hybrid recall.
    /init-project, /recall, /locate, /reindex, /eval-recall, /doc,
    /global, /audit-md, and /upgrade all work:
 
+       POSIX shell (bash/zsh):
+       mkdir -p ~/.codex/skills
        for d in ~/src/memhub/templates/skills/codex/*; do case "$(basename "$d")" in metrics|viz) continue;; esac; cp -R "$d" ~/.codex/skills/; done
+
+       Windows PowerShell:
+       New-Item -ItemType Directory -Force -Path "$HOME\.codex\skills" | Out-Null
+       Get-ChildItem "$HOME\src\memhub\templates\skills\codex" -Directory | Where-Object { $_.Name -notin 'metrics','viz' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.codex\skills\" -Recurse -Force }
 
 6. cd back to this repo and run `memhub init`, then `memhub status`.
    Tell me what status reports.
@@ -302,9 +316,15 @@ Please install memhub for me, then turn on hybrid recall.
    /init-project, /recall, /locate, /reindex, /eval-recall, /doc,
    /global, /audit-md, and /upgrade all work:
 
+       POSIX shell (bash/zsh):
        mkdir -p ~/.config/opencode/skills ~/.config/opencode/commands
        for d in ~/src/memhub/templates/skills/opencode/*; do case "$(basename "$d")" in metrics|viz) continue;; esac; cp -R "$d" ~/.config/opencode/skills/; done
        for f in ~/src/memhub/templates/commands/opencode/*.md; do case "$(basename "$f")" in metrics.md|viz.md) continue;; esac; cp "$f" ~/.config/opencode/commands/; done
+
+       Windows PowerShell:
+       New-Item -ItemType Directory -Force -Path "$HOME\.config\opencode\skills","$HOME\.config\opencode\commands" | Out-Null
+       Get-ChildItem "$HOME\src\memhub\templates\skills\opencode" -Directory | Where-Object { $_.Name -notin 'metrics','viz' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.config\opencode\skills\" -Recurse -Force }
+       Get-ChildItem "$HOME\src\memhub\templates\commands\opencode\*.md" | Where-Object { $_.Name -notin 'metrics.md','viz.md' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.config\opencode\commands\" }
 
 6. Restart OpenCode so it reloads config, skills, and commands.
 7. cd back to this repo and run `memhub init`, then `memhub status`.
@@ -390,12 +410,27 @@ memhub code index
 memhub code status   # confirm files indexed
 
 # 5. Agent skills / command wrappers (Claude + Codex + OpenCode)
+mkdir -p ~/.claude/commands ~/.codex/skills
 for f in ~/src/memhub/templates/skills/claude/*.md; do case "$(basename "$f")" in metrics.md|viz.md) continue;; esac; cp "$f" ~/.claude/commands/; done
 for d in ~/src/memhub/templates/skills/codex/*; do case "$(basename "$d")" in metrics|viz) continue;; esac; cp -R "$d" ~/.codex/skills/; done
 mkdir -p ~/.config/opencode/skills ~/.config/opencode/commands
 for d in ~/src/memhub/templates/skills/opencode/*; do case "$(basename "$d")" in metrics|viz) continue;; esac; cp -R "$d" ~/.config/opencode/skills/; done
 for f in ~/src/memhub/templates/commands/opencode/*.md; do case "$(basename "$f")" in metrics.md|viz.md) continue;; esac; cp "$f" ~/.config/opencode/commands/; done
+```
 
+Windows PowerShell equivalent for step 5 (the `for`/`case`/`basename` loops above are POSIX-only):
+
+```powershell
+# 5. Agent skills / command wrappers (Claude + Codex + OpenCode)
+New-Item -ItemType Directory -Force -Path "$HOME\.claude\commands","$HOME\.codex\skills" | Out-Null
+Get-ChildItem "$HOME\src\memhub\templates\skills\claude\*.md" | Where-Object { $_.Name -notin 'metrics.md','viz.md' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.claude\commands\" }
+Get-ChildItem "$HOME\src\memhub\templates\skills\codex" -Directory | Where-Object { $_.Name -notin 'metrics','viz' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.codex\skills\" -Recurse -Force }
+New-Item -ItemType Directory -Force -Path "$HOME\.config\opencode\skills","$HOME\.config\opencode\commands" | Out-Null
+Get-ChildItem "$HOME\src\memhub\templates\skills\opencode" -Directory | Where-Object { $_.Name -notin 'metrics','viz' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.config\opencode\skills\" -Recurse -Force }
+Get-ChildItem "$HOME\src\memhub\templates\commands\opencode\*.md" | Where-Object { $_.Name -notin 'metrics.md','viz.md' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.config\opencode\commands\" }
+```
+
+```bash
 # 6. MCP for Codex — append to ~/.codex/config.toml (Codex has no repo
 #    scope, so this is a per-machine step, and it also needs this repo
 #    trusted or the MCP-first skill instructions won't reliably fire —
