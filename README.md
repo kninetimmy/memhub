@@ -111,9 +111,11 @@ Please install memhub for me, then turn on hybrid recall.
    /global, /audit-md, and /upgrade all work as slash commands:
 
        POSIX shell (bash/zsh):
+       mkdir -p ~/.claude/commands
        for f in ~/src/memhub/templates/skills/claude/*.md; do case "$(basename "$f")" in metrics.md|viz.md) continue;; esac; cp "$f" ~/.claude/commands/; done
 
        Windows PowerShell:
+       New-Item -ItemType Directory -Force -Path "$HOME\.claude\commands" | Out-Null
        Get-ChildItem "$HOME\src\memhub\templates\skills\claude\*.md" | Where-Object { $_.Name -notin 'metrics.md','viz.md' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.claude\commands\" }
 
 6. cd back to this repo and run `memhub init`, then `memhub status`.
@@ -210,10 +212,12 @@ Please install memhub for me, then turn on hybrid recall.
    /global, /audit-md, and /upgrade all work:
 
        POSIX shell (bash/zsh):
+       mkdir -p ~/.codex/skills
        for d in ~/src/memhub/templates/skills/codex/*; do case "$(basename "$d")" in metrics|viz) continue;; esac; cp -R "$d" ~/.codex/skills/; done
 
        Windows PowerShell:
-       Get-ChildItem "$HOME\src\memhub\templates\skills\codex" -Directory | Where-Object { $_.Name -notin 'metrics','viz' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.codex\skills\" -Recurse }
+       New-Item -ItemType Directory -Force -Path "$HOME\.codex\skills" | Out-Null
+       Get-ChildItem "$HOME\src\memhub\templates\skills\codex" -Directory | Where-Object { $_.Name -notin 'metrics','viz' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.codex\skills\" -Recurse -Force }
 
 6. cd back to this repo and run `memhub init`, then `memhub status`.
    Tell me what status reports.
@@ -319,7 +323,7 @@ Please install memhub for me, then turn on hybrid recall.
 
        Windows PowerShell:
        New-Item -ItemType Directory -Force -Path "$HOME\.config\opencode\skills","$HOME\.config\opencode\commands" | Out-Null
-       Get-ChildItem "$HOME\src\memhub\templates\skills\opencode" -Directory | Where-Object { $_.Name -notin 'metrics','viz' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.config\opencode\skills\" -Recurse }
+       Get-ChildItem "$HOME\src\memhub\templates\skills\opencode" -Directory | Where-Object { $_.Name -notin 'metrics','viz' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.config\opencode\skills\" -Recurse -Force }
        Get-ChildItem "$HOME\src\memhub\templates\commands\opencode\*.md" | Where-Object { $_.Name -notin 'metrics.md','viz.md' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.config\opencode\commands\" }
 
 6. Restart OpenCode so it reloads config, skills, and commands.
@@ -406,6 +410,7 @@ memhub code index
 memhub code status   # confirm files indexed
 
 # 5. Agent skills / command wrappers (Claude + Codex + OpenCode)
+mkdir -p ~/.claude/commands ~/.codex/skills
 for f in ~/src/memhub/templates/skills/claude/*.md; do case "$(basename "$f")" in metrics.md|viz.md) continue;; esac; cp "$f" ~/.claude/commands/; done
 for d in ~/src/memhub/templates/skills/codex/*; do case "$(basename "$d")" in metrics|viz) continue;; esac; cp -R "$d" ~/.codex/skills/; done
 mkdir -p ~/.config/opencode/skills ~/.config/opencode/commands
@@ -417,10 +422,11 @@ Windows PowerShell equivalent for step 5 (the `for`/`case`/`basename` loops abov
 
 ```powershell
 # 5. Agent skills / command wrappers (Claude + Codex + OpenCode)
+New-Item -ItemType Directory -Force -Path "$HOME\.claude\commands","$HOME\.codex\skills" | Out-Null
 Get-ChildItem "$HOME\src\memhub\templates\skills\claude\*.md" | Where-Object { $_.Name -notin 'metrics.md','viz.md' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.claude\commands\" }
-Get-ChildItem "$HOME\src\memhub\templates\skills\codex" -Directory | Where-Object { $_.Name -notin 'metrics','viz' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.codex\skills\" -Recurse }
+Get-ChildItem "$HOME\src\memhub\templates\skills\codex" -Directory | Where-Object { $_.Name -notin 'metrics','viz' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.codex\skills\" -Recurse -Force }
 New-Item -ItemType Directory -Force -Path "$HOME\.config\opencode\skills","$HOME\.config\opencode\commands" | Out-Null
-Get-ChildItem "$HOME\src\memhub\templates\skills\opencode" -Directory | Where-Object { $_.Name -notin 'metrics','viz' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.config\opencode\skills\" -Recurse }
+Get-ChildItem "$HOME\src\memhub\templates\skills\opencode" -Directory | Where-Object { $_.Name -notin 'metrics','viz' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.config\opencode\skills\" -Recurse -Force }
 Get-ChildItem "$HOME\src\memhub\templates\commands\opencode\*.md" | Where-Object { $_.Name -notin 'metrics.md','viz.md' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.config\opencode\commands\" }
 ```
 
