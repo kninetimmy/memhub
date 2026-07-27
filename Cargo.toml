@@ -1,7 +1,8 @@
 [package]
 name = "memhub"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
+rust-version = "1.85"
 description = "Local-first project memory for Codex and Claude Code."
 license = "MIT"
 repository = "https://github.com/kninetimmy/memhub"
