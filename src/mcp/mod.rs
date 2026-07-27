@@ -182,11 +182,25 @@ impl MemhubServer {
         &self,
         Parameters(params): Parameters<ListPendingWritesParams>,
     ) -> std::result::Result<Json<ListPendingWritesToolResponse>, McpError> {
-        let status = params.status.as_deref();
+        // Match the CLI's default (`review list --status`, default `pending`).
+        // An omitted status previously reached review::list as `None`, which is
+        // that function's encoding of "every status" (PendingStatus::All), so the
+        // tool returned accepted/rejected rows as if they were pending.
+        let requested = params.status.as_deref().unwrap_or("pending");
+        // "all" is the CLI's name for the unfiltered query. Now that omission no
+        // longer means "all", MCP needs an explicit spelling or the capability is
+        // lost.
+        let filter = if requested == "all" {
+            None
+        } else {
+            Some(requested)
+        };
         let limit = params.limit.unwrap_or(commands::review::DEFAULT_LIST_LIMIT);
-        let rows = commands::review::list(&self.start, status, limit).map_err(map_tool_error)?;
+        let rows = commands::review::list(&self.start, filter, limit).map_err(map_tool_error)?;
         Ok(Json(ListPendingWritesToolResponse {
-            status: status.map(|s| s.to_string()),
+            // Report the filter actually applied, never the raw parameter, so an
+            // omitted status can no longer come back as `null`.
+            status: Some(requested.to_string()),
             pending_writes: rows.into_iter().map(PendingWriteToolRecord::from).collect(),
         }))
     }
@@ -672,7 +686,7 @@ impl MemhubServer {
 
     #[tool(
         name = "list_pending_writes",
-        description = "List staged agent-originated proposals from pending_writes. Filter by status; defaults to pending."
+        description = "List staged agent-originated proposals from pending_writes. Filter by status (pending|accepted|rejected|expired|all); defaults to pending."
     )]
     async fn list_pending_writes(
         &self,
@@ -2679,6 +2693,117 @@ mod tests {
                 .iter()
                 .all(|p| p.status == "pending")
         );
+    }
+
+    #[test]
+    fn mcp_list_pending_writes_defaults_to_pending_only() {
+        // Mixed review history: one proposal accepted, one left pending.
+        // Only then are the "pending" and "all" behaviors distinguishable
+        // (a fresh fixture where every row is still pending returns the
+        // same rows either way, which is the blind spot this test closes).
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+
+        let fact_id = crate::commands::pending_write::propose_fact(
+            temp.path(),
+            "build-command",
+            "cargo build",
+            "Observed in repo.",
+            "codex",
+            "openai-codex",
+            "{\"source\":\"mcp\"}",
+        )
+        .expect("propose fact");
+        crate::commands::pending_write::propose_decision(
+            temp.path(),
+            "Adopt the kraken pattern",
+            "Sea creatures organize concurrent workloads cleanly.",
+            "claude-code",
+            "claude-ai",
+            "{\"source\":\"mcp\"}",
+        )
+        .expect("propose decision");
+
+        crate::commands::review::accept(temp.path(), fact_id, "cli:user", None, false)
+            .expect("accept fact");
+
+        let server = MemhubServer::new(temp.path().to_path_buf());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+
+        let response = runtime
+            .block_on(
+                server.list_pending_writes_impl(Parameters(ListPendingWritesParams::default())),
+            )
+            .expect("list pending writes");
+
+        assert_eq!(response.0.status.as_deref(), Some("pending"));
+        assert_eq!(response.0.pending_writes.len(), 1);
+        assert!(
+            response
+                .0
+                .pending_writes
+                .iter()
+                .all(|p| p.status == "pending")
+        );
+        assert_eq!(response.0.pending_writes[0].kind, "decision");
+    }
+
+    #[test]
+    fn mcp_list_pending_writes_all_returns_every_status() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+
+        let fact_id = crate::commands::pending_write::propose_fact(
+            temp.path(),
+            "build-command",
+            "cargo build",
+            "Observed in repo.",
+            "codex",
+            "openai-codex",
+            "{\"source\":\"mcp\"}",
+        )
+        .expect("propose fact");
+        crate::commands::pending_write::propose_decision(
+            temp.path(),
+            "Adopt the kraken pattern",
+            "Sea creatures organize concurrent workloads cleanly.",
+            "claude-code",
+            "claude-ai",
+            "{\"source\":\"mcp\"}",
+        )
+        .expect("propose decision");
+
+        crate::commands::review::accept(temp.path(), fact_id, "cli:user", None, false)
+            .expect("accept fact");
+
+        let server = MemhubServer::new(temp.path().to_path_buf());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+
+        let response = runtime
+            .block_on(
+                server.list_pending_writes_impl(Parameters(ListPendingWritesParams {
+                    status: Some("all".to_string()),
+                    limit: None,
+                })),
+            )
+            .expect("list pending writes");
+
+        assert_eq!(response.0.status.as_deref(), Some("all"));
+        assert_eq!(response.0.pending_writes.len(), 2);
+        let statuses: Vec<_> = response
+            .0
+            .pending_writes
+            .iter()
+            .map(|p| p.status.as_str())
+            .collect();
+        assert!(statuses.contains(&"accepted"));
+        assert!(statuses.contains(&"pending"));
     }
 
     #[test]
