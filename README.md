@@ -447,10 +447,11 @@ memhub sync status   # confirms enablement + the resolved remote dir
 
 ## Project status
 
-A point-in-time snapshot pulled from the memhub task DB, current as of the cross-CLI verification sweep merge on **2026-07-18** — not a live feed. Run `memhub task list` or `memhub recall "sync hardening"` in this repo for the current picture.
+A point-in-time snapshot pulled from the memhub task DB, current as of the MCP `list_pending_writes` default fix on **2026-07-27** — not a live feed. Run `memhub task list` or `memhub recall "sync hardening"` in this repo for the current picture.
 
 ### Recently fixed
 
+- **MCP `list_pending_writes` now honors its documented default (2026-07-27, PR #174).** The tool advertised "Filter by status; defaults to pending" but passed an omitted `status` straight through to `review::list` as `None` — that function's encoding of *every* status — so agents were shown accepted, rejected, and expired rows as if they were still awaiting review. It now defaults to `pending` like the CLI, adds an explicit `all` spelling so the unfiltered query stays reachable, and always reports the filter actually applied instead of returning `"status": null`. Review surfaced a second-order effect: because `LIMIT` is applied after the status predicate, the old default could return *zero* pending rows while pending rows existed, crowded out of the 25-row window by newer reviewed ones. The regression test now uses a mixed-history fixture — the previous test built a fresh DB in which every row was pending, so it returned identical rows either way and could never have caught this.
 - **Cross-CLI verification sweep (2026-07-18, task 124, #168).** Codex integration checked end to end against the current CLI — MCP registration, actor mapping, and the wrap-up flow all healthy. OpenCode verified live for the first time: a user-run SSH smoke session confirmed the MCP status/recall round-trip works and all 14 skills are discoverable in-repo, so OpenCode support stays advertised rather than de-advertised. The one real drift found — the `opencode.json` command block — was fixed to the canonical 12 commands (added `catch-up`/`locate`, removed hibernated metrics/viz) and is now caught by a skill-parity test that parses `opencode.json`, so that drift class can't recur silently again. Installed Claude/Codex skill wrappers that had lagged one `memhub upgrade` behind the K9 removal were brought current. The PR also carried three small README fixes: the `.jsonc` filename, `/audit-md` in the Compatibility table, and an `opencode-run` default-model note.
 - **Branch protection on `main` is live (2026-07-18, task 121).** PRs are now required to merge, with the lint lane (fmt+clippy) and Windows/macOS build+test as required status checks, and `enforce_admins` on — merges wait on CI, not just local preflight.
 - **K9 removal and onboarding parity (2026-07-18, PRs #161, #162, #165).** The K9 integration subsystem is removed entirely — config model, init detection, the `memhub integrations` verb group, and all `k9_*` status/JSON/MCP/doctor surfaces are gone (task 123, #165). The README gained a Drive-sync model diagram (`docs/images/sync-model.svg`) in the sync section (task 96, #161). Onboarding surfaces now offer all five current runtime toggles, the import checklist's metrics bullet is cfg-gated, install-by-hand skips the hibernated metrics/viz skills, and the deprecated K9 interview step is stripped from `/init-project` (task 95, #162).
@@ -461,6 +462,7 @@ A point-in-time snapshot pulled from the memhub task DB, current as of the cross
 ### Known issues (non-blocking)
 
 - **Non-blocking transcript-archive residual races**, noted during review but not yet acted on (task 122).
+- **The weekly `cargo audit` job is red on `main`** — RUSTSEC-2026-0204 plus two unmaintained-crate advisories. It is not a required status check, so it does not gate merges (task 127).
 
 ### Roadmap (open tasks)
 
