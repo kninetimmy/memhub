@@ -462,7 +462,7 @@ A point-in-time snapshot pulled from the memhub task DB, current as of the MCP `
 ### Known issues (non-blocking)
 
 - **Non-blocking transcript-archive residual races**, noted during review but not yet acted on (task 122).
-- **The weekly `cargo audit` job is red on `main`** — RUSTSEC-2026-0204 plus two unmaintained-crate advisories. It is not a required status check, so it does not gate merges (task 127).
+- **The weekly `cargo audit` job is red on `main`** — RUSTSEC-2026-0204 against `crossbeam-epoch` is the lone hard failure, alongside two non-blocking warnings: unmaintained `paste` (RUSTSEC-2024-0436) and an unsoundness advisory against `anyhow` (RUSTSEC-2026-0190). It is not a required status check, so it does not gate merges (task 127).
 
 ### Roadmap (open tasks)
 
