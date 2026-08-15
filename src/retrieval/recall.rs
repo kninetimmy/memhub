@@ -532,7 +532,7 @@ fn finalize(
     opts: &ResolvedOptions,
     mut scored: Vec<ScoredHit>,
     candidate_count: usize,
-    warnings: Vec<RecallWarning>,
+    mut warnings: Vec<RecallWarning>,
     doc_chunk_total: i64,
     started: Instant,
 ) -> Result<RecallResponse> {
@@ -561,6 +561,7 @@ fn finalize(
             .collect();
         let scored_order = rerank::rerank(&opts.query, &docs)?;
         let mut reshuffled: Vec<ScoredHit> = Vec::with_capacity(scored.len());
+        let mut highest_dropped: Option<(f32, f32)> = None;
         for (idx, score) in scored_order {
             if let Some(hit) = scored.get(idx) {
                 // Doc chunks that joined via the default-inclusion
@@ -573,12 +574,30 @@ fn finalize(
                     opts.min_rerank_score
                 };
                 if score < floor {
+                    if highest_dropped.is_none_or(|(highest, _)| score > highest) {
+                        highest_dropped = Some((score, floor));
+                    }
                     continue;
                 }
                 let mut hit = hit.clone();
                 hit.rerank_score = Some(score);
                 reshuffled.push(hit);
             }
+        }
+        if reshuffled.is_empty()
+            && let Some((highest_score, floor)) = highest_dropped
+        {
+            warnings.push(RecallWarning {
+                kind: "rerank_floor_dropped_all".to_string(),
+                stale_count: 0,
+                total_count: scored.len(),
+                reason: format!(
+                    "Candidates existed, but none cleared the relevance floor ({floor:.3}); \
+                     the highest rerank score among dropped candidates was {highest_score:.3}."
+                ),
+                fix: "Refine the query, or lower [retrieval.scoring] min_rerank_score if low-relevance matches are wanted."
+                    .to_string(),
+            });
         }
         scored = reshuffled;
     }
@@ -2442,7 +2461,7 @@ mod tests {
     #[test]
     fn hybrid_min_rerank_score_drops_nonsense_when_reranker_runs() {
         // With hybrid + use_reranker on (project defaults) and the
-        // min_rerank_score floor at its default near 0, MiniLM's negative
+        // min_rerank_score floor at its default 2.0, MiniLM's negative
         // logits on a pure-nonsense query drop every candidate, so the
         // bundle must be empty.
         let temp = tempdir().expect("tempdir");
@@ -2482,6 +2501,14 @@ mod tests {
                 .collect::<Vec<_>>(),
         );
         assert_eq!(response.matcher, "recall:hybrid+rerank");
+        let warning = response
+            .warnings
+            .iter()
+            .find(|warning| warning.kind == "rerank_floor_dropped_all")
+            .expect("all-dropped rerank must warn callers");
+        assert!(warning.reason.contains("none cleared the relevance floor"));
+        assert!(warning.reason.contains("2.000"));
+        assert!(warning.reason.contains("highest rerank score"));
     }
 
     #[test]
@@ -2519,6 +2546,13 @@ mod tests {
         assert!(
             !response.results.is_empty(),
             "with the rerank floor pinned below every possible logit, hybrid recall should still surface low-confidence vector hits",
+        );
+        assert!(
+            response
+                .warnings
+                .iter()
+                .all(|warning| warning.kind != "rerank_floor_dropped_all"),
+            "a non-empty rerank result must not report an all-dropped warning"
         );
     }
 
