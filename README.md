@@ -27,7 +27,7 @@ When the agent needs context, it pulls a small, ranked bundle of just the releva
 <br>
 
 <p align="center">
-  <img src="docs/images/system-overview.svg" alt="memhub system overview" width="920"/>
+  <img src="docs/images/system-overview-dark-luxury.svg" alt="memhub system overview" width="920"/>
 </p>
 
 ---
