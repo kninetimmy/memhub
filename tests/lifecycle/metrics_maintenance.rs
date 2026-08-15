@@ -76,6 +76,17 @@ fn open(repo: &Path) -> db::ProjectContext {
     db::open_project(repo).expect("open_project")
 }
 
+/// A calendar date comfortably inside the default 90-day metrics
+/// retention window, computed at test runtime. Only needed by tests
+/// whose rows must survive an actual `prune_old` pass (as opposed to
+/// tests that call `reconcile` directly, which never consults the
+/// retention window and so are calendar-independent).
+fn recent_date() -> String {
+    let conn = Connection::open_in_memory().expect("in-memory conn");
+    conn.query_row("SELECT date('now', '-1 day')", [], |r| r.get(0))
+        .expect("recent date")
+}
+
 /// The core correctness case: the recall `ts` is in SQLite
 /// `CURRENT_TIMESTAMP` form (space separator) while the session bounds
 /// are in Claude Code's ISO `T`/`Z` form. A naive string compare would
@@ -337,16 +348,24 @@ fn open_project_runs_maintenance_only_when_enabled() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
+    // Enabling metrics below makes the third `open` actually run
+    // `prune_old` against the real (90-day) default retention, so this
+    // session/recall pair must be computed relative to "now" to survive it.
+    let date = recent_date();
+    let started_at = format!("{date}T09:00:00.000Z");
+    let ended_at = format!("{date}T09:59:00.000Z");
+    let recall_ts = format!("{date} 09:05:00");
+
     {
         let ctx = open(temp.path());
         insert_session(
             &ctx.conn,
             "sess-1",
             "claude-code",
-            "2026-05-15T09:00:00.000Z",
-            Some("2026-05-15T09:59:00.000Z"),
+            &started_at,
+            Some(ended_at.as_str()),
         );
-        insert_recall(&ctx.conn, "2026-05-15 09:05:00");
+        insert_recall(&ctx.conn, &recall_ts);
     }
 
     // Default config: metrics.enabled = false. open_project runs the
@@ -354,7 +373,7 @@ fn open_project_runs_maintenance_only_when_enabled() {
     {
         let ctx = open(temp.path());
         assert_eq!(
-            session_id_of_recall(&ctx.conn, "2026-05-15 09:05:00"),
+            session_id_of_recall(&ctx.conn, &recall_ts),
             None,
             "disabled: recall stays unattributed"
         );
@@ -368,7 +387,7 @@ fn open_project_runs_maintenance_only_when_enabled() {
 
     let ctx = open(temp.path());
     assert_eq!(
-        session_id_of_recall(&ctx.conn, "2026-05-15 09:05:00").as_deref(),
+        session_id_of_recall(&ctx.conn, &recall_ts).as_deref(),
         Some("sess-1"),
         "enabled: open_project attributed the recall"
     );
