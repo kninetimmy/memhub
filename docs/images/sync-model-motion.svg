@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 520" width="960" height="520">
+  <defs>
+    <marker id="arr-mint" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="8" refX="10" refY="4" orient="auto-start-reverse"><polygon points="0 0,11 4,0 8" fill="#6ee7b7"/></marker>
+    <marker id="arr-sky" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="8" refX="10" refY="4" orient="auto-start-reverse"><polygon points="0 0,11 4,0 8" fill="#38bdf8"/></marker>
+    <marker id="arr-orange" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="8" refX="10" refY="4" orient="auto-start-reverse"><polygon points="0 0,11 4,0 8" fill="#fdba74"/></marker>
+    <radialGradient id="glow" cx="50%" cy="45%" r="55%">
+      <stop offset="0%" stop-color="#d4a574" stop-opacity="0.05"/>
+      <stop offset="100%" stop-color="#d4a574" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="960" height="520" fill="#0a0a0a"/>
+  <rect width="960" height="520" fill="url(#glow)"/>
+  <text x="36" y="46" font-family="Georgia,'Times New Roman',serif" font-size="22" font-weight="700" fill="#f5f0eb">cross-machine sync</text>
+  <text x="36" y="64" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="10.5" fill="#a39787">a folder that already syncs is the transport - memhub stays offline</text>
+  <path d="M 256,172 L 330,172" fill="none" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#arr-mint)" data-graph-role="edge"/>
+  <path d="M 630,172 L 704,172" fill="none" stroke="#38bdf8" stroke-width="1.5" marker-end="url(#arr-sky)" data-graph-role="edge"/>
+  <path d="M 630,236 L 658,236" fill="none" stroke="#fdba74" stroke-width="1.5" data-graph-role="edge"/>
+  <path d="M 658,236 L 704,236" fill="none" stroke="#fdba74" stroke-width="1.5" marker-end="url(#arr-orange)" data-graph-role="edge"/>
+  <text x="293" y="160" text-anchor="middle" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="10" fill="#8c7e72">snapshot</text>
+  <text x="293" y="186" text-anchor="middle" font-family="'Cascadia Code','SF Mono','Courier New',monospace" font-size="8" fill="#8c7e72">VACUUM INTO</text>
+  <text x="667" y="160" text-anchor="middle" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="10" fill="#8c7e72">check</text>
+  <text x="667" y="186" text-anchor="middle" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="8" fill="#8c7e72">compare digests</text>
+  <text x="645" y="225" text-anchor="middle" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="10" fill="#8c7e72">adopt</text>
+  <line x1="664" y1="222" x2="664" y2="250" stroke="#d4a574" stroke-width="1.5" stroke-dasharray="3,3"/>
+  <text x="664" y="266" text-anchor="middle" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="9" fill="#c9a96e">you confirm</text>
+  <rect x="36" y="110" width="220" height="170" rx="8" fill="#111111" stroke="#d4a574" stroke-width="0.5" stroke-dasharray="6,4" opacity="0.9"/>
+  <text x="48" y="132" font-family="Georgia,'Times New Roman',serif" font-size="11" font-weight="700" fill="#c9a96e" opacity="0.75">MACHINE A</text>
+  <rect x="52" y="146" width="188" height="30" rx="5" fill="#111111" stroke="#38bdf8" stroke-width="1.25"/>
+  <text x="146.0" y="165.0" text-anchor="middle" font-family="'Cascadia Code','SF Mono','Courier New',monospace" font-size="12" font-weight="600" fill="#38bdf8">project.sqlite</text>
+  <rect x="52" y="186" width="188" height="26" rx="5" fill="#111111" stroke="#94a3b8" stroke-width="1.25"/>
+  <text x="146.0" y="203.0" text-anchor="middle" font-family="'Cascadia Code','SF Mono','Courier New',monospace" font-size="10" font-weight="600" fill="#a39787">sync_marker.json</text>
+  <text x="146" y="230" text-anchor="middle" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="9" fill="#6b5f53">last-synced baseline</text>
+  <text x="146" y="260" text-anchor="middle" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="10.5" fill="#a39787">pushes at /wrap-up</text>
+  <rect x="704" y="110" width="220" height="170" rx="8" fill="#111111" stroke="#d4a574" stroke-width="0.5" stroke-dasharray="6,4" opacity="0.9"/>
+  <text x="716" y="132" font-family="Georgia,'Times New Roman',serif" font-size="11" font-weight="700" fill="#c9a96e" opacity="0.75">MACHINE B</text>
+  <rect x="720" y="146" width="188" height="30" rx="5" fill="#111111" stroke="#38bdf8" stroke-width="1.25"/>
+  <text x="814.0" y="165.0" text-anchor="middle" font-family="'Cascadia Code','SF Mono','Courier New',monospace" font-size="12" font-weight="600" fill="#38bdf8">project.sqlite</text>
+  <rect x="720" y="186" width="188" height="26" rx="5" fill="#111111" stroke="#94a3b8" stroke-width="1.25"/>
+  <text x="814.0" y="203.0" text-anchor="middle" font-family="'Cascadia Code','SF Mono','Courier New',monospace" font-size="10" font-weight="600" fill="#a39787">sync_marker.json</text>
+  <text x="814" y="230" text-anchor="middle" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="9" fill="#6b5f53">last-synced baseline</text>
+  <text x="814" y="260" text-anchor="middle" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="10.5" fill="#a39787">pulls at /catch-up</text>
+  <rect x="744" y="290" width="150" height="22" rx="5" fill="#111111" stroke="#94a3b8" stroke-width="1.25" stroke-dasharray="4,3"/>
+  <text x="819.0" y="305.0" text-anchor="middle" font-family="'Cascadia Code','SF Mono','Courier New',monospace" font-size="9" font-weight="600" fill="#6b5f53">.memhub/backups/sync/</text>
+  <text x="736" y="305" text-anchor="end" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="9" fill="#8c7e72">backup first</text>
+  <rect x="330" y="96" width="300" height="220" rx="8" fill="#111111" stroke="#94a3b8" stroke-width="1" stroke-dasharray="6,4" opacity="0.9"/>
+  <text x="480" y="118" text-anchor="middle" font-family="Georgia,'Times New Roman',serif" font-size="11" font-weight="700" fill="#a39787">SYNCED FOLDER - DRIVE / RCLONE</text>
+  <text x="480" y="134" text-anchor="middle" font-family="'Cascadia Code','SF Mono','Courier New',monospace" font-size="9" fill="#6b5f53">&lt;drive_subpath&gt;/memhub/&lt;project_id&gt;</text>
+  <rect x="346" y="150" width="268" height="44" rx="5" fill="#111111" stroke="#38bdf8" stroke-width="1.25"/>
+  <text x="480.0" y="176.0" text-anchor="middle" font-family="'Cascadia Code','SF Mono','Courier New',monospace" font-size="12" font-weight="600" fill="#38bdf8">project-&lt;sha256&gt;.sqlite</text>
+  <text x="480" y="186" text-anchor="middle" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="9" fill="#a39787">content-addressed - immutable</text>
+  <rect x="346" y="206" width="268" height="44" rx="5" fill="#111111" stroke="#fbbf24" stroke-width="1.25"/>
+  <text x="480.0" y="232.0" text-anchor="middle" font-family="'Cascadia Code','SF Mono','Courier New',monospace" font-size="12" font-weight="600" fill="#fbbf24">manifest.json</text>
+  <text x="480" y="242" text-anchor="middle" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="9" fill="#a39787">written last - the publish moment</text>
+  <text x="480" y="290" text-anchor="middle" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="9" fill="#6b5f53">snapshot first, manifest last - a half-written push is never visible</text>
+  <text x="480" y="336" text-anchor="middle" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="9" fill="#8c7e72">every sync check ends in one of five verdicts</text>
+  <rect x="28" y="346" width="168" height="42" rx="7" fill="#111111" stroke="#94a3b8" stroke-width="1" opacity="0.9"/>
+  <text x="112" y="364" text-anchor="middle" font-family="'Cascadia Code','SF Mono','Courier New',monospace" font-size="11" font-weight="600" fill="#94a3b8">no-remote</text>
+  <text x="112" y="379" text-anchor="middle" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="8" fill="#a39787">nothing pushed yet</text>
+  <rect x="212" y="346" width="168" height="42" rx="7" fill="#111111" stroke="#6ee7b7" stroke-width="1" opacity="0.9"/>
+  <text x="296" y="364" text-anchor="middle" font-family="'Cascadia Code','SF Mono','Courier New',monospace" font-size="11" font-weight="600" fill="#6ee7b7">up-to-date</text>
+  <text x="296" y="379" text-anchor="middle" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="8" fill="#a39787">in sync - nothing to do</text>
+  <rect x="396" y="346" width="168" height="42" rx="7" fill="#111111" stroke="#38bdf8" stroke-width="1" opacity="0.9"/>
+  <text x="480" y="364" text-anchor="middle" font-family="'Cascadia Code','SF Mono','Courier New',monospace" font-size="11" font-weight="600" fill="#38bdf8">local-ahead</text>
+  <text x="480" y="379" text-anchor="middle" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="8" fill="#a39787">this machine is newer - push</text>
+  <rect x="580" y="346" width="168" height="42" rx="7" fill="#111111" stroke="#a78bfa" stroke-width="1" opacity="0.9"/>
+  <text x="664" y="364" text-anchor="middle" font-family="'Cascadia Code','SF Mono','Courier New',monospace" font-size="11" font-weight="600" fill="#a78bfa">drive-ahead</text>
+  <text x="664" y="379" text-anchor="middle" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="8" fill="#a39787">the folder is newer - pull</text>
+  <rect x="764" y="346" width="168" height="42" rx="7" fill="#111111" stroke="#fdba74" stroke-width="1" opacity="0.9"/>
+  <text x="848" y="364" text-anchor="middle" font-family="'Cascadia Code','SF Mono','Courier New',monospace" font-size="11" font-weight="600" fill="#fdba74">diverged</text>
+  <text x="848" y="379" text-anchor="middle" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="8" fill="#a39787">both changed - you choose</text>
+  <rect x="28" y="412" width="904" height="46" rx="8" fill="#111111" stroke="#d4a574" stroke-width="1" opacity="0.95"/>
+  <text x="480" y="431" text-anchor="middle" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="12.5" font-weight="700" fill="#e8c49a">memhub only reads and writes a local path</text>
+  <text x="480" y="448" text-anchor="middle" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="10" fill="#a39787">Drive for Desktop or rclone moves the bytes - memhub never makes a network call</text>
+  <line x1="120" y1="492" x2="148" y2="492" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="156" y="495" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="10" fill="#a39787">push (snapshot)</text>
+  <line x1="310" y1="492" x2="338" y2="492" stroke="#38bdf8" stroke-width="1.5"/>
+  <text x="346" y="495" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="10" fill="#a39787">check (read-only)</text>
+  <line x1="500" y1="492" x2="528" y2="492" stroke="#fdba74" stroke-width="1.5"/>
+  <text x="536" y="495" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="10" fill="#a39787">adopt - gated</text>
+  <line x1="690" y1="492" x2="718" y2="492" stroke="#d4a574" stroke-width="1.5"/>
+  <text x="726" y="495" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="10" fill="#a39787">your confirm</text>
+</svg>
