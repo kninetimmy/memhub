@@ -15,6 +15,7 @@ use std::path::Path;
 use memhub::commands::init;
 use memhub::config::ProjectConfig;
 use memhub::db;
+use rusqlite::Connection;
 use tempfile::tempdir;
 
 // Wave 5 U4 (issue #90): this file moved from `tests/` to `tests/lifecycle/`
@@ -22,6 +23,22 @@ use tempfile::tempdir;
 // binaries, so the fixture (still at `tests/fixtures/`, untouched) is now one
 // level further up.
 const FIXTURE: &str = include_str!("../fixtures/claude_session_sample.jsonl");
+
+// The fixture (and this file's own appended lines) hardcode 2026-05-15 as
+// the calendar date. The 90-day default metrics retention window means a
+// fixed date eventually ages out from under these tests (it did: see issue
+// #189), so every row that must survive the retention prune substitutes
+// this runtime-computed "yesterday" for that date instead. Timestamps that
+// exist to be pruned would stay hardcoded, but none of this file's do.
+fn recent_date() -> String {
+    let conn = Connection::open_in_memory().expect("in-memory conn");
+    conn.query_row("SELECT date('now', '-1 day')", [], |r| r.get(0))
+        .expect("recent date")
+}
+
+fn fixture_with_recent_date(date: &str) -> String {
+    FIXTURE.replace("2026-05-15", date)
+}
 
 struct Row {
     agent: String,
@@ -97,10 +114,11 @@ fn scrapes_claude_fixture_into_session_metrics() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
 
+    let date = recent_date();
     let tdir = temp.path().join("transcripts");
     fs::create_dir_all(&tdir).expect("transcripts dir");
     let file = tdir.join("sess-abc.jsonl");
-    fs::write(&file, FIXTURE).expect("write fixture");
+    fs::write(&file, fixture_with_recent_date(&date)).expect("write fixture");
     enable_metrics(temp.path(), &tdir);
 
     let row = scrape_and_read(temp.path(), "sess-abc").expect("row exists");
@@ -116,8 +134,9 @@ fn scrapes_claude_fixture_into_session_metrics() {
         row.recall_calls, 0,
         "recall_calls is task #30's, not the scraper's"
     );
-    assert_eq!(row.started_at, "2026-05-15T09:00:00.000Z");
-    assert_eq!(row.ended_at.as_deref(), Some("2026-05-15T09:01:30.000Z"));
+    assert_eq!(row.started_at, format!("{date}T09:00:00.000Z"));
+    let ended_at = format!("{date}T09:01:30.000Z");
+    assert_eq!(row.ended_at.as_deref(), Some(ended_at.as_str()));
 
     let len = fs::metadata(&file).expect("stat").len() as i64;
     assert_eq!(row.offset, len, "offset advanced to EOF");
@@ -136,7 +155,7 @@ fn rescan_without_change_does_not_double_count() {
     let tdir = temp.path().join("transcripts");
     fs::create_dir_all(&tdir).expect("transcripts dir");
     let file = tdir.join("sess-abc.jsonl");
-    fs::write(&file, FIXTURE).expect("write fixture");
+    fs::write(&file, fixture_with_recent_date(&recent_date())).expect("write fixture");
     enable_metrics(temp.path(), &tdir);
 
     let first = scrape_and_read(temp.path(), "sess-abc").expect("row");
@@ -160,19 +179,22 @@ fn rescan_without_change_does_not_double_count() {
 fn incremental_resume_accumulates_only_the_appended_delta() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
+    let date = recent_date();
     let tdir = temp.path().join("transcripts");
     fs::create_dir_all(&tdir).expect("transcripts dir");
     let file = tdir.join("sess-abc.jsonl");
-    fs::write(&file, FIXTURE).expect("write fixture");
+    fs::write(&file, fixture_with_recent_date(&date)).expect("write fixture");
     enable_metrics(temp.path(), &tdir);
 
     let base = scrape_and_read(temp.path(), "sess-abc").expect("row");
 
     append(
         &file,
-        "{\"type\":\"assistant\",\"timestamp\":\"2026-05-15T09:05:00.000Z\",\
-          \"sessionId\":\"sess-abc\",\"message\":{\"role\":\"assistant\",\
-          \"usage\":{\"input_tokens\":700,\"output_tokens\":100}}}\n",
+        &format!(
+            "{{\"type\":\"assistant\",\"timestamp\":\"{date}T09:05:00.000Z\",\
+              \"sessionId\":\"sess-abc\",\"message\":{{\"role\":\"assistant\",\
+              \"usage\":{{\"input_tokens\":700,\"output_tokens\":100}}}}}}\n"
+        ),
     );
 
     let after = scrape_and_read(temp.path(), "sess-abc").expect("row");
@@ -183,9 +205,10 @@ fn incremental_resume_accumulates_only_the_appended_delta() {
         after.started_at, base.started_at,
         "started_at pinned to earliest"
     );
+    let ended_at = format!("{date}T09:05:00.000Z");
     assert_eq!(
         after.ended_at.as_deref(),
-        Some("2026-05-15T09:05:00.000Z"),
+        Some(ended_at.as_str()),
         "ended_at moved forward"
     );
     let len = fs::metadata(&file).expect("stat").len() as i64;
@@ -199,7 +222,7 @@ fn partial_trailing_line_is_not_consumed_until_completed() {
     let tdir = temp.path().join("transcripts");
     fs::create_dir_all(&tdir).expect("transcripts dir");
     let file = tdir.join("sess-abc.jsonl");
-    fs::write(&file, FIXTURE).expect("write fixture");
+    fs::write(&file, fixture_with_recent_date(&recent_date())).expect("write fixture");
     enable_metrics(temp.path(), &tdir);
 
     let base = scrape_and_read(temp.path(), "sess-abc").expect("row");
