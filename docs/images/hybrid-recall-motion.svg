@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 560" width="960" height="560">
+  <defs>
+    <marker id="arr-sky" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="8" refX="10" refY="4" orient="auto-start-reverse"><polygon points="0 0,11 4,0 8" fill="#38bdf8"/></marker>
+    <marker id="arr-violet" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="8" refX="10" refY="4" orient="auto-start-reverse"><polygon points="0 0,11 4,0 8" fill="#a78bfa"/></marker>
+    <marker id="arr-mint" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="8" refX="10" refY="4" orient="auto-start-reverse"><polygon points="0 0,11 4,0 8" fill="#6ee7b7"/></marker>
+    <marker id="arr-gold" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="8" refX="10" refY="4" orient="auto-start-reverse"><polygon points="0 0,11 4,0 8" fill="#d4a574"/></marker>
+    <radialGradient id="glow" cx="50%" cy="45%" r="55%">
+      <stop offset="0%" stop-color="#d4a574" stop-opacity="0.05"/>
+      <stop offset="100%" stop-color="#d4a574" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="960" height="560" fill="#0a0a0a"/>
+  <rect width="960" height="560" fill="url(#glow)"/>
+  <text x="920" y="44" text-anchor="end" font-family="Georgia,'Times New Roman',serif" font-size="22" font-weight="700" fill="#f5f0eb">hybrid recall</text>
+  <text x="920" y="62" text-anchor="end" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="10.5" fill="#a39787">one query &#183; two searches &#183; one ranked answer</text>
+  <path d="M 480,86 L 480,112" fill="none" stroke="#6ee7b7" stroke-width="1.5" data-graph-role="edge"/>
+  <path d="M 480,112 L 240,112 L 240,152" fill="none" stroke="#38bdf8" stroke-width="1.5" marker-end="url(#arr-sky)" data-graph-role="edge"/>
+  <path d="M 480,112 L 720,112 L 720,152" fill="none" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arr-violet)" data-graph-role="edge"/>
+  <path d="M 240,224 L 240,268 L 474,268" fill="none" stroke="#38bdf8" stroke-width="1.5" data-graph-role="edge"/>
+  <path d="M 720,224 L 720,268 L 486,268" fill="none" stroke="#a78bfa" stroke-width="1.5" data-graph-role="edge"/>
+  <path d="M 480,268 L 480,296" fill="none" stroke="#6ee7b7" stroke-width="2" marker-end="url(#arr-mint)" data-graph-role="edge"/>
+  <path d="M 480,356 L 480,388" fill="none" stroke="#6ee7b7" stroke-width="2" marker-end="url(#arr-mint)" data-graph-role="edge"/>
+  <path d="M 480,448 L 480,480" fill="none" stroke="#d4a574" stroke-width="2" marker-end="url(#arr-gold)" data-graph-role="edge"/>
+  <text x="196" y="250" text-anchor="middle" font-family="'Cascadia Code','SF Mono','Courier New',monospace" font-size="10" fill="#8c7e72">BM25 score</text>
+  <text x="766" y="250" text-anchor="middle" font-family="'Cascadia Code','SF Mono','Courier New',monospace" font-size="10" fill="#8c7e72">cosine score</text>
+  <text x="480" y="246" text-anchor="middle" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="9" fill="#8c7e72">both run over project.sqlite - locally</text>
+  <rect x="330" y="36" width="300" height="50" rx="6" fill="#111111" stroke="#6ee7b7" stroke-width="1.5" data-graph-role="node"/>
+  <text x="342" y="58" font-family="'Cascadia Code','SF Mono','Courier New',monospace" font-size="13" font-weight="600" fill="#f5f0eb">recall("why did we pick rusqlite?")</text>
+  <rect x="110" y="152" width="260" height="72" rx="6" fill="#111111" stroke="#38bdf8" stroke-width="1.5" data-graph-role="node"/>
+  <text x="122" y="174" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="600" fill="#38bdf8">FTS5 - BM25</text>
+  <text x="122" y="192" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="10" fill="#a39787">keyword + stemmed match</text>
+  <text x="122" y="208" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="10" fill="#a39787">finds the exact words</text>
+  <rect x="590" y="152" width="260" height="72" rx="6" fill="#111111" stroke="#a78bfa" stroke-width="1.5" data-graph-role="node"/>
+  <text x="602" y="174" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="600" fill="#a78bfa">BGE-small vectors</text>
+  <text x="602" y="192" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="10" fill="#a39787">semantic similarity - cosine</text>
+  <text x="602" y="208" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="10" fill="#a39787">finds the meaning, not the words</text>
+  <rect x="330" y="296" width="300" height="60" rx="6" fill="#111111" stroke="#5a9e6f" stroke-width="1.5" data-graph-role="node"/>
+  <text x="342" y="318" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="600" fill="#5a9e6f">score blend</text>
+  <text x="342" y="336" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="10" fill="#a39787">0.5 x fts + 0.5 x vec - 0.3 x stale</text>
+  <rect x="330" y="388" width="300" height="60" rx="6" fill="#111111" stroke="#fbbf24" stroke-width="1.5" data-graph-role="node"/>
+  <text x="342" y="410" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="600" fill="#fbbf24">cross-encoder re-rank</text>
+  <text x="342" y="428" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="10" fill="#a39787">ms-marco-MiniLM - scores top 20 pairs</text>
+  <rect x="330" y="480" width="300" height="56" rx="6" fill="#111111" stroke="#d4a574" stroke-width="1.5" data-graph-role="node"/>
+  <text x="342" y="502" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="600" fill="#e8c49a">ranked bundle</text>
+  <text x="342" y="520" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="10" fill="#a39787">cited - scored - stale-flagged</text>
+  <rect x="36" y="452" width="252" height="106" rx="8" fill="none" stroke="#d4a574" stroke-width="0.5" stroke-dasharray="6,4" opacity="0.35"/>
+  <line x1="46" y1="474" x2="74" y2="474" stroke="#38bdf8" stroke-width="1.5"/>
+  <text x="82" y="477" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="10" fill="#a39787">keyword search</text>
+  <line x1="46" y1="498" x2="74" y2="498" stroke="#a78bfa" stroke-width="1.5"/>
+  <text x="82" y="501" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="10" fill="#a39787">semantic search</text>
+  <line x1="46" y1="522" x2="74" y2="522" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="82" y="525" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="10" fill="#a39787">blended candidates</text>
+  <line x1="46" y1="546" x2="74" y2="546" stroke="#d4a574" stroke-width="1.5"/>
+  <text x="82" y="549" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="10" fill="#a39787">what the agent gets back</text>
+  <text x="920" y="552" text-anchor="end" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="9" fill="#6b5f53">models bundled in the binary - runs offline - no network</text>
+</svg>
