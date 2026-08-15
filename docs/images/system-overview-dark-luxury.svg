@@ -1,0 +1,129 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 560" width="1200" height="560" style="max-width:100%;display:block;">
+  <style>
+    text { font-family: -apple-system,'Helvetica Neue',Arial,'PingFang SC',sans-serif; }
+    .ttl { font-family: Georgia,'Times New Roman',serif; font-weight: 700; }
+    .lbl { font-family: Georgia,'Times New Roman',serif; font-size: 11px; font-weight: 700; fill: #c9a96e; opacity: 0.7; letter-spacing: 1.5px; }
+    .fn  { font-family: 'Cascadia Code','SF Mono','Courier New',monospace; }
+    .sm  { font-size: 10px; fill: #a39787; }
+    .xs  { font-size: 9px; fill: #6b5f53; }
+    .al  { font-size: 9.5px; }
+  </style>
+  <defs>
+    <marker id="arr-gold" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0,10 3.5,0 7" fill="#d4a574"/>
+    </marker>
+    <marker id="arr-mint" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0,10 3.5,0 7" fill="#6ee7b7"/>
+    </marker>
+    <marker id="arr-mint-dim" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0,10 3.5,0 7" fill="#6ee7b7" opacity="0.5"/>
+    </marker>
+    <marker id="arr-orange" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0,10 3.5,0 7" fill="#fdba74"/>
+    </marker>
+    <radialGradient id="glow" cx="46%" cy="45%" r="45%">
+      <stop offset="0%" stop-color="#d4a574" stop-opacity="0.05"/>
+      <stop offset="100%" stop-color="#d4a574" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Canvas -->
+  <rect width="1200" height="560" rx="14" fill="#0a0a0a"/>
+  <rect width="1200" height="560" rx="14" fill="url(#glow)"/>
+  <rect x="0.5" y="0.5" width="1199" height="559" rx="14" fill="none" stroke="#c9a96e" stroke-width="1" stroke-opacity="0.25"/>
+
+  <!-- Title -->
+  <text x="600" y="48" text-anchor="middle" class="ttl" font-size="21" fill="#d4a574" letter-spacing="2">how memhub works</text>
+  <text x="600" y="70" text-anchor="middle" font-size="11" fill="#a39787">recall is ranked · writes are reviewed</text>
+
+  <!-- AGENTS node -->
+  <rect x="60" y="195" width="240" height="90" rx="8" fill="#111111" stroke="#a78bfa" stroke-width="1.5"/>
+  <text x="180" y="230" text-anchor="middle" class="fn" font-size="14" font-weight="600" fill="#a78bfa">your agents</text>
+  <text x="180" y="250" text-anchor="middle" class="sm">Claude Code · Codex · OpenCode</text>
+  <text x="180" y="268" text-anchor="middle" class="xs">untrusted writers · trusted readers</text>
+
+  <!-- READ PATH container -->
+  <rect x="400" y="95" width="320" height="120" rx="8" fill="none" stroke="#d4a574" stroke-width="0.5" stroke-dasharray="6,4" stroke-opacity="0.4" data-graph-role="container"/>
+  <text x="412" y="113" class="lbl">READ PATH — EVERY PROMPT</text>
+
+  <rect x="420" y="125" width="280" height="70" rx="8" fill="#111111" stroke="#d4a574" stroke-width="1.2"/>
+  <text x="560" y="152" text-anchor="middle" class="fn" font-size="14" font-weight="600" fill="#e8c49a">hybrid recall engine</text>
+  <text x="560" y="170" text-anchor="middle" class="sm">FTS5 BM25 · BGE-small vectors · re-ranker</text>
+  <text x="560" y="185" text-anchor="middle" class="xs">a few relevant rows, never the whole ledger</text>
+
+  <!-- WRITE PATH container -->
+  <rect x="400" y="325" width="480" height="115" rx="8" fill="none" stroke="#d4a574" stroke-width="0.5" stroke-dasharray="6,4" stroke-opacity="0.4" data-graph-role="container"/>
+  <text x="412" y="343" class="lbl">WRITE PATH — STAGED UNTIL YOU APPROVE</text>
+
+  <rect x="420" y="355" width="180" height="55" rx="8" fill="#111111" stroke="#f87171" stroke-width="1.5"/>
+  <text x="510" y="378" text-anchor="middle" class="fn" font-size="13" font-weight="600" fill="#f87171">staged proposals</text>
+  <text x="510" y="396" text-anchor="middle" class="sm">pending writes</text>
+
+  <rect x="660" y="355" width="200" height="55" rx="8" fill="#111111" stroke="#fbbf24" stroke-width="1.5"/>
+  <text x="760" y="378" text-anchor="middle" class="fn" font-size="13" font-weight="600" fill="#fbbf24">review gate</text>
+  <text x="760" y="396" text-anchor="middle" class="fn" font-size="10" fill="#a39787">memhub review accept</text>
+
+  <!-- YOU node -->
+  <rect x="700" y="475" width="180" height="50" rx="8" fill="#111111" stroke="#fbbf24" stroke-width="1" stroke-opacity="0.85"/>
+  <text x="790" y="505" text-anchor="middle" class="fn" font-size="13" fill="#fbbf24">⌨  you · terminal</text>
+
+  <!-- STORE panel -->
+  <rect x="950" y="95" width="200" height="345" rx="10" fill="#111111" stroke="#d4a574" stroke-width="0.5" stroke-dasharray="6,4" stroke-opacity="0.4" data-graph-role="container"/>
+  <text x="964" y="115" class="lbl">PROJECT MEMORY</text>
+
+  <rect x="965" y="128" width="170" height="24" rx="6" fill="#1a1a1a" stroke="#38bdf8" stroke-width="1"/>
+  <text x="1050" y="144" text-anchor="middle" class="fn" font-size="11.5" fill="#38bdf8">facts</text>
+
+  <rect x="965" y="158" width="170" height="24" rx="6" fill="#1a1a1a" stroke="#38bdf8" stroke-width="1" stroke-opacity="0.8"/>
+  <text x="1050" y="174" text-anchor="middle" class="fn" font-size="11.5" fill="#38bdf8" fill-opacity="0.9">decisions</text>
+
+  <rect x="965" y="188" width="170" height="24" rx="6" fill="#1a1a1a" stroke="#38bdf8" stroke-width="1" stroke-opacity="0.6"/>
+  <text x="1050" y="204" text-anchor="middle" class="fn" font-size="11.5" fill="#38bdf8" fill-opacity="0.75">tasks</text>
+
+  <rect x="965" y="218" width="170" height="24" rx="6" fill="#1a1a1a" stroke="#fbbf24" stroke-width="1" stroke-opacity="0.85"/>
+  <text x="1036" y="234" text-anchor="middle" class="fn" font-size="11.5" fill="#fbbf24">reference docs</text>
+  <text x="1112" y="234" text-anchor="middle" class="xs" font-size="8.5">opt-in</text>
+
+  <text x="1050" y="268" text-anchor="middle" class="fn" font-size="10" fill="#a39787">.memhub/project.sqlite</text>
+
+  <line x1="965" y1="290" x2="1135" y2="290" stroke="#6b5f53" stroke-width="0.5" stroke-opacity="0.6"/>
+
+  <text x="964" y="312" class="lbl">CODE INDEX</text>
+  <rect x="965" y="324" width="170" height="24" rx="6" fill="#1a1a1a" stroke="#38bdf8" stroke-width="1" stroke-opacity="0.8"/>
+  <text x="1050" y="340" text-anchor="middle" class="fn" font-size="11" fill="#38bdf8">file:line breadcrumbs</text>
+  <text x="1050" y="366" text-anchor="middle" class="xs">/locate — "where is the retry logic?"</text>
+  <text x="1050" y="382" text-anchor="middle" class="fn" font-size="9" fill="#6b5f53">.memhub/code_index.sqlite</text>
+
+  <!-- READ arrows -->
+  <path d="M300,220 L360,220 L360,150 L420,150" fill="none" stroke="#6ee7b7" stroke-width="1.6" marker-end="url(#arr-mint)"/>
+  <text x="330" y="212" text-anchor="middle" class="al" fill="#6ee7b7">ask</text>
+
+  <path d="M420,172 L382,172 L382,250 L300,250" fill="none" stroke="#6ee7b7" stroke-width="2" marker-end="url(#arr-mint)"/>
+  <text x="338" y="242" text-anchor="middle" class="al" fill="#6ee7b7">bundle → prompt</text>
+
+  <path d="M700,160 L928,160 L928,205 L950,205" fill="none" stroke="#6ee7b7" stroke-width="1.4" stroke-dasharray="4,3" stroke-opacity="0.6" marker-end="url(#arr-mint-dim)"/>
+  <text x="800" y="152" text-anchor="middle" class="al" fill="#6ee7b7" fill-opacity="0.7">query + rank</text>
+
+  <!-- WRITE arrows -->
+  <path d="M300,268 L397,268 L397,382 L420,382" fill="none" stroke="#fdba74" stroke-width="1.5" marker-end="url(#arr-orange)"/>
+  <text x="332" y="282" text-anchor="middle" class="al" fill="#fdba74">propose</text>
+
+  <line x1="600" y1="382" x2="660" y2="382" stroke="#fdba74" stroke-width="1.5" marker-end="url(#arr-orange)"/>
+  <text x="630" y="374" text-anchor="middle" class="al" fill="#fdba74">staged</text>
+
+  <path d="M860,382 L912,382 L912,250 L950,250" fill="none" stroke="#d4a574" stroke-width="2" marker-end="url(#arr-gold)"/>
+  <text x="884" y="374" text-anchor="middle" class="al" fill="#d4a574">durable</text>
+
+  <line x1="790" y1="475" x2="790" y2="410" stroke="#d4a574" stroke-width="2" marker-end="url(#arr-gold)"/>
+  <text x="800" y="448" class="al" fill="#d4a574">approve ✓</text>
+
+  <!-- Legend -->
+  <g transform="translate(60,530)">
+    <line x1="0" y1="0" x2="26" y2="0" stroke="#6ee7b7" stroke-width="1.6" marker-end="url(#arr-mint)"/>
+    <text x="32" y="4" class="al" fill="#a39787">read path</text>
+    <line x1="110" y1="0" x2="136" y2="0" stroke="#fdba74" stroke-width="1.5" marker-end="url(#arr-orange)"/>
+    <text x="142" y="4" class="al" fill="#a39787">staged write path</text>
+    <line x1="256" y1="0" x2="282" y2="0" stroke="#d4a574" stroke-width="2" marker-end="url(#arr-gold)"/>
+    <text x="288" y="4" class="al" fill="#a39787">human-approved · durable</text>
+  </g>
+</svg>
