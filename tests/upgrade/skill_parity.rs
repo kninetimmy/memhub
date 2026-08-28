@@ -13,6 +13,7 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -262,8 +263,12 @@ fn collect_opencode_skill_ids(source: &Path, dir: &Path, ids: &mut BTreeSet<Stri
 }
 
 fn opencode_json_discovered_skill_names() -> BTreeSet<String> {
+    opencode_discovered_skill_names(&opencode_json_skill_sources())
+}
+
+fn opencode_discovered_skill_names(skill_sources: &BTreeSet<String>) -> BTreeSet<String> {
     let mut ids = BTreeSet::new();
-    for relative in opencode_json_skill_sources() {
+    for relative in skill_sources {
         let source = repo_root().join(relative);
         collect_opencode_skill_ids(&source, &source, &mut ids);
     }
@@ -291,6 +296,93 @@ fn opencode_json_discovers_only_default_installed_skills() {
         default_installed_skill_set(),
         "opencode.json must discover every active skill by its path-derived ID without \
          scanning the metrics/viz reactivation templates"
+    );
+}
+
+#[test]
+#[ignore = "requires an installed OpenCode V2 parser; run explicitly"]
+fn opencode_v2_effective_config_smoke() {
+    let root = repo_root();
+    #[cfg(windows)]
+    let mut command = {
+        let mut command = Command::new("cmd");
+        command.args(["/d", "/c", "opencode2", "debug", "config"]);
+        command
+    };
+    #[cfg(not(windows))]
+    let mut command = {
+        let mut command = Command::new("opencode2");
+        command.args(["debug", "config"]);
+        command
+    };
+    let output = command
+        .current_dir(&root)
+        .output()
+        .expect("run installed OpenCode V2 parser (`opencode2 debug config`)");
+    assert!(
+        output.status.success(),
+        "`opencode2 debug config` failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let entries: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .unwrap_or_else(|error| panic!("parse `opencode2 debug config` output: {error}"));
+    let config_path = root
+        .join("opencode.json")
+        .canonicalize()
+        .expect("canonicalize repo-root opencode.json");
+    let project_document = entries
+        .as_array()
+        .expect("OpenCode debug config output must be an array")
+        .iter()
+        .find(|entry| {
+            entry.get("type").and_then(|value| value.as_str()) == Some("document")
+                && entry
+                    .get("path")
+                    .and_then(|value| value.as_str())
+                    .and_then(|path| Path::new(path).canonicalize().ok())
+                    .is_some_and(|path| path == config_path)
+        })
+        .expect("OpenCode debug config must include the repo-root opencode.json document");
+    let info = project_document
+        .get("info")
+        .expect("repo-root opencode.json document must include parsed info");
+
+    assert!(
+        info.pointer("/mcp/servers/memhub").is_some(),
+        "OpenCode must parse the native `mcp.servers.memhub` project configuration"
+    );
+    let commands: BTreeSet<String> = info
+        .get("commands")
+        .and_then(|value| value.as_object())
+        .expect("OpenCode must parse the native project `commands` block")
+        .keys()
+        .cloned()
+        .collect();
+    assert_eq!(commands, default_installed_skill_set());
+
+    let skill_sources: BTreeSet<String> = info
+        .get("skills")
+        .and_then(|value| value.as_array())
+        .expect("OpenCode must parse the native project `skills` array")
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .expect("OpenCode project skill sources must be strings")
+                .to_string()
+        })
+        .collect();
+    assert_eq!(
+        skill_sources,
+        BTreeSet::from(["templates/skills/opencode".to_string()]),
+        "OpenCode must expose only the active project skill source"
+    );
+    assert_eq!(
+        opencode_discovered_skill_names(&skill_sources),
+        default_installed_skill_set(),
+        "OpenCode project discovery must exclude hibernated metrics and viz skills"
     );
 }
 
