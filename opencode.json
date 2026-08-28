@@ -1,13 +1,15 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
-    "memhub": {
-      "type": "local",
-      "command": ["memhub", "serve"],
-      "enabled": true
+    "servers": {
+      "memhub": {
+        "type": "local",
+        "command": ["memhub", "serve"],
+        "disabled": false
+      }
     }
   },
-  "command": {
+  "commands": {
     "audit-md": {
       "description": "Audit CLAUDE.md/AGENTS.md for drift and bloat",
       "template": "Use the memhub audit-md skill. Arguments: $ARGUMENTS"
@@ -57,7 +59,5 @@
       "template": "Use the memhub upgrade skill. Arguments: $ARGUMENTS"
     }
   },
-  "skills": {
-    "paths": ["templates/skills/opencode"]
-  }
+  "skills": ["templates/skills/opencode"]
 }

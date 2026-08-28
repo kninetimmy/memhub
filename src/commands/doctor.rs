@@ -1242,10 +1242,10 @@ fn json_file_registers_memhub(path: &Path, servers_key: &str) -> bool {
 }
 
 /// Best-effort JSONC-tolerant check for native V2
-/// `mcp.servers.memhub` or legacy `mcp.memhub` registration. Strip JSONC
-/// comments and trailing commas before parsing, but require a real parsed
-/// configuration so malformed files and similarly named keys elsewhere do
-/// not count.
+/// `mcp.servers.memhub` or officially supported V1 compatibility syntax at
+/// `mcp.memhub`. Strip JSONC comments and trailing commas before parsing, but
+/// require a real parsed configuration so malformed files and similarly named
+/// keys elsewhere do not count.
 fn opencode_config_registers_memhub(path: &Path) -> bool {
     let Ok(raw) = fs::read_to_string(path) else {
         return false;
@@ -2051,13 +2051,13 @@ transcript_retention_days = 99999999
     }
 
     #[test]
-    fn mcp_opencode_ok_via_legacy_jsonc_with_comments() {
+    fn mcp_opencode_ok_via_supported_v1_jsonc_with_comments() {
         let temp = tempdir().expect("tempdir");
         let home = empty_home();
         fs::create_dir_all(home.path().join(".config").join("opencode")).expect("mkdir");
         fs::write(
             temp.path().join("opencode.jsonc"),
-            "{\n  // memhub MCP registration\n  \"mcp\": { /* legacy path */ \"memhub\": { \"command\": \"memhub\", }, },\n}\n",
+            "{\n  // memhub MCP registration\n  \"mcp\": { /* supported V1 compatibility path */ \"memhub\": { \"type\": \"local\", \"command\": [\"memhub\", \"serve\"], \"enabled\": true, }, },\n}\n",
         )
         .expect("write");
 
@@ -2090,17 +2090,17 @@ transcript_retention_days = 99999999
         assert_eq!(value["note"], "keep \"quoted\" // and /* literal */");
     }
 
-    /// Exact shape committed to this repo's own `opencode.json` (issue
-    /// #65 R2): array-form `command`, plus `type`/`enabled` siblings the
-    /// presence-only checker must still see past to find `memhub`.
+    /// Native V2 shape committed to this repo's own `opencode.json`:
+    /// `mcp.servers.memhub` with array-form `command`, plus `type`/`disabled`
+    /// siblings the presence-only checker must still see past.
     #[test]
-    fn mcp_opencode_ok_via_committed_opencode_json_shape() {
+    fn mcp_opencode_ok_via_committed_native_v2_opencode_json_shape() {
         let temp = tempdir().expect("tempdir");
         let home = empty_home();
         fs::create_dir_all(home.path().join(".config").join("opencode")).expect("mkdir");
         fs::write(
             temp.path().join("opencode.json"),
-            r#"{"mcp": {"memhub": {"type": "local", "command": ["memhub", "serve"], "enabled": true}}}"#,
+            r#"{"mcp": {"servers": {"memhub": {"type": "local", "command": ["memhub", "serve"], "disabled": false}}}}"#,
         )
         .expect("write");
 

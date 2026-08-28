@@ -245,15 +245,17 @@ Please install memhub for me, then turn on hybrid recall.
        {
          "$schema": "https://opencode.ai/config.json",
          "mcp": {
-           "memhub": {
-             "type": "local",
-             "command": ["memhub", "serve"],
-             "enabled": true
+           "servers": {
+             "memhub": {
+               "type": "local",
+               "command": ["memhub", "serve"],
+               "disabled": false
+             }
            }
          }
        }
 
-   If that file already exists, merge only the `mcp.memhub` block.
+   If that file already exists, merge only the `mcp.servers.memhub` block.
 5. Copy the user-level skills so /wrap-up, /catch-up, /check-init,
    /init-project, /recall, /locate, /reindex, /eval-recall, /doc,
    /global, /audit-md, and /upgrade all work:
@@ -382,8 +384,8 @@ Get-ChildItem "$HOME\src\memhub\templates\commands\opencode\*.md" | Where-Object
 #   command = "memhub"
 #   args = ["serve"]
 
-# MCP for OpenCode — merge into ~/.config/opencode/opencode.json:
-#   { "mcp": { "memhub": { "type": "local", "command": ["memhub", "serve"], "enabled": true } } }
+# MCP for OpenCode V2 — merge into ~/.config/opencode/opencode.json:
+#   { "mcp": { "servers": { "memhub": { "type": "local", "command": ["memhub", "serve"], "disabled": false } } } }
 
 # 7. (Recommended) Turn on hybrid recall — FTS + semantic search, with a
 #    bundled cross-encoder re-ranker over the blended results on by
@@ -826,9 +828,9 @@ include_docs_in_default = false  # auto-flips on first `doc add --global`
 
 - Reads `AGENTS.md` at session start (same role as Codex).
 - User-level skills at `~/.config/opencode/skills/` and command wrappers at `~/.config/opencode/commands/`: same set as above.
-- MCP server registered repo-scoped via the `mcp.memhub` block in the tracked `opencode.json` — nothing to set up per machine.
+- MCP server registered repo-scoped via the `mcp.servers.memhub` block in the tracked `opencode.json` — nothing to set up per machine.
 - Skill writes are attributed `actor=opencode:wrap-up`, `source=user+agent:opencode`.
-- Non-interactive `opencode run` needs a default model configured (`opencode config`) or an explicit `-m <provider/model>` flag.
+- Set the optional root `model` in `opencode.json(c)` for a default, or select one run with `opencode2 run --model provider/model#variant` (short form `-m provider/model#variant`). If no configured default is available, OpenCode can fall back to an available supported model.
 
 **All three at once**
 
@@ -871,7 +873,7 @@ When you accept a pending proposal via `memhub review accept`, the durable row's
 This repo ships repo-scoped registration for the two CLIs that support it — nothing to do:
 
 - **Claude Code** — committed [`.mcp.json`](.mcp.json) at the repo root (`mcpServers.memhub`).
-- **OpenCode** — the `mcp.memhub` block in the tracked [`opencode.json`](opencode.json).
+- **OpenCode** — the `mcp.servers.memhub` block in the tracked [`opencode.json`](opencode.json).
 
 **Codex** has no repo scope, so it's a one-time **per-machine** step — append to `~/.codex/config.toml` (not committed):
 
