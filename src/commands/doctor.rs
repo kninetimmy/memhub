@@ -1249,7 +1249,7 @@ fn opencode_config_registers_memhub(path: &Path) -> bool {
     let Ok(raw) = fs::read_to_string(path) else {
         return false;
     };
-    let stripped = strip_jsonc_line_comments(&raw);
+    let stripped = strip_jsonc_trailing_commas(&strip_jsonc_line_comments(&raw));
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&stripped) else {
         return false;
     };
@@ -1268,6 +1268,42 @@ fn strip_jsonc_line_comments(raw: &str) -> String {
         .map(strip_line_comment)
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn strip_jsonc_trailing_commas(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut stripped = String::with_capacity(raw.len());
+    let mut start = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (i, &byte) in bytes.iter().enumerate() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+        } else if byte == b'"' {
+            in_string = true;
+        } else if byte == b','
+            && matches!(
+                bytes[i + 1..]
+                    .iter()
+                    .copied()
+                    .find(|byte| !byte.is_ascii_whitespace()),
+                Some(b'}' | b']')
+            )
+        {
+            stripped.push_str(&raw[start..i]);
+            start = i + 1;
+        }
+    }
+
+    stripped.push_str(&raw[start..]);
+    stripped
 }
 
 /// Strips a trailing `//` comment from one line, honoring double-quoted
@@ -1984,7 +2020,7 @@ transcript_retention_days = 99999999
         fs::create_dir_all(home.path().join(".config").join("opencode")).expect("mkdir");
         fs::write(
             temp.path().join("opencode.jsonc"),
-            "{\n  // memhub MCP registration\n  \"mcp\": { \"memhub\": { \"command\": \"memhub\" } }\n}\n",
+            "{\n  // memhub MCP registration\n  \"mcp\": { \"memhub\": { \"command\": \"memhub\", }, },\n}\n",
         )
         .expect("write");
 
@@ -1993,13 +2029,13 @@ transcript_retention_days = 99999999
     }
 
     #[test]
-    fn mcp_opencode_ok_via_native_v2_json_shape() {
+    fn mcp_opencode_ok_via_native_v2_jsonc_with_trailing_commas() {
         let temp = tempdir().expect("tempdir");
         let home = empty_home();
         fs::create_dir_all(home.path().join(".config").join("opencode")).expect("mkdir");
         fs::write(
-            temp.path().join("opencode.json"),
-            r#"{"mcp": {"servers": {"memhub": {"command": "memhub"}}}}"#,
+            temp.path().join("opencode.jsonc"),
+            r#"{"mcp": {"servers": {"memhub": {"command": "memhub",},},},}"#,
         )
         .expect("write");
 
