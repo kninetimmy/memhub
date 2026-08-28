@@ -11,6 +11,7 @@ use std::fs;
 use memhub::commands::{decision, fact, init, review, session_note, task};
 use memhub::config::ProjectConfig;
 use memhub::db;
+use memhub::models::SessionNoteProvenance;
 use rusqlite::params;
 use tempfile::tempdir;
 
@@ -275,21 +276,46 @@ fn hybrid_mode_writes_session_note_embedding() {
     init::run(temp.path()).expect("init");
     switch_to_hybrid(temp.path());
 
-    let note = session_note::add(
+    let text = "Investigated the flaky upload test; root cause was a race in the retry loop.";
+    let note = session_note::add_with_provenance(
         temp.path(),
-        "Investigated the flaky upload test; root cause was a race in the retry loop.",
+        text,
+        "claude-code",
+        "claude-code:log_session_note",
+        &SessionNoteProvenance {
+            session_id: Some("ses_current".to_string()),
+            agent_id: Some("build".to_string()),
+            provider_id: Some("openai".to_string()),
+            model_id: Some("gpt-5.6-sol".to_string()),
+            variant: Some("xhigh".to_string()),
+        },
+    )
+    .expect("add session note");
+    let same_text_without_provenance = session_note::add(
+        temp.path(),
+        text,
         "claude-code",
         "claude-code:log_session_note",
     )
-    .expect("add session note");
+    .expect("add session note without provenance");
 
     let ctx = db::open_project(temp.path()).expect("open project");
     assert_eq!(embedding_count(&ctx.conn, "note", note.id), 1);
 
     let (dim, hash, blob) = embedding_metadata(&ctx.conn, "note", note.id);
+    let (_, legacy_hash, legacy_blob) =
+        embedding_metadata(&ctx.conn, "note", same_text_without_provenance.id);
     assert_eq!(dim, 384);
     assert_eq!(hash.len(), 64, "expected hex sha256 string");
     assert_eq!(blob.len(), 384 * 4, "expected 384 f32 little-endian floats");
+    assert_eq!(
+        hash, legacy_hash,
+        "provenance must not change note text hash"
+    );
+    assert_eq!(
+        blob, legacy_blob,
+        "provenance must not change note embedding"
+    );
 }
 
 #[test]

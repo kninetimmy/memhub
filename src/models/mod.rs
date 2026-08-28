@@ -187,7 +187,21 @@ pub struct SessionNote {
     pub actor: String,
     pub actor_raw: String,
     pub text: String,
+    pub session_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub provider_id: Option<String>,
+    pub model_id: Option<String>,
+    pub variant: Option<String>,
     pub created_at: String,
+}
+
+#[derive(Debug, Default)]
+pub struct SessionNoteProvenance {
+    pub session_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub provider_id: Option<String>,
+    pub model_id: Option<String>,
+    pub variant: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]

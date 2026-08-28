@@ -239,14 +239,31 @@ impl MemhubServer {
         Parameters(params): Parameters<LogSessionNoteParams>,
         actor: ClientIdentity,
     ) -> std::result::Result<Json<LogSessionNoteToolResponse>, McpError> {
-        let note =
-            commands::session_note::add(&self.start, &params.text, &actor.normalized, &actor.raw)
-                .map_err(map_tool_error)?;
+        let provenance = crate::models::SessionNoteProvenance {
+            session_id: params.session_id,
+            agent_id: params.agent_id,
+            provider_id: params.provider_id,
+            model_id: params.model_id,
+            variant: params.variant,
+        };
+        let note = commands::session_note::add_with_provenance(
+            &self.start,
+            &params.text,
+            &actor.normalized,
+            &actor.raw,
+            &provenance,
+        )
+        .map_err(map_tool_error)?;
 
         Ok(Json(LogSessionNoteToolResponse {
             id: note.id,
             actor: note.actor,
             actor_raw: note.actor_raw,
+            session_id: note.session_id,
+            agent_id: note.agent_id,
+            provider_id: note.provider_id,
+            model_id: note.model_id,
+            variant: note.variant,
             created_at: note.created_at,
         }))
     }
@@ -741,7 +758,7 @@ impl MemhubServer {
 
     #[tool(
         name = "log_session_note",
-        description = "Record a free-form session note. Notes are write-only scratch space and never promote to facts or decisions; never in default recall, but retrievable with recall(source_types=[\"note\"])."
+        description = "Record a free-form session note with optional structured session, agent, provider, model, and variant provenance. Provenance does not alter note text or actor attribution. Notes are write-only scratch space and never promote to facts or decisions; never in default recall, but retrievable with recall(source_types=[\"note\"])."
     )]
     async fn log_session_note(
         &self,
@@ -1283,6 +1300,11 @@ impl From<PendingWriteRecord> for PendingWriteToolRecord {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct LogSessionNoteParams {
     text: String,
+    session_id: Option<String>,
+    agent_id: Option<String>,
+    provider_id: Option<String>,
+    model_id: Option<String>,
+    variant: Option<String>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -1290,6 +1312,11 @@ struct LogSessionNoteToolResponse {
     id: i64,
     actor: String,
     actor_raw: String,
+    session_id: Option<String>,
+    agent_id: Option<String>,
+    provider_id: Option<String>,
+    model_id: Option<String>,
+    variant: Option<String>,
     created_at: String,
 }
 
@@ -2589,7 +2616,7 @@ mod tests {
     }
 
     #[test]
-    fn mcp_log_session_note_persists_with_client_identity() {
+    fn mcp_log_session_note_persists_provenance_without_changing_client_identity() {
         let temp = tempdir().expect("tempdir");
         init::run(temp.path()).expect("init");
 
@@ -2603,30 +2630,41 @@ mod tests {
             .block_on(server.log_session_note_impl(
                 Parameters(LogSessionNoteParams {
                     text: "experimented with router fallback, no clear winner yet".to_string(),
+                    session_id: Some("ses_current".to_string()),
+                    agent_id: Some("build".to_string()),
+                    provider_id: Some("openai".to_string()),
+                    model_id: Some("gpt-5.6-sol".to_string()),
+                    variant: Some("xhigh".to_string()),
                 }),
                 ClientIdentity {
-                    normalized: "claude-code".to_string(),
-                    raw: "claude-ai".to_string(),
+                    normalized: "opencode".to_string(),
+                    raw: "cli".to_string(),
                 },
             ))
             .expect("log session note");
 
         assert!(response.0.id > 0);
-        assert_eq!(response.0.actor, "claude-code");
-        assert_eq!(response.0.actor_raw, "claude-ai");
+        assert_eq!(response.0.actor, "opencode");
+        assert_eq!(response.0.actor_raw, "cli");
+        assert_eq!(response.0.session_id.as_deref(), Some("ses_current"));
+        assert_eq!(response.0.agent_id.as_deref(), Some("build"));
+        assert_eq!(response.0.provider_id.as_deref(), Some("openai"));
+        assert_eq!(response.0.model_id.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(response.0.variant.as_deref(), Some("xhigh"));
         assert!(!response.0.created_at.is_empty());
 
-        let ctx = db::open_project(temp.path()).expect("open");
-        let stored_text: String = ctx
-            .conn
-            .query_row(
-                "SELECT text FROM session_notes WHERE id = ?1",
-                params![response.0.id],
-                |row| row.get(0),
-            )
+        let stored = commands::session_note::list(temp.path(), 1, None, None)
+            .expect("list notes")
+            .pop()
             .expect("note row exists");
-        assert!(stored_text.contains("router fallback"));
+        assert!(stored.text.contains("router fallback"));
+        assert_eq!(stored.session_id.as_deref(), Some("ses_current"));
+        assert_eq!(stored.agent_id.as_deref(), Some("build"));
+        assert_eq!(stored.provider_id.as_deref(), Some("openai"));
+        assert_eq!(stored.model_id.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(stored.variant.as_deref(), Some("xhigh"));
 
+        let ctx = db::open_project(temp.path()).expect("open");
         let (audit_actor, audit_table, audit_action): (String, String, String) = ctx
             .conn
             .query_row(
@@ -2637,7 +2675,7 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .expect("audit row exists");
-        assert_eq!(audit_actor, "claude-code");
+        assert_eq!(audit_actor, "opencode");
         assert_eq!(audit_table, "session_notes");
         assert_eq!(audit_action, "insert");
     }

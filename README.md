@@ -830,6 +830,7 @@ include_docs_in_default = false  # auto-flips on first `doc add --global`
 - User-level skills at `~/.config/opencode/skills/` and command wrappers at `~/.config/opencode/commands/`: same set as above.
 - MCP server registered repo-scoped via the `mcp.servers.memhub` block in the tracked `opencode.json` — nothing to set up per machine.
 - Skill writes are attributed `actor=opencode:wrap-up`, `source=user+agent:opencode`.
+- The OpenCode wrap-up reads and verifies the current `Session.Info` through `opencode2 api`, then stores its session/agent/provider/model/variant values as optional structured fields on the session note only; those values do not change the actor or source above.
 - Set the optional root `model` in `opencode.json(c)` for a default, or select one run with `opencode2 run --model provider/model#variant` (short form `-m provider/model#variant`). If no configured default is available, OpenCode can fall back to an available supported model.
 
 **All three at once**

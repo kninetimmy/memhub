@@ -135,6 +135,16 @@ pub struct SessionNote {
     pub actor: String,
     pub actor_raw: String,
     pub text: String,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub provider_id: Option<String>,
+    #[serde(default)]
+    pub model_id: Option<String>,
+    #[serde(default)]
+    pub variant: Option<String>,
     pub created_at: String,
 }
 

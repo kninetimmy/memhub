@@ -650,6 +650,16 @@ pub enum NoteCommand {
         #[arg(long, value_name = "PATH")]
         from_file: Option<PathBuf>,
         #[arg(long)]
+        session_id: Option<String>,
+        #[arg(long)]
+        agent_id: Option<String>,
+        #[arg(long)]
+        provider_id: Option<String>,
+        #[arg(long)]
+        model_id: Option<String>,
+        #[arg(long)]
+        variant: Option<String>,
+        #[arg(long)]
         json: bool,
         #[arg(long)]
         actor: Option<String>,

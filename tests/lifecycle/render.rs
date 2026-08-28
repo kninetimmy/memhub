@@ -1,9 +1,9 @@
 use std::fs;
 use std::process::Command;
 
-use memhub::commands::{decision, fact, init, narrative, render, task};
+use memhub::commands::{decision, fact, init, narrative, render, session_note, task};
 use memhub::config::ProjectConfig;
-use memhub::models::NarrativeKind;
+use memhub::models::{NarrativeKind, SessionNoteProvenance};
 use tempfile::tempdir;
 
 fn read_string(path: &std::path::Path) -> String {
@@ -51,6 +51,42 @@ fn render_empty_repo_writes_placeholder_files() {
     assert!(ledger.contains("No decisions recorded"));
     assert!(ledger.contains("No tasks recorded"));
     assert!(ledger.contains("No facts recorded"));
+}
+
+#[test]
+fn render_keeps_session_note_provenance_out_of_note_text() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+    session_note::add_with_provenance(
+        temp.path(),
+        "Visible wrap-up summary.",
+        "opencode",
+        "cli",
+        &SessionNoteProvenance {
+            session_id: Some("ses_not_rendered".to_string()),
+            agent_id: Some("agent_not_rendered".to_string()),
+            provider_id: Some("provider_not_rendered".to_string()),
+            model_id: Some("model_not_rendered".to_string()),
+            variant: Some("variant_not_rendered".to_string()),
+        },
+    )
+    .expect("add note");
+
+    let result = render::run(temp.path(), "cli:user").expect("render");
+    let project = read_string(&result.project_md_path);
+    assert!(project.contains("(opencode) — Visible wrap-up summary."));
+    for hidden in [
+        "ses_not_rendered",
+        "agent_not_rendered",
+        "provider_not_rendered",
+        "model_not_rendered",
+        "variant_not_rendered",
+    ] {
+        assert!(
+            !project.contains(hidden),
+            "render leaked provenance {hidden}"
+        );
+    }
 }
 
 #[test]

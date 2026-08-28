@@ -125,10 +125,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
     // Wave 6 W3 (issue #96): session-transcript archive pointer table.
     // Number 0023 was pre-assigned so it could land after the sibling
     // Wave 6 migrations 0021/0022 (issues #97/#98) regardless of merge
-    // order. Kept in numeric order so `latest_version()` stays 0023.
+    // order. Kept in numeric order so `latest_version()` stays correct.
     (
         "0023_session_transcripts",
         include_str!("../../migrations/0023_session_transcripts.sql"),
+    ),
+    (
+        "0024_session_note_provenance",
+        include_str!("../../migrations/0024_session_note_provenance.sql"),
     ),
 ];
 
@@ -375,5 +379,62 @@ mod tests {
                 .expect("pragma session_transcripts");
             assert_eq!(has, 1, "session_transcripts.{col} must exist after 0023");
         }
+    }
+
+    #[test]
+    fn migration_0024_preserves_legacy_notes_and_adds_provenance_columns() {
+        let mut conn = Connection::open_in_memory().expect("open");
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (
+                 version TEXT PRIMARY KEY,
+                 applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+             );",
+        )
+        .expect("create migration ledger");
+        for (version, _) in &MIGRATIONS[..MIGRATIONS.len() - 1] {
+            conn.execute(
+                "INSERT INTO schema_migrations(version) VALUES (?1)",
+                [version],
+            )
+            .expect("mark legacy migration applied");
+        }
+        conn.execute_batch(
+            "CREATE TABLE projects (id INTEGER PRIMARY KEY);
+             INSERT INTO projects(id) VALUES (1);",
+        )
+        .expect("create legacy project row");
+        conn.execute_batch(include_str!("../../migrations/0006_session_notes.sql"))
+            .expect("create legacy session_notes table");
+        conn.execute(
+            "INSERT INTO session_notes(project_id, actor, actor_raw, text)
+             VALUES (1, 'opencode', 'cli', 'legacy note')",
+            [],
+        )
+        .expect("insert legacy note");
+
+        let applied = apply_all(&mut conn).expect("auto-apply 0024");
+        assert_eq!(applied, vec!["0024_session_note_provenance"]);
+        for column in [
+            "session_id",
+            "agent_id",
+            "provider_id",
+            "model_id",
+            "variant",
+        ] {
+            let present: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('session_notes') WHERE name = ?1",
+                    [column],
+                    |row| row.get(0),
+                )
+                .expect("inspect migrated session_notes");
+            assert_eq!(present, 1, "session_notes.{column} must exist after 0024");
+        }
+        let legacy: (String, Option<String>) = conn
+            .query_row("SELECT text, session_id FROM session_notes", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .expect("read migrated legacy note");
+        assert_eq!(legacy, ("legacy note".to_string(), None));
     }
 }

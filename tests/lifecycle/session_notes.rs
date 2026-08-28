@@ -3,6 +3,7 @@ use std::process::Command;
 
 use memhub::commands::{init, session_note};
 use memhub::db;
+use memhub::models::SessionNoteProvenance;
 use rusqlite::params;
 use serde_json::Value;
 use tempfile::tempdir;
@@ -58,6 +59,40 @@ fn session_note_add_persists_row_and_logs_audit() {
     assert_eq!(actor, "claude-code");
     assert_eq!(table, "session_notes");
     assert_eq!(action, "insert");
+}
+
+#[test]
+fn session_note_provenance_round_trips_through_listing() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+    let provenance = SessionNoteProvenance {
+        session_id: Some("ses_current".to_string()),
+        agent_id: Some("orch-specialist".to_string()),
+        provider_id: Some("openai".to_string()),
+        model_id: Some("gpt-5.6-sol".to_string()),
+        variant: Some("xhigh".to_string()),
+    };
+
+    let note = session_note::add_with_provenance(
+        temp.path(),
+        "record structured provenance",
+        "opencode",
+        "cli",
+        &provenance,
+    )
+    .expect("add note with provenance");
+    assert_eq!(note.session_id.as_deref(), Some("ses_current"));
+    assert_eq!(note.agent_id.as_deref(), Some("orch-specialist"));
+    assert_eq!(note.provider_id.as_deref(), Some("openai"));
+    assert_eq!(note.model_id.as_deref(), Some("gpt-5.6-sol"));
+    assert_eq!(note.variant.as_deref(), Some("xhigh"));
+
+    let listed = session_note::list(temp.path(), 1, None, None).expect("list notes");
+    assert_eq!(listed[0].session_id, note.session_id);
+    assert_eq!(listed[0].agent_id, note.agent_id);
+    assert_eq!(listed[0].provider_id, note.provider_id);
+    assert_eq!(listed[0].model_id, note.model_id);
+    assert_eq!(listed[0].variant, note.variant);
 }
 
 #[test]
@@ -164,6 +199,11 @@ fn note_list_cli_json_envelope_shape() {
     assert!(row["id"].as_i64().expect("id") > 0);
     assert_eq!(row["actor"], "cli:user");
     assert_eq!(row["text"], "json envelope test");
+    assert!(row["session_id"].is_null());
+    assert!(row["agent_id"].is_null());
+    assert!(row["provider_id"].is_null());
+    assert!(row["model_id"].is_null());
+    assert!(row["variant"].is_null());
     assert!(row["created_at"].is_string());
 }
 
@@ -278,6 +318,66 @@ fn note_add_cli_emits_json_envelope() {
     assert_eq!(payload["actor"], "cli:user");
     assert_eq!(payload["text"], "json note");
     assert!(payload["created_at"].is_string());
+}
+
+#[test]
+fn note_add_and_list_cli_json_expose_provenance_without_changing_attribution() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    let output = run_cli(
+        temp.path(),
+        &[
+            "note",
+            "add",
+            "OpenCode wrap-up summary",
+            "--session-id",
+            "ses_current",
+            "--agent-id",
+            "orch-specialist",
+            "--provider-id",
+            "openai",
+            "--model-id",
+            "gpt-5.6-sol",
+            "--variant",
+            "xhigh",
+            "--actor",
+            "opencode:wrap-up",
+            "--json",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "note add with provenance failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let added: Value = serde_json::from_slice(&output.stdout).expect("add JSON");
+    assert_eq!(added["actor"], "opencode:wrap-up");
+    assert_eq!(added["actor_raw"], "opencode:wrap-up");
+    assert_eq!(added["session_id"], "ses_current");
+    assert_eq!(added["agent_id"], "orch-specialist");
+    assert_eq!(added["provider_id"], "openai");
+    assert_eq!(added["model_id"], "gpt-5.6-sol");
+    assert_eq!(added["variant"], "xhigh");
+    assert_eq!(added["text"], "OpenCode wrap-up summary");
+
+    let output = run_cli(temp.path(), &["note", "list", "--json"]);
+    assert!(output.status.success());
+    let listed: Value = serde_json::from_slice(&output.stdout).expect("list JSON");
+    let note = &listed["session_notes"][0];
+    for field in [
+        "actor",
+        "actor_raw",
+        "text",
+        "session_id",
+        "agent_id",
+        "provider_id",
+        "model_id",
+        "variant",
+    ] {
+        assert_eq!(listed["session_notes"][0][field], added[field]);
+    }
+    assert_eq!(note["actor"], "opencode:wrap-up");
 }
 
 #[test]

@@ -109,6 +109,12 @@ shipped. Missing:
   needs to write a session-summary note at the end of each wrap-up.
   This is a ~20-line CLI addition; ships with this slice.
 
+  **Before/after (issue #212):** the original primitive above accepted only
+  text and actor metadata. It now also accepts optional `--session-id`,
+  `--agent-id`, `--provider-id`, `--model-id`, and `--variant` values for the
+  session-summary note. The old form remains valid; the new fields do not
+  change note text, actor attribution, rendering, or embedding.
+
 What the skill does *not* need new primitives for:
 
 - Reading state/arch latest — `memhub state show --json` /
