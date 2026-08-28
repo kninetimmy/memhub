@@ -60,12 +60,17 @@ fn count_codex_templates(repo: &Path) -> usize {
 }
 
 fn count_opencode_skill_templates(repo: &Path) -> usize {
-    std::fs::read_dir(repo.join("templates").join("skills").join("opencode"))
-        .expect("opencode skill templates dir")
-        .flatten()
-        .filter(|e| e.path().is_dir())
-        .filter(|e| active_template(&e.path()))
-        .count()
+    ["opencode", "opencode-hibernated"]
+        .into_iter()
+        .map(|dir| {
+            std::fs::read_dir(repo.join("templates").join("skills").join(dir))
+                .expect("opencode skill templates dir")
+                .flatten()
+                .filter(|e| e.path().is_dir())
+                .filter(|e| active_template(&e.path()))
+                .count()
+        })
+        .sum()
 }
 
 fn count_opencode_command_templates(repo: &Path) -> usize {

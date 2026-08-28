@@ -1939,7 +1939,7 @@ pub fn sync_skills(source_repo: &Path, dry: bool) -> ResyncReport {
         (
             sync_one(
                 "claude",
-                &skills_root.join("claude"),
+                &[skills_root.join("claude")],
                 &claude_target,
                 CopyKind::FlatMd,
                 dry,
@@ -1950,7 +1950,7 @@ pub fn sync_skills(source_repo: &Path, dry: bool) -> ResyncReport {
         (
             sync_one(
                 "codex",
-                &skills_root.join("codex"),
+                &[skills_root.join("codex")],
                 &codex_target,
                 CopyKind::DirPerSkill,
                 dry,
@@ -1961,7 +1961,10 @@ pub fn sync_skills(source_repo: &Path, dry: bool) -> ResyncReport {
         (
             sync_one(
                 "opencode-skills",
-                &skills_root.join("opencode"),
+                &[
+                    skills_root.join("opencode"),
+                    skills_root.join("opencode-hibernated"),
+                ],
                 &oc_skills_target,
                 CopyKind::DirPerSkill,
                 dry,
@@ -1972,7 +1975,7 @@ pub fn sync_skills(source_repo: &Path, dry: bool) -> ResyncReport {
         (
             sync_one(
                 "opencode-commands",
-                &commands_root.join("opencode"),
+                &[commands_root.join("opencode")],
                 &oc_commands_target,
                 CopyKind::FlatMd,
                 dry,
@@ -2125,7 +2128,7 @@ enum UnitStatus {
 
 fn sync_one(
     agent: &str,
-    src: &Path,
+    sources: &[PathBuf],
     target: &Path,
     kind: CopyKind,
     dry: bool,
@@ -2167,25 +2170,28 @@ fn sync_one(
         Ok(_) => {}
     }
 
-    let entries = match std::fs::read_dir(src) {
-        Ok(e) => e,
-        Err(e) => {
-            // Source unreadable: NOT authoritative (`enumerated: false`).
-            // Possibly transient, so the caller must carry this agent's
-            // manifest slice forward instead of orphaning still-owned files.
-            return skip(
-                SkillSyncStatus::Warn,
-                Some(format!("templates unreadable at {}: {e}", src.display())),
-                false,
-            );
+    let mut entries = Vec::new();
+    for src in sources {
+        match std::fs::read_dir(src) {
+            Ok(found) => entries.extend(found.flatten()),
+            Err(e) => {
+                // Source unreadable: NOT authoritative (`enumerated: false`).
+                // Possibly transient, so the caller must carry this agent's
+                // manifest slice forward instead of orphaning still-owned files.
+                return skip(
+                    SkillSyncStatus::Warn,
+                    Some(format!("templates unreadable at {}: {e}", src.display())),
+                    false,
+                );
+            }
         }
-    };
+    }
 
     let mut synced = 0usize;
     let mut protected = 0usize;
     let mut errors: Vec<String> = Vec::new();
     let mut shipped: Vec<(String, Option<String>)> = Vec::new();
-    for entry in entries.flatten() {
+    for entry in entries {
         let from = entry.path();
         let name = entry.file_name();
         if !skill_surface_enabled(&name) {
