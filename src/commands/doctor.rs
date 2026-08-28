@@ -1338,6 +1338,14 @@ fn strip_jsonc_trailing_commas(raw: &str) -> String {
             in_string = true;
         } else if byte == b','
             && matches!(
+                bytes[..i]
+                    .iter()
+                    .rev()
+                    .copied()
+                    .find(|byte| !byte.is_ascii_whitespace()),
+                Some(b'}' | b']' | b'"' | b'0'..=b'9' | b'e' | b'l')
+            )
+            && matches!(
                 bytes[i + 1..]
                     .iter()
                     .copied()
@@ -2108,6 +2116,21 @@ transcript_retention_days = 99999999
         fs::write(
             temp.path().join("opencode.json"),
             r#"{"mcp": {"memhub": {"command": "memhub"}}} /* unterminated"#,
+        )
+        .expect("write");
+
+        let check = check_mcp_opencode(temp.path(), Some(home.path()));
+        assert_eq!(check.status, Status::Warn);
+    }
+
+    #[test]
+    fn mcp_opencode_warns_when_trailing_comma_follows_no_value() {
+        let temp = tempdir().expect("tempdir");
+        let home = empty_home();
+        fs::create_dir_all(home.path().join(".config").join("opencode")).expect("mkdir");
+        fs::write(
+            temp.path().join("opencode.json"),
+            r#"{"mcp":{"memhub":{}},"malformed":[,]}"#,
         )
         .expect("write");
 
