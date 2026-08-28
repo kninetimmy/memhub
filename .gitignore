@@ -21,3 +21,4 @@ agent_docs/PROJECT_LEDGER.md
 .claude/agents/
 .codex/agents/
 .orchestrator/metrics/
+.opencode/agents/
