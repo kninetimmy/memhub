@@ -3,7 +3,7 @@
 # a Delivery PR.
 
 schema_version  = 1
-config_revision = "sha256:1f9541dbd826"
+config_revision = "sha256:7f3215cb5e04"
 
 [concurrency]
 max_subagents = 3
@@ -64,3 +64,27 @@ effort = "max"
 [hosts.codex.roles.review_downgrade]
 model  = "gpt-5.6-sol"
 effort = "high"
+
+[hosts.opencode.roles.architect]
+model   = "openai/gpt-5.6-sol"
+variant = "xhigh"
+
+[hosts.opencode.roles.scout]
+model   = "openai/gpt-5.6-luna"
+variant = "max"
+
+[hosts.opencode.roles.implementer]
+model   = "openai/gpt-5.6-sol"
+variant = "xhigh"
+
+[hosts.opencode.roles.specialist]
+model   = "openai/gpt-5.6-sol"
+variant = "xhigh"
+
+[hosts.opencode.roles.reviewer]
+model   = "openai/gpt-5.6-sol"
+variant = "xhigh"
+
+[hosts.opencode.roles.review_downgrade]
+model   = "openai/gpt-5.6-sol"
+variant = "high"
