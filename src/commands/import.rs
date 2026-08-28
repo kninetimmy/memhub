@@ -318,8 +318,10 @@ fn insert_writes_log(tx: &Transaction<'_>, rows: &[v1::WriteLogEntry]) -> Result
 
 fn insert_session_notes(tx: &Transaction<'_>, rows: &[v1::SessionNote]) -> Result<()> {
     let mut stmt = tx.prepare(
-        "INSERT INTO session_notes(id, project_id, actor, actor_raw, text, created_at)
-         VALUES (?1, 1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO session_notes(
+             id, project_id, actor, actor_raw, text, session_id, agent_id,
+             provider_id, model_id, variant, created_at
+         ) VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
     )?;
     for note in rows {
         stmt.execute(params![
@@ -327,6 +329,11 @@ fn insert_session_notes(tx: &Transaction<'_>, rows: &[v1::SessionNote]) -> Resul
             note.actor,
             note.actor_raw,
             note.text,
+            note.session_id,
+            note.agent_id,
+            note.provider_id,
+            note.model_id,
+            note.variant,
             note.created_at,
         ])?;
     }

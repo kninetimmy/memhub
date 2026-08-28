@@ -2166,18 +2166,41 @@ pub fn run(cli: Cli) -> Result<()> {
             NoteCommand::Add {
                 text,
                 from_file,
+                session_id,
+                agent_id,
+                provider_id,
+                model_id,
+                variant,
                 json: as_json,
                 actor,
             } => {
                 let body = resolve_text_input("note add", text, from_file)?;
                 let actor = resolve_actor(actor.as_deref())?;
-                let note = commands::session_note::add(&cwd, &body, &actor, &actor)?;
+                let provenance = crate::models::SessionNoteProvenance {
+                    session_id,
+                    agent_id,
+                    provider_id,
+                    model_id,
+                    variant,
+                };
+                let note = commands::session_note::add_with_provenance(
+                    &cwd,
+                    &body,
+                    &actor,
+                    &actor,
+                    &provenance,
+                )?;
                 if as_json {
                     let payload = json!({
                         "id": note.id,
                         "actor": note.actor,
                         "actor_raw": note.actor_raw,
                         "text": note.text,
+                        "session_id": note.session_id,
+                        "agent_id": note.agent_id,
+                        "provider_id": note.provider_id,
+                        "model_id": note.model_id,
+                        "variant": note.variant,
                         "created_at": note.created_at,
                     });
                     println!("{payload}");
@@ -2206,6 +2229,11 @@ pub fn run(cli: Cli) -> Result<()> {
                                 "actor": n.actor,
                                 "actor_raw": n.actor_raw,
                                 "text": n.text,
+                                "session_id": n.session_id,
+                                "agent_id": n.agent_id,
+                                "provider_id": n.provider_id,
+                                "model_id": n.model_id,
+                                "variant": n.variant,
                                 "created_at": n.created_at,
                             }))
                             .collect::<Vec<_>>(),

@@ -174,7 +174,18 @@ const CONTENT_TABLES: &[(&str, &[&str])] = &[
     ),
     (
         "session_notes",
-        &["id", "actor", "actor_raw", "text", "created_at"],
+        &[
+            "id",
+            "actor",
+            "actor_raw",
+            "text",
+            "session_id",
+            "agent_id",
+            "provider_id",
+            "model_id",
+            "variant",
+            "created_at",
+        ],
     ),
     (
         "project_state",
@@ -2904,6 +2915,35 @@ mod tests {
             with_kind, with_supersede,
             "facts.superseded_by must be part of the digest"
         );
+    }
+
+    #[test]
+    fn digest_reflects_session_note_provenance() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let ctx = db::open_project(temp.path()).expect("open");
+        ctx.conn
+            .execute(
+                "INSERT INTO session_notes(project_id, actor, actor_raw, text)
+                 VALUES (1, 'opencode', 'cli', 'same note text')",
+                [],
+            )
+            .expect("insert note");
+        let before = LogicalVersion::read(&ctx.conn).expect("read");
+
+        ctx.conn
+            .execute(
+                "UPDATE session_notes
+                 SET session_id = 'ses_current', agent_id = 'build',
+                     provider_id = 'openai', model_id = 'gpt-5.6-sol', variant = 'xhigh'",
+                [],
+            )
+            .expect("add provenance");
+        let after = LogicalVersion::read(&ctx.conn).expect("read");
+
+        assert_eq!(before.writes_log_max_id, after.writes_log_max_id);
+        assert_eq!(before.writes_log_count, after.writes_log_count);
+        assert_ne!(before.digest, after.digest);
     }
 
     fn write_doc(dir: &Path, name: &str, body: &str) -> PathBuf {

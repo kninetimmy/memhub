@@ -2,7 +2,7 @@
 
 **Author:** Elswick
 **Status:** Addendum to [`memhub-prd.md`](memhub-prd.md) (Draft v2). Authoritative for the items it modifies.
-**Last updated:** 2026-05-14
+**Last updated:** 2026-08-28
 
 This document supplements `memhub-prd.md` rather than replacing it.
 The PRD stays verbatim per the project guardrail in `CLAUDE.md`.
@@ -85,8 +85,22 @@ memhub arch history [--limit N] [--json]
 
 memhub render
 
+# Before issue #212 (the original session-note surface):
 memhub note add [TEXT] [--from-file PATH] [--actor NAME] [--json]
+
+# After issue #212 (optional structured session provenance):
+memhub note add [TEXT] [--from-file PATH]
+    [--session-id ID] [--agent-id ID]
+    [--provider-id ID] [--model-id ID] [--variant NAME]
+    [--actor NAME] [--json]
 ```
+
+The original `note add` accepted note text and attribution only; it rejected
+the provenance flags shown above. Issue #212 removes that restriction for
+`note add` specifically (not for every CLI add command). Omitted provenance
+remains valid for existing callers and imports. `note add --json` and
+`note list --json` expose the five nullable provenance values without changing
+the note text, actor, or source semantics.
 
 `note add` shipped as the only new primitive the wrap-up routing
 brain (§5 below) requires. `state` and `arch` are the durable

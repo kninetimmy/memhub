@@ -651,6 +651,37 @@ fn wrap_up_templates_render_with_actor_and_resume_without_replaying_writes() {
     }
 }
 
+#[test]
+fn opencode_wrap_up_requires_verified_session_provenance_before_writes() {
+    let path = repo_root().join("templates/skills/opencode/wrap-up/SKILL.md");
+    let content = fs::read_to_string(&path).expect("read OpenCode wrap-up skill");
+
+    for required in [
+        "opencode2 api get \"/api/session/<current-session-id>\"",
+        "require `data.id` to exactly equal",
+        "stop before every durable memhub write",
+        "session_id",
+        "agent_id",
+        "provider_id",
+        "model_id",
+        "variant",
+        "--session-id",
+        "--agent-id",
+        "--provider-id",
+        "--model-id",
+        "--variant",
+    ] {
+        assert!(
+            content.contains(required),
+            "OpenCode wrap-up skill is missing `{required}`"
+        );
+    }
+    assert!(content.contains("--source user+agent:opencode"));
+    assert!(content.contains("normalized `opencode` actor and raw client identity"));
+    assert!(content.contains("--actor opencode:wrap-up"));
+    assert!(content.contains("Do not put these values in the free-form session-note text"));
+}
+
 /// True when `s` is a YAML block-scalar indicator on its own: `>` or `|`,
 /// optionally followed by chomping (`-`/`+`) and/or an explicit indentation
 /// digit, and nothing else. Anything past that is the block's own

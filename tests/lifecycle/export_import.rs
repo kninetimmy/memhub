@@ -7,7 +7,7 @@ use memhub::commands::{
 };
 use memhub::db;
 use memhub::export::v1;
-use memhub::models::NarrativeKind;
+use memhub::models::{NarrativeKind, SessionNoteProvenance};
 use tempfile::tempdir;
 
 fn seed_project(path: &std::path::Path) {
@@ -635,11 +635,18 @@ fn export_import_round_trips_session_notes_and_narratives() {
         "cli:user",
     )
     .expect("first note");
-    session_note::add(
+    session_note::add_with_provenance(
         source.path(),
         "Embeddings cache may be stale — verify before reindex.",
         "codex",
         "openai-codex",
+        &SessionNoteProvenance {
+            session_id: Some("ses_exported".to_string()),
+            agent_id: Some("build".to_string()),
+            provider_id: Some("openai".to_string()),
+            model_id: Some("gpt-5.6-sol".to_string()),
+            variant: Some("high".to_string()),
+        },
     )
     .expect("second note");
 
@@ -685,6 +692,14 @@ fn export_import_round_trips_session_notes_and_narratives() {
             .iter()
             .any(|t| t.contains("Embeddings cache may be stale"))
     );
+    let provenance_note = notes
+        .iter()
+        .find(|note| note.session_id.as_deref() == Some("ses_exported"))
+        .expect("provenance note round-tripped");
+    assert_eq!(provenance_note.agent_id.as_deref(), Some("build"));
+    assert_eq!(provenance_note.provider_id.as_deref(), Some("openai"));
+    assert_eq!(provenance_note.model_id.as_deref(), Some("gpt-5.6-sol"));
+    assert_eq!(provenance_note.variant.as_deref(), Some("high"));
 
     let state = narrative::show(target.path(), NarrativeKind::State)
         .expect("state show")
@@ -727,6 +742,47 @@ fn import_accepts_legacy_export_without_session_notes_or_narratives() {
     assert_eq!(summary.session_notes, 0);
     assert_eq!(summary.project_state, 0);
     assert_eq!(summary.project_arch, 0);
+}
+
+#[test]
+fn import_accepts_legacy_v1_session_note_without_provenance() {
+    let target = tempdir().expect("target tempdir");
+    init::run(target.path()).expect("target init");
+    let legacy_export = serde_json::json!({
+        "memhub_export_version": 1,
+        "exported_at": "2025-01-01T00:00:00Z",
+        "exported_by": "memhub legacy",
+        "source_schema_version": "0006_session_notes",
+        "project": {
+            "root_path_at_export": target.path().to_string_lossy(),
+            "created_at": "2025-01-01T00:00:00Z",
+        },
+        "facts": [],
+        "decisions": [],
+        "tasks": [],
+        "commands": [],
+        "pending_writes": [],
+        "writes_log": [],
+        "session_notes": [{
+            "id": 1,
+            "actor": "opencode",
+            "actor_raw": "cli",
+            "text": "legacy v1 note",
+            "created_at": "2025-01-01T00:00:00Z"
+        }]
+    });
+    let legacy_path = target.path().join("legacy-note.json");
+    fs::write(&legacy_path, legacy_export.to_string()).expect("write legacy export");
+
+    let summary = import::run(target.path(), &legacy_path, true).expect("legacy import");
+    assert_eq!(summary.session_notes, 1);
+    let notes = session_note::list(target.path(), 1, None, None).expect("list legacy note");
+    assert_eq!(notes[0].text, "legacy v1 note");
+    assert!(notes[0].session_id.is_none());
+    assert!(notes[0].agent_id.is_none());
+    assert!(notes[0].provider_id.is_none());
+    assert!(notes[0].model_id.is_none());
+    assert!(notes[0].variant.is_none());
 }
 
 #[test]

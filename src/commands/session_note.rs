@@ -5,12 +5,28 @@ use rusqlite::params;
 use crate::MemhubError;
 use crate::Result;
 use crate::db;
-use crate::models::SessionNote;
+use crate::models::{SessionNote, SessionNoteProvenance};
 
 pub const DEFAULT_LIST_LIMIT: usize = 25;
 pub const MAX_TEXT_LEN: usize = 4096;
 
 pub fn add(start: &Path, text: &str, actor: &str, actor_raw: &str) -> Result<SessionNote> {
+    add_with_provenance(
+        start,
+        text,
+        actor,
+        actor_raw,
+        &SessionNoteProvenance::default(),
+    )
+}
+
+pub fn add_with_provenance(
+    start: &Path,
+    text: &str,
+    actor: &str,
+    actor_raw: &str,
+    provenance: &SessionNoteProvenance,
+) -> Result<SessionNote> {
     let trimmed_text = text.trim();
     if trimmed_text.is_empty() {
         return Err(MemhubError::InvalidInput(
@@ -33,9 +49,20 @@ pub fn add(start: &Path, text: &str, actor: &str, actor_raw: &str) -> Result<Ses
     let tx = ctx.conn.transaction()?;
 
     tx.execute(
-        "INSERT INTO session_notes(project_id, actor, actor_raw, text)
-         VALUES (1, ?1, ?2, ?3)",
-        params![actor, actor_raw, trimmed_text],
+        "INSERT INTO session_notes(
+             project_id, actor, actor_raw, text, session_id, agent_id,
+             provider_id, model_id, variant
+         ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            actor,
+            actor_raw,
+            trimmed_text,
+            provenance.session_id.as_deref(),
+            provenance.agent_id.as_deref(),
+            provenance.provider_id.as_deref(),
+            provenance.model_id.as_deref(),
+            provenance.variant.as_deref(),
+        ],
     )?;
     let row_id = tx.last_insert_rowid();
 
@@ -58,7 +85,8 @@ pub fn add(start: &Path, text: &str, actor: &str, actor_raw: &str) -> Result<Ses
     )?;
 
     let note = tx.query_row(
-        "SELECT id, actor, actor_raw, text, created_at
+        "SELECT id, actor, actor_raw, text, session_id, agent_id,
+                provider_id, model_id, variant, created_at
          FROM session_notes WHERE id = ?1",
         params![row_id],
         row_to_note,
@@ -91,7 +119,8 @@ pub fn list(
     let conn = &ctx.conn;
 
     let mut sql = String::from(
-        "SELECT id, actor, actor_raw, text, created_at
+        "SELECT id, actor, actor_raw, text, session_id, agent_id,
+                provider_id, model_id, variant, created_at
          FROM session_notes
          WHERE project_id = 1",
     );
@@ -123,6 +152,11 @@ fn row_to_note(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionNote> {
         actor: row.get(1)?,
         actor_raw: row.get(2)?,
         text: row.get(3)?,
-        created_at: row.get(4)?,
+        session_id: row.get(4)?,
+        agent_id: row.get(5)?,
+        provider_id: row.get(6)?,
+        model_id: row.get(7)?,
+        variant: row.get(8)?,
+        created_at: row.get(9)?,
     })
 }

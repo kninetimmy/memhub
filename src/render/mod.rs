@@ -368,7 +368,8 @@ fn count_open_tasks(conn: &Connection) -> Result<i64> {
 
 fn load_recent_session_notes(conn: &Connection) -> Result<Vec<SessionNote>> {
     let mut stmt = conn.prepare(
-        "SELECT id, actor, actor_raw, text, created_at
+        "SELECT id, actor, actor_raw, text, session_id, agent_id,
+                provider_id, model_id, variant, created_at
          FROM session_notes
          WHERE project_id = 1
          ORDER BY created_at DESC, id DESC
@@ -381,7 +382,12 @@ fn load_recent_session_notes(conn: &Connection) -> Result<Vec<SessionNote>> {
                 actor: row.get(1)?,
                 actor_raw: row.get(2)?,
                 text: row.get(3)?,
-                created_at: row.get(4)?,
+                session_id: row.get(4)?,
+                agent_id: row.get(5)?,
+                provider_id: row.get(6)?,
+                model_id: row.get(7)?,
+                variant: row.get(8)?,
+                created_at: row.get(9)?,
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
