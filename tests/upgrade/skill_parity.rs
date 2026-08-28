@@ -12,7 +12,7 @@
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -73,9 +73,12 @@ fn codex_skill_names() -> BTreeSet<String> {
         .collect()
 }
 
-/// OpenCode skills are `templates/skills/opencode/<name>/SKILL.md`.
+/// OpenCode skills are active templates under `opencode/` plus dormant
+/// reactivation templates kept outside that configured discovery root.
 fn opencode_skill_names() -> BTreeSet<String> {
-    dir_per_skill_names("templates/skills/opencode")
+    let mut names = dir_per_skill_names("templates/skills/opencode");
+    names.extend(dir_per_skill_names("templates/skills/opencode-hibernated"));
+    names
 }
 
 fn dir_per_skill_names(relative: &str) -> BTreeSet<String> {
@@ -218,6 +221,55 @@ fn opencode_json_command_names() -> BTreeSet<String> {
     commands.keys().cloned().collect()
 }
 
+fn opencode_json_skill_sources() -> BTreeSet<String> {
+    let path = repo_root().join("opencode.json");
+    let raw = fs::read_to_string(&path).expect("read opencode.json");
+    let value: serde_json::Value = serde_json::from_str(&raw).expect("parse opencode.json");
+    value
+        .get("skills")
+        .and_then(|v| v.as_array())
+        .expect("opencode.json must have a `skills` array")
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .expect("opencode.json skill sources must be strings")
+                .to_string()
+        })
+        .collect()
+}
+
+fn collect_opencode_skill_ids(source: &Path, dir: &Path, ids: &mut BTreeSet<String>) {
+    for entry in fs::read_dir(dir).unwrap_or_else(|_| panic!("read {}", dir.display())) {
+        let path = entry.expect("read skill source entry").path();
+        if path.is_dir() {
+            collect_opencode_skill_ids(source, &path, ids);
+        } else if dir == source && path.extension().and_then(|x| x.to_str()) == Some("md") {
+            ids.insert(
+                path.file_stem()
+                    .and_then(|s| s.to_str())
+                    .expect("root skill filename must be UTF-8")
+                    .to_string(),
+            );
+        } else if path.file_name().and_then(|s| s.to_str()) == Some("SKILL.md") {
+            ids.insert(
+                dir.file_name()
+                    .and_then(|s| s.to_str())
+                    .expect("skill directory name must be UTF-8")
+                    .to_string(),
+            );
+        }
+    }
+}
+
+fn opencode_json_discovered_skill_names() -> BTreeSet<String> {
+    let mut ids = BTreeSet::new();
+    for relative in opencode_json_skill_sources() {
+        let source = repo_root().join(relative);
+        collect_opencode_skill_ids(&source, &source, &mut ids);
+    }
+    ids
+}
+
 #[test]
 fn opencode_json_commands_block_matches_default_installed_skill_set() {
     let commands = opencode_json_command_names();
@@ -229,6 +281,16 @@ fn opencode_json_commands_block_matches_default_installed_skill_set() {
          memhub skill set minus the hibernated set (metrics, viz) — it must \
          gain a skill the moment one ships and lose metrics/viz, which stay \
          hibernated in a default build"
+    );
+}
+
+#[test]
+fn opencode_json_discovers_only_default_installed_skills() {
+    assert_eq!(
+        opencode_json_discovered_skill_names(),
+        default_installed_skill_set(),
+        "opencode.json must discover every active skill by its path-derived ID without \
+         scanning the metrics/viz reactivation templates"
     );
 }
 
@@ -431,7 +493,7 @@ fn claude_md_managed_block_parses() {
 
 /// Every skill template file across all three agents, as absolute paths:
 /// `templates/skills/claude/*.md`, `templates/skills/codex/*/SKILL.md`,
-/// `templates/skills/opencode/*/SKILL.md`.
+/// active and hibernated `templates/skills/opencode*/*/SKILL.md` roots.
 fn all_skill_template_files() -> Vec<PathBuf> {
     let mut files = Vec::new();
 
@@ -443,7 +505,11 @@ fn all_skill_template_files() -> Vec<PathBuf> {
         }
     }
 
-    for relative in ["templates/skills/codex", "templates/skills/opencode"] {
+    for relative in [
+        "templates/skills/codex",
+        "templates/skills/opencode",
+        "templates/skills/opencode-hibernated",
+    ] {
         let dir = repo_root().join(relative);
         for entry in fs::read_dir(&dir).unwrap_or_else(|_| panic!("read {relative}")) {
             let path = entry.expect("read dir entry").path();
