@@ -200,7 +200,7 @@ fn opencode_command_wrappers_match_skill_set() {
     );
 }
 
-/// Parse the tracked repo-root `opencode.json`'s `command` block and
+/// Parse the tracked repo-root `opencode.json`'s native V2 `commands` block and
 /// return its key set. This is the file OpenCode actually loads for an
 /// in-repo session — distinct from `templates/commands/opencode/*.md`,
 /// which only feeds `memhub upgrade`'s user-level install. The two can
@@ -212,20 +212,20 @@ fn opencode_json_command_names() -> BTreeSet<String> {
     let raw = fs::read_to_string(&path).expect("read opencode.json");
     let value: serde_json::Value = serde_json::from_str(&raw).expect("parse opencode.json");
     let commands = value
-        .get("command")
+        .get("commands")
         .and_then(|v| v.as_object())
-        .expect("opencode.json must have an object `command` block");
+        .expect("opencode.json must have an object `commands` block");
     commands.keys().cloned().collect()
 }
 
 #[test]
-fn opencode_json_command_block_matches_default_installed_skill_set() {
+fn opencode_json_commands_block_matches_default_installed_skill_set() {
     let commands = opencode_json_command_names();
     let canonical = default_installed_skill_set();
 
     assert_eq!(
         commands, canonical,
-        "opencode.json's `command` block must define exactly the canonical \
+        "opencode.json's `commands` block must define exactly the canonical \
          memhub skill set minus the hibernated set (metrics, viz) — it must \
          gain a skill the moment one ships and lose metrics/viz, which stay \
          hibernated in a default build"
