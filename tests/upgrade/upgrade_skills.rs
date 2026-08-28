@@ -15,7 +15,8 @@
 //! `upgrade/support.rs` (Wave 5 U4, issue #90) — to stay isolated from
 //! sibling tests in this shared harness binary.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use memhub::commands::upgrade::{SkillSync, SkillSyncStatus, sync_skills};
 use tempfile::tempdir;
@@ -74,6 +75,34 @@ fn count_opencode_command_templates(repo: &Path) -> usize {
         .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("md"))
         .filter(|e| active_template(&e.path()))
         .count()
+}
+
+fn installed_wrapper_paths(home: &Path, name: &str) -> [PathBuf; 4] {
+    [
+        home.join(".claude")
+            .join("commands")
+            .join(format!("{name}.md")),
+        home.join(".codex")
+            .join("skills")
+            .join(name)
+            .join("SKILL.md"),
+        home.join(".config")
+            .join("opencode")
+            .join("skills")
+            .join(name)
+            .join("SKILL.md"),
+        home.join(".config")
+            .join("opencode")
+            .join("commands")
+            .join(format!("{name}.md")),
+    ]
+}
+
+fn report_contains_path(orphans: &[String], home: &Path, path: &Path) -> bool {
+    let relative = path.strip_prefix(home).expect("wrapper under home");
+    orphans
+        .iter()
+        .any(|orphan| orphan.ends_with(&*relative.to_string_lossy()))
 }
 
 #[test]
@@ -196,16 +225,19 @@ fn skill_resync_additive_idempotent_and_conservative() {
         opencode_commands_dir.join("recall.md").is_file(),
         "a known OpenCode command wrapper must land on disk"
     );
-    assert_eq!(
-        claude_dir.join("metrics.md").exists(),
-        cfg!(feature = "metrics"),
-        "metrics skill installation must follow the compile-time feature"
-    );
-    assert_eq!(
-        codex_dir.join("viz").exists(),
-        cfg!(feature = "viz"),
-        "viz skill installation must follow the compile-time feature"
-    );
+    for (name, enabled) in [
+        ("metrics", cfg!(feature = "metrics")),
+        ("viz", cfg!(feature = "viz")),
+    ] {
+        for path in installed_wrapper_paths(home.path(), name) {
+            assert_eq!(
+                path.exists(),
+                enabled,
+                "{name} wrapper installation must follow the compile-time feature: {}",
+                path.display()
+            );
+        }
+    }
     // Additive: the user's unrelated skill is untouched.
     assert_eq!(
         std::fs::read(claude_dir.join("user-own.md")).expect("user skill"),
@@ -258,6 +290,100 @@ fn skill_resync_additive_idempotent_and_conservative() {
         b"not a dir",
         "the offending file must be left exactly as-is"
     );
+
+    unsafe { std::env::remove_var("HOME") };
+}
+
+#[test]
+fn hibernated_wrappers_are_reported_without_mutation() {
+    let _env_guard = crate::support::env_lock();
+
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let home = tempdir().expect("home tempdir");
+    unsafe {
+        std::env::set_var("HOME", home.path());
+        std::env::remove_var("USERPROFILE");
+    }
+
+    let seeded = b"pre-existing wrapper";
+    for name in ["metrics", "viz"] {
+        for path in installed_wrapper_paths(home.path(), name) {
+            std::fs::create_dir_all(path.parent().expect("wrapper parent")).expect("mkdir");
+            std::fs::write(path, seeded).expect("seed wrapper");
+        }
+    }
+
+    for dry in [true, false] {
+        let report = sync_skills(repo, dry);
+        for (name, hibernated) in [
+            ("metrics", !cfg!(feature = "metrics")),
+            ("viz", !cfg!(feature = "viz")),
+        ] {
+            for path in installed_wrapper_paths(home.path(), name) {
+                assert_eq!(
+                    report_contains_path(&report.orphans, home.path(), &path),
+                    hibernated,
+                    "{name} wrapper report must follow the compile-time feature: {}",
+                    path.display()
+                );
+                assert_eq!(
+                    std::fs::read(&path).expect("wrapper survives resync"),
+                    seeded,
+                    "dry-run and real resync must leave the wrapper unchanged: {}",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    if !cfg!(feature = "metrics") {
+        let output = Command::new(env!("CARGO_BIN_EXE_memhub"))
+            .args(["upgrade", "--dry-run", "--json", "--no-gc"])
+            .current_dir(repo)
+            .env("HOME", home.path())
+            .env_remove("USERPROFILE")
+            .env("CARGO_HOME", home.path().join(".cargo"))
+            .env_remove("CARGO_INSTALL_ROOT")
+            .env("MEMHUB_LOG", "off")
+            .output()
+            .expect("run JSON dry-run");
+        assert!(
+            output.status.success(),
+            "JSON dry-run failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let json: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("parse dry-run JSON");
+        assert!(
+            json["resync_orphans"]
+                .as_array()
+                .is_some_and(|paths| paths.len() >= 8),
+            "JSON must report every hibernated wrapper: {json}"
+        );
+        assert!(
+            json["resync_orphan_remediation"]
+                .as_str()
+                .is_some_and(|text| text.contains("remove the file manually")),
+            "JSON must provide safe manual remediation: {json}"
+        );
+
+        let output = Command::new(env!("CARGO_BIN_EXE_memhub"))
+            .args(["upgrade", "--dry-run", "--no-gc"])
+            .current_dir(repo)
+            .env("HOME", home.path())
+            .env_remove("USERPROFILE")
+            .env("CARGO_HOME", home.path().join(".cargo"))
+            .env_remove("CARGO_INSTALL_ROOT")
+            .env("MEMHUB_LOG", "off")
+            .output()
+            .expect("run human dry-run");
+        assert!(output.status.success(), "human dry-run failed");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("remove the file manually if unwanted"),
+            "human output must provide safe manual remediation: {stdout}"
+        );
+    }
 
     unsafe { std::env::remove_var("HOME") };
 }

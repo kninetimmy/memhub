@@ -109,12 +109,16 @@ pub struct UpgradeArgs {
 const SKILLS_ENV: &str = "MEMHUB_UPGRADE_SKILLS_JSON";
 
 /// Companion to `SKILLS_ENV`: the resync's orphan list (files memhub
-/// previously installed but no longer ships) crosses the same
+/// previously installed but no longer ships, plus installed wrappers for
+/// hibernated features) crosses the same
 /// orchestrate->finish process boundary. Kept as a separate var so the
 /// existing `SKILLS_ENV` payload shape is unchanged — an older binary
 /// that never sets this simply yields "no orphans this run", which
 /// deserializes to an empty list (fail-safe, never fatal).
 const ORPHANS_ENV: &str = "MEMHUB_UPGRADE_ORPHANS_JSON";
+
+const ORPHAN_REMEDIATION: &str =
+    "review each path and remove the file manually if unwanted; memhub left it unchanged";
 
 /// Set to "1" across the orchestrate->finish boundary when the resync hit
 /// the first-run (empty-manifest) case and left a pre-existing file
@@ -1509,8 +1513,10 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
                 },
                 "skills": resync.agents,
                 // Resync orphans (U6): files memhub installed before but no
-                // longer ships. Reported, never deleted.
+                // longer ships, plus hibernated wrappers. Reported, never deleted.
                 "resync_orphans": resync.orphans,
+                "resync_orphan_remediation": (!resync.orphans.is_empty())
+                    .then_some(ORPHAN_REMEDIATION),
                 // Degrade warnings (U7), e.g. a corrupt registry.
                 "warnings": warnings,
                 // First-run adoption notice (U6).
@@ -1556,7 +1562,7 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
         println!("  skills:       {}", s.dry_line());
     }
     for orphan in &resync.orphans {
-        println!("  orphan:       {orphan} (no longer shipped; left in place)");
+        println!("  orphan:       {orphan} ({ORPHAN_REMEDIATION})");
     }
     if resync.first_run_hint {
         print_first_run_notice();
@@ -1648,8 +1654,10 @@ fn emit(
                 "pruned": pruned,
                 "skills": skills,
                 // Resync orphans (U6): files memhub installed before but no
-                // longer ships. Reported, never deleted.
+                // longer ships, plus hibernated wrappers. Reported, never deleted.
                 "resync_orphans": orphans,
+                "resync_orphan_remediation": (!orphans.is_empty())
+                    .then_some(ORPHAN_REMEDIATION),
                 // Windows only: `.old-*` install destinations renamed
                 // aside (this run or an earlier one) that still exist —
                 // reclaimed on a later run once nothing has them open.
@@ -1702,7 +1710,7 @@ fn emit(
         println!("  skills: {}", s.line());
     }
     for orphan in orphans {
-        println!("  orphan: {orphan} (no longer shipped; left in place)");
+        println!("  orphan: {orphan} ({ORPHAN_REMEDIATION})");
     }
     for old in old_exe_leftovers {
         println!("  old install: {old} (renamed aside; reclaimed once nothing has it open)");
@@ -1846,8 +1854,10 @@ impl SkillSync {
 
 /// The full result of a skill/command resync: the per-agent rows plus the
 /// cross-agent orphan list — files memhub installed on a previous run but
-/// no longer ships. Orphans are **reported, never deleted** (U6): a stale
-/// slash-command is harmless, but deleting the user's file would not be.
+/// no longer ships, plus installed wrappers for hibernated features even when
+/// the manifest cannot prove ownership. Orphans are **reported, never
+/// deleted** (U6): a stale slash-command is harmless, but deleting the user's
+/// file would not be.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ResyncReport {
     pub agents: Vec<SkillSync>,
@@ -2020,7 +2030,30 @@ pub fn sync_skills(source_repo: &Path, dry: bool) -> ResyncReport {
         .filter(|k| Path::new(k).exists())
         .map(|k| abbrev(Path::new(k)))
         .collect();
+
+    // Hibernated wrappers are also actionable orphans even when an absent or
+    // corrupt manifest cannot prove memhub installed them. Reporting is the
+    // only action: default resync must neither overwrite nor delete them.
+    for (name, enabled) in [
+        ("metrics", cfg!(feature = "metrics")),
+        ("viz", cfg!(feature = "viz")),
+    ] {
+        if enabled {
+            continue;
+        }
+        for path in [
+            claude_target.join(format!("{name}.md")),
+            codex_target.join(name).join("SKILL.md"),
+            oc_skills_target.join(name).join("SKILL.md"),
+            oc_commands_target.join(format!("{name}.md")),
+        ] {
+            if std::fs::symlink_metadata(&path).is_ok() {
+                orphans.push(abbrev(&path));
+            }
+        }
+    }
     orphans.sort();
+    orphans.dedup();
 
     // First-run notice (REQUIRED 1b): the first time memhub consults an
     // empty manifest and leaves at least one pre-existing file untouched,

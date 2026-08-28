@@ -218,6 +218,23 @@ fn opencode_json_command_names() -> BTreeSet<String> {
     commands.keys().cloned().collect()
 }
 
+fn opencode_json_skill_sources() -> BTreeSet<String> {
+    let path = repo_root().join("opencode.json");
+    let raw = fs::read_to_string(&path).expect("read opencode.json");
+    let value: serde_json::Value = serde_json::from_str(&raw).expect("parse opencode.json");
+    value
+        .get("skills")
+        .and_then(|v| v.as_array())
+        .expect("opencode.json must have a `skills` array")
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .expect("opencode.json skill sources must be strings")
+                .to_string()
+        })
+        .collect()
+}
+
 #[test]
 fn opencode_json_commands_block_matches_default_installed_skill_set() {
     let commands = opencode_json_command_names();
@@ -229,6 +246,21 @@ fn opencode_json_commands_block_matches_default_installed_skill_set() {
          memhub skill set minus the hibernated set (metrics, viz) — it must \
          gain a skill the moment one ships and lose metrics/viz, which stay \
          hibernated in a default build"
+    );
+}
+
+#[test]
+fn opencode_json_discovers_only_default_installed_skills() {
+    let expected: BTreeSet<String> = default_installed_skill_set()
+        .into_iter()
+        .map(|name| format!("templates/skills/opencode/{name}"))
+        .collect();
+
+    assert_eq!(
+        opencode_json_skill_sources(),
+        expected,
+        "opencode.json must explicitly discover every active skill without scanning the \
+         metrics/viz reactivation templates"
     );
 }
 

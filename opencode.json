@@ -59,5 +59,18 @@
       "template": "Use the memhub upgrade skill. Arguments: $ARGUMENTS"
     }
   },
-  "skills": ["templates/skills/opencode"]
+  "skills": [
+    "templates/skills/opencode/audit-md",
+    "templates/skills/opencode/catch-up",
+    "templates/skills/opencode/check-init",
+    "templates/skills/opencode/doc",
+    "templates/skills/opencode/eval-recall",
+    "templates/skills/opencode/global",
+    "templates/skills/opencode/init-project",
+    "templates/skills/opencode/locate",
+    "templates/skills/opencode/recall",
+    "templates/skills/opencode/reindex",
+    "templates/skills/opencode/upgrade",
+    "templates/skills/opencode/wrap-up"
+  ]
 }
