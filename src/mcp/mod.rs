@@ -2012,7 +2012,9 @@ fn normalize_client_name(name: &str) -> String {
         // Codex writes were bucketed under the raw string, escaping the
         // agent rollups (F15).
         "codex" | "codex-cli" | "openai-codex" | "codex-mcp-client" => "codex".to_string(),
-        "opencode" | "open-code" | "opencode-cli" => "opencode".to_string(),
+        // OpenCode V2's CLI initializes MCP clients with the app identity
+        // `cli`, so include it in the OpenCode actor bucket.
+        "opencode" | "open-code" | "opencode-cli" | "cli" => "opencode".to_string(),
         other => {
             // An unmapped client still works (it buckets under its own
             // name); the warning surfaces the missing alias so it can be
@@ -2871,18 +2873,14 @@ mod tests {
             .enable_all()
             .build()
             .expect("runtime");
-        let raw = "OpenCode";
-        let actor = ClientIdentity {
-            normalized: normalize_client_name(raw),
-            raw: raw.to_string(),
-        };
+        let raw = "cli";
+        let initialize =
+            InitializeRequestParams::new(Default::default(), Implementation::new(raw, "1.0.0"));
+        let actor = current_client_identity_from_initialize(Some(&initialize));
         let provenance_json = pending_write_provenance_json(
             &NumberOrString::String("req-opencode".into()),
             &Meta::default(),
-            Some(&InitializeRequestParams::new(
-                Default::default(),
-                Implementation::new(raw, "1.0.0"),
-            )),
+            Some(&initialize),
         );
 
         let result = runtime
@@ -2902,16 +2900,19 @@ mod tests {
         assert_eq!(result.0.actor, "opencode");
 
         let ctx = db::open_project(temp.path()).expect("open project");
-        let staged: (String, String) = ctx
+        let staged: (String, String, String) = ctx
             .conn
             .query_row(
-                "SELECT actor, actor_raw FROM pending_writes ORDER BY id DESC LIMIT 1",
+                "SELECT actor, actor_raw, provenance_json
+                 FROM pending_writes ORDER BY id DESC LIMIT 1",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .expect("staged write");
         assert_eq!(staged.0, "opencode");
-        assert_eq!(staged.1, "OpenCode");
+        assert_eq!(staged.1, "cli");
+        let provenance: Value = serde_json::from_str(&staged.2).expect("provenance json");
+        assert_eq!(provenance["client_name"], "cli");
     }
 
     #[test]
