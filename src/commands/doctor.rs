@@ -1241,53 +1241,125 @@ fn json_file_registers_memhub(path: &Path, servers_key: &str) -> bool {
         .is_some()
 }
 
-/// Best-effort JSONC-tolerant check for an `mcp`/`mcpServers` block
-/// containing a `memhub` key. OpenCode's exact MCP registration schema
-/// is not pinned down anywhere in this repo (see
-/// docs/reviews/2026-07-improvement-review.md §13.2 P1/P5 — precedence
-/// between `opencode.json` and `opencode.jsonc` is itself flagged
-/// unverified), so this is deliberately lenient: strip `//` line
-/// comments (a reasonable JSONC approximation), try a real JSON parse
-/// under either key name, and fall back to a raw substring heuristic
-/// for JSONC constructs that pass still can't handle (e.g. trailing
-/// commas). This is report-only (P1) — a false negative here costs an
-/// unnecessary warn, never a crash or a write.
+/// Best-effort JSONC-tolerant check for native V2
+/// `mcp.servers.memhub` or legacy `mcp.memhub` registration. Strip JSONC
+/// comments and trailing commas before parsing, but require a real parsed
+/// configuration so malformed files and similarly named keys elsewhere do
+/// not count.
 fn opencode_config_registers_memhub(path: &Path) -> bool {
     let Ok(raw) = fs::read_to_string(path) else {
         return false;
     };
-    let stripped = strip_jsonc_line_comments(&raw);
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&stripped) {
-        let has = |key: &str| value.get(key).and_then(|m| m.get("memhub")).is_some();
-        return has("mcp") || has("mcpServers");
-    }
-    raw.contains("\"memhub\"") && (raw.contains("\"mcp\"") || raw.contains("\"mcpServers\""))
+    let stripped = strip_jsonc_trailing_commas(&strip_jsonc_comments(&raw));
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&stripped) else {
+        return false;
+    };
+    let Some(mcp) = value.get("mcp") else {
+        return false;
+    };
+
+    mcp.get("servers")
+        .and_then(|servers| servers.get("memhub"))
+        .or_else(|| mcp.get("memhub"))
+        .is_some()
 }
 
-fn strip_jsonc_line_comments(raw: &str) -> String {
-    raw.lines()
-        .map(strip_line_comment)
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Strips a trailing `//` comment from one line, honoring double-quoted
-/// string content (a `//` inside a JSON string is not a comment). Not a
-/// full JSONC parser — block comments and escaped quotes inside strings
-/// are out of scope for this best-effort heuristic.
-fn strip_line_comment(line: &str) -> &str {
-    let bytes = line.as_bytes();
+fn strip_jsonc_comments(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut stripped = String::with_capacity(raw.len());
+    let mut start = 0;
     let mut in_string = false;
+    let mut escaped = false;
     let mut i = 0;
-    while i + 1 < bytes.len() {
-        match bytes[i] {
-            b'"' => in_string = !in_string,
-            b'/' if !in_string && bytes[i + 1] == b'/' => return &line[..i],
-            _ => {}
+
+    while i < bytes.len() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if bytes[i] == b'\\' {
+                escaped = true;
+            } else if bytes[i] == b'"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
         }
-        i += 1;
+
+        if bytes[i] == b'"' {
+            in_string = true;
+            i += 1;
+        } else if bytes[i..].starts_with(b"//") {
+            stripped.push_str(&raw[start..i]);
+            i += 2;
+            while i < bytes.len() && !matches!(bytes[i], b'\r' | b'\n') {
+                i += 1;
+            }
+            start = i;
+        } else if bytes[i..].starts_with(b"/*") {
+            let comment_start = i;
+            stripped.push_str(&raw[start..i]);
+            i += 2;
+            while i + 1 < bytes.len() && !bytes[i..].starts_with(b"*/") {
+                i += 1;
+            }
+            if i + 1 >= bytes.len() {
+                stripped.push_str(&raw[comment_start..]);
+                return stripped;
+            }
+            stripped.push(' ');
+            i += 2;
+            start = i;
+        } else {
+            i += 1;
+        }
     }
-    line
+
+    stripped.push_str(&raw[start..]);
+    stripped
+}
+
+fn strip_jsonc_trailing_commas(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut stripped = String::with_capacity(raw.len());
+    let mut start = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (i, &byte) in bytes.iter().enumerate() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+        } else if byte == b'"' {
+            in_string = true;
+        } else if byte == b','
+            && matches!(
+                bytes[..i]
+                    .iter()
+                    .rev()
+                    .copied()
+                    .find(|byte| !byte.is_ascii_whitespace()),
+                Some(b'}' | b']' | b'"' | b'0'..=b'9' | b'e' | b'l')
+            )
+            && matches!(
+                bytes[i + 1..]
+                    .iter()
+                    .copied()
+                    .find(|byte| !byte.is_ascii_whitespace()),
+                Some(b'}' | b']')
+            )
+        {
+            stripped.push_str(&raw[start..i]);
+            start = i + 1;
+        }
+    }
+
+    stripped.push_str(&raw[start..]);
+    stripped
 }
 
 fn normalize_slashes(path: &Path) -> String {
@@ -1979,18 +2051,43 @@ transcript_retention_days = 99999999
     }
 
     #[test]
-    fn mcp_opencode_ok_via_repo_scoped_jsonc_with_comments() {
+    fn mcp_opencode_ok_via_legacy_jsonc_with_comments() {
         let temp = tempdir().expect("tempdir");
         let home = empty_home();
         fs::create_dir_all(home.path().join(".config").join("opencode")).expect("mkdir");
         fs::write(
             temp.path().join("opencode.jsonc"),
-            "{\n  // memhub MCP registration\n  \"mcp\": { \"memhub\": { \"command\": \"memhub\" } }\n}\n",
+            "{\n  // memhub MCP registration\n  \"mcp\": { /* legacy path */ \"memhub\": { \"command\": \"memhub\", }, },\n}\n",
         )
         .expect("write");
 
         let check = check_mcp_opencode(temp.path(), Some(home.path()));
         assert_eq!(check.status, Status::Ok);
+    }
+
+    #[test]
+    fn mcp_opencode_ok_via_native_v2_jsonc_with_block_comment() {
+        let temp = tempdir().expect("tempdir");
+        let home = empty_home();
+        fs::create_dir_all(home.path().join(".config").join("opencode")).expect("mkdir");
+        fs::write(
+            temp.path().join("opencode.jsonc"),
+            r#"{"mcp": {"servers": {/* native V2 path */ "memhub": {"command": "memhub",},},},}"#,
+        )
+        .expect("write");
+
+        let check = check_mcp_opencode(temp.path(), Some(home.path()));
+        assert_eq!(check.status, Status::Ok);
+    }
+
+    #[test]
+    fn mcp_opencode_jsonc_comment_stripping_preserves_comment_markers_in_strings() {
+        let stripped = strip_jsonc_comments(
+            r#"{"note":"keep \"quoted\" // and /* literal */",/* comment */"mcp":{"memhub":{}}}"#,
+        );
+        let value = serde_json::from_str::<serde_json::Value>(&stripped).expect("parse");
+
+        assert_eq!(value["note"], "keep \"quoted\" // and /* literal */");
     }
 
     /// Exact shape committed to this repo's own `opencode.json` (issue
@@ -2009,6 +2106,51 @@ transcript_retention_days = 99999999
 
         let check = check_mcp_opencode(temp.path(), Some(home.path()));
         assert_eq!(check.status, Status::Ok);
+    }
+
+    #[test]
+    fn mcp_opencode_warns_when_config_is_malformed() {
+        let temp = tempdir().expect("tempdir");
+        let home = empty_home();
+        fs::create_dir_all(home.path().join(".config").join("opencode")).expect("mkdir");
+        fs::write(
+            temp.path().join("opencode.json"),
+            r#"{"mcp": {"memhub": {"command": "memhub"}}} /* unterminated"#,
+        )
+        .expect("write");
+
+        let check = check_mcp_opencode(temp.path(), Some(home.path()));
+        assert_eq!(check.status, Status::Warn);
+    }
+
+    #[test]
+    fn mcp_opencode_warns_when_trailing_comma_follows_no_value() {
+        let temp = tempdir().expect("tempdir");
+        let home = empty_home();
+        fs::create_dir_all(home.path().join(".config").join("opencode")).expect("mkdir");
+        fs::write(
+            temp.path().join("opencode.json"),
+            r#"{"mcp":{"memhub":{}},"malformed":[,]}"#,
+        )
+        .expect("write");
+
+        let check = check_mcp_opencode(temp.path(), Some(home.path()));
+        assert_eq!(check.status, Status::Warn);
+    }
+
+    #[test]
+    fn mcp_opencode_warns_when_memhub_is_not_at_a_supported_path() {
+        let temp = tempdir().expect("tempdir");
+        let home = empty_home();
+        fs::create_dir_all(home.path().join(".config").join("opencode")).expect("mkdir");
+        fs::write(
+            temp.path().join("opencode.json"),
+            r#"{"mcpServers": {"memhub": {"command": "memhub"}}}"#,
+        )
+        .expect("write");
+
+        let check = check_mcp_opencode(temp.path(), Some(home.path()));
+        assert_eq!(check.status, Status::Warn);
     }
 
     // -- Sync freshness (P4) ------------------------------------------------------
