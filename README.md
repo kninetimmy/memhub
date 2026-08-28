@@ -504,10 +504,11 @@ memhub render
 ## Project status
 
 <details>
-<summary><b>Expand for the current snapshot</b> — pulled from the memhub task DB as of <b>2026-07-27</b> (not a live feed; run <code>memhub task list</code> in this repo for the current picture)</summary>
+<summary><b>Expand for the current snapshot</b> — pulled from the memhub task DB as of <b>2026-08-28</b> (not a live feed; run <code>memhub task list</code> in this repo for the current picture)</summary>
 
 ### Recently fixed
 
+- **The weekly `cargo audit` hard failure is resolved (2026-08-28, task 127).** Before: `main` was red on RUSTSEC-2026-0204 because it resolved `crossbeam-epoch` 0.9.18. After: `crossbeam-epoch` 0.9.20 resolves the hard failure and `cargo audit` now succeeds; the two warning-only advisories remain non-blocking: unmaintained `paste` (RUSTSEC-2024-0436) and the `anyhow` unsoundness advisory (RUSTSEC-2026-0190). The weekly job remains outside the required merge checks.
 - **MCP `list_pending_writes` honors its documented `pending` default (2026-07-27, PR #174).** It used to pass an omitted status through as *every* status, and because `LIMIT` applied afterwards, reviewed rows could crowd genuinely pending ones out of the window entirely. It now defaults to `pending`, adds an explicit `all` spelling, and always reports the filter actually applied.
 - **Cross-CLI verification sweep (2026-07-18, task 124, #168).** Codex checked end to end; OpenCode verified live for the first time (MCP round-trip and all 14 skills discoverable), so its support stays advertised. The one drift found — the `opencode.json` command block — was fixed and is now guarded by a skill-parity test.
 - **Branch protection on `main` is live (2026-07-18, task 121).** PRs required, with lint and Windows/macOS build+test as required checks and `enforce_admins` on.
@@ -519,7 +520,6 @@ memhub render
 ### Known issues (non-blocking)
 
 - **Non-blocking transcript-archive residual races**, noted during review but not yet acted on (task 122).
-- **The weekly `cargo audit` job is red on `main`** — RUSTSEC-2026-0204 against `crossbeam-epoch` is the lone hard failure, alongside two non-blocking warnings: unmaintained `paste` (RUSTSEC-2024-0436) and an unsoundness advisory against `anyhow` (RUSTSEC-2026-0190). Not a required check, so it doesn't gate merges (task 127).
 
 ### Roadmap (open tasks)
 
