@@ -1241,27 +1241,26 @@ fn json_file_registers_memhub(path: &Path, servers_key: &str) -> bool {
         .is_some()
 }
 
-/// Best-effort JSONC-tolerant check for an `mcp`/`mcpServers` block
-/// containing a `memhub` key. OpenCode's exact MCP registration schema
-/// is not pinned down anywhere in this repo (see
-/// docs/reviews/2026-07-improvement-review.md §13.2 P1/P5 — precedence
-/// between `opencode.json` and `opencode.jsonc` is itself flagged
-/// unverified), so this is deliberately lenient: strip `//` line
-/// comments (a reasonable JSONC approximation), try a real JSON parse
-/// under either key name, and fall back to a raw substring heuristic
-/// for JSONC constructs that pass still can't handle (e.g. trailing
-/// commas). This is report-only (P1) — a false negative here costs an
-/// unnecessary warn, never a crash or a write.
+/// Best-effort JSONC-tolerant check for native V2
+/// `mcp.servers.memhub` or legacy `mcp.memhub` registration. Strip `//`
+/// line comments before parsing, but require a real parsed configuration
+/// so malformed files and similarly named keys elsewhere do not count.
 fn opencode_config_registers_memhub(path: &Path) -> bool {
     let Ok(raw) = fs::read_to_string(path) else {
         return false;
     };
     let stripped = strip_jsonc_line_comments(&raw);
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&stripped) {
-        let has = |key: &str| value.get(key).and_then(|m| m.get("memhub")).is_some();
-        return has("mcp") || has("mcpServers");
-    }
-    raw.contains("\"memhub\"") && (raw.contains("\"mcp\"") || raw.contains("\"mcpServers\""))
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&stripped) else {
+        return false;
+    };
+    let Some(mcp) = value.get("mcp") else {
+        return false;
+    };
+
+    mcp.get("servers")
+        .and_then(|servers| servers.get("memhub"))
+        .or_else(|| mcp.get("memhub"))
+        .is_some()
 }
 
 fn strip_jsonc_line_comments(raw: &str) -> String {
@@ -1979,13 +1978,28 @@ transcript_retention_days = 99999999
     }
 
     #[test]
-    fn mcp_opencode_ok_via_repo_scoped_jsonc_with_comments() {
+    fn mcp_opencode_ok_via_legacy_jsonc_with_comments() {
         let temp = tempdir().expect("tempdir");
         let home = empty_home();
         fs::create_dir_all(home.path().join(".config").join("opencode")).expect("mkdir");
         fs::write(
             temp.path().join("opencode.jsonc"),
             "{\n  // memhub MCP registration\n  \"mcp\": { \"memhub\": { \"command\": \"memhub\" } }\n}\n",
+        )
+        .expect("write");
+
+        let check = check_mcp_opencode(temp.path(), Some(home.path()));
+        assert_eq!(check.status, Status::Ok);
+    }
+
+    #[test]
+    fn mcp_opencode_ok_via_native_v2_json_shape() {
+        let temp = tempdir().expect("tempdir");
+        let home = empty_home();
+        fs::create_dir_all(home.path().join(".config").join("opencode")).expect("mkdir");
+        fs::write(
+            temp.path().join("opencode.json"),
+            r#"{"mcp": {"servers": {"memhub": {"command": "memhub"}}}}"#,
         )
         .expect("write");
 
@@ -2009,6 +2023,36 @@ transcript_retention_days = 99999999
 
         let check = check_mcp_opencode(temp.path(), Some(home.path()));
         assert_eq!(check.status, Status::Ok);
+    }
+
+    #[test]
+    fn mcp_opencode_warns_when_config_is_malformed() {
+        let temp = tempdir().expect("tempdir");
+        let home = empty_home();
+        fs::create_dir_all(home.path().join(".config").join("opencode")).expect("mkdir");
+        fs::write(
+            temp.path().join("opencode.json"),
+            r#"{"mcp": {"memhub": {"command": "memhub"}}"#,
+        )
+        .expect("write");
+
+        let check = check_mcp_opencode(temp.path(), Some(home.path()));
+        assert_eq!(check.status, Status::Warn);
+    }
+
+    #[test]
+    fn mcp_opencode_warns_when_memhub_is_not_at_a_supported_path() {
+        let temp = tempdir().expect("tempdir");
+        let home = empty_home();
+        fs::create_dir_all(home.path().join(".config").join("opencode")).expect("mkdir");
+        fs::write(
+            temp.path().join("opencode.json"),
+            r#"{"mcpServers": {"memhub": {"command": "memhub"}}}"#,
+        )
+        .expect("write");
+
+        let check = check_mcp_opencode(temp.path(), Some(home.path()));
+        assert_eq!(check.status, Status::Warn);
     }
 
     // -- Sync freshness (P4) ------------------------------------------------------
