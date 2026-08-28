@@ -2057,7 +2057,7 @@ transcript_retention_days = 99999999
         fs::create_dir_all(home.path().join(".config").join("opencode")).expect("mkdir");
         fs::write(
             temp.path().join("opencode.jsonc"),
-            "{\n  // memhub MCP registration\n  \"mcp\": { /* supported V1 compatibility path */ \"memhub\": { \"command\": \"memhub\", }, },\n}\n",
+            "{\n  // memhub MCP registration\n  \"mcp\": { /* supported V1 compatibility path */ \"memhub\": { \"type\": \"local\", \"command\": [\"memhub\", \"serve\"], \"enabled\": true, }, },\n}\n",
         )
         .expect("write");
 
