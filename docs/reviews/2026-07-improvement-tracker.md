@@ -447,7 +447,9 @@ teaching command-as-fact), and a transcript session-id path-traversal read.
 - [x] W2 level semantics (minimal/standard/full/transcript) — landed with W1;
   `full` promotes the decision `--summary` field (decision 72) + arch-drift check +
   triage to always-run. — 2026-07-09, PR #100 / 2b0dceb (issue #95).
-- [x] W3 transcript mode — session JSONL → `.memhub/transcripts/<date>-<id>.jsonl.zst`
+- [x] W3 transcript mode — before issue #214, Claude/Codex session JSONL →
+  `.memhub/transcripts/<date>-<id>.jsonl.zst`; after issue #214, complete OpenCode
+  exported JSON → `.json.zst` through the same archive lifecycle
   (zstd, approved dep) + `session_transcripts` pointer row (migration 0023); warn +
   fail-closed approval gate (Q8, non-TTY refuses); provably excluded from
   embed/recall/export; per-machine opt-in (Q7); `transcript_retention_days`.

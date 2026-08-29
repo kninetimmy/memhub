@@ -1,10 +1,11 @@
 -- Migration 0023: pointer table for archived session transcripts
 -- (Wave 6 W3, issue #96 / decision Q7+Q8).
 --
--- When `/wrap-up` runs at `transcript` verbosity, the archiver copies a
--- session's raw agent JSONL into `.memhub/transcripts/<date>-<session-id>
--- .jsonl.zst` and records ONE pointer row here per archived transcript:
--- the session id, the source path it was copied from, the on-disk archive
+-- Before issue #214, `/wrap-up` at `transcript` verbosity copied Claude/Codex
+-- raw JSONL into `.memhub/transcripts/<date>-<session-id>.jsonl.zst`. After
+-- issue #214, OpenCode's complete exported JSON is also supported and uses
+-- `.json.zst`. Both formats record ONE pointer row here per archive:
+-- the session id, its filesystem/API source locator, the on-disk archive
 -- path, the source + compressed byte sizes, and when it was archived.
 --
 -- This table is deliberately NOT a retrieval source: it is never embedded

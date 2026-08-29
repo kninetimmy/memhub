@@ -322,10 +322,16 @@ Two independent sub-switches under `[metrics]`:
 - `recall_proxy = true` (component A) — logs one row to `recall_metrics`
   per `memhub recall` call: actual bundle size vs a full-ledger
   counterfactual, tokenised with tiktoken cl100k.
-- `session_accounting = true` (component B) — scrapes Claude Code
-  transcript JSONL into `session_metrics` for real input/output/cache
-  token totals. Scraping is incremental and never fatal; bad lines are
-  skipped.
+- `session_accounting = true` (component B) — scrapes configured Claude Code
+  and Codex transcript JSONL into `session_metrics` for real
+  input/output/cache token totals. Scraping is incremental and never fatal;
+  bad lines are skipped.
+
+OpenCode transcript archiving does **not** add OpenCode session-accounting
+ingestion. Before issue #214 the independent archiver accepted Claude/Codex
+only; after issue #214 it can archive a complete OpenCode session export, but
+the retained optional metrics component continues to support Claude Code and
+Codex session accounting and writes no OpenCode rows to `session_metrics`.
 
 **Proxy contract:** `bundle_tokens` is the token count of the recall bundle
 actually returned. `ledger_tokens` (per row in `recall_metrics`) is the size

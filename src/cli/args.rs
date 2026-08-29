@@ -280,25 +280,28 @@ pub enum TopLevelCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Archive a session's RAW transcript into
-    /// `.memhub/transcripts/<date>-<session-id>.jsonl.zst` with a pointer
-    /// row (Wave 6 W3, issue #96). Per-machine opt-in behind `[wrap_up]
-    /// verbosity = "transcript"`. The archive is UNREDACTED, so archiving
-    /// requires an explicit `--yes` and refuses on a non-TTY without it.
-    /// Transcripts are never embedded, recalled, or exported.
+    /// Archive a session's RAW transcript into `.memhub/transcripts/` with
+    /// a pointer row (Wave 6 W3, issue #96). Claude/Codex keep their
+    /// `.jsonl.zst` format; OpenCode complete exports use `.json.zst` (issue
+    /// #214). Per-machine opt-in behind `[wrap_up] verbosity =
+    /// "transcript"`. The archive is UNREDACTED, so archiving requires an
+    /// explicit `--yes` and refuses on a non-TTY without it. Transcripts are
+    /// never embedded, recalled, or exported.
     Transcript {
         #[command(subcommand)]
         command: TranscriptCommand,
     },
 }
 
-/// Agent selector for `memhub transcript archive` — picks the transcript
-/// directory + session-id convention (Claude file-stem ids vs Codex
-/// `codex:<uuid>` ids), reusing the metrics scraper's mapping.
+/// Agent selector for `memhub transcript archive`. Before issue #214 only
+/// Claude/Codex filesystem transcripts were accepted; now OpenCode uses its
+/// complete local session-export API without becoming a metrics source.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum TranscriptAgentArg {
     Claude,
     Codex,
+    #[value(name = "opencode")]
+    OpenCode,
 }
 
 impl TranscriptAgentArg {
@@ -306,13 +309,15 @@ impl TranscriptAgentArg {
         match self {
             TranscriptAgentArg::Claude => commands::transcript::Agent::Claude,
             TranscriptAgentArg::Codex => commands::transcript::Agent::Codex,
+            TranscriptAgentArg::OpenCode => commands::transcript::Agent::OpenCode,
         }
     }
 }
 
 #[derive(Debug, Subcommand)]
 pub enum TranscriptCommand {
-    /// Copy the session JSONL to a compressed archive under `.memhub/`.
+    /// Copy/export the complete session to a compressed archive under
+    /// `.memhub/`.
     Archive {
         /// Which agent's transcript directory + session-id convention to
         /// use.
@@ -320,7 +325,7 @@ pub enum TranscriptCommand {
         agent: TranscriptAgentArg,
         /// Session id to archive. Claude: the transcript file stem (the
         /// session UUID). Codex: `codex:<uuid>` (a bare uuid is accepted
-        /// and prefixed).
+        /// and prefixed). OpenCode: the verified current session id.
         #[arg(long, value_name = "ID")]
         session_id: String,
         /// Required to actually archive — the copy is UNREDACTED. Without

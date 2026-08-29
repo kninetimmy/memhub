@@ -599,9 +599,10 @@ impl MemhubServer {
         let agent = match params.agent.trim().to_ascii_lowercase().as_str() {
             "claude" | "claude-code" => commands::transcript::Agent::Claude,
             "codex" => commands::transcript::Agent::Codex,
+            "opencode" => commands::transcript::Agent::OpenCode,
             other => {
                 return Err(McpError::invalid_params(
-                    format!("unknown agent '{other}'; expected 'claude' or 'codex'"),
+                    format!("unknown agent '{other}'; expected 'claude', 'codex', or 'opencode'"),
                     None,
                 ));
             }
@@ -907,7 +908,7 @@ impl MemhubServer {
 
     #[tool(
         name = "archive_transcript",
-        description = "Archive a session's RAW agent transcript to local disk (the `transcript` wrap-up level, issue #96). Copies the session JSONL into gitignored .memhub/transcripts/<date>-<session-id>.jsonl.zst with a pointer row. The archive is UNREDACTED and may contain secrets, so this is GATED: without `confirm=true` it refuses and returns the warning — surface it and only re-call with confirm=true after the user approves. Transcripts are never embedded, never in recall, and excluded from export/import. `agent` is `claude` or `codex`; `session_id` is the transcript file stem (Claude) or `codex:<uuid>` (Codex)."
+        description = "Archive a session's RAW agent transcript to local disk (the `transcript` wrap-up level, issue #96). Claude/Codex session JSONL stays .jsonl.zst. Before issue #214 the tool accepted only those agents; it now also requests OpenCode's complete local v2.session.export with sanitize=false, validates the returned session id, and stores the complete JSON as .json.zst. Every format gets one pointer row under gitignored .memhub/transcripts/. The archive is UNREDACTED and may contain secrets, so this is GATED: without `confirm=true` it refuses and returns the warning — surface it and only re-call with confirm=true after the user approves. Transcripts are never embedded, never in recall, and excluded from export/import. `agent` is `claude`, `codex`, or `opencode`; `session_id` is the transcript file stem (Claude), `codex:<uuid>` (Codex), or the verified current OpenCode session id."
     )]
     async fn archive_transcript(
         &self,
@@ -1900,12 +1901,12 @@ impl From<commands::sync::CommitSummary> for SyncCommitToolResponse {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
 struct ArchiveTranscriptParams {
-    /// `claude` or `codex` — selects the transcript directory + session-id
-    /// convention.
+    /// `claude`, `codex`, or `opencode` — selects the filesystem transcript
+    /// convention or OpenCode complete-session export.
     agent: String,
     /// Session id to archive. Claude: the transcript file stem (session
-    /// UUID). Codex: `codex:<uuid>` (a bare uuid is accepted and
-    /// prefixed).
+    /// UUID). Codex: `codex:<uuid>` (a bare uuid is accepted and prefixed).
+    /// OpenCode: the verified current session id.
     session_id: String,
     /// Must be `true` to archive the UNREDACTED transcript. Without it the
     /// tool refuses and returns the secret warning.
@@ -3408,7 +3409,7 @@ mod tests {
             .expect("runtime")
             .block_on(
                 server.archive_transcript_impl(Parameters(ArchiveTranscriptParams {
-                    agent: "claude".to_string(),
+                    agent: "opencode".to_string(),
                     session_id: "whatever".to_string(),
                     confirm: None,
                 })),
