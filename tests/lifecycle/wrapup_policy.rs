@@ -133,6 +133,8 @@ fn transcript_level_names_the_archive_step_and_issue_96() {
         .expect("instructions");
     assert!(instructions.contains("Transcript archive"));
     assert!(instructions.contains("issue #96"));
+    assert!(instructions.contains("<claude|codex|opencode>"));
+    assert!(instructions.contains("already-verified current session id"));
 }
 
 #[test]

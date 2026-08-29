@@ -670,6 +670,8 @@ fn opencode_wrap_up_requires_verified_session_provenance_before_writes() {
         "--provider-id",
         "--model-id",
         "--variant",
+        "memhub transcript archive --agent opencode",
+        "reuse the exact `session_id` already verified",
     ] {
         assert!(
             content.contains(required),

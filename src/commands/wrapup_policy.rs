@@ -111,9 +111,8 @@ fn level_summary(level: WrapUpVerbosity) -> &'static str {
              have no --summary field to promote and are unchanged from standard."
         }
         WrapUpVerbosity::Transcript => {
-            "Transcript is full plus a named transcript-archive step. The archiver itself \
-             is tracked separately (issue #96); this level only needs the step to exist \
-             in the policy."
+            "Transcript is full plus a named transcript-archive step for Claude, Codex, \
+             and OpenCode. The archive remains unredacted and explicitly approved."
         }
     }
 }
@@ -383,14 +382,20 @@ const TRANSCRIPT_ARCHIVE: &str = "\
 
 After the render step above, archive this session's agent transcript (issue #96 / W3):
 
-    memhub transcript archive --agent <claude|codex> --session-id <this session's id> --yes
+    memhub transcript archive --agent <claude|codex|opencode> --session-id <this session's id> --yes
 
-The archive is stored UNREDACTED under gitignored, export-excluded
-`.memhub/transcripts/<date>-<session-id>.jsonl.zst` and may contain secrets, so the
-command requires `--yes` and refuses on a non-interactive terminal without it. Get the
-user's explicit approval first, then pass `--yes`. Transcripts are never embedded,
-recalled, or exported. If the archive command is missing (an older build), say so
-plainly and continue -- a skipped archive is not a failure of wrap-up itself.
+Before issue #214 this step supported Claude/Codex JSONL only. It now also supports
+OpenCode: the OpenCode wrapper passes its already-verified current session id, and the
+archiver requests the complete OpenCode 2 session export with sanitization disabled and
+verifies that the returned id matches before writing. Claude/Codex archives remain
+`.jsonl.zst`; OpenCode exports are `.json.zst`.
+
+Every archive is stored UNREDACTED under gitignored, export-excluded
+`.memhub/transcripts/` and may contain secrets, so the command requires `--yes` and
+refuses on a non-interactive terminal without it. Get the user's explicit approval
+first, then pass `--yes`. Transcripts are never embedded, recalled, or exported. If the
+archive command is missing (an older build), say so plainly and continue -- a skipped
+archive is not a failure of wrap-up itself.
 
 ";
 
@@ -447,6 +452,8 @@ mod tests {
         assert!(text.matches("MANDATORY").count() >= 3, "{text}");
         assert!(text.contains("Transcript archive"));
         assert!(text.contains("issue #96"));
+        assert!(text.contains("<claude|codex|opencode>"));
+        assert!(text.contains("OpenCode exports are `.json.zst`"));
     }
 
     #[test]

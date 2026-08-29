@@ -2,16 +2,19 @@
 //! the session-transcript archiver behind the `transcript` wrap-up level.
 //!
 //! When a machine opts into `[wrap_up] verbosity = "transcript"`, wrap-up
-//! copies the current session's raw agent JSONL into
-//! `.memhub/transcripts/<date>-<session-id>.jsonl.zst` and records one
-//! pointer row in `session_transcripts` (migration 0023).
+//! archives the current session. Before issue #214, this copied
+//! Claude/Codex JSONL into
+//! `.memhub/transcripts/<date>-<session-id>.jsonl.zst`. Issue #214 keeps
+//! that behavior and adds complete OpenCode 2 session exports as
+//! `.json.zst`; both forms record one pointer row in `session_transcripts`
+//! (migration 0023).
 //!
 //! ## Security posture (Q8)
 //!
 //! The archive is stored **UNREDACTED**. v1 secret handling is warn +
 //! explicit per-wrap-up approval, NOT content redaction (a deliberate
-//! follow-up). Two things make that safe enough for v1: the source
-//! transcript already exists unredacted in the agent's own session dir,
+//! follow-up). Two things make that safe enough for v1: the source session
+//! already exists unredacted in the agent's own local storage,
 //! and the copy lands under gitignored, export-excluded `.memhub/`. So
 //! every archive surface **fails closed**: this module refuses outright
 //! unless the caller passes `approved = true`, and the CLI/MCP gates only
@@ -32,17 +35,22 @@
 //!     fixed field list with no `session_transcripts`, so an archive can
 //!     never leave the machine via a memhub export.
 //!
+//! These restrictions apply to every [`Agent`] variant, not only the
+//! filesystem-backed Claude/Codex variants.
+//!
 //! These are enforced by construction and asserted in
 //! `tests/lifecycle/transcript_archive.rs`.
 //!
 //! ## Path + id reuse
 //!
-//! Directory resolution and the session-id ↔ file mapping come from the
-//! metrics-independent `transcript_files` module, so archiving still works
+//! Claude/Codex directory resolution and session-id ↔ file mapping come
+//! from the metrics-independent `transcript_files` module. OpenCode's API
+//! export path is likewise outside `metrics`, so all three keep archiving
 //! while token accounting is hibernated.
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -56,24 +64,34 @@ const ARCHIVE_DIRNAME: &str = "transcripts";
 /// `writes_log` actor for archive + prune events.
 const ACTOR: &str = "cli:transcript-archive";
 /// zstd compression level. 3 is the library default — a good size/speed
-/// point for append-only JSONL that is written once and rarely read.
+/// point for session JSON/JSONL that is written once and rarely read.
 const ZSTD_LEVEL: i32 = 3;
+/// Non-filesystem source recorded for OpenCode's local session-export API.
+const OPENCODE_EXPORT_SOURCE: &str = "opencode2 api v2.session.export";
 
-/// Which agent's transcript directory + session-id convention to use.
-/// Mirrors the two agents the metrics scraper already understands.
+#[cfg(windows)]
+const OPENCODE_PROGRAMS: &[&str] = &["opencode2", "opencode2.cmd"];
+#[cfg(not(windows))]
+const OPENCODE_PROGRAMS: &[&str] = &["opencode2"];
+
+/// Which agent's transcript source + session-id convention to use. Claude
+/// and Codex mirror the metrics scraper; OpenCode is archive-only and uses
+/// its local complete-session export API (it is not a metrics source).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Agent {
     Claude,
     Codex,
+    OpenCode,
 }
 
 impl Agent {
-    /// Agent tag stored in `session_transcripts.agent`, identical to the
-    /// tags the scraper writes into `session_metrics.agent`.
+    /// Agent tag stored in `session_transcripts.agent`. Claude/Codex match
+    /// their optional metrics tags; OpenCode has no metrics ingestion.
     pub fn as_str(self) -> &'static str {
         match self {
             Agent::Claude => "claude-code",
             Agent::Codex => "codex",
+            Agent::OpenCode => "opencode",
         }
     }
 
@@ -82,14 +100,14 @@ impl Agent {
         match self {
             Agent::Claude => "Claude",
             Agent::Codex => "Codex",
+            Agent::OpenCode => "OpenCode",
         }
     }
 
-    /// The `[metrics]` config key that names this agent's transcript dir.
-    fn config_key(self) -> &'static str {
+    fn archive_extension(self) -> &'static str {
         match self {
-            Agent::Claude => "claude",
-            Agent::Codex => "codex",
+            Agent::Claude | Agent::Codex => "jsonl.zst",
+            Agent::OpenCode => "json.zst",
         }
     }
 }
@@ -129,6 +147,19 @@ pub fn archive(
     session_id: &str,
     approved: bool,
 ) -> Result<ArchiveReport> {
+    archive_with_opencode_exporter(start, agent, session_id, approved, export_opencode_session)
+}
+
+fn archive_with_opencode_exporter<F>(
+    start: &Path,
+    agent: Agent,
+    session_id: &str,
+    approved: bool,
+    export_opencode: F,
+) -> Result<ArchiveReport>
+where
+    F: FnOnce(&str) -> Result<Vec<u8>>,
+{
     if !approved {
         return Err(MemhubError::InvalidInput(
             "transcript archive requires explicit approval (--yes / confirm=true); \
@@ -141,19 +172,39 @@ pub fn archive(
     // session id (`<dir>/<session_id>.jsonl`), so an id carrying a
     // separator or a `..` component could read a file OUTSIDE the
     // transcripts dir. Reject that external input before any resolution or
-    // read. Applied uniformly to both agents — a real Claude UUID / Codex
-    // `codex:<uuid>` never trips it.
+    // read. Applied uniformly to all archive agents — real Claude, Codex,
+    // and OpenCode ids never trip it.
     validate_session_id(session_id)?;
 
     let session_id = normalize_session_id(agent, session_id);
+
+    if agent == Agent::OpenCode {
+        // Export and validate before opening the project or creating the
+        // archive directory. A missing CLI, failed request, malformed
+        // response, or mismatched session id therefore cannot leave an
+        // archive or pointer row behind.
+        let exported = export_opencode(&session_id)?;
+        let ctx = db::open_project(start)?;
+        return archive_bytes_into(
+            &ctx.conn,
+            &ctx.paths.memhub_dir,
+            agent,
+            &session_id,
+            Path::new(OPENCODE_EXPORT_SOURCE),
+            &exported,
+            ctx.config.wrap_up.transcript_retention_days,
+        );
+    }
+
     let ctx = db::open_project(start)?;
     let retention_days = ctx.config.wrap_up.transcript_retention_days;
     let dir = resolve_transcript_dir(&ctx.config, &ctx.paths.repo_root, agent)?;
     let source = resolve_source(agent, &dir, &session_id)?;
 
-    // Belt-and-suspenders: even with a clean id, a symlinked transcript
-    // file could point outside the dir. Canonicalize both and require the
-    // resolved source to live under the transcripts directory, or refuse.
+    // Belt-and-suspenders for every filesystem-backed agent (Claude and
+    // Codex): even with a clean id, a symlinked transcript file could point
+    // outside the dir. OpenCode has no source path to contain; its complete
+    // export is validated in memory before this branch.
     assert_source_contained(&dir, &source)?;
 
     archive_into(
@@ -169,7 +220,7 @@ pub fn archive(
 /// Codex sessions are keyed `codex:<uuid>` everywhere (scraper +
 /// `session_transcripts`). Accept a bare uuid from a caller and normalize
 /// it so the pointer row and metrics row share the same key. Claude ids
-/// pass through untouched.
+/// and OpenCode ids pass through untouched.
 fn normalize_session_id(agent: Agent, session_id: &str) -> String {
     match agent {
         Agent::Codex if !session_id.starts_with("codex:") => format!("codex:{session_id}"),
@@ -177,10 +228,127 @@ fn normalize_session_id(agent: Agent, session_id: &str) -> String {
     }
 }
 
+struct ProcessOutput {
+    success: bool,
+    status: String,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+/// Request OpenCode's documented complete projected session export with
+/// sanitization disabled. Arguments are passed directly to the process — no
+/// shell interpolation — and Windows also tries the npm-installed `.cmd`
+/// shim after a bare-program not-found result.
+fn export_opencode_session(session_id: &str) -> Result<Vec<u8>> {
+    request_opencode_export_with(session_id, |program, args| {
+        let output = Command::new(program).args(args).output()?;
+        Ok(ProcessOutput {
+            success: output.status.success(),
+            status: output.status.to_string(),
+            stdout: output.stdout,
+            stderr: output.stderr,
+        })
+    })
+}
+
+fn request_opencode_export_with<F>(session_id: &str, mut run: F) -> Result<Vec<u8>>
+where
+    F: FnMut(&str, &[String]) -> std::io::Result<ProcessOutput>,
+{
+    let args = vec![
+        "api".to_string(),
+        "v2.session.export".to_string(),
+        "--param".to_string(),
+        format!("sessionID={session_id}"),
+        "--param".to_string(),
+        "sanitize=false".to_string(),
+    ];
+
+    for program in OPENCODE_PROGRAMS {
+        let output = match run(program, &args) {
+            Ok(output) => output,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(MemhubError::ExternalCommand {
+                    command: format!("{program} api v2.session.export"),
+                    stderr: error.to_string(),
+                });
+            }
+        };
+
+        if !output.success {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(MemhubError::ExternalCommand {
+                command: format!("{program} api v2.session.export"),
+                stderr: if stderr.is_empty() {
+                    format!("process exited with {}", output.status)
+                } else {
+                    stderr
+                },
+            });
+        }
+
+        validate_opencode_export(&output.stdout, session_id)?;
+        return Ok(output.stdout);
+    }
+
+    Err(MemhubError::ExternalCommand {
+        command: "opencode2 api v2.session.export".to_string(),
+        stderr: "OpenCode 2 CLI not found on PATH (tried opencode2 and, on Windows, opencode2.cmd)"
+            .to_string(),
+    })
+}
+
+fn validate_opencode_export(raw: &[u8], expected_session_id: &str) -> Result<()> {
+    let response: serde_json::Value = serde_json::from_slice(raw).map_err(|error| {
+        MemhubError::InvalidInput(format!(
+            "OpenCode session export returned malformed JSON: {error}"
+        ))
+    })?;
+    let data = response
+        .get("data")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| {
+            MemhubError::InvalidInput(
+                "OpenCode session export response is missing object data".to_string(),
+            )
+        })?;
+    let info = data
+        .get("info")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| {
+            MemhubError::InvalidInput(
+                "OpenCode session export response is missing data.info".to_string(),
+            )
+        })?;
+    let exported_session_id = info
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            MemhubError::InvalidInput(
+                "OpenCode session export response is missing data.info.id".to_string(),
+            )
+        })?;
+    if exported_session_id != expected_session_id {
+        return Err(MemhubError::InvalidInput(format!(
+            "OpenCode session export id mismatch: requested '{expected_session_id}', got '{exported_session_id}'"
+        )));
+    }
+    if !data
+        .get("messages")
+        .is_some_and(serde_json::Value::is_array)
+    {
+        return Err(MemhubError::InvalidInput(
+            "OpenCode session export response is missing data.messages array".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Reject a session id that could escape the transcripts directory when
 /// path-joined. Fail-closed: a separator (`/` or `\`) or any `..` is
-/// refused before the id is ever resolved or read. No legitimate Claude
-/// UUID or Codex `codex:<uuid>` contains any of these.
+/// refused before the id is ever resolved or read. No legitimate Claude,
+/// Codex, or OpenCode id contains any of these.
 fn validate_session_id(session_id: &str) -> Result<()> {
     if session_id.trim().is_empty() {
         return Err(MemhubError::InvalidInput(
@@ -233,15 +401,23 @@ fn resolve_transcript_dir(
     repo_root: &Path,
     agent: Agent,
 ) -> Result<PathBuf> {
-    let (configured, detected) = match agent {
+    let (configured, detected, config_key) = match agent {
         Agent::Claude => (
             config.metrics.claude_transcripts_dir.clone(),
             transcript_files::detect_claude_transcripts_dir(repo_root),
+            "claude",
         ),
         Agent::Codex => (
             config.metrics.codex_transcripts_dir.clone(),
             transcript_files::detect_codex_sessions_dir(),
+            "codex",
         ),
+        Agent::OpenCode => {
+            return Err(MemhubError::InvalidInput(
+                "OpenCode transcripts come from the local session-export API, not a transcript directory"
+                    .to_string(),
+            ));
+        }
     };
 
     if !configured.is_empty() {
@@ -254,7 +430,7 @@ fn resolve_transcript_dir(
              Set it directly or create the agent's \
              transcript directory first.",
             agent.label(),
-            agent.config_key(),
+            config_key,
         ))
     })
 }
@@ -265,6 +441,7 @@ fn resolve_source(agent: Agent, dir: &Path, session_id: &str) -> Result<PathBuf>
     let found = match agent {
         Agent::Claude => transcript_files::find_claude_transcript(dir, session_id),
         Agent::Codex => transcript_files::find_codex_transcript(dir, session_id),
+        Agent::OpenCode => None,
     };
     found.ok_or_else(|| {
         MemhubError::InvalidInput(format!(
@@ -276,10 +453,10 @@ fn resolve_source(agent: Agent, dir: &Path, session_id: &str) -> Result<PathBuf>
     })
 }
 
-/// Core archive step, split out so integration tests can drive it against
-/// a real project + a seeded source file. Compresses `source` into
-/// `.memhub/transcripts/<date>-<session-id>.jsonl.zst`, upserts the
-/// pointer row, then prunes past the retention horizon.
+/// Filesystem-backed archive step, split out so integration tests can drive
+/// it against a real project + a seeded source file. Claude/Codex use
+/// `.jsonl.zst`; OpenCode reaches the shared byte archive below and uses
+/// `.json.zst`. Both upsert a pointer row and prune past the horizon.
 pub(crate) fn archive_into(
     conn: &Connection,
     memhub_dir: &Path,
@@ -288,12 +465,62 @@ pub(crate) fn archive_into(
     source: &Path,
     retention_days: u32,
 ) -> Result<ArchiveReport> {
-    let source_bytes = fs::metadata(source)?.len();
+    if agent == Agent::OpenCode {
+        return Err(MemhubError::InvalidInput(
+            "OpenCode archives must come from the validated local session-export API".to_string(),
+        ));
+    }
 
-    // Compress the whole file into memory. Session JSONL is small (a few
-    // MB at most) and written once, so a single-shot encode is simpler
-    // and safer than a streaming copy with partial-write cleanup.
+    // Preserve the established Claude/Codex path exactly: size from source
+    // metadata, then stream the JSONL file into zstd.
+    let source_bytes = fs::metadata(source)?.len();
     let compressed = zstd::encode_all(fs::File::open(source)?, ZSTD_LEVEL)?;
+    archive_compressed_into(
+        conn,
+        memhub_dir,
+        agent,
+        session_id,
+        source,
+        source_bytes,
+        &compressed,
+        retention_days,
+    )
+}
+
+fn archive_bytes_into(
+    conn: &Connection,
+    memhub_dir: &Path,
+    agent: Agent,
+    session_id: &str,
+    source: &Path,
+    body: &[u8],
+    retention_days: u32,
+) -> Result<ArchiveReport> {
+    let source_bytes = body.len() as u64;
+    let compressed = zstd::encode_all(body, ZSTD_LEVEL)?;
+    archive_compressed_into(
+        conn,
+        memhub_dir,
+        agent,
+        session_id,
+        source,
+        source_bytes,
+        &compressed,
+        retention_days,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn archive_compressed_into(
+    conn: &Connection,
+    memhub_dir: &Path,
+    agent: Agent,
+    session_id: &str,
+    source: &Path,
+    source_bytes: u64,
+    compressed: &[u8],
+    retention_days: u32,
+) -> Result<ArchiveReport> {
     let archive_bytes = compressed.len() as u64;
 
     let archive_dir = memhub_dir.join(ARCHIVE_DIRNAME);
@@ -306,7 +533,11 @@ pub(crate) fn archive_into(
 
     // `date('now')` is UTC and pairs with the DB's other timestamps.
     let date: String = conn.query_row("SELECT date('now')", [], |r| r.get(0))?;
-    let file_name = format!("{date}-{}.jsonl.zst", sanitize_filename(session_id));
+    let file_name = format!(
+        "{date}-{}.{}",
+        sanitize_filename(session_id),
+        agent.archive_extension()
+    );
     let archive_path = archive_dir.join(&file_name);
 
     // Decision 161 — REJECT LOUDLY on a sanitize_filename collision. Two
@@ -352,7 +583,7 @@ pub(crate) fn archive_into(
     // still points at.
     let published_over_existing = archive_path.exists();
     let tmp_path = archive_dir.join(format!(".{file_name}.tmp-{}", std::process::id()));
-    fs::write(&tmp_path, &compressed)?;
+    fs::write(&tmp_path, compressed)?;
     if let Err(e) = fs::rename(&tmp_path, &archive_path) {
         let _ = fs::remove_file(&tmp_path);
         return Err(e.into());
@@ -693,6 +924,222 @@ fn sanitize_filename(session_id: &str) -> String {
 mod tests {
     use super::*;
 
+    fn opencode_export(session_id: &str, marker: &str) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "data": {
+                "info": { "id": session_id, "title": "complete export" },
+                "messages": [{ "info": { "id": "msg-1" }, "parts": [{ "text": marker }] }]
+            }
+        }))
+        .expect("serialize fixture")
+    }
+
+    fn successful_process(stdout: Vec<u8>) -> ProcessOutput {
+        ProcessOutput {
+            success: true,
+            status: "exit code: 0".to_string(),
+            stdout,
+            stderr: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn opencode_export_uses_complete_v2_api_with_sanitization_disabled() {
+        let body = opencode_export("ses_current", "all messages");
+        let mut calls = Vec::new();
+        let returned = request_opencode_export_with("ses_current", |program, args| {
+            calls.push((program.to_string(), args.to_vec()));
+            Ok(successful_process(body.clone()))
+        })
+        .expect("valid export");
+
+        assert_eq!(returned, body, "the complete response bytes are retained");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "opencode2");
+        assert_eq!(
+            calls[0].1,
+            [
+                "api",
+                "v2.session.export",
+                "--param",
+                "sessionID=ses_current",
+                "--param",
+                "sanitize=false",
+            ]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn opencode_export_falls_back_to_the_windows_cmd_shim() {
+        let body = opencode_export("ses_current", "all messages");
+        let mut programs = Vec::new();
+        let returned = request_opencode_export_with("ses_current", |program, _| {
+            programs.push(program.to_string());
+            if program == "opencode2" {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "bare npm command is not directly executable",
+                ))
+            } else {
+                Ok(successful_process(body.clone()))
+            }
+        })
+        .expect(".cmd fallback");
+
+        assert_eq!(returned, body);
+        assert_eq!(programs, ["opencode2", "opencode2.cmd"]);
+    }
+
+    fn assert_opencode_failure_before_write<F>(exporter: F, expected: &str)
+    where
+        F: FnOnce(&str) -> Result<Vec<u8>>,
+    {
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::commands::init::run(temp.path()).expect("init");
+
+        let error = archive_with_opencode_exporter(
+            temp.path(),
+            Agent::OpenCode,
+            "ses_current",
+            true,
+            exporter,
+        )
+        .expect_err("export failure must stop archival");
+        assert!(
+            error.to_string().contains(expected),
+            "expected {expected:?}, got {error}"
+        );
+
+        let ctx = crate::db::open_project(temp.path()).expect("open");
+        let rows: i64 = ctx
+            .conn
+            .query_row("SELECT COUNT(*) FROM session_transcripts", [], |row| {
+                row.get(0)
+            })
+            .expect("count rows");
+        assert_eq!(rows, 0, "failure must not create a pointer row");
+        assert!(
+            !ctx.paths.memhub_dir.join(ARCHIVE_DIRNAME).exists(),
+            "failure must not create an archive directory"
+        );
+    }
+
+    #[test]
+    fn opencode_export_failures_all_happen_before_archive_writes() {
+        assert_opencode_failure_before_write(
+            |session_id| {
+                request_opencode_export_with(session_id, |_, _| {
+                    Err(std::io::Error::new(std::io::ErrorKind::NotFound, "missing"))
+                })
+            },
+            "CLI not found",
+        );
+
+        assert_opencode_failure_before_write(
+            |session_id| {
+                request_opencode_export_with(session_id, |_, _| {
+                    Ok(ProcessOutput {
+                        success: false,
+                        status: "exit code: 7".to_string(),
+                        stdout: Vec::new(),
+                        stderr: b"local API unavailable".to_vec(),
+                    })
+                })
+            },
+            "local API unavailable",
+        );
+
+        assert_opencode_failure_before_write(
+            |session_id| {
+                request_opencode_export_with(session_id, |_, _| {
+                    Ok(successful_process(b"not json".to_vec()))
+                })
+            },
+            "malformed JSON",
+        );
+
+        assert_opencode_failure_before_write(
+            |session_id| {
+                request_opencode_export_with(session_id, |_, _| {
+                    Ok(successful_process(
+                        br#"{"data":{"info":{"id":"ses_current"}}}"#.to_vec(),
+                    ))
+                })
+            },
+            "data.messages array",
+        );
+
+        assert_opencode_failure_before_write(
+            |session_id| {
+                request_opencode_export_with(session_id, |_, _| {
+                    Ok(successful_process(opencode_export("ses_other", "body")))
+                })
+            },
+            "id mismatch",
+        );
+    }
+
+    #[test]
+    fn opencode_archive_round_trips_complete_json_and_keeps_isolation_invariants() {
+        const MARKER: &str = "OPENCODE_TRANSCRIPT_SECRET_MARKER";
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::commands::init::run(temp.path()).expect("init");
+        let body = opencode_export("ses_current", MARKER);
+
+        let report = archive_with_opencode_exporter(
+            temp.path(),
+            Agent::OpenCode,
+            "ses_current",
+            true,
+            |_| Ok(body.clone()),
+        )
+        .expect("archive");
+
+        assert_eq!(report.agent, "opencode");
+        assert!(report.archive_path.to_string_lossy().ends_with(".json.zst"));
+        assert_eq!(report.source_bytes, body.len() as u64);
+        let compressed = fs::read(&report.archive_path).expect("read archive");
+        let decoded = zstd::decode_all(&compressed[..]).expect("decode archive");
+        assert_eq!(decoded, body, "complete exported JSON must round-trip");
+
+        let ctx = crate::db::open_project(temp.path()).expect("open");
+        let (agent, source_path): (String, String) = ctx
+            .conn
+            .query_row(
+                "SELECT agent, source_path FROM session_transcripts WHERE session_id = 'ses_current'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("pointer row");
+        assert_eq!(agent, "opencode");
+        assert_eq!(source_path, OPENCODE_EXPORT_SOURCE);
+        let embeddings: i64 = ctx
+            .conn
+            .query_row("SELECT COUNT(*) FROM embeddings", [], |row| row.get(0))
+            .expect("embeddings count");
+        assert_eq!(embeddings, 0, "OpenCode archives are never embedded");
+        drop(ctx);
+
+        let search = crate::commands::search::run(temp.path(), MARKER, 10).expect("search");
+        assert!(
+            search.results.is_empty(),
+            "archive must not enter recall/search"
+        );
+
+        let export_path = temp.path().join("memhub-export.json");
+        crate::commands::export::run(temp.path(), &export_path).expect("memhub export");
+        let exported = fs::read_to_string(export_path).expect("read memhub export");
+        assert!(!exported.contains(MARKER));
+        let exported: serde_json::Value = serde_json::from_str(&exported).expect("parse export");
+        assert!(
+            exported
+                .as_object()
+                .is_some_and(|object| !object.contains_key("session_transcripts")),
+            "memhub export must not carry the transcript pointer table"
+        );
+    }
+
     #[test]
     fn sanitize_filename_neutralizes_codex_colon_and_other_unsafe_chars() {
         assert_eq!(
@@ -722,6 +1169,11 @@ mod tests {
             "uuid-1",
             "claude ids are never prefixed"
         );
+        assert_eq!(
+            normalize_session_id(Agent::OpenCode, "ses_current"),
+            "ses_current",
+            "OpenCode ids are never prefixed"
+        );
     }
 
     #[test]
@@ -729,6 +1181,7 @@ mod tests {
         // Real ids pass.
         validate_session_id("11111111-2222-3333-4444-555555555555").expect("claude uuid");
         validate_session_id("codex:abcd-1234").expect("codex id");
+        validate_session_id("ses_current").expect("OpenCode id");
         // Traversal vectors are all refused.
         for evil in [
             "../../etc/passwd",

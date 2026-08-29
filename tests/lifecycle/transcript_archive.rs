@@ -7,6 +7,7 @@
 
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 
 use memhub::commands::{export, fact, import, init, search, transcript};
 use memhub::config::ProjectConfig;
@@ -16,6 +17,10 @@ use tempfile::tempdir;
 /// A distinctive token planted in the transcript body so a leak into any
 /// searchable/exported surface is unambiguous.
 const MARKER: &str = "TRANSCRIPTSECRETMARKER42";
+
+fn memhub_bin() -> &'static str {
+    env!("CARGO_BIN_EXE_memhub")
+}
 
 fn set_claude_dir(repo: &Path, dir: &Path) {
     let config_path = repo.join(".memhub").join("config.toml");
@@ -222,6 +227,45 @@ fn archive_refuses_without_explicit_approval_even_with_a_valid_session() {
         .expect("count");
     assert_eq!(count, 0);
     assert!(!temp.path().join(".memhub").join("transcripts").exists());
+}
+
+#[test]
+fn cli_accepts_opencode_but_still_refuses_without_unredacted_approval() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    let output = Command::new(memhub_bin())
+        .args([
+            "transcript",
+            "archive",
+            "--agent",
+            "opencode",
+            "--session-id",
+            "ses_current",
+        ])
+        .current_dir(temp.path())
+        .env("MEMHUB_LOG", "off")
+        .output()
+        .expect("spawn memhub");
+
+    assert!(!output.status.success(), "approval omission must fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("UNREDACTED"), "stderr: {stderr}");
+    assert!(stderr.contains("not approved"), "stderr: {stderr}");
+    assert!(
+        !stderr.contains("invalid value 'opencode'"),
+        "stderr: {stderr}"
+    );
+
+    let ctx = db::open_project(temp.path()).expect("open");
+    let count: i64 = ctx
+        .conn
+        .query_row("SELECT COUNT(*) FROM session_transcripts", [], |row| {
+            row.get(0)
+        })
+        .expect("count");
+    assert_eq!(count, 0);
+    assert!(!ctx.paths.memhub_dir.join("transcripts").exists());
 }
 
 #[test]
