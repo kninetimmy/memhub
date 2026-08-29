@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/License-MIT-2E7D32?style=flat&logo=opensourceinitiative&logoColor=white" alt="License: MIT"/>
-  <img src="https://img.shields.io/badge/Rust-1.85%2B-B7410E?style=flat&logo=rust&logoColor=white" alt="Rust 1.85+"/>
+  <img src="https://img.shields.io/badge/Rust-1.87%2B-B7410E?style=flat&logo=rust&logoColor=white" alt="Rust 1.87+"/>
   <img src="https://img.shields.io/badge/SQLite-bundled-003B57?style=flat&logo=sqlite&logoColor=white" alt="SQLite bundled"/>
   <br/>
   <img src="https://img.shields.io/badge/Recall-FTS5%20%2B%20RAG-5E81AC?style=flat" alt="Recall: FTS5 + RAG"/>
@@ -38,7 +38,7 @@ Please install memhub for me, then turn on hybrid recall.
 
 1. Clone https://github.com/kninetimmy/memhub.git into ~/src/memhub if it
    isn't already there (`git pull` if it is). Stop if the Rust toolchain
-   (1.85+) is missing.
+   (1.87+) is missing.
 2. Run `cargo install --path ~/src/memhub --force` so `memhub` ends up on
    PATH (~/.cargo/bin must be on PATH; warn me if it isn't). First build
    takes a couple of minutes — it downloads and bundles a ~130 MB
@@ -129,7 +129,7 @@ Please install memhub for me, then turn on hybrid recall.
 
 1. Clone https://github.com/kninetimmy/memhub.git into ~/src/memhub if it
    isn't already there (`git pull` if it is). Stop if the Rust toolchain
-   (1.85+) is missing.
+   (1.87+) is missing.
 2. Run `cargo install --path ~/src/memhub --force` so `memhub` ends up on
    PATH (~/.cargo/bin must be on PATH; warn me if it isn't). First build
    takes a couple of minutes — it downloads and bundles a ~130 MB
@@ -231,7 +231,7 @@ Please install memhub for me, then turn on hybrid recall.
 
 1. Clone https://github.com/kninetimmy/memhub.git into ~/src/memhub if it
    isn't already there (`git pull` if it is). Stop if the Rust toolchain
-   (1.85+) is missing.
+   (1.87+) is missing.
 2. Run `cargo install --path ~/src/memhub --force` so `memhub` ends up on
    PATH (~/.cargo/bin must be on PATH; warn me if it isn't). First build
    takes a couple of minutes — it downloads and bundles a ~130 MB
