@@ -176,6 +176,10 @@ where
     // and OpenCode ids never trip it.
     validate_session_id(session_id)?;
 
+    if agent == Agent::OpenCode {
+        validate_opencode_session_id(session_id)?;
+    }
+
     let session_id = normalize_session_id(agent, session_id);
 
     if agent == Agent::OpenCode {
@@ -361,6 +365,25 @@ fn validate_session_id(session_id: &str) -> Result<()> {
              ('/' or '\\') or '..' — refusing to resolve a transcript outside the \
              transcripts directory"
         )));
+    }
+    Ok(())
+}
+
+/// OpenCode's Windows npm shim is a `.cmd` file, so its arguments cross a
+/// command-interpreter boundary. Accept only the documented `ses` id prefix
+/// plus the ASCII characters observed in V2 ids before invoking the shim.
+fn validate_opencode_session_id(session_id: &str) -> Result<()> {
+    let valid = session_id.strip_prefix("ses").is_some_and(|remainder| {
+        !remainder.is_empty()
+            && remainder
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    });
+    if !valid {
+        return Err(MemhubError::InvalidInput(
+            "OpenCode session id must start with 'ses' and contain only ASCII letters, digits, '_' or '-' after the prefix"
+                .to_string(),
+        ));
     }
     Ok(())
 }
@@ -1077,6 +1100,40 @@ mod tests {
                 })
             },
             "id mismatch",
+        );
+    }
+
+    #[test]
+    fn opencode_metacharacter_id_never_reaches_process_or_archive_writes() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::commands::init::run(temp.path()).expect("init");
+        let mut exporter_called = false;
+
+        let error = archive_with_opencode_exporter(
+            temp.path(),
+            Agent::OpenCode,
+            "ses_safe&whoami",
+            true,
+            |_| {
+                exporter_called = true;
+                Ok(Vec::new())
+            },
+        )
+        .expect_err("unsafe OpenCode id must be rejected");
+
+        assert!(!exporter_called, "unsafe id reached the process seam");
+        assert!(error.to_string().contains("only ASCII"), "{error}");
+        let ctx = crate::db::open_project(temp.path()).expect("open");
+        let rows: i64 = ctx
+            .conn
+            .query_row("SELECT COUNT(*) FROM session_transcripts", [], |row| {
+                row.get(0)
+            })
+            .expect("count rows");
+        assert_eq!(rows, 0, "unsafe id created a pointer row");
+        assert!(
+            !ctx.paths.memhub_dir.join(ARCHIVE_DIRNAME).exists(),
+            "unsafe id created an archive directory"
         );
     }
 
