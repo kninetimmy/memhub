@@ -147,8 +147,10 @@ Capture only what minimal drafts:
    matched to ids. Run `memhub task show <id>` for one task's full notes only when
    acting on that task.
 3. From the prior state row's `created_at` (or the last 10 commits if there is no prior
-   state row), `git log --since=<that timestamp> --oneline` -- just enough to write an
-   accurate state update.
+   state row), `git log --since=<that timestamp as ISO-8601 UTC with a Z suffix, e.g.
+   2026-10-08T22:52:03Z> --oneline` -- just enough to write an accurate state update.
+   memhub timestamps are UTC with no zone suffix, so convert `2026-10-08 22:52:03` to
+   `2026-10-08T22:52:03Z`; git reads a bare value as local time and would miss commits.
 
 "
         .to_string(),
@@ -167,7 +169,10 @@ history is in-window. Run, in order, and keep the JSON for draft assembly:
 5. `memhub task list --status open --brief` -- open work items. Run `memhub task show
    <id>` for one task's full notes only when acting on that task.
 6. From the state row's `created_at` (or the last 10 commits if there is no prior state
-   row), `git log --since=<that timestamp> --oneline`.
+   row), `git log --since=<that timestamp as ISO-8601 UTC with a Z suffix, e.g.
+   2026-10-08T22:52:03Z> --oneline`. memhub timestamps are UTC with no zone suffix, so
+   convert `2026-10-08 22:52:03` to `2026-10-08T22:52:03Z`; git reads a bare value as
+   local time and would miss commits.
 7. `git status --porcelain` -- uncommitted changes worth surfacing.
 
 "
@@ -542,6 +547,34 @@ mod tests {
                 "level {level:?} missing Q11 routing to command verify/record_command: {text}"
             );
             assert!(text.contains("go-forward only"), "level {level:?}: {text}");
+        }
+    }
+
+    /// Issue #224: memhub timestamps are zone-less UTC, but git reads a bare
+    /// `--since` value as local time; every `git log --since` must use the `Z` form.
+    #[test]
+    fn git_log_since_uses_the_utc_z_form_at_every_level() {
+        for level in [
+            WrapUpVerbosity::Minimal,
+            WrapUpVerbosity::Standard,
+            WrapUpVerbosity::Full,
+            WrapUpVerbosity::Transcript,
+        ] {
+            let text = render_instructions(level);
+            assert!(text.contains("git log --since="), "level {level:?}: {text}");
+            assert!(
+                !text.contains("--since=<that timestamp>"),
+                "level {level:?} has a bare --since: {text}"
+            );
+            assert!(
+                text.contains("ISO-8601 UTC with a Z suffix")
+                    && text.contains("2026-10-08T22:52:03Z"),
+                "level {level:?}: {text}"
+            );
+            assert!(
+                text.contains("memhub timestamps are UTC"),
+                "level {level:?}: {text}"
+            );
         }
     }
 
