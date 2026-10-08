@@ -80,6 +80,17 @@ fn require_global_target(global: bool) -> Result<()> {
     }
 }
 
+fn task_json(task: &crate::models::Task) -> serde_json::Value {
+    json!({
+        "id": task.id,
+        "title": task.title,
+        "status": task.status,
+        "notes": task.notes,
+        "created_at": task.created_at,
+        "updated_at": task.updated_at,
+    })
+}
+
 fn resolve_actor(actor: Option<&str>) -> Result<String> {
     match actor {
         Some(value) => {
@@ -841,28 +852,61 @@ pub fn run(cli: Cli) -> Result<()> {
                     println!("Created task {id}: {title}");
                 }
             }
+            TaskCommand::Show { id, json: as_json } => {
+                let task = commands::task::get(&cwd, id)?;
+                if as_json {
+                    println!("{}", task_json(&task));
+                } else {
+                    println!(
+                        "[{}] {} [{}]\ncreated: {}\nupdated: {}\nnotes: {}",
+                        task.id,
+                        task.title,
+                        task.status,
+                        task.created_at,
+                        task.updated_at,
+                        task.notes
+                            .as_deref()
+                            .filter(|n| !n.is_empty())
+                            .unwrap_or("(none)")
+                    );
+                }
+            }
             TaskCommand::List {
                 status,
+                limit,
+                brief,
                 json: as_json,
             } => {
-                let tasks = commands::task::list(&cwd, status.as_ref().map(TaskStatus::as_str))?;
+                let mut tasks =
+                    commands::task::list(&cwd, status.as_ref().map(TaskStatus::as_str))?;
+                if let Some(limit) = limit {
+                    tasks.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+                }
                 if as_json {
                     let payload = json!({
-                        "tasks": tasks
-                            .iter()
-                            .map(|task| json!({
-                                "id": task.id,
-                                "title": task.title,
-                                "status": task.status,
-                                "notes": task.notes,
-                                "created_at": task.created_at,
-                                "updated_at": task.updated_at,
-                            }))
-                            .collect::<Vec<_>>(),
+                        "tasks": tasks.iter().map(task_json).collect::<Vec<_>>(),
                     });
                     println!("{payload}");
                 } else if tasks.is_empty() {
                     println!("No tasks recorded.");
+                } else if brief {
+                    for task in tasks {
+                        let first_line = task
+                            .notes
+                            .as_deref()
+                            .and_then(|n| n.lines().next())
+                            .unwrap_or("")
+                            .trim();
+                        let notes = if first_line.chars().count() > 120 {
+                            let cut: String = first_line.chars().take(117).collect();
+                            format!("{cut}...")
+                        } else {
+                            first_line.to_string()
+                        };
+                        let sep = if notes.is_empty() { "" } else { " - " };
+                        let title = task.title.replace(['\r', '\n'], " ");
+                        println!("[{}] [{}] {title}{sep}{notes}", task.id, task.status);
+                    }
                 } else {
                     for task in tasks {
                         let notes = task.notes.unwrap_or_default();

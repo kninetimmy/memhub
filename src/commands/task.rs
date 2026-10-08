@@ -82,6 +82,33 @@ pub fn list(start: &Path, status_filter: Option<&str>) -> Result<Vec<Task>> {
         .map_err(Into::into)
 }
 
+pub fn get(start: &Path, task_id: i64) -> Result<Task> {
+    let ctx = db::open_project(start)?;
+    ctx.conn
+        .query_row(
+            "SELECT id, title, status, notes, created_at, updated_at
+             FROM tasks
+             WHERE id = ?1",
+            [task_id],
+            |row| {
+                Ok(Task {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    status: row.get(2)?,
+                    notes: row.get(3)?,
+                    created_at: row.get(4)?,
+                    updated_at: row.get(5)?,
+                })
+            },
+        )
+        .map_err(|err| match err {
+            rusqlite::Error::QueryReturnedNoRows => {
+                MemhubError::InvalidInput(format!("task {task_id} does not exist"))
+            }
+            other => other.into(),
+        })
+}
+
 pub fn list_by_status(start: &Path, status: &str, limit: usize) -> Result<Vec<Task>> {
     if limit == 0 {
         return Err(MemhubError::InvalidInput(
@@ -126,14 +153,19 @@ pub fn done(start: &Path, task_id: i64, actor: &str) -> Result<()> {
     let updated = tx.execute(
         "UPDATE tasks
          SET status = 'done', updated_at = CURRENT_TIMESTAMP
-         WHERE id = ?1",
+         WHERE id = ?1 AND status != 'done'",
         [task_id],
     )?;
 
     if updated == 0 {
-        return Err(MemhubError::InvalidInput(format!(
-            "task {task_id} does not exist"
-        )));
+        let exists = tx.query_row("SELECT 1 FROM tasks WHERE id = ?1", [task_id], |_| Ok(()));
+        return Err(match exists {
+            Ok(()) => MemhubError::InvalidInput(format!("task {task_id} is already done")),
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                MemhubError::InvalidInput(format!("task {task_id} does not exist"))
+            }
+            Err(err) => err.into(),
+        });
     }
 
     db::log_write(&tx, actor, "tasks", Some(task_id), "update", "task done")?;

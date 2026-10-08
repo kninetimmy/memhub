@@ -1010,6 +1010,16 @@ pub enum TaskCommand {
     List {
         #[arg(long, value_enum)]
         status: Option<TaskStatus>,
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        limit: Option<u64>,
+        /// One line per task: id, status, title, first notes line (<=120 chars).
+        #[arg(long, conflicts_with = "json")]
+        brief: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    Show {
+        id: i64,
         #[arg(long)]
         json: bool,
     },

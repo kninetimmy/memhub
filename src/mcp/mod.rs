@@ -3014,6 +3014,16 @@ mod tests {
 
         let remaining = task::list(temp.path(), Some("open")).expect("open tasks");
         assert!(remaining.is_empty());
+
+        let again = runtime.block_on(server.task_done_impl(
+            Parameters(TaskDoneParams { id: task_id }),
+            ClientIdentity {
+                normalized: "claude-code".to_string(),
+                raw: "claude-ai".to_string(),
+            },
+        ));
+        let err = again.err().expect("already-done task must error");
+        assert!(err.message.contains("already done"), "{err:?}");
     }
 
     #[test]
