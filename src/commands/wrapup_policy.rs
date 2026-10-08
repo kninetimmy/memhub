@@ -143,7 +143,9 @@ fn read_window(level: WrapUpVerbosity) -> String {
 Capture only what minimal drafts:
 
 1. `memhub state show --json` -- the current state narrative (or null for a fresh repo).
-2. `memhub task list --status open` -- open work items, so closures can be matched to ids.
+2. `memhub task list --status open --brief` -- open work items, so closures can be
+   matched to ids. Run `memhub task show <id>` for one task's full notes only when
+   acting on that task.
 3. From the prior state row's `created_at` (or the last 10 commits if there is no prior
    state row), `git log --since=<that timestamp> --oneline` -- just enough to write an
    accurate state update.
@@ -162,7 +164,8 @@ history is in-window. Run, in order, and keep the JSON for draft assembly:
 3. `memhub note list --since-days 7 --json` -- recent session notes.
 4. `memhub review list --status pending --json` -- staged proposals no human has
    reviewed yet.
-5. `memhub task list --status open` -- open work items.
+5. `memhub task list --status open --brief` -- open work items. Run `memhub task show
+   <id>` for one task's full notes only when acting on that task.
 6. From the state row's `created_at` (or the last 10 commits if there is no prior state
    row), `git log --since=<that timestamp> --oneline`.
 7. `git status --porcelain` -- uncommitted changes worth surfacing.
@@ -213,11 +216,15 @@ own (memhub's original flow, unchanged):
    commit hashes where possible. Bias toward truth; say so plainly if the session was
    exploratory.
 7. Architecture drift -- touch only if a real architectural shift occurred (new
-   subsystem, schema change, invariant change); default is no arch update.
+   subsystem, schema change, invariant change); default is no arch update. An approved
+   update rewrites the whole narrative as the current state in one body, never
+   prepending dated update paragraphs to the previous body; history belongs in
+   decisions and session notes. Keep the body under about 150 lines.
 8. Stale-fact re-verify candidates -- run `memhub fact list --json` and pick up to 5
    facts ordered oldest-first by `verified_at` (null sorts as oldest), preferring rows
-   already flagged `is_stale`. Skip this draft entirely if there are none. Present each
-   as its own accept/reject item, never a single grouped prompt.
+   already flagged `is_stale`. Skip any fact whose `superseded_by` is set. Skip this
+   draft entirely if there are none. Present each as its own accept/reject item, never a
+   single grouped prompt.
 
 "
         .to_string(),
@@ -279,11 +286,15 @@ const MANDATORY_EIGHT_ITEMS: &str = "\
    possible. Bias toward truth over polish.
 7. Architecture drift -- MANDATORY CHECK: explicitly assess and report whether a real
    architectural shift occurred every time. The conclusion may still be 'no drift', but
-   it must be stated, not assumed by omission.
+   it must be stated, not assumed by omission. An approved update rewrites the whole
+   narrative as the current state in one body, never prepending dated update paragraphs
+   to the previous body; history belongs in decisions and session notes. Keep the body
+   under about 150 lines.
 8. Stale-fact re-verify candidates -- run `memhub fact list --json` and pick up to 5
    facts ordered oldest-first by `verified_at` (null sorts as oldest), preferring rows
-   already flagged `is_stale`. Skip this draft entirely if there are none. Present each
-   as its own accept/reject item, never a single grouped prompt.
+   already flagged `is_stale`. Skip any fact whose `superseded_by` is set. Skip this
+   draft entirely if there are none. Present each as its own accept/reject item, never a
+   single grouped prompt.
 
 ";
 
@@ -313,7 +324,8 @@ Once approved, invoke each write in this order, every command taking `--json --a
    <id>`.
 5. New facts -- `memhub fact add <key> <value> --source user+agent:<agent>`.
 6. Session summary (always, unless rejected) -- `memhub note add <summary>`.
-7. Architecture (only if approved this session) -- `memhub arch set <body>`.
+7. Architecture (only if approved this session) -- `memhub arch set <body>`, the whole
+   narrative rewritten as the current state (no prepended dated updates).
 8. Stale-fact re-verifications -- one `memhub fact verify <id>` call per approved fact,
    never a bulk pass.
 
@@ -530,6 +542,51 @@ mod tests {
                 "level {level:?} missing Q11 routing to command verify/record_command: {text}"
             );
             assert!(text.contains("go-forward only"), "level {level:?}: {text}");
+        }
+    }
+
+    /// Issue #221: brief task list in the read window at every level, whole-body
+    /// architecture rewrite and superseded-fact skip at the levels that draft them.
+    #[test]
+    fn read_window_is_brief_and_arch_and_stale_rules_hold_at_the_right_levels() {
+        for level in [
+            WrapUpVerbosity::Minimal,
+            WrapUpVerbosity::Standard,
+            WrapUpVerbosity::Full,
+            WrapUpVerbosity::Transcript,
+        ] {
+            let text = render_instructions(level);
+            assert!(
+                text.contains("memhub task list --status open --brief"),
+                "level {level:?}: {text}"
+            );
+            assert!(text.contains("memhub task show"), "level {level:?}: {text}");
+            assert!(
+                !text.contains("memhub task list --status open`"),
+                "level {level:?} still lists full-notes tasks: {text}"
+            );
+        }
+        for level in [
+            WrapUpVerbosity::Standard,
+            WrapUpVerbosity::Full,
+            WrapUpVerbosity::Transcript,
+        ] {
+            let text = render_instructions(level)
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert!(
+                text.contains("never prepending dated update paragraphs"),
+                "level {level:?}: {text}"
+            );
+            assert!(
+                text.contains("under about 150 lines"),
+                "level {level:?}: {text}"
+            );
+            assert!(
+                text.contains("Skip any fact whose `superseded_by` is set"),
+                "level {level:?}: {text}"
+            );
         }
     }
 
