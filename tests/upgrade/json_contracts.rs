@@ -287,6 +287,30 @@ fn task_list_brief_limit_show_and_double_done() {
 }
 
 #[test]
+fn task_list_brief_flattens_line_breaks_in_titles() {
+    let _env_guard = crate::support::env_read_lock();
+
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    for title in ["Multi\nline title", "Carriage\rreturn title"] {
+        assert!(
+            run_cli(temp.path(), &["task", "add", title])
+                .status
+                .success()
+        );
+    }
+
+    let out = run_cli(temp.path(), &["task", "list", "--brief"]);
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(stdout.split('\n').count(), 3, "{stdout:?}");
+    assert!(!stdout.contains('\r'), "{stdout:?}");
+    assert!(stdout.contains("[2] [open] Carriage return title\n"));
+    assert!(stdout.contains("[1] [open] Multi line title\n"));
+}
+
+#[test]
 fn review_accept_json_emits_contract_shape() {
     let _env_guard = crate::support::env_read_lock();
 

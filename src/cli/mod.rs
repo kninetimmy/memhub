@@ -904,7 +904,8 @@ pub fn run(cli: Cli) -> Result<()> {
                             first_line.to_string()
                         };
                         let sep = if notes.is_empty() { "" } else { " - " };
-                        println!("[{}] [{}] {}{sep}{notes}", task.id, task.status, task.title);
+                        let title = task.title.replace(['\r', '\n'], " ");
+                        println!("[{}] [{}] {title}{sep}{notes}", task.id, task.status);
                     }
                 } else {
                     for task in tasks {
