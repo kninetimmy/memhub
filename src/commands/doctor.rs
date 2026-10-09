@@ -752,14 +752,17 @@ fn lookup_toml_path<'a>(value: &'a toml::Value, dotted: &str) -> Option<&'a toml
 /// (source table, FTS5 shadow table) pairs. Mirrors every
 /// content-external FTS5 table in `project.sqlite` across the
 /// migrations (0002 legacy git-search chunks, 0009 facts/decisions/
-/// tasks, 0014 doc_chunks). The sibling code-index DB is out of scope
-/// (disposable/rebuildable, per the PRD addendum).
+/// tasks, 0014 doc_chunks, 0022 session_notes, 0025 arch_sections). The
+/// sibling code-index DB is out of scope (disposable/rebuildable, per
+/// the PRD addendum).
 const FTS_TABLES: &[(&str, &str)] = &[
     ("facts", "facts_fts"),
     ("decisions", "decisions_fts"),
     ("tasks", "tasks_fts"),
     ("doc_chunks", "doc_chunks_fts"),
     ("chunks", "chunk_fts"),
+    ("session_notes", "session_notes_fts"),
+    ("arch_sections", "arch_sections_fts"),
 ];
 
 fn check_integrity(conn: &Connection) -> Vec<Check> {
@@ -1592,6 +1595,74 @@ mod tests {
         let mismatch = find(&checks, "fts_rowcounts");
         assert_eq!(mismatch.status, Status::Error);
         assert!(mismatch.detail.as_deref().unwrap_or("").contains("facts"));
+    }
+
+    /// Issue #237: session notes and architecture sections are covered by
+    /// the FTS rowcount check, same shape as the facts test above.
+    #[test]
+    fn fts_rowcount_drift_in_session_notes_is_an_error() {
+        let temp = healthy_repo();
+        let note = crate::commands::session_note::add(temp.path(), "a note", "user", "cli:user")
+            .expect("note");
+        let ctx = db::open_project(temp.path()).expect("open");
+
+        ctx.conn
+            .execute(
+                "INSERT INTO session_notes_fts(session_notes_fts, rowid, text) VALUES ('delete', ?1, 'a note')",
+                params![note.id],
+            )
+            .expect("desync fts");
+
+        let checks = check_integrity(&ctx.conn);
+        let mismatch = find(&checks, "fts_rowcounts");
+        assert_eq!(mismatch.status, Status::Error);
+        assert!(
+            mismatch
+                .detail
+                .as_deref()
+                .unwrap_or("")
+                .contains("session_notes")
+        );
+    }
+
+    #[test]
+    fn fts_rowcount_drift_in_arch_sections_is_an_error() {
+        let temp = healthy_repo();
+        crate::commands::narrative::set(
+            temp.path(),
+            crate::models::NarrativeKind::Arch,
+            "# Overview\n\nSome architecture text.",
+            "user",
+            "cli:user",
+        )
+        .expect("arch");
+        let ctx = db::open_project(temp.path()).expect("open");
+        let (id, heading_path, body): (i64, String, String) = ctx
+            .conn
+            .query_row(
+                "SELECT id, heading_path, body FROM arch_sections LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("section row");
+
+        ctx.conn
+            .execute(
+                "INSERT INTO arch_sections_fts(arch_sections_fts, rowid, heading_path, body) VALUES ('delete', ?1, ?2, ?3)",
+                params![id, heading_path, body],
+            )
+            .expect("desync fts");
+
+        let checks = check_integrity(&ctx.conn);
+        let mismatch = find(&checks, "fts_rowcounts");
+        assert_eq!(mismatch.status, Status::Error);
+        assert!(
+            mismatch
+                .detail
+                .as_deref()
+                .unwrap_or("")
+                .contains("arch_sections")
+        );
     }
 
     // -- Config group ------------------------------------------------------
