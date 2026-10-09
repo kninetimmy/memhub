@@ -456,48 +456,223 @@ fn readme_install_blocks_enumerate_every_skill() {
     }
 }
 
+/// Creation tokens (raw, unnormalized destination paths) of a `mkdir -p` or
+/// `New-Item -ItemType Directory ... -Path a,b` README line; empty otherwise.
+fn created_tokens(line: &str) -> Vec<&str> {
+    if let Some(i) = line.find("mkdir -p ") {
+        line[i + "mkdir -p ".len()..].split_whitespace().collect()
+    } else if line.contains("New-Item -ItemType Directory") {
+        let Some((_, rest)) = line.split_once("-Path ") else {
+            return Vec::new();
+        };
+        let paths = rest.split(" |").next().unwrap_or(rest);
+        paths
+            .split(',')
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .collect()
+    } else {
+        Vec::new()
+    }
+}
+
+/// Canonical form so `~/.x/y/` (POSIX) and `"$HOME\.x\y\"` (PowerShell) of
+/// the same directory compare equal.
+fn norm_install_path(token: &str) -> String {
+    let t = token
+        .trim_matches(|c| c == '"' || c == ';')
+        .replace('\\', "/");
+    let t = match t.strip_prefix('~') {
+        Some(rest) => format!("$HOME{rest}"),
+        None => t,
+    };
+    t.trim_end_matches('/').to_string()
+}
+
+/// Destination directory of a skill/command copy line, raw. The PowerShell
+/// half quotes it right after `$_.FullName`; the POSIX half puts it after
+/// the quoted source in `cp [-R] "$x" DEST`.
+fn copy_destination(line: &str) -> Option<&str> {
+    if let Some((_, rest)) = line.split_once("Copy-Item $_.FullName ") {
+        rest.strip_prefix('"')?.split('"').next()
+    } else {
+        let (_, rest) = line.rsplit_once("cp ")?;
+        rest.split_whitespace()
+            .filter(|t| !t.starts_with('-'))
+            .nth(1)
+    }
+}
+
+/// Checks every skill/command-wrapper copy line of every README `<details>`
+/// block, in both the POSIX (`cp`) and PowerShell (`Copy-Item`) halves:
+/// it must skip the hibernated `metrics`/`viz` subsystems, and its
+/// destination must have been created by an earlier `mkdir -p` /
+/// `New-Item -ItemType Directory` line of the same block (without that,
+/// `Copy-Item -Recurse` into a missing directory turns the first skill
+/// directory into the destination — task 137). Returns the number of
+/// `(posix, powershell)` copy lines checked, or the first violation.
+fn check_readme_install_blocks(readme: &str) -> Result<(usize, usize), String> {
+    let (mut posix, mut ps, mut blocks) = (0, 0, 0);
+    for block in readme.split("<details>") {
+        let mut created = BTreeSet::new();
+        let mut block_copies = 0;
+        for raw in block.lines() {
+            let line = raw.trim();
+            let is_ps = line.contains("Copy-Item");
+            // Each half must create its own directories.
+            created.extend(
+                created_tokens(line)
+                    .into_iter()
+                    .map(|t| (line.contains("New-Item"), norm_install_path(t))),
+            );
+            if !(is_ps || line.contains("cp "))
+                || !(line.contains("templates/skills/")
+                    || line.contains("templates/commands/")
+                    || line.contains("templates\\skills\\")
+                    || line.contains("templates\\commands\\"))
+            {
+                continue;
+            }
+            block_copies += 1;
+            let skips = if is_ps {
+                line.contains("-notin") && line.contains("metrics") && line.contains("viz")
+            } else {
+                line.contains("metrics") && line.contains("viz") && line.contains("continue")
+            };
+            if !skips {
+                return Err(format!(
+                    "README copies from a skill/command template directory \
+                     without skipping metrics/viz — hibernated subsystems \
+                     must never be installed by a default build: {line:?}"
+                ));
+            }
+            let dest = copy_destination(line)
+                .map(norm_install_path)
+                .ok_or_else(|| format!("cannot find the copy destination in {line:?}"))?;
+            if !created.contains(&(is_ps, dest.clone())) {
+                return Err(format!(
+                    "README copy line writes into {dest:?}, which no earlier \
+                     mkdir -p / New-Item -ItemType Directory line in the same \
+                     install block creates: {line:?}"
+                ));
+            }
+            if is_ps {
+                ps += 1;
+            } else {
+                posix += 1;
+            }
+        }
+        if block_copies > 0 {
+            blocks += 1;
+        }
+    }
+    // Claude, Codex, OpenCode quickstarts + Install by hand.
+    if blocks != 4 || posix < 8 || ps < 8 {
+        return Err(format!(
+            "expected skill-copy lines in 4 install blocks (Claude/Codex/\
+             OpenCode quickstarts + Install by hand), 8 POSIX and 8 \
+             PowerShell lines in total; found {blocks} blocks, {posix} \
+             POSIX, {ps} PowerShell"
+        ));
+    }
+    Ok((posix, ps))
+}
+
 /// Onboarding surfaces must never install or offer the two hibernated
 /// subsystems (metrics, viz) in a default build. The three CLI quickstart
-/// blocks already skip them with a `case ... continue;;` guard on the
-/// `for`-loop that copies each skill; "Install by hand" used to copy the
+/// blocks already skip them with a `case ... continue;;` guard (POSIX) or
+/// a `Where-Object { $_.Name -notin ... }` filter (PowerShell) on the
+/// command that copies each skill; "Install by hand" used to copy the
 /// same globs with a bare `cp`, silently installing `metrics.md`/`viz.md`
 /// and the `codex`/`opencode` `metrics/`/`viz/` directories. This scans
 /// every skill/command-wrapper copy line in the whole README — including
-/// Install by hand — and fails if any of them lost the guard.
+/// Install by hand — and fails if any of them lost the guard or writes
+/// into a directory its block never creates.
 #[test]
 fn readme_skill_copy_commands_skip_metrics_and_viz() {
     let readme = fs::read_to_string(repo_root().join("README.md")).expect("read README.md");
-
-    let source_globs = [
-        "templates/skills/claude/*",
-        "templates/skills/codex/*",
-        "templates/skills/opencode/*",
-        "templates/commands/opencode/*",
-    ];
-
-    let mut checked = 0;
-    for line in readme.lines() {
-        if !line.contains("cp ") {
-            continue;
-        }
-        if !source_globs.iter().any(|glob| line.contains(glob)) {
-            continue;
-        }
-        checked += 1;
-        assert!(
-            line.contains("metrics") && line.contains("viz") && line.contains("continue"),
-            "README copies from a skill/command template glob without \
-             skipping metrics.md/viz.md (or metrics/viz dirs) — hibernated \
-             subsystems must never be installed by a default build: {line:?}"
-        );
+    if let Err(msg) = check_readme_install_blocks(&readme) {
+        panic!("{msg}");
     }
+}
 
-    assert!(
-        checked >= 8,
-        "expected every skill-copy command across the Claude/Codex/OpenCode \
-         quickstart blocks and Install by hand (8 lines total) to be found \
-         and checked; found {checked}"
-    );
+/// Proves the checker above actually rejects each defect, by feeding it the
+/// real README with one line mutated at a time: every copy line losing its
+/// metrics/viz guard, and every destination-creation line (or each of its
+/// paths) being removed.
+#[test]
+fn readme_install_block_checker_rejects_mutations() {
+    let readme = lf(&fs::read_to_string(repo_root().join("README.md")).expect("read README.md"));
+    check_readme_install_blocks(&readme).expect("unmutated README passes");
+
+    // Replace the line at `idx` with `new_line` and require rejection.
+    let reject = |idx: usize, new_line: &str, what: &str| {
+        let mutated: Vec<&str> = readme
+            .lines()
+            .enumerate()
+            .map(|(i, l)| if i == idx { new_line } else { l })
+            .collect();
+        assert!(
+            check_readme_install_blocks(&mutated.join("\n")).is_err(),
+            "checker accepted a README with {what}: line {} was {:?}",
+            idx + 1,
+            readme.lines().nth(idx).unwrap()
+        );
+    };
+    // Remove `line[from..to]`, where `to` is the start of `until` after `from`.
+    let cut = |line: &str, from: &str, until: &str| -> String {
+        let a = line.find(from).expect("guard start present");
+        let b = a + line[a..].find(until).expect("guard end present");
+        format!("{}{}", &line[..a], &line[b..])
+    };
+
+    // Only creations of a directory some copy line writes into matter (the
+    // README's `mkdir -p ~/gdrive` for Drive sync is unrelated).
+    let destinations: BTreeSet<String> = readme
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.contains("templates/") || l.contains("templates\\"))
+        .filter_map(copy_destination)
+        .map(norm_install_path)
+        .collect();
+
+    let (mut guards, mut creations) = (0, 0);
+    for (idx, line) in readme.lines().enumerate() {
+        if line.contains("Copy-Item") && line.contains("templates\\") {
+            guards += 1;
+            reject(
+                idx,
+                &cut(line, "| Where-Object", "| ForEach-Object"),
+                "a PowerShell copy line lacking the metrics/viz exclusion",
+            );
+        } else if line.contains("cp ") && line.contains("templates/") {
+            guards += 1;
+            reject(
+                idx,
+                &cut(line, "case ", "cp "),
+                "a POSIX copy line lacking the metrics/viz exclusion",
+            );
+        }
+        let tokens: Vec<&str> = created_tokens(line)
+            .into_iter()
+            .filter(|t| destinations.contains(&norm_install_path(t)))
+            .collect();
+        if !tokens.is_empty() {
+            creations += 1;
+            reject(idx, "", "a destination-creation line deleted");
+            for token in tokens {
+                reject(
+                    idx,
+                    &line.replacen(token, "", 1),
+                    "a destination path dropped from its creation line",
+                );
+            }
+        }
+    }
+    // 8 POSIX + 8 PowerShell copy lines; 1 creation line per half in each
+    // quickstart and 2 per half in Install by hand.
+    assert_eq!(guards, 16, "mutated {guards} copy lines");
+    assert_eq!(creations, 10, "mutated {creations} creation lines");
 }
 
 /// Normalize line endings for a cross-platform byte comparison: this repo is
