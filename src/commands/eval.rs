@@ -78,6 +78,9 @@ pub struct QueryOutcome {
     pub matched_rank: Option<usize>,
     /// Score of the matched hit, if any.
     pub matched_score: Option<f64>,
+    /// The matched hit was a low-confidence fallback (every candidate fell
+    /// below the relevance floor), not a hit that cleared its floor.
+    pub matched_low_confidence: bool,
     /// Total returned by recall for this query.
     pub returned_count: usize,
     /// Optional reason string for failed outcomes (debug aid in markdown output).
@@ -279,7 +282,11 @@ pub fn evaluate_query(query: &GoldenQuery, response: &RecallResponse, k: usize) 
     let returned_count = response.results.len();
     match query.kind {
         GoldenKind::Empty => {
-            if returned_count == 0 {
+            // Low-confidence fallback hits (issue #225) are allowed: they
+            // are flagged, not vouched for. Only a hit that cleared its
+            // relevance floor leaks.
+            let vouched = response.results.iter().filter(|hit| !hit.low_confidence);
+            if vouched.clone().next().is_none() {
                 QueryOutcome {
                     id: query.id.clone(),
                     query: query.query.clone(),
@@ -287,13 +294,12 @@ pub fn evaluate_query(query: &GoldenQuery, response: &RecallResponse, k: usize) 
                     passed: true,
                     matched_rank: None,
                     matched_score: None,
+                    matched_low_confidence: false,
                     returned_count,
                     failure_reason: None,
                 }
             } else {
-                let leaked: Vec<String> = response
-                    .results
-                    .iter()
+                let leaked: Vec<String> = vouched
                     .take(k.min(3))
                     .map(|hit| format!("{}#{}", hit.source_type, hit.source_id))
                     .collect();
@@ -304,9 +310,10 @@ pub fn evaluate_query(query: &GoldenQuery, response: &RecallResponse, k: usize) 
                     passed: false,
                     matched_rank: None,
                     matched_score: None,
+                    matched_low_confidence: false,
                     returned_count,
                     failure_reason: Some(format!(
-                        "expected empty bundle but recall returned {} hit(s): {}",
+                        "expected empty bundle (no hit clearing the relevance floor) but recall returned {} hit(s): {}",
                         returned_count,
                         leaked.join(", "),
                     )),
@@ -324,6 +331,7 @@ pub fn evaluate_query(query: &GoldenQuery, response: &RecallResponse, k: usize) 
                         passed: true,
                         matched_rank: Some(hit.rank),
                         matched_score: Some(hit.score),
+                        matched_low_confidence: hit.low_confidence,
                         returned_count,
                         failure_reason: None,
                     };
@@ -359,6 +367,7 @@ pub fn evaluate_query(query: &GoldenQuery, response: &RecallResponse, k: usize) 
                 passed: false,
                 matched_rank: None,
                 matched_score: None,
+                matched_low_confidence: false,
                 returned_count,
                 failure_reason: Some(reason),
             }
@@ -876,6 +885,7 @@ mod tests {
             source: "user".to_string(),
             created_at: "2026-05-13".to_string(),
             rerank_score: None,
+            low_confidence: false,
             kind: None,
         }
     }
@@ -973,6 +983,57 @@ mod tests {
     }
 
     #[test]
+    fn empty_probe_allows_low_confidence_hits_but_not_floor_clearing_ones() {
+        let q = GoldenQuery {
+            id: "near".into(),
+            query: "adjacent topic".into(),
+            kind: GoldenKind::Empty,
+            source_type: None,
+            title_contains: vec![],
+            body_contains: vec![],
+            notes: String::new(),
+        };
+        let mut low = hit(1, "fact", 1, "build-command", "cargo build");
+        low.low_confidence = true;
+        let only_low = fake_response("adjacent topic", vec![low.clone()]);
+        let outcome = evaluate_query(&q, &only_low, 3);
+        assert!(outcome.passed, "{:?}", outcome.failure_reason);
+
+        let cleared = hit(2, "fact", 2, "test-command", "cargo test");
+        let mixed = fake_response("adjacent topic", vec![low, cleared]);
+        let outcome = evaluate_query(&q, &mixed, 3);
+        assert!(!outcome.passed);
+        let reason = outcome.failure_reason.unwrap();
+        assert!(
+            reason.contains("fact#2") && !reason.contains("fact#1"),
+            "{reason}"
+        );
+    }
+
+    #[test]
+    fn match_outcome_records_whether_the_matched_hit_was_low_confidence() {
+        let q = GoldenQuery {
+            id: "kw".into(),
+            query: "cargo compile command".into(),
+            kind: GoldenKind::Match,
+            source_type: Some("fact".into()),
+            title_contains: vec!["build".into()],
+            body_contains: vec![],
+            notes: String::new(),
+        };
+        let mut h = hit(1, "fact", 1, "build-command", "cargo build");
+        h.low_confidence = true;
+        let outcome = evaluate_query(&q, &fake_response("q", vec![h]), 3);
+        assert!(outcome.passed);
+        assert!(outcome.matched_low_confidence);
+
+        let h = hit(1, "fact", 1, "build-command", "cargo build");
+        let outcome = evaluate_query(&q, &fake_response("q", vec![h]), 3);
+        assert!(outcome.passed);
+        assert!(!outcome.matched_low_confidence);
+    }
+
+    #[test]
     fn empty_passes_when_results_empty() {
         let q = GoldenQuery {
             id: "neg".into(),
@@ -1063,6 +1124,7 @@ mod tests {
                 passed: true,
                 matched_rank: Some(1),
                 matched_score: Some(0.9),
+                matched_low_confidence: false,
                 returned_count: 1,
                 failure_reason: None,
             },
@@ -1073,6 +1135,7 @@ mod tests {
                 passed: false,
                 matched_rank: None,
                 matched_score: None,
+                matched_low_confidence: false,
                 returned_count: 0,
                 failure_reason: Some("no hit".into()),
             },
@@ -1083,6 +1146,7 @@ mod tests {
                 passed: false,
                 matched_rank: None,
                 matched_score: None,
+                matched_low_confidence: false,
                 returned_count: 2,
                 failure_reason: Some("leaked".into()),
             },

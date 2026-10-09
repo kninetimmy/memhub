@@ -32,19 +32,52 @@ pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     out
 }
 
-/// Tokenize a free-text query into a quoted FTS5 `AND` of terms. Returns
-/// `None` when the query has no usable tokens (so the caller skips FTS).
-pub(crate) fn build_fts_match(query: &str) -> Option<String> {
-    let tokens: Vec<String> = query
+/// Whitespace-split `query` into punctuation-trimmed, non-empty tokens.
+fn query_tokens(query: &str) -> impl Iterator<Item = &str> {
+    query
         .split_whitespace()
         .map(|token| token.trim_matches(|c: char| matches!(c, '"' | '\'' | ',' | '.' | ':' | ';')))
         .filter(|t| !t.is_empty())
-        .map(|token| format!("\"{}\"", token.replace('"', "\"\"")))
-        .collect();
+}
+
+fn quote_fts_token(token: &str) -> String {
+    format!("\"{}\"", token.replace('"', "\"\""))
+}
+
+/// Tokenize a free-text query into a quoted FTS5 `AND` of terms. Returns
+/// `None` when the query has no usable tokens (so the caller skips FTS).
+pub(crate) fn build_fts_match(query: &str) -> Option<String> {
+    let tokens: Vec<String> = query_tokens(query).map(quote_fts_token).collect();
     if tokens.is_empty() {
         None
     } else {
         Some(tokens.join(" AND "))
+    }
+}
+
+/// English function words dropped from the `OR` expression: as a bag of
+/// alternatives they would match nearly every row and drown the content
+/// words in bm25.
+const FTS_STOPWORDS: &[&str] = &[
+    "a", "an", "and", "any", "are", "aren't", "as", "at", "be", "between", "but", "by", "can",
+    "do", "does", "doesn't", "for", "from", "how", "i", "if", "in", "into", "is", "it", "its",
+    "me", "my", "of", "on", "or", "our", "should", "so", "that", "the", "their", "then", "there",
+    "this", "to", "was", "we", "what", "when", "where", "which", "who", "why", "will", "with",
+    "would", "you", "your",
+];
+
+/// Like [`build_fts_match`] but an `OR` of the query's content terms (stopwords
+/// removed), for the recall fallback when no single row holds every token.
+/// Kept separate so the code locator keeps requiring every token.
+pub(crate) fn build_fts_match_any(query: &str) -> Option<String> {
+    let tokens: Vec<String> = query_tokens(query)
+        .filter(|t| !FTS_STOPWORDS.contains(&t.to_lowercase().as_str()))
+        .map(quote_fts_token)
+        .collect();
+    if tokens.is_empty() {
+        None
+    } else {
+        Some(tokens.join(" OR "))
     }
 }
 
@@ -102,4 +135,19 @@ pub(crate) fn bytes_to_vector(blob: &[u8]) -> Vec<f32> {
     blob.chunks_exact(4)
         .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_fts_match_any_ors_content_terms_and_drops_stopwords() {
+        assert_eq!(
+            build_fts_match_any("how does the parser, handle \"quotes\""),
+            Some("\"parser\" OR \"handle\" OR \"quotes\"".to_string()),
+        );
+        assert_eq!(build_fts_match_any("what is the"), None);
+        assert_eq!(build_fts_match_any("   "), None);
+    }
 }
