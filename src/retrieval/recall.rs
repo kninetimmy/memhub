@@ -3191,7 +3191,7 @@ mod tests {
             .iter()
             .find(|h| h.source_type == "arch_section")
             .expect("default recall must return the matching architecture section");
-        assert_eq!(hit.title, "Architecture — Overview > Storage");
+        assert_eq!(hit.title, "Architecture — Storage");
         assert!(hit.body.contains("zebrafinch"));
         assert!(
             !hit.body.contains("Drive folder"),

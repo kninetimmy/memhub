@@ -138,9 +138,14 @@ pub(crate) fn rederive_arch_sections(tx: &Transaction<'_>, mode: RetrievalMode) 
     };
 
     let mut embed_rows: Vec<(i64, String)> = Vec::new();
-    for (ord, (heading_path, section)) in crate::commands::doc::chunk_markdown(&body)
-        .iter()
-        .enumerate()
+    for (
+        ord,
+        ArchSection {
+            heading_path,
+            body: section,
+            ..
+        },
+    ) in arch_sections(&body).iter().enumerate()
     {
         tx.execute(
             "INSERT INTO arch_sections(project_id, arch_id, ord, heading_path, body)
@@ -155,6 +160,89 @@ pub(crate) fn rederive_arch_sections(tx: &Transaction<'_>, mode: RetrievalMode) 
     eager_embed_batch_in_tx(tx, mode, SourceType::ArchSection, embed_rows)
 }
 
+/// One retrievable piece of the architecture body (see [`arch_sections`]).
+pub(crate) struct ArchSection {
+    pub heading_path: String,
+    pub body: String,
+    /// False for the follow-on pieces of one over-long section; the PROJECT.md
+    /// index lists one entry per piece that starts a section.
+    pub starts_section: bool,
+}
+
+/// Split an architecture body into sections for recall and the PROJECT.md
+/// index. Chunks come from `chunk_markdown` (shared with document ingestion,
+/// so it stays untouched); the architecture-specific rules live here:
+///
+/// - A piece starts a section when its text opens with a heading line, which
+///   keeps two adjacent sections with the same heading apart from the several
+///   pieces of one over-long section.
+/// - A wrapper is a first heading, with nothing before it, that every other
+///   heading is nested under (e.g. `# memhub architecture` over the whole
+///   body). It is left out of every heading path, and dropped as a section of
+///   its own when it has no text beyond the heading line.
+///
+/// shortcut: nesting is detected on the joined `" > "` path text, so a later
+/// top-level heading literally named `"<wrapper> > x"` would pass as nested;
+/// upgrade if chunk_markdown ever exposes heading levels.
+pub(crate) fn arch_sections(body: &str) -> Vec<ArchSection> {
+    let mut sections: Vec<ArchSection> = crate::commands::doc::chunk_markdown(body)
+        .into_iter()
+        .map(|(heading_path, body)| {
+            let starts_section = body
+                .lines()
+                .next()
+                .is_some_and(|l| crate::commands::doc::parse_heading(l.trim_start()).is_some());
+            ArchSection {
+                heading_path,
+                body,
+                starts_section,
+            }
+        })
+        .collect();
+    // The untitled opening has no heading line but still starts a section.
+    if let Some(first) = sections.first_mut() {
+        first.starts_section = true;
+    }
+
+    let Some(wrapper) = sections.first().and_then(|first| {
+        let (_, text) =
+            crate::commands::doc::parse_heading(first.body.lines().next()?.trim_start())?;
+        (first.heading_path == text).then_some(text)
+    }) else {
+        return sections;
+    };
+    let prefix = format!("{wrapper} > ");
+    let wrapper_pieces = 1 + sections[1..]
+        .iter()
+        .take_while(|s| !s.starts_section && s.heading_path == wrapper)
+        .count();
+    let rest = &sections[wrapper_pieces..];
+    if rest.is_empty() || !rest.iter().all(|s| s.heading_path.starts_with(&prefix)) {
+        return sections;
+    }
+
+    let heading_only = wrapper_pieces == 1
+        && sections[0]
+            .body
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .count()
+            == 1;
+    let mut out = Vec::with_capacity(sections.len());
+    for (i, mut section) in sections.into_iter().enumerate() {
+        if i < wrapper_pieces {
+            if heading_only {
+                continue;
+            }
+            section.heading_path.clear();
+        } else {
+            section.heading_path.drain(..prefix.len());
+        }
+        out.push(section);
+    }
+    out
+}
+
 fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<NarrativeEntry> {
     Ok(NarrativeEntry {
         id: row.get(0)?,
@@ -163,4 +251,71 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<NarrativeEntry> {
         actor_raw: row.get(3)?,
         created_at: row.get(4)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::arch_sections;
+
+    fn index(body: &str) -> Vec<String> {
+        arch_sections(body)
+            .into_iter()
+            .filter(|s| s.starts_section)
+            .map(|s| s.heading_path)
+            .collect()
+    }
+
+    fn paths(body: &str) -> Vec<String> {
+        arch_sections(body)
+            .into_iter()
+            .map(|s| s.heading_path)
+            .collect()
+    }
+
+    fn long_text() -> String {
+        vec!["word ".repeat(300); 8].join("\n\n")
+    }
+
+    #[test]
+    fn adjacent_sections_with_the_same_heading_stay_distinct() {
+        let body = "## Storage\n\nOne.\n\n## Storage\n\nTwo.\n";
+        assert_eq!(index(body), ["Storage", "Storage"]);
+    }
+
+    #[test]
+    fn pieces_of_one_over_long_section_count_once() {
+        let body = format!("## Big\n\n{}\n\n## Big\n\nTail.\n", long_text());
+        assert!(paths(&body).len() > 3, "the first section splits");
+        assert_eq!(index(&body), ["Big", "Big"]);
+    }
+
+    #[test]
+    fn an_over_long_untitled_opening_counts_once() {
+        let body = format!("{}\n\n## After\n\nTail.\n", long_text());
+        assert!(paths(&body).len() > 2, "the opening splits");
+        assert_eq!(index(&body), ["", "After"]);
+    }
+
+    #[test]
+    fn a_heading_only_wrapper_is_left_out_of_paths_and_not_listed() {
+        let body =
+            "# memhub architecture\n\n## Purpose\n\nWhy.\n\n## Storage\n\nA.\n\n### Tables\n\nB.\n";
+        assert_eq!(paths(body), ["Purpose", "Storage", "Storage > Tables"]);
+        assert_eq!(index(body), ["Purpose", "Storage", "Storage > Tables"]);
+    }
+
+    #[test]
+    fn a_wrapper_with_its_own_text_stays_as_an_untitled_section() {
+        let body = "# memhub architecture\n\nIntro text.\n\n## Purpose\n\nWhy.\n";
+        assert_eq!(paths(body), ["", "Purpose"]);
+    }
+
+    #[test]
+    fn no_wrapper_when_a_heading_sits_outside_the_first_one() {
+        let two_tops = "# One\n\n## A\n\nx\n\n# Two\n\n## B\n\ny\n";
+        assert_eq!(paths(two_tops), ["One", "One > A", "Two", "Two > B"]);
+        let opening = "Opening.\n\n# Overview\n\n## Storage\n\nx\n";
+        assert_eq!(paths(opening), ["", "Overview", "Overview > Storage"]);
+        assert_eq!(paths("# Only\n\nJust text.\n"), ["Only"]);
+    }
 }

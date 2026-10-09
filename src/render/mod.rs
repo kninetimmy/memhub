@@ -669,16 +669,15 @@ fn render_header(s: &RenderSnapshot) -> String {
     )
 }
 
-/// Heading path of every architecture section, in body order, with
-/// consecutive repeats (over-long sections split into several chunks)
-/// collapsed. An empty path is the untitled text before the first heading.
+/// Heading path of every architecture section, in body order, one per
+/// section (the pieces of an over-long section count once). An empty path is
+/// untitled text, such as the text before the first heading.
 fn architecture_section_index(body: &str) -> Vec<String> {
-    let mut paths: Vec<String> = crate::commands::doc::chunk_markdown(body)
+    crate::commands::narrative::arch_sections(body)
         .into_iter()
-        .map(|(path, _)| path)
-        .collect();
-    paths.dedup();
-    paths
+        .filter(|s| s.starts_section)
+        .map(|s| s.heading_path)
+        .collect()
 }
 
 /// Shorten `text` to at most `NOTE_STUB_MAX_CHARS` characters including the
@@ -729,7 +728,9 @@ fn escape_table_cell(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{RenderSnapshot, format_ledger_md, strip_leading_heading};
+    use super::{
+        RenderSnapshot, collapse_inline, format_ledger_md, note_stub, strip_leading_heading,
+    };
     use crate::models::Fact;
 
     #[test]

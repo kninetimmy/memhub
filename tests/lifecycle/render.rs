@@ -443,6 +443,30 @@ fn render_collapses_consecutive_split_chunks_of_one_section() {
 }
 
 #[test]
+fn render_lists_adjacent_same_heading_sections_and_drops_a_wrapper_heading() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+    let body = "# memhub architecture\n\n## Purpose\n\nWhy.\n\n## Storage\n\nFirst.\n\n\
+                ## Storage\n\nSecond.\n";
+    narrative::set(
+        temp.path(),
+        NarrativeKind::Arch,
+        body,
+        "cli:user",
+        "cli:user",
+    )
+    .expect("arch set");
+
+    let result = render::run(temp.path(), "cli:user").expect("render");
+    let project = read_string(&result.project_md_path);
+    assert!(
+        project.contains("Sections:\n\n- Purpose\n- Storage\n- Storage\n\n"),
+        "{project}"
+    );
+    assert!(!project.contains("memhub architecture"), "{project}");
+}
+
+#[test]
 fn state_set_warns_on_stderr_past_the_soft_limit_but_still_stores() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");

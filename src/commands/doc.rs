@@ -651,7 +651,7 @@ fn soft_split(body: &str) -> Vec<String> {
     pieces
 }
 
-fn parse_heading(trimmed: &str) -> Option<(usize, String)> {
+pub(crate) fn parse_heading(trimmed: &str) -> Option<(usize, String)> {
     if !trimmed.starts_with('#') {
         return None;
     }
