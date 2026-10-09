@@ -1482,6 +1482,9 @@ struct RecallParams {
     mode: Option<String>,
     max_results: Option<usize>,
     source_types: Option<Vec<String>>,
+    /// Keep only user-accepted rows (source `user` or `user+agent:<id>`).
+    /// Tasks, architecture sections and session notes carry no such
+    /// source, so they are never returned when this is true.
     accepted_only: Option<bool>,
     include_stale: Option<bool>,
 }

@@ -213,6 +213,9 @@ pub enum TopLevelCommand {
         mode: Option<RecallModeArg>,
         #[arg(long)]
         include_stale: bool,
+        /// Keep only rows whose source is `user` or `user+agent:<id>`.
+        /// Tasks, architecture sections and session notes carry no such
+        /// source, so they are never returned with this flag.
         #[arg(long)]
         accepted_only: bool,
         /// Disable the cross-encoder re-ranker for this call. By default

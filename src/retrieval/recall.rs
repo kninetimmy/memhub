@@ -71,7 +71,9 @@ pub struct RecallOptions {
     pub mode: Option<RetrievalMode>,
     /// 0 means "use config default".
     pub max_results: usize,
-    /// Empty = all source types allowed.
+    /// Empty = the default bundle: facts, decisions, tasks and
+    /// architecture sections, plus doc chunks when the repo includes docs
+    /// in default recall. Never session notes; scope to `Note` explicitly.
     pub source_types: Vec<SourceType>,
     /// Override of `include_stale_by_default`.
     pub include_stale: Option<bool>,
