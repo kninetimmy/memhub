@@ -16,8 +16,8 @@ use crate::config::RetrievalMode;
 use crate::db;
 use crate::retrieval::embeddings::{EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME, embed_batch};
 use crate::retrieval::persist::{
-    SourceType, decision_embed_text, doc_chunk_embed_text, fact_embed_text, note_embed_text,
-    task_embed_text,
+    SourceType, arch_section_embed_text, decision_embed_text, doc_chunk_embed_text,
+    fact_embed_text, note_embed_text, task_embed_text,
 };
 use crate::retrieval::util::{sha256_hex, vector_to_le_bytes};
 
@@ -35,6 +35,8 @@ pub struct IndexStatusSummary {
     pub doc_chunks_embedded: i64,
     pub notes_total: i64,
     pub notes_embedded: i64,
+    pub arch_sections_total: i64,
+    pub arch_sections_embedded: i64,
     pub total_embeddings: i64,
     pub missing_count: i64,
     pub stale_ratio: f64,
@@ -48,6 +50,7 @@ pub struct RebuildSummary {
     pub tasks: usize,
     pub doc_chunks: usize,
     pub notes: usize,
+    pub arch_sections: usize,
     pub deleted: usize,
     pub elapsed_ms: u128,
 }
@@ -62,12 +65,14 @@ pub fn status(start: &Path) -> Result<IndexStatusSummary> {
     let tasks_total = rows.tasks.len() as i64;
     let doc_chunks_total = rows.doc_chunks.len() as i64;
     let notes_total = rows.notes.len() as i64;
+    let arch_sections_total = rows.arch_sections.len() as i64;
 
     let facts_embedded = count_current_fact_embeddings(conn, &rows.facts)?;
     let decisions_embedded = count_current_decision_embeddings(conn, &rows.decisions)?;
     let tasks_embedded = count_current_task_embeddings(conn, &rows.tasks)?;
     let doc_chunks_embedded = count_current_doc_chunk_embeddings(conn, &rows.doc_chunks)?;
     let notes_embedded = count_current_note_embeddings(conn, &rows.notes)?;
+    let arch_sections_embedded = count_current_arch_section_embeddings(conn, &rows.arch_sections)?;
 
     let total_embeddings: i64 = conn.query_row(
         "SELECT COUNT(*) FROM embeddings WHERE model_name = ?1",
@@ -75,9 +80,18 @@ pub fn status(start: &Path) -> Result<IndexStatusSummary> {
         |row| row.get(0),
     )?;
 
-    let source_rows = facts_total + decisions_total + tasks_total + doc_chunks_total + notes_total;
-    let current_rows =
-        facts_embedded + decisions_embedded + tasks_embedded + doc_chunks_embedded + notes_embedded;
+    let source_rows = facts_total
+        + decisions_total
+        + tasks_total
+        + doc_chunks_total
+        + notes_total
+        + arch_sections_total;
+    let current_rows = facts_embedded
+        + decisions_embedded
+        + tasks_embedded
+        + doc_chunks_embedded
+        + notes_embedded
+        + arch_sections_embedded;
     let missing_count = (source_rows - current_rows).max(0);
     let stale_ratio = if source_rows == 0 {
         0.0
@@ -98,6 +112,8 @@ pub fn status(start: &Path) -> Result<IndexStatusSummary> {
         doc_chunks_embedded,
         notes_total,
         notes_embedded,
+        arch_sections_total,
+        arch_sections_embedded,
         total_embeddings,
         missing_count,
         stale_ratio,
@@ -120,6 +136,7 @@ pub fn rebuild(start: &Path, actor: &str) -> Result<RebuildSummary> {
     let mut tasks_vectors: Vec<(i64, Vec<f32>, String)> = Vec::new();
     let mut doc_chunks_vectors: Vec<(i64, Vec<f32>, String)> = Vec::new();
     let mut notes_vectors: Vec<(i64, Vec<f32>, String)> = Vec::new();
+    let mut arch_sections_vectors: Vec<(i64, Vec<f32>, String)> = Vec::new();
 
     if !rows.facts.is_empty() {
         let texts: Vec<String> = rows
@@ -176,6 +193,21 @@ pub fn rebuild(start: &Path, actor: &str) -> Result<RebuildSummary> {
             notes_vectors.push((*id, vector, text));
         }
     }
+    if !rows.arch_sections.is_empty() {
+        let texts: Vec<String> = rows
+            .arch_sections
+            .iter()
+            .map(|(_, h, b)| arch_section_embed_text(h, b))
+            .collect();
+        let vectors = embed_batch(&texts)?;
+        for ((id, _, _), (text, vector)) in rows
+            .arch_sections
+            .iter()
+            .zip(texts.into_iter().zip(vectors))
+        {
+            arch_sections_vectors.push((*id, vector, text));
+        }
+    }
 
     // Single transaction: prune orphaned active-model rows, then UPSERT
     // vectors only when the source row still matches the snapshot that was
@@ -190,6 +222,7 @@ pub fn rebuild(start: &Path, actor: &str) -> Result<RebuildSummary> {
     let tasks_written = upsert_batch(&tx, SourceType::Task, &tasks_vectors)?;
     let doc_chunks_written = upsert_batch(&tx, SourceType::DocChunk, &doc_chunks_vectors)?;
     let notes_written = upsert_batch(&tx, SourceType::Note, &notes_vectors)?;
+    let arch_sections_written = upsert_batch(&tx, SourceType::ArchSection, &arch_sections_vectors)?;
 
     db::log_write(
         &tx,
@@ -198,13 +231,15 @@ pub fn rebuild(start: &Path, actor: &str) -> Result<RebuildSummary> {
         None,
         "rebuild",
         &format!(
-            "index rebuild: model={} facts={} decisions={} tasks={} doc_chunks={} notes={}",
+            "index rebuild: model={} facts={} decisions={} tasks={} doc_chunks={} notes={} \
+             arch_sections={}",
             EMBEDDING_MODEL_NAME,
             facts_written,
             decisions_written,
             tasks_written,
             doc_chunks_written,
             notes_written,
+            arch_sections_written,
         ),
     )?;
     tx.commit()?;
@@ -216,6 +251,7 @@ pub fn rebuild(start: &Path, actor: &str) -> Result<RebuildSummary> {
         tasks: tasks_written,
         doc_chunks: doc_chunks_written,
         notes: notes_written,
+        arch_sections: arch_sections_written,
         deleted,
         elapsed_ms: started.elapsed().as_millis(),
     })
@@ -227,6 +263,7 @@ struct CollectedRows {
     tasks: Vec<(i64, String, Option<String>)>,
     doc_chunks: Vec<(i64, String, String)>,
     notes: Vec<(i64, String)>,
+    arch_sections: Vec<(i64, String, String)>,
 }
 
 fn collect_source_rows(conn: &Connection) -> Result<CollectedRows> {
@@ -293,12 +330,26 @@ fn collect_source_rows(conn: &Connection) -> Result<CollectedRows> {
         notes.push(row?);
     }
 
+    let mut arch_sections = Vec::new();
+    let mut stmt = conn.prepare("SELECT id, heading_path, body FROM arch_sections ORDER BY id")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    for row in rows {
+        arch_sections.push(row?);
+    }
+
     Ok(CollectedRows {
         facts,
         decisions,
         tasks,
         doc_chunks,
         notes,
+        arch_sections,
     })
 }
 
@@ -379,6 +430,13 @@ fn delete_orphan_embeddings(tx: &rusqlite::Transaction<'_>) -> Result<usize> {
            AND NOT EXISTS (SELECT 1 FROM session_notes WHERE session_notes.id = embeddings.source_id)",
         params![EMBEDDING_MODEL_NAME],
     )?;
+    deleted += tx.execute(
+        "DELETE FROM embeddings
+         WHERE model_name = ?1
+           AND source_type = 'arch_section'
+           AND NOT EXISTS (SELECT 1 FROM arch_sections WHERE arch_sections.id = embeddings.source_id)",
+        params![EMBEDDING_MODEL_NAME],
+    )?;
     Ok(deleted)
 }
 
@@ -440,6 +498,20 @@ fn count_current_note_embeddings(conn: &Connection, rows: &[(i64, String)]) -> R
     for (id, text) in rows {
         let text = note_embed_text(text);
         if embedding_matches(conn, SourceType::Note, *id, &text)? {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+fn count_current_arch_section_embeddings(
+    conn: &Connection,
+    rows: &[(i64, String, String)],
+) -> Result<i64> {
+    let mut count = 0;
+    for (id, heading_path, body) in rows {
+        let text = arch_section_embed_text(heading_path, body);
+        if embedding_matches(conn, SourceType::ArchSection, *id, &text)? {
             count += 1;
         }
     }
@@ -532,6 +604,17 @@ fn current_source_hash(
                 |row| {
                     let text: String = row.get(0)?;
                     Ok(note_embed_text(&text))
+                },
+            )
+            .optional()?,
+        SourceType::ArchSection => tx
+            .query_row(
+                "SELECT heading_path, body FROM arch_sections WHERE id = ?1",
+                params![source_id],
+                |row| {
+                    let heading_path: String = row.get(0)?;
+                    let body: String = row.get(1)?;
+                    Ok(arch_section_embed_text(&heading_path, &body))
                 },
             )
             .optional()?,
@@ -704,6 +787,36 @@ mod tests {
             1,
             "live note embedding must survive delete_orphan_embeddings, not be dropped"
         );
+    }
+
+    /// Issue #232: architecture sections derived under fts mode (or on
+    /// open after the upgrade) have no vectors; status counts them as
+    /// missing and rebuild embeds them.
+    #[test]
+    fn status_counts_and_rebuild_embeds_arch_sections() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        crate::commands::narrative::set(
+            temp.path(),
+            crate::models::NarrativeKind::Arch,
+            "# Overview\n\nIntro.\n\n## Storage\n\nOne SQLite file per repo.\n",
+            "user",
+            "cli:user",
+        )
+        .expect("arch set");
+        switch_to_hybrid(temp.path());
+
+        let before = status(temp.path()).expect("status before rebuild");
+        assert_eq!(before.arch_sections_total, 2);
+        assert_eq!(before.arch_sections_embedded, 0);
+        assert_eq!(before.missing_count, 2);
+
+        let summary = rebuild(temp.path(), "cli:user").expect("rebuild");
+        assert_eq!(summary.arch_sections, 2);
+
+        let after = status(temp.path()).expect("status after rebuild");
+        assert_eq!(after.arch_sections_embedded, 2);
+        assert_eq!(after.missing_count, 0);
     }
 
     #[test]

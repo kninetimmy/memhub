@@ -19,8 +19,8 @@ use crate::config::{RetrievalMode, RetrievalScoringConfig};
 use crate::db;
 use crate::retrieval::embeddings::{EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME, embed_one};
 use crate::retrieval::persist::{
-    SourceType, decision_embed_text, doc_chunk_embed_text, fact_embed_text, note_embed_text,
-    task_embed_text,
+    SourceType, arch_section_embed_text, decision_embed_text, doc_chunk_embed_text,
+    fact_embed_text, note_embed_text, task_embed_text,
 };
 use crate::retrieval::rerank;
 use crate::retrieval::util::{
@@ -360,7 +360,15 @@ impl ResolvedOptions {
         // keep the legacy floor.
         let docs_via_default = opts.source_types.is_empty() && cfg.include_docs_in_default;
         let source_types = if opts.source_types.is_empty() {
-            let mut base = vec![SourceType::Fact, SourceType::Decision, SourceType::Task];
+            // Architecture sections are always in the default bundle and
+            // take the normal floor and fallback, unlike docs (issue #232).
+            // Notes never are (gate Q9).
+            let mut base = vec![
+                SourceType::Fact,
+                SourceType::Decision,
+                SourceType::Task,
+                SourceType::ArchSection,
+            ];
             if docs_via_default {
                 base.push(SourceType::DocChunk);
             }
@@ -920,6 +928,13 @@ fn fts_lookup(
              ORDER BY score ASC \
              LIMIT ?2"
         }
+        SourceType::ArchSection => {
+            "SELECT arch_sections_fts.rowid, bm25(arch_sections_fts) AS score \
+             FROM arch_sections_fts \
+             WHERE arch_sections_fts MATCH ?1 \
+             ORDER BY score ASC \
+             LIMIT ?2"
+        }
     };
     let mut stmt = conn.prepare(sql)?;
     let rows = stmt.query_map(params![match_expr, PER_SOURCE_FTS_LIMIT], |row| {
@@ -1164,6 +1179,17 @@ fn current_embed_text(
                 None => Ok(None),
             }
         }
+        SourceType::ArchSection => {
+            let row: std::result::Result<(String, String), rusqlite::Error> = conn.query_row(
+                "SELECT heading_path, body FROM arch_sections WHERE id = ?1",
+                params![source_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            );
+            match row.optional_row()? {
+                Some((h, b)) => Ok(Some(arch_section_embed_text(&h, &b))),
+                None => Ok(None),
+            }
+        }
     }
 }
 
@@ -1400,8 +1426,45 @@ fn load_source_row(
                 });
             row.optional_row().map_err(Into::into)
         }
+        SourceType::ArchSection => {
+            // Title names the narrative plus the section's heading path so
+            // a hit says which part of the architecture it is.
+            let mut stmt = conn.prepare(
+                "SELECT heading_path, body, created_at FROM arch_sections WHERE id = ?1",
+            )?;
+            let row: std::result::Result<HydratedSource, rusqlite::Error> =
+                stmt.query_row(params![source_id], |r: &Row<'_>| {
+                    let heading_path: String = r.get(0)?;
+                    let body: String = r.get(1)?;
+                    let created_at: String = r.get(2)?;
+                    let title = if heading_path.trim().is_empty() {
+                        ARCH_SECTION_TITLE.to_string()
+                    } else {
+                        format!("{ARCH_SECTION_TITLE} — {heading_path}")
+                    };
+                    Ok(HydratedSource {
+                        title,
+                        body,
+                        summary: None,
+                        // No source-vocabulary column (like tasks), so
+                        // `accepted_only` excludes sections as it does tasks.
+                        source: String::new(),
+                        is_stale: false,
+                        superseded_by: None,
+                        created_at,
+                        // Only the latest body has sections, so no decay age.
+                        age_days: None,
+                        // `kind` (migration 0021) is a facts-only column.
+                        kind: None,
+                    })
+                });
+            row.optional_row().map_err(Into::into)
+        }
     }
 }
+
+/// Title prefix of an architecture-section hit; the heading path follows.
+const ARCH_SECTION_TITLE: &str = "Architecture";
 
 fn is_accepted_source(source: &str) -> bool {
     source == "user" || source.starts_with("user+agent:")
@@ -1414,6 +1477,7 @@ fn parse_source_type(raw: &str) -> Option<SourceType> {
         "task" => Some(SourceType::Task),
         "doc_chunk" => Some(SourceType::DocChunk),
         "note" => Some(SourceType::Note),
+        "arch_section" => Some(SourceType::ArchSection),
         _ => None,
     }
 }
@@ -1526,8 +1590,9 @@ fn age_decay_multiplier(age_days: Option<f64>, half_life_days: i64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::{decision, doc, fact, init, session_note, task};
+    use crate::commands::{decision, doc, fact, init, narrative, session_note, task};
     use crate::config::{ProjectConfig, RetrievalMode};
+    use crate::models::NarrativeKind;
     use rusqlite::params;
     use tempfile::tempdir;
 
@@ -3070,6 +3135,260 @@ mod tests {
         assert!(
             response.results.iter().all(|h| h.source_type != "note"),
             "session notes must never leak into hybrid default recall via the vector path"
+        );
+    }
+
+    // Issue #232: heading sections of the latest architecture body are a
+    // default-recall source type (`arch_section`, CLI/MCP spelling `arch`).
+    const ARCH_BODY: &str = "# Overview\n\nmemhub is a local-first project memory CLI.\n\n\
+        ## Storage\n\nThe zebrafinch ledger keeps every durable row in one SQLite file per repo.\n\n\
+        ## Sync\n\nSnapshots travel between machines through a shared Drive folder.\n";
+
+    fn arch_recall(
+        start: &std::path::Path,
+        query: &str,
+        mode: RetrievalMode,
+        source_types: Vec<SourceType>,
+        min_rerank_score: Option<f32>,
+    ) -> RecallResponse {
+        recall(
+            start,
+            RecallOptions {
+                query: query.to_string(),
+                mode: Some(mode),
+                max_results: 10,
+                source_types,
+                include_stale: None,
+                accepted_only: None,
+                use_reranker: None,
+                min_rerank_score,
+                log_metrics: false,
+                surface: None,
+            },
+        )
+        .expect("recall")
+    }
+
+    fn set_arch(start: &std::path::Path, body: &str) {
+        narrative::set(start, NarrativeKind::Arch, body, "user", "cli:user").expect("arch set");
+    }
+
+    #[test]
+    fn arch_sections_join_default_recall_with_heading_path_title() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        set_arch(temp.path(), ARCH_BODY);
+
+        let response = arch_recall(
+            temp.path(),
+            "zebrafinch ledger",
+            RetrievalMode::Fts,
+            vec![],
+            None,
+        );
+        let hit = response
+            .results
+            .iter()
+            .find(|h| h.source_type == "arch_section")
+            .expect("default recall must return the matching architecture section");
+        assert_eq!(hit.title, "Architecture — Overview > Storage");
+        assert!(hit.body.contains("zebrafinch"));
+        assert!(
+            !hit.body.contains("Drive folder"),
+            "a hit is one section, not the whole body"
+        );
+    }
+
+    #[test]
+    fn arch_sections_join_default_recall_in_hybrid_mode_and_fall_back() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let cfg_path = temp.path().join(".memhub/config.toml");
+        let mut cfg = ProjectConfig::load(&cfg_path).expect("load cfg");
+        cfg.retrieval.mode = RetrievalMode::Hybrid;
+        cfg.save(&cfg_path).expect("save cfg");
+        // Hybrid is on, so `arch set` eager-embeds every section.
+        set_arch(temp.path(), ARCH_BODY);
+
+        // Default floor: a question-shaped query must clear it normally.
+        let response = arch_recall(
+            temp.path(),
+            "Where does the zebrafinch ledger keep every durable row?",
+            RetrievalMode::Hybrid,
+            vec![],
+            None,
+        );
+        assert!(
+            response
+                .warnings
+                .iter()
+                .all(|w| w.kind != "stale_embeddings"),
+            "arch set must eager-embed sections in hybrid mode: {:?}",
+            response.warnings
+        );
+        let hit = response
+            .results
+            .iter()
+            .find(|h| h.source_type == "arch_section" && h.title.ends_with("Storage"))
+            .expect("hybrid default recall must return the Storage section");
+        assert!(hit.rerank_score.is_some());
+        assert!(
+            !hit.low_confidence,
+            "the section must clear the normal floor"
+        );
+
+        // An unreachable floor drops everything: arch sections are
+        // fallback-eligible like facts/decisions/tasks (unlike default docs).
+        let dropped = arch_recall(
+            temp.path(),
+            "Where does the zebrafinch ledger keep every durable row?",
+            RetrievalMode::Hybrid,
+            vec![],
+            Some(100.0),
+        );
+        assert!(
+            dropped
+                .results
+                .iter()
+                .any(|h| h.source_type == "arch_section" && h.low_confidence),
+            "arch sections must be low-confidence fallback hits"
+        );
+    }
+
+    #[test]
+    fn later_arch_set_retires_earlier_sections_from_recall() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        set_arch(temp.path(), ARCH_BODY);
+        set_arch(
+            temp.path(),
+            "# Overview\n\n## Storage\n\nRows now live in the pelicanvault store.\n",
+        );
+
+        for source_types in [vec![], vec![SourceType::ArchSection]] {
+            let old = arch_recall(
+                temp.path(),
+                "zebrafinch",
+                RetrievalMode::Fts,
+                source_types,
+                None,
+            );
+            assert!(
+                old.results.iter().all(|h| h.source_type != "arch_section"),
+                "sections of an earlier architecture body must never be returned"
+            );
+        }
+        let new = arch_recall(
+            temp.path(),
+            "pelicanvault",
+            RetrievalMode::Fts,
+            vec![],
+            None,
+        );
+        assert!(new.results.iter().any(|h| h.source_type == "arch_section"));
+
+        let ctx = crate::db::open_project(temp.path()).expect("open");
+        let (owners, latest): (i64, i64) = ctx
+            .conn
+            .query_row(
+                "SELECT (SELECT COUNT(DISTINCT arch_id) FROM arch_sections),
+                        (SELECT MAX(id) FROM project_arch)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("owners");
+        let owner: i64 = ctx
+            .conn
+            .query_row("SELECT arch_id FROM arch_sections LIMIT 1", [], |r| {
+                r.get(0)
+            })
+            .expect("owner");
+        assert_eq!((owners, owner), (1, latest));
+    }
+
+    #[test]
+    fn arch_scoped_recall_returns_only_arch_sections_and_notes_stay_out() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        fact::add(
+            temp.path(),
+            "storage-engine",
+            "the zebrafinch ledger is SQLite",
+            "user",
+            "cli:user",
+        )
+        .expect("fact");
+        session_note::add(
+            temp.path(),
+            "zebrafinch ledger scratch note",
+            "claude-code",
+            "claude-code:log_session_note",
+        )
+        .expect("note");
+        set_arch(temp.path(), ARCH_BODY);
+
+        let default = arch_recall(temp.path(), "zebrafinch", RetrievalMode::Fts, vec![], None);
+        let types: Vec<&str> = default
+            .results
+            .iter()
+            .map(|h| h.source_type.as_str())
+            .collect();
+        assert!(types.contains(&"fact") && types.contains(&"arch_section"));
+        assert!(!types.contains(&"note"), "notes never join default recall");
+
+        let scoped = arch_recall(
+            temp.path(),
+            "zebrafinch",
+            RetrievalMode::Fts,
+            vec![SourceType::ArchSection],
+            None,
+        );
+        assert!(!scoped.results.is_empty());
+        assert!(
+            scoped
+                .results
+                .iter()
+                .all(|h| h.source_type == "arch_section")
+        );
+    }
+
+    /// Criterion 4: a DB whose latest architecture body predates migration
+    /// 0025 (simulated by dropping its ledger row) gets sections on the
+    /// next ordinary open, with no new `arch set`.
+    #[test]
+    fn arch_body_stored_before_migration_is_recallable_without_new_set() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        {
+            let ctx = crate::db::open_project(temp.path()).expect("open");
+            ctx.conn
+                .execute(
+                    "INSERT INTO project_arch(project_id, body, actor, actor_raw)
+                     VALUES (1, ?1, 'user', 'cli:user')",
+                    params![ARCH_BODY],
+                )
+                .expect("legacy arch body");
+            ctx.conn
+                .execute(
+                    "DELETE FROM schema_migrations WHERE version = '0025_arch_sections'",
+                    [],
+                )
+                .expect("forget 0025");
+        }
+
+        let response = arch_recall(
+            temp.path(),
+            "zebrafinch ledger",
+            RetrievalMode::Fts,
+            vec![],
+            None,
+        );
+        assert!(
+            response
+                .results
+                .iter()
+                .any(|h| h.source_type == "arch_section" && h.title.ends_with("Storage")),
+            "a pre-existing architecture body must be recallable after upgrade"
         );
     }
 

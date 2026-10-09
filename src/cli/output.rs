@@ -202,6 +202,7 @@ pub(crate) fn index_status_to_json(s: &commands::index::IndexStatusSummary) -> s
         "decisions": { "total": s.decisions_total, "embedded": s.decisions_embedded },
         "tasks": { "total": s.tasks_total, "embedded": s.tasks_embedded },
         "doc_chunks": { "total": s.doc_chunks_total, "embedded": s.doc_chunks_embedded },
+        "arch_sections": { "total": s.arch_sections_total, "embedded": s.arch_sections_embedded },
         "total_embeddings": s.total_embeddings,
         "missing_count": s.missing_count,
         "stale_ratio": s.stale_ratio,
@@ -226,6 +227,10 @@ pub(crate) fn print_index_status(s: &commands::index::IndexStatusSummary) {
     println!(
         "Doc chunks:{} embedded / {} total",
         s.doc_chunks_embedded, s.doc_chunks_total,
+    );
+    println!(
+        "Arch sections: {} embedded / {} total",
+        s.arch_sections_embedded, s.arch_sections_total,
     );
     println!("Total embeddings: {}", s.total_embeddings);
     println!(

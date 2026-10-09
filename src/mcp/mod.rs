@@ -459,10 +459,11 @@ impl MemhubServer {
                 "task" => source_types.push(SourceType::Task),
                 "doc" | "doc_chunk" => source_types.push(SourceType::DocChunk),
                 "note" => source_types.push(SourceType::Note),
+                "arch" | "arch_section" => source_types.push(SourceType::ArchSection),
                 other => {
                     return Err(McpError::invalid_params(
                         format!(
-                            "invalid source_type '{other}'; expected fact, decision, task, doc, or note"
+                            "invalid source_type '{other}'; expected fact, decision, task, doc, note, or arch"
                         ),
                         None,
                     ));
@@ -834,7 +835,7 @@ impl MemhubServer {
 
     #[tool(
         name = "recall",
-        description = "Retrieve relevant facts, decisions, and tasks via SQL+RAG hybrid recall (FTS5 + brute-force cosine when hybrid mode is configured). Read-only; prefer this over reading PROJECT_LEDGER.md mid-session. Phrase `query` as a natural-language question (\"are task writes reviewed or direct writes?\"), not a keyword list — the cross-encoder scores question phrasings several logits higher, so a keyword bag can miss the relevance floor. A hit with `low_confidence: true` did not clear the floor; it is returned only when the floor dropped every candidate (with a `rerank_floor_dropped_all` warning) and is a weak lead to verify before relying on it. Default-included doc chunks are never returned as low-confidence fallback hits. Ingested reference docs are opt-in (add one with doc_add); once added they join the default bundle when a chunk clears the relevance floor (decision 90), and source_types=[\"doc\"] scopes a query to docs alone. The response's `available_docs` counts ingested doc chunks that did NOT surface this call — when it is non-zero and the question is design/spec/architecture-flavored, consider a follow-up recall scoped to docs (use judgment; not every turn). Session notes (log_session_note) are write-only scratch and never join the default bundle at all — source_types=[\"note\"] is the only way to retrieve one."
+        description = "Retrieve relevant facts, decisions, tasks, and architecture sections via SQL+RAG hybrid recall (FTS5 + brute-force cosine when hybrid mode is configured). Read-only; prefer this over reading PROJECT_LEDGER.md mid-session. Phrase `query` as a natural-language question (\"are task writes reviewed or direct writes?\"), not a keyword list — the cross-encoder scores question phrasings several logits higher, so a keyword bag can miss the relevance floor. A hit with `low_confidence: true` did not clear the floor; it is returned only when the floor dropped every candidate (with a `rerank_floor_dropped_all` warning) and is a weak lead to verify before relying on it. Default-included doc chunks are never returned as low-confidence fallback hits. Sections of the latest architecture narrative (`memhub arch set`, split by heading; source_type `arch_section`, titled `Architecture — <heading path>`) are part of the default bundle with the same floor and fallback as facts, decisions, and tasks; source_types=[\"arch\"] scopes a query to them alone. Ingested reference docs are opt-in (add one with doc_add); once added they join the default bundle when a chunk clears the relevance floor (decision 90), and source_types=[\"doc\"] scopes a query to docs alone. The response's `available_docs` counts ingested doc chunks that did NOT surface this call — when it is non-zero and the question is design/spec/architecture-flavored, consider a follow-up recall scoped to docs (use judgment; not every turn). Session notes (log_session_note) are write-only scratch and never join the default bundle at all — source_types=[\"note\"] is the only way to retrieve one."
     )]
     async fn recall(
         &self,
@@ -943,7 +944,7 @@ impl ServerHandler for MemhubServer {
                 r#"memhub: local-first per-repo project memory. Routing rules below are ABSOLUTE when user intent matches.
 
 INTENT → TOOL (always start here; do not fall through to Grep/Read/manual scan):
-• past decisions, status of work, "is there a fact/task about X" → recall
+• past decisions, status of work, architecture, "is there a fact/task about X" → recall (default recall includes sections of the current architecture narrative; recall(source_types=["arch"]) scopes to them alone)
 • find code by what it does, "where is X", "I want to change Y" → locate
 • ingest a markdown spec/design doc as searchable reference → doc_add
 • new task / mark task done → task_add / task_done
@@ -3169,6 +3170,65 @@ mod tests {
         };
         let message = err.message.to_string();
         assert!(message.contains("turbo"), "unexpected error: {message}");
+    }
+
+    /// Issue #232: `source_types=["arch"]` scopes recall to architecture
+    /// sections, and an unknown value still fails listing `arch`.
+    #[test]
+    fn mcp_recall_scopes_to_arch_and_lists_it_in_errors() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        crate::commands::fact::add(
+            temp.path(),
+            "storage-engine",
+            "the zebrafinch ledger is SQLite",
+            "user",
+            "cli:user",
+        )
+        .expect("fact");
+        commands::narrative::set(
+            temp.path(),
+            crate::models::NarrativeKind::Arch,
+            "# Overview\n\n## Storage\n\nThe zebrafinch ledger is one SQLite file.\n",
+            "user",
+            "cli:user",
+        )
+        .expect("arch set");
+        let server = MemhubServer::new(temp.path().to_path_buf());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let params = |source_types: Vec<&str>| {
+            Parameters(RecallParams {
+                query: "zebrafinch".to_string(),
+                mode: Some("fts".to_string()),
+                max_results: None,
+                source_types: Some(source_types.into_iter().map(String::from).collect()),
+                accepted_only: None,
+                include_stale: None,
+            })
+        };
+
+        let scoped = runtime
+            .block_on(server.recall_impl(params(vec!["arch"])))
+            .expect("arch-scoped recall");
+        assert!(!scoped.0.results.is_empty());
+        assert!(
+            scoped
+                .0
+                .results
+                .iter()
+                .all(|h| h.source_type == "arch_section")
+        );
+
+        let err = match runtime.block_on(server.recall_impl(params(vec!["blueprint"]))) {
+            Ok(_) => panic!("unknown source_type should error"),
+            Err(e) => e,
+        };
+        let message = err.message.to_string();
+        assert!(message.contains("blueprint"), "unexpected error: {message}");
+        assert!(message.contains("arch"), "error must list arch: {message}");
     }
 
     /// Run a git command in `repo`, asserting success. Locate's lazy

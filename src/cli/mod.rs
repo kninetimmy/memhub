@@ -1390,6 +1390,7 @@ pub fn run(cli: Cli) -> Result<()> {
                         "decisions": summary.decisions,
                         "tasks": summary.tasks,
                         "doc_chunks": summary.doc_chunks,
+                        "arch_sections": summary.arch_sections,
                         "deleted": summary.deleted,
                         "elapsed_ms": summary.elapsed_ms,
                     });
@@ -1400,8 +1401,12 @@ pub fn run(cli: Cli) -> Result<()> {
                         summary.model, summary.elapsed_ms, summary.deleted,
                     );
                     println!(
-                        "  facts: {}  decisions: {}  tasks: {}  doc chunks: {}",
-                        summary.facts, summary.decisions, summary.tasks, summary.doc_chunks,
+                        "  facts: {}  decisions: {}  tasks: {}  doc chunks: {}  arch sections: {}",
+                        summary.facts,
+                        summary.decisions,
+                        summary.tasks,
+                        summary.doc_chunks,
+                        summary.arch_sections,
                     );
                 }
             }

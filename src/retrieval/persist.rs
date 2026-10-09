@@ -32,6 +32,7 @@ pub enum SourceType {
     Task,
     DocChunk,
     Note,
+    ArchSection,
 }
 
 impl SourceType {
@@ -42,6 +43,7 @@ impl SourceType {
             SourceType::Task => "task",
             SourceType::DocChunk => "doc_chunk",
             SourceType::Note => "note",
+            SourceType::ArchSection => "arch_section",
         }
     }
 }
@@ -83,6 +85,13 @@ pub fn doc_chunk_embed_text(heading_path: &str, body: &str) -> String {
     } else {
         format!("{heading_path}\n\n{body}")
     }
+}
+
+/// Build the embed text for an architecture section (issue #232). Same
+/// `heading_path\n\nbody` shape as a doc chunk: both come from the same
+/// heading chunker, and the breadcrumb is the section's title-analog.
+pub fn arch_section_embed_text(heading_path: &str, body: &str) -> String {
+    doc_chunk_embed_text(heading_path, body)
 }
 
 /// Build the embed text for a session note. Notes carry only free-form
