@@ -24,8 +24,7 @@ use tempfile::tempdir;
 // level further up.
 const FIXTURE: &str = include_str!("../fixtures/claude_session_sample.jsonl");
 
-// The fixture (and this file's own appended lines) hardcode 2026-05-15 as
-// the calendar date. The 90-day default metrics retention window means a
+// The fixture hardcodes a single calendar date (see `fixture_with_recent_date`). The 90-day default metrics retention window means a
 // fixed date eventually ages out from under these tests (it did: see issue
 // #189), so every row that must survive the retention prune substitutes
 // this runtime-computed "yesterday" for that date instead. Timestamps that
@@ -222,7 +221,8 @@ fn partial_trailing_line_is_not_consumed_until_completed() {
     let tdir = temp.path().join("transcripts");
     fs::create_dir_all(&tdir).expect("transcripts dir");
     let file = tdir.join("sess-abc.jsonl");
-    fs::write(&file, fixture_with_recent_date(&recent_date())).expect("write fixture");
+    let date = recent_date();
+    fs::write(&file, fixture_with_recent_date(&date)).expect("write fixture");
     enable_metrics(temp.path(), &tdir);
 
     let base = scrape_and_read(temp.path(), "sess-abc").expect("row");
@@ -230,8 +230,10 @@ fn partial_trailing_line_is_not_consumed_until_completed() {
     // Half a line, no newline: the session is mid-write.
     append(
         &file,
-        "{\"type\":\"assistant\",\"timestamp\":\"2026-05-15T09:06:00.000Z\",\
-          \"message\":{\"usage\":{\"input_tokens\":999",
+        &format!(
+            "{{\"type\":\"assistant\",\"timestamp\":\"{date}T09:06:00.000Z\",\
+              \"message\":{{\"usage\":{{\"input_tokens\":999"
+        ),
     );
     let mid = scrape_and_read(temp.path(), "sess-abc").expect("row");
     assert_eq!(mid.input, base.input, "partial line not counted");
