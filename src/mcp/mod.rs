@@ -1525,6 +1525,12 @@ struct RecallToolHit {
     /// fusion/FTS/vector scores are diagnostic-only and not surfaced here
     /// (issue #72; see `memhub recall --json` for the full breakdown).
     rerank_score: Option<f32>,
+    /// `true` only on a fallback hit (issue #225): every candidate fell
+    /// below the relevance floor, so the top reranked ones are returned
+    /// anyway, alongside a `rerank_floor_dropped_all` warning. Treat as a
+    /// lead, not an answer. Omitted when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    low_confidence: bool,
     /// Fact-only optional tag (issue #97). Present only when the
     /// underlying fact was tagged; omitted from the JSON payload
     /// otherwise so an untagged corpus's MCP recall bundle stays
@@ -1561,6 +1567,7 @@ impl From<RecallHit> for RecallToolHit {
             source: value.source,
             created_at: value.created_at,
             rerank_score: value.rerank_score,
+            low_confidence: value.low_confidence,
             kind: value.kind,
         }
     }
@@ -3230,6 +3237,32 @@ mod tests {
         // Reranker is off by default (PR3 contract).
         assert!(!response.0.reranked);
         assert!(top.rerank_score.is_none());
+    }
+
+    #[test]
+    fn mcp_recall_hit_marks_low_confidence_only_when_set() {
+        let hit = |low_confidence| RecallHit {
+            rank: 1,
+            source_type: "fact".to_string(),
+            scope: "repo".to_string(),
+            source_id: 1,
+            title: "t".to_string(),
+            body: "b".to_string(),
+            score: 0.5,
+            fts_score: 0.0,
+            vector_score: 0.5,
+            stale: false,
+            superseded_by: None,
+            source: "user".to_string(),
+            created_at: "2026-01-01".to_string(),
+            rerank_score: Some(-1.0),
+            low_confidence,
+            kind: None,
+        };
+        let normal = serde_json::to_value(RecallToolHit::from(hit(false))).expect("json");
+        assert!(normal.get("low_confidence").is_none());
+        let flagged = serde_json::to_value(RecallToolHit::from(hit(true))).expect("json");
+        assert_eq!(flagged["low_confidence"], true);
     }
 
     #[test]

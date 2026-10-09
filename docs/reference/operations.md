@@ -249,14 +249,49 @@ entirely.
 
 Candidates whose cross-encoder logit falls below
 `[retrieval.scoring] min_rerank_score` (default 2.0) are dropped
-after re-ranking, primarily to keep gibberish queries returning empty
-bundles. This replaces the legacy `min_vector_score` cosine floor
+after re-ranking, primarily to keep gibberish queries from surfacing
+as answers (see the low-confidence fallback below for what a recall
+returns when the floor drops everything). This replaces the legacy `min_vector_score` cosine floor
 (decisions 70, 71) — the cosine band of nonsense overlapped borderline
 semantic queries, so a vector-path floor had no safe sweet spot.
 The rerank-score band is similarly noisy on memhub's own corpus, so
 2.0 is a parity calibration rather than an improvement; override with
 `memhub recall --min-rerank-score <F>` or `memhub eval retrieval
 --min-rerank-score=<F>` (use the `=` form for negative values).
+
+**Partial-token FTS (issue #225).** The recall FTS path first requires every
+query token to match one row (a quoted FTS5 `AND`). When no row in the corpus
+holds every token, which is the normal case for a keyword bag or a natural
+question, recall retries with an `OR` of the query's content tokens (English
+stopwords such as "the", "how", "does" are dropped) so rows matching some of
+the tokens still contribute FTS signal. Before this, a multi-word query whose
+tokens never co-occur in one row got no FTS signal at all, the rerank
+candidate pool was picked by the narrow cosine band alone, and the right row
+could fall outside it and never reach the cross-encoder. bm25 is min-max
+normalized over the hits, so the best partial hit would otherwise blend as if
+it matched every token (about 0.82 against about 0.36 for a vector-only row)
+and crowd the pool; partial-token FTS scores are therefore multiplied by 0.5
+(`PARTIAL_FTS_FACTOR`). The code locator (`memhub locate`) is unchanged and
+still requires every token. `min_rerank_score`, `doc_min_rerank_score` and
+`rerank_candidate_pool` defaults are unchanged, and superseded or stale rows
+are still demoted rather than excluded (decision 145).
+
+**Low-confidence fallback (issue #225).** When the relevance floor drops every
+reranked candidate, recall returns the top 3 reranked candidates (never more
+than `max_results`) instead of an empty bundle, each marked `low_confidence`
+(`"low_confidence": true` in `memhub recall --json` and the MCP recall hit,
+omitted otherwise; a `[low-confidence]` tag in the CLI text), and still emits
+the `rerank_floor_dropped_all` warning. Treat them as leads, not answers. A
+recall in which at least one candidate clears its floor contains no
+low-confidence hits, and a hit that clears its floor is never marked. Doc
+chunks that joined the default bundle and missed `doc_min_rerank_score` are
+never returned as fallback hits (decisions 90/91). Previously, a recall whose
+candidates were all dropped by the floor returned an empty bundle (decision
+33); this fallback supersedes that rule by user decision of 2026-10-08. In the
+eval harness an `empty` probe now passes when it returns no hit that cleared
+the floor (low-confidence hits allowed), and each match outcome reports
+`matched_low_confidence`. The golden set carries `kw-` keyword-bag variants
+and `near-` related-but-no-answer probes for this.
 
 Decisions can carry an optional natural-language `summary` (migration
 0011, decision 72). When set, the summary is prepended to BOTH the
@@ -291,7 +326,10 @@ retrieval golden.
 
 Baseline recorded 2026-07-06 (issue #44): Recall@3 = 100% (17/17 match
 queries, every one at rank 1), 0 safety failures, over the 18-query set
-(hybrid mode, default rerank floor 2.0). This is the reference other
+(hybrid mode, default rerank floor 2.0). With the issue #225 extension the
+set is 36 queries (31 match, 5 empty); the fixed code scores 31/31 match and
+5/5 empty probes, three of the keyword-bag matches via the low-confidence
+fallback. This is the reference other
 Wave 3 lifecycle PRs (L2 staleness, L3 supersession, L6 age decay) compare
 their own hermetic re-run against. There is no persisted fixture DB to
 regenerate — the corpus is defined entirely by the `fact::add` /

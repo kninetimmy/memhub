@@ -75,6 +75,7 @@ use std::process::Command;
 
 use memhub::commands::{decision, doc, fact, init, task};
 use memhub::config::{ProjectConfig, RetrievalMode};
+use memhub::retrieval::{RecallOptions, recall};
 use serde::Deserialize;
 use tempfile::tempdir;
 
@@ -101,6 +102,38 @@ fn set_age_half_life(root: &Path, days: i64) {
     let mut config = ProjectConfig::load(&config_path).expect("load config");
     config.retrieval.scoring.age_half_life_days = days;
     config.save(&config_path).expect("save config");
+}
+
+/// Pads the seeded corpus with `count` facts about agent-proposal sign-off:
+/// semantically close to the keyword bag in the pool test below but
+/// lexically disjoint from it, so on the pre-#225 code they outrank the real
+/// target (the MCP trust-split decision) by cosine alone and push it out of
+/// the default 20-row rerank pool.
+fn seed_proposal_fillers(root: &Path, count: usize) {
+    const SUBJECTS: [&str; 5] = [
+        "Agent-proposed changes",
+        "Claims written by an agent",
+        "Proposals from an AI assistant",
+        "Candidate memory entries from agents",
+        "Unverified agent submissions",
+    ];
+    const CHECKS: [&str; 5] = [
+        "wait for a human to sign off before they become permanent",
+        "need explicit human sign-off and are not stored directly",
+        "are held back until a person accepts or rejects them",
+        "stay in a holding queue until the user signs off",
+        "are not trusted until the user explicitly approves them",
+    ];
+    for i in 0..count {
+        fact::add(
+            root,
+            &format!("proposal-note-{i}"),
+            &format!("{} {}", SUBJECTS[i % 5], CHECKS[(i / 5) % 5]),
+            "user",
+            "cli:user",
+        )
+        .expect("seed proposal filler");
+    }
 }
 
 /// Seeds a fresh `.memhub` project whose rows satisfy every matcher in the
@@ -402,8 +435,9 @@ fn seed_hermetic_corpus(root: &Path) {
     doc::add(root, &doc_file, None, "cli:user").expect("ingest code style doc");
 
     // Deliberately nothing here mentions "zxqv" or similar gibberish — the
-    // shipped golden's one `kind: empty` safety probe
-    // (`negative-nonsense-tokens`) must find zero hits against this corpus.
+    // shipped golden's `kind: empty` probes (the gibberish
+    // `negative-nonsense-tokens` and the `near-*` adjacent-topic ones) must
+    // find no hit that clears the relevance floor against this corpus.
 }
 
 /// Flip `[global] enabled` on the fixture repo so recall merges the
@@ -490,6 +524,7 @@ struct EvalCliOutcome {
     #[allow(dead_code)]
     kind: String,
     passed: bool,
+    matched_low_confidence: bool,
     failure_reason: Option<String>,
 }
 
@@ -559,10 +594,12 @@ fn hermetic_retrieval_recall_at_3_matches_baseline() {
     // Drift guard: catches the golden file changing shape out from under
     // this fixture (mirrors `shipped_golden_file_parses_cleanly` in
     // tests/m8_retrieval_eval.rs, but against a live run, not just parsing).
-    // 22 = the original 18 (issue #44) + 4 doc-/global- queries (issue #74).
-    assert_eq!(result.totals.queries, 22, "golden query count drifted");
-    assert_eq!(result.totals.match_queries, 21);
-    assert_eq!(result.totals.empty_queries, 1);
+    // 36 = the original 18 (issue #44) + 4 doc-/global- queries (issue #74)
+    // + 10 kw- keyword-bag match queries and 4 near- related-but-no-answer
+    // empty probes (issue #225).
+    assert_eq!(result.totals.queries, 36, "golden query count drifted");
+    assert_eq!(result.totals.match_queries, 31);
+    assert_eq!(result.totals.empty_queries, 5);
 
     let misses: Vec<String> = result
         .outcomes
@@ -575,11 +612,29 @@ fn hermetic_retrieval_recall_at_3_matches_baseline() {
         "hermetic fixture should reproduce the recorded baseline; misses:\n{}",
         misses.join("\n"),
     );
-    assert_eq!(result.totals.match_passes, result.totals.match_queries);
+    assert_eq!(result.totals.match_passes, 31);
+    assert_eq!(result.totals.empty_passes, 5);
     assert!(
         (result.recall_at_k - 1.0).abs() < 1e-9,
         "expected Recall@3 = 100% on the curated fixture, got {}",
         result.recall_at_k,
+    );
+    // These keyword bags rerank below the 2.0 floor, so they pass only via
+    // the low-confidence fallback; every other match clears its floor.
+    let mut low_confidence_matches: Vec<&str> = result
+        .outcomes
+        .iter()
+        .filter(|o| o.matched_low_confidence)
+        .map(|o| o.id.as_str())
+        .collect();
+    low_confidence_matches.sort_unstable();
+    assert_eq!(
+        low_confidence_matches,
+        [
+            "kw-decision-agent-trust",
+            "kw-decision-recall-readonly-audit",
+            "kw-fact-build-command",
+        ],
     );
     // Report-only metric (issue #74) — proves it reaches the CLI JSON
     // shape end to end, without asserting any threshold on it.
@@ -604,12 +659,12 @@ fn hermetic_retrieval_safety_probe_never_leaks() {
 
     let result = run_cli_eval(temp.path(), home.path());
 
-    assert_eq!(result.totals.empty_queries, 1);
+    assert_eq!(result.totals.empty_queries, 5);
     assert_eq!(
         result.totals.safety_failures, 0,
-        "gibberish probe leaked a hit against the hermetic fixture"
+        "gibberish or near-topic probe returned a hit that cleared the floor"
     );
-    assert_eq!(result.totals.empty_passes, 1);
+    assert_eq!(result.totals.empty_passes, 5);
 }
 
 /// Wave 3 L6 eval sweep, ON case. With `age_half_life_days = 30` enabled on
@@ -633,7 +688,7 @@ fn hermetic_retrieval_age_decay_on_holds_baseline_on_fresh_corpus() {
 
     let result = run_cli_eval(temp.path(), home.path());
 
-    assert_eq!(result.totals.queries, 22, "golden query count drifted");
+    assert_eq!(result.totals.queries, 36, "golden query count drifted");
     let misses: Vec<String> = result
         .outcomes
         .iter()
@@ -653,5 +708,57 @@ fn hermetic_retrieval_age_decay_on_holds_baseline_on_fresh_corpus() {
     assert_eq!(
         result.totals.safety_failures, 0,
         "gibberish probe must still find zero hits with decay on"
+    );
+}
+
+/// Issue #225: no row holds every token of this keyword-bag query (a
+/// live-DB repro), so the AND-only FTS path contributed nothing
+/// and the rerank pool was picked by cosine alone — the trust-split decision
+/// fell outside the default 20-row pool and never reached the cross-encoder.
+/// Partial-token FTS must lift it into the pool and on to the top 3. The
+/// floor is disabled so the assertion isolates pool membership.
+#[test]
+fn hermetic_partial_token_fts_lifts_keyword_bag_target_into_the_pool() {
+    let temp = tempdir().expect("tempdir");
+    seed_hermetic_corpus(temp.path());
+    seed_proposal_fillers(temp.path(), 50);
+
+    let response = recall(
+        temp.path(),
+        RecallOptions {
+            query: "task writes ungated review require_review".to_string(),
+            mode: None,
+            max_results: 3,
+            source_types: Vec::new(),
+            include_stale: None,
+            accepted_only: None,
+            use_reranker: None,
+            min_rerank_score: Some(-1000.0),
+            log_metrics: false,
+            surface: None,
+        },
+    )
+    .expect("recall");
+
+    assert!(
+        response.candidate_count > 20,
+        "corpus must be larger than the default rerank pool, got {}",
+        response.candidate_count,
+    );
+    assert!(
+        response
+            .results
+            .iter()
+            .any(|h| h.title.starts_with("MCP tool trust split")),
+        "trust-split decision should reach the top 3; got {:?}",
+        response
+            .results
+            .iter()
+            .map(|h| h.title.clone())
+            .collect::<Vec<_>>(),
+    );
+    assert!(
+        response.results.iter().all(|h| !h.low_confidence),
+        "hits that clear the (disabled) floor are never low-confidence"
     );
 }

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "M8 retrieval golden set. Recall@K acceptance for `memhub eval retrieval`. Matchers run case-insensitive substring checks against the recall hit's title and body, so queries survive row-ID shifts and minor wording tweaks. `kind: match` queries contribute to Recall@K; `kind: empty` queries are safety probes that must return zero results. Two query styles are mixed: keyword-style (3-6 specific terms, ids without a prefix) that play well with FTS5's AND-of-tokens matcher, and `semantic-` prefixed queries written as natural-language sentences that intentionally avoid the durable surface vocabulary — added for re-ranker bake-off (task #20) so headroom exists above the keyword baseline. `doc-` prefixed queries (Wave 4 R10, issue #74) target the doc-chunk ranking path (source_type doc_chunk, gated by the doc floor / include_docs_in_default); `global-` prefixed queries target the machine-global-store ranking path (M9 cross-DB merge, scope=global) — both previously zero-coverage. Every id in this file (base, doc-, global-, semantic-) runs against ONE seeded, hermetic fixture in `tests/retrieval_golden_hermetic.rs`, never this machine's live `.memhub/project.sqlite`.",
+  "description": "M8 retrieval golden set. Recall@K acceptance for `memhub eval retrieval`. Matchers run case-insensitive substring checks against the recall hit's title and body, so queries survive row-ID shifts and minor wording tweaks. `kind: match` queries contribute to Recall@K; `kind: empty` queries are safety probes that must return no hit that cleared the relevance floor (low-confidence fallback hits are allowed; they are flagged, not vouched for). `kw-` prefixed queries are keyword-bag variants (bare terms, not a question) of existing match targets, and `near-` prefixed `empty` queries are related-but-no-answer probes about topics adjacent to the corpus (issue #225). Two query styles are mixed: keyword-style (3-6 specific terms, ids without a prefix) that play well with FTS5's AND-of-tokens matcher, and `semantic-` prefixed queries written as natural-language sentences that intentionally avoid the durable surface vocabulary — added for re-ranker bake-off (task #20) so headroom exists above the keyword baseline. `doc-` prefixed queries (Wave 4 R10, issue #74) target the doc-chunk ranking path (source_type doc_chunk, gated by the doc floor / include_docs_in_default); `global-` prefixed queries target the machine-global-store ranking path (M9 cross-DB merge, scope=global) — both previously zero-coverage. Every id in this file (base, doc-, global-, semantic-) runs against ONE seeded, hermetic fixture in `tests/retrieval_golden_hermetic.rs`, never this machine's live `.memhub/project.sqlite`.",
   "queries": [
     {
       "id": "decision-recall-readonly",
@@ -196,6 +196,120 @@
       "title_contains": ["indent"],
       "body_contains": ["global scope"],
       "notes": "Semantic phrasing of the global-store editor-indent decision — exists only in the global store, same global-blend contract as global-fact-git-signing-key."
+    },
+    {
+      "id": "kw-decision-recall-readonly-audit",
+      "query": "audit trace reads recall",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": ["recall", "read-only"],
+      "body_contains": ["writes_log"],
+      "notes": "Keyword-bag variant (bare terms, not a question) of decision-recall-readonly. No row holds all four tokens and the cross-encoder scores the bag below the floor; passes only via the low-confidence fallback."
+    },
+    {
+      "id": "kw-decision-stale-embedding",
+      "query": "embedding out-of-date detection",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": ["content_hash", "drift"],
+      "body_contains": [],
+      "notes": "Keyword-bag variant (bare terms, not a question) of semantic-decision-stale-embedding."
+    },
+    {
+      "id": "kw-decision-agent-trust",
+      "query": "task writes ungated review",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": ["trust split"],
+      "body_contains": [],
+      "notes": "Keyword-bag variant (bare terms, not a question) of semantic-decision-agent-trust. Cross-encoder scores the bag below the floor; passes only via the low-confidence fallback."
+    },
+    {
+      "id": "kw-decision-cross-machine-transfer",
+      "query": "memory transfer between machines",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": ["Export format"],
+      "body_contains": ["Cross-machine"],
+      "notes": "Keyword-bag variant (bare terms, not a question) of semantic-decision-cross-machine-transfer."
+    },
+    {
+      "id": "kw-decision-empty-result",
+      "query": "no-match behaviour empty results",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": ["Zero-result"],
+      "body_contains": [],
+      "notes": "Keyword-bag variant (bare terms, not a question) of semantic-decision-empty-result."
+    },
+    {
+      "id": "kw-decision-machine-local",
+      "query": "laptop local files git ignored",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": ["machine-local"],
+      "body_contains": [],
+      "notes": "Keyword-bag variant (bare terms, not a question) of semantic-decision-machine-local."
+    },
+    {
+      "id": "kw-fact-build-command",
+      "query": "cargo compile command",
+      "kind": "match",
+      "source_type": "fact",
+      "title_contains": ["build"],
+      "body_contains": ["cargo build"],
+      "notes": "Keyword-bag variant (bare terms, not a question) of fact-build-command ('compile' appears in no row). Cross-encoder scores the bag below the floor; passes only via the low-confidence fallback."
+    },
+    {
+      "id": "kw-fact-test-command",
+      "query": "cargo run tests",
+      "kind": "match",
+      "source_type": "fact",
+      "title_contains": ["test"],
+      "body_contains": ["cargo test"],
+      "notes": "Keyword-bag variant (bare terms, not a question) of fact-test-command."
+    },
+    {
+      "id": "kw-doc-error-handling",
+      "query": "function errors propagate result",
+      "kind": "match",
+      "source_type": "doc_chunk",
+      "title_contains": ["Error Handling"],
+      "body_contains": ["map_err"],
+      "notes": "Keyword-bag variant (bare terms, not a question) of semantic-doc-code-style-error-handling."
+    },
+    {
+      "id": "kw-global-decision-editor-indent",
+      "query": "indentation default machine-wide",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": ["indent"],
+      "body_contains": ["global scope"],
+      "notes": "Keyword-bag variant (bare terms, not a question) of semantic-global-decision-editor-indent."
+    },
+    {
+      "id": "near-recall-latency-benchmark",
+      "query": "recall latency benchmark milliseconds",
+      "kind": "empty",
+      "notes": "Related-but-no-answer probe: close to recall/eval topics, but no row answers it. May return low-confidence hits; must return none that clear the floor."
+    },
+    {
+      "id": "near-embedding-quantization",
+      "query": "embedding model quantization int8",
+      "kind": "empty",
+      "notes": "Related-but-no-answer probe: near the embedding-model decisions, but no row covers quantization."
+    },
+    {
+      "id": "near-export-encryption",
+      "query": "export encryption passphrase",
+      "kind": "empty",
+      "notes": "Related-but-no-answer probe: near the export-format decision, but no row covers encryption."
+    },
+    {
+      "id": "near-mcp-auth-tokens",
+      "query": "mcp server authentication tokens",
+      "kind": "empty",
+      "notes": "Related-but-no-answer probe: near the MCP trust-split decision, but no row covers authentication."
     }
   ]
 }

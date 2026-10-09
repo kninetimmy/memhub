@@ -275,6 +275,12 @@ pub(crate) fn recall_response_to_json(response: &RecallResponse) -> serde_json::
             if let Some(kind) = &hit.kind {
                 hit_json["kind"] = json!(kind);
             }
+            // Issue #225: present (true) only on floor-dropped fallback
+            // hits, omitted otherwise, same as `kind` above -- a recall
+            // with no fallback keeps its pre-#225 JSON shape.
+            if hit.low_confidence {
+                hit_json["low_confidence"] = json!(true);
+            }
             hit_json
         })
         .collect::<Vec<_>>();
@@ -350,13 +356,19 @@ pub(crate) fn print_recall_human(response: &RecallResponse) {
                 Some(k) => format!(" [kind:{k}]"),
                 None => String::new(),
             };
+            // Issue #225: a floor-dropped fallback hit, shown but not vouched for.
+            let low_confidence_tag = if hit.low_confidence {
+                " [low-confidence]"
+            } else {
+                ""
+            };
             let source_label = if hit.source.is_empty() {
                 String::new()
             } else {
                 format!(" source={}", hit.source)
             };
             println!(
-                "#{rank} [{stype}:{sid}] {title}{scope}{stale}{superseded}{kind}  score={score:.3} (fts={fts:.3}, vec={vec:.3}){src}",
+                "#{rank} [{stype}:{sid}] {title}{scope}{stale}{superseded}{kind}{low}  score={score:.3} (fts={fts:.3}, vec={vec:.3}){src}",
                 rank = hit.rank,
                 stype = hit.source_type,
                 sid = hit.source_id,
@@ -365,6 +377,7 @@ pub(crate) fn print_recall_human(response: &RecallResponse) {
                 stale = stale_tag,
                 superseded = superseded_tag,
                 kind = kind_tag,
+                low = low_confidence_tag,
                 score = hit.score,
                 fts = hit.fts_score,
                 vec = hit.vector_score,
@@ -402,6 +415,7 @@ pub(crate) fn eval_summary_to_json(summary: &commands::eval::EvalSummary) -> ser
                 "passed": o.passed,
                 "matched_rank": o.matched_rank,
                 "matched_score": o.matched_score,
+                "matched_low_confidence": o.matched_low_confidence,
                 "returned_count": o.returned_count,
                 "failure_reason": o.failure_reason,
             })
@@ -471,9 +485,14 @@ pub(crate) fn print_eval_summary(summary: &commands::eval::EvalSummary) {
         };
         let detail = match outcome.matched_rank {
             Some(rank) => format!(
-                "rank {rank}, score {score:.3}",
+                "rank {rank}, score {score:.3}{low}",
                 rank = rank,
                 score = outcome.matched_score.unwrap_or(0.0),
+                low = if outcome.matched_low_confidence {
+                    " (low-confidence)"
+                } else {
+                    ""
+                },
             ),
             None => match outcome.kind {
                 commands::eval::GoldenKind::Empty => {
@@ -1350,6 +1369,7 @@ mod tests {
             source: "user".to_string(),
             created_at: "2026-01-01".to_string(),
             rerank_score: None,
+            low_confidence: false,
             kind: None,
         }
     }
@@ -1403,6 +1423,17 @@ mod tests {
             hit_json, &expected,
             "untagged hit JSON must be byte-identical to pre-#97 shape"
         );
+    }
+
+    #[test]
+    fn recall_json_marks_low_confidence_only_when_set() {
+        let mut hit = untagged_hit();
+        let json = recall_response_to_json(&response_with(hit.clone()));
+        assert!(json["results"][0].get("low_confidence").is_none());
+
+        hit.low_confidence = true;
+        let json = recall_response_to_json(&response_with(hit));
+        assert_eq!(json["results"][0]["low_confidence"], true);
     }
 
     #[test]

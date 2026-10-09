@@ -24,11 +24,23 @@ use crate::retrieval::persist::{
 };
 use crate::retrieval::rerank;
 use crate::retrieval::util::{
-    build_fts_match, bytes_to_vector, cosine_similarity, normalize_fts, sha256_hex,
+    build_fts_match, build_fts_match_any, bytes_to_vector, cosine_similarity, normalize_fts,
+    sha256_hex,
 };
 use crate::{MemhubError, Result};
 
 const PER_SOURCE_FTS_LIMIT: i64 = 50;
+
+/// Strength multiplier on the normalized FTS score when it comes from the
+/// partial-token (`OR`) fallback. bm25 is min-max normalized over the hits,
+/// so without this the best partial hit would blend as if it matched every
+/// query token (about 0.82 vs about 0.36 for a vector-only row) and crowd
+/// the rerank pool.
+const PARTIAL_FTS_FACTOR: f64 = 0.5;
+
+/// How many reranked candidates are returned, flagged low-confidence, when
+/// the relevance floor drops every candidate.
+const LOW_CONFIDENCE_FALLBACK_HITS: usize = 3;
 
 /// Which agent-facing surface issued a recall — the CLI process or the
 /// MCP server's `recall` tool (issue #70, Wave 4 gate Q17 / decision
@@ -126,6 +138,12 @@ pub struct RecallHit {
     /// dropped by `[retrieval.scoring] min_rerank_score` before this
     /// hit ever surfaces (decisions 70, 71).
     pub rerank_score: Option<f32>,
+    /// True only for a fallback hit: every candidate fell below its
+    /// relevance floor, so the top reranked ones are returned anyway
+    /// (alongside the `rerank_floor_dropped_all` warning) rather than an
+    /// empty bundle. A hit that cleared its floor is never low-confidence,
+    /// and a recall with any floor-clearing hit has none.
+    pub low_confidence: bool,
     /// Optional, unenforced classifier tag (Wave 6 W4, migration 0021).
     /// Fact-only -- always `None` for decisions, tasks, and doc chunks.
     /// A pure passthrough: never read by `score()`, so its presence never
@@ -405,17 +423,25 @@ fn gather_scored(
 ) -> Result<GatherResult> {
     let mut candidates: HashMap<(SourceType, i64), CandidateRow> = HashMap::new();
 
-    let fts_match = build_fts_match(&opts.query);
-    let fts_results: Vec<(SourceType, i64, f64)> = if let Some(match_expr) = fts_match.as_ref() {
+    let fts_all = |match_expr: &str| -> Result<Vec<(SourceType, i64, f64)>> {
         let mut acc = Vec::new();
         for st in &opts.source_types {
             let hits = fts_lookup(conn, *st, match_expr)?;
             acc.extend(hits.into_iter().map(|(id, score)| (*st, id, score)));
         }
-        acc
-    } else {
-        Vec::new()
+        Ok(acc)
     };
+    let mut fts_results = match build_fts_match(&opts.query) {
+        Some(expr) => fts_all(&expr)?,
+        None => Vec::new(),
+    };
+    // No row holds every query token (typical of a keyword bag or a natural
+    // question): let rows matching some of the content tokens contribute
+    // FTS signal instead of leaving the pool to cosine alone (issue #225).
+    let fts_partial = fts_results.is_empty();
+    if fts_partial && let Some(expr) = build_fts_match_any(&opts.query) {
+        fts_results = fts_all(&expr)?;
+    }
 
     // Hydrate source rows for every FTS hit so we can apply filters and
     // assemble the response.
@@ -424,6 +450,7 @@ fn gather_scored(
             .entry((*st, *id))
             .or_insert_with(|| CandidateRow::empty(*st, *id));
         entry.fts_raw = Some(*fts_raw);
+        entry.fts_partial = fts_partial;
     }
 
     // Vector path (hybrid only). The query embedding is supplied by the
@@ -562,6 +589,10 @@ fn finalize(
         let scored_order = rerank::rerank(&opts.query, &docs)?;
         let mut reshuffled: Vec<ScoredHit> = Vec::with_capacity(scored.len());
         let mut highest_dropped = None;
+        // Floor-dropped candidates eligible for the low-confidence fallback,
+        // in rerank order. Default-bundle docs are excluded: a doc may enter
+        // the default bundle only by clearing its floor (decisions 90/91).
+        let mut fallback: Vec<ScoredHit> = Vec::new();
         let mut normal_floor_applied = false;
         let mut doc_floor_applied = false;
         for (idx, score) in scored_order {
@@ -582,6 +613,12 @@ fn finalize(
                     if highest_dropped.is_none_or(|highest| score > highest) {
                         highest_dropped = Some(score);
                     }
+                    if !doc_floor && fallback.len() < LOW_CONFIDENCE_FALLBACK_HITS {
+                        let mut hit = hit.clone();
+                        hit.rerank_score = Some(score);
+                        hit.low_confidence = true;
+                        fallback.push(hit);
+                    }
                     continue;
                 }
                 let mut hit = hit.clone();
@@ -592,12 +629,17 @@ fn finalize(
         if reshuffled.is_empty()
             && let Some(highest_score) = highest_dropped
         {
+            // `rerank::rerank` yields best-first, so `fallback` is the top
+            // reranked non-doc candidates.
+            fallback.truncate(opts.max_results);
             warnings.push(rerank_floor_warning(
                 highest_score,
                 normal_floor_applied.then_some(opts.min_rerank_score),
                 doc_floor_applied.then_some(opts.doc_min_rerank_score),
                 scored.len(),
+                fallback.len(),
             ));
+            reshuffled = fallback;
         }
         scored = reshuffled;
     }
@@ -633,6 +675,7 @@ fn finalize(
             source: hit.source,
             created_at: hit.created_at,
             rerank_score: hit.rerank_score,
+            low_confidence: hit.low_confidence,
             kind: hit.kind,
         });
     }
@@ -692,6 +735,7 @@ fn rerank_floor_warning(
     normal_floor: Option<f32>,
     doc_floor: Option<f32>,
     total_count: usize,
+    low_confidence_returned: usize,
 ) -> RecallWarning {
     let (floors, fix) = match (normal_floor, doc_floor) {
         (Some(normal), Some(doc)) => (
@@ -718,7 +762,9 @@ fn rerank_floor_warning(
         total_count,
         reason: format!(
             "Candidates existed, but none cleared the relevance {floors}; \
-             the highest rerank score among dropped candidates was {highest_score:.3}."
+             the highest rerank score among dropped candidates was {highest_score:.3}. \
+             {low_confidence_returned} top reranked candidate(s) are returned flagged \
+             low_confidence: treat them as leads, not answers."
         ),
         fix: fix.to_string(),
     }
@@ -729,6 +775,9 @@ struct CandidateRow {
     source_type: SourceType,
     source_id: i64,
     fts_raw: Option<f64>,
+    /// `fts_raw` came from the partial-token (`OR`) fallback; `score()`
+    /// discounts it by `PARTIAL_FTS_FACTOR`.
+    fts_partial: bool,
     vector_score: Option<f64>,
     title: String,
     body: String,
@@ -763,6 +812,7 @@ impl CandidateRow {
             source_type,
             source_id,
             fts_raw: None,
+            fts_partial: false,
             vector_score: None,
             title: String::new(),
             body: String::new(),
@@ -812,6 +862,8 @@ struct ScoredHit {
     /// Used both as the final ordering key and as the nonsense-rejection
     /// floor (`min_rerank_score`). See decisions 68, 70, 71.
     rerank_score: Option<f32>,
+    /// Set by `finalize` on floor-dropped fallback hits only.
+    low_confidence: bool,
     /// Carried from the candidate row so the returned hit can be tagged
     /// with its fact `kind` (Wave 6 W4, migration 0021). `score()` never
     /// reads this -- it is a pure passthrough, unlike `superseded_by`.
@@ -1373,7 +1425,14 @@ fn score(rows: &[CandidateRow], scoring: &RetrievalScoringConfig) -> Vec<ScoredH
     rows.iter()
         .map(|c| {
             let fts_score = match c.fts_raw {
-                Some(raw) => normalize_fts(-raw, fts_min, fts_max),
+                Some(raw) => {
+                    let strength = if c.fts_partial {
+                        PARTIAL_FTS_FACTOR
+                    } else {
+                        1.0
+                    };
+                    normalize_fts(-raw, fts_min, fts_max) * strength
+                }
                 None => 0.0,
             };
             let vector_score = c.vector_score.unwrap_or(0.0).clamp(0.0, 1.0);
@@ -1422,6 +1481,7 @@ fn score(rows: &[CandidateRow], scoring: &RetrievalScoringConfig) -> Vec<ScoredH
                 source: c.source.clone(),
                 created_at: c.created_at.clone(),
                 rerank_score: None,
+                low_confidence: false,
                 kind: c.kind.clone(),
             }
         })
@@ -2496,11 +2556,13 @@ mod tests {
     }
 
     #[test]
-    fn hybrid_min_rerank_score_drops_nonsense_when_reranker_runs() {
+    fn hybrid_min_rerank_score_flags_nonsense_low_confidence_when_reranker_runs() {
         // With hybrid + use_reranker on (project defaults) and the
         // min_rerank_score floor at its default 2.0, MiniLM's negative
-        // logits on a pure-nonsense query drop every candidate, so the
-        // bundle must be empty.
+        // logits on a pure-nonsense query drop every candidate. Issue
+        // #225 (superseding decision 33's empty-bundle rule): the top 3
+        // reranked candidates come back flagged low-confidence, next to
+        // the rerank_floor_dropped_all warning, instead of an empty bundle.
         let temp = tempdir().expect("tempdir");
         init::run(temp.path()).expect("init");
         let cfg_path = temp.path().join(".memhub/config.toml");
@@ -2529,13 +2591,27 @@ mod tests {
 
         assert_eq!(
             response.results.len(),
-            0,
-            "nonsense query must return empty bundle once the rerank-score floor drops negative-logit candidates; got {:?}",
+            3,
+            "all-dropped nonsense query must return the top 3 reranked hits; got {:?}",
             response
                 .results
                 .iter()
                 .map(|h| (h.source_type.clone(), h.rerank_score))
                 .collect::<Vec<_>>(),
+        );
+        assert!(
+            response
+                .results
+                .iter()
+                .all(|h| h.low_confidence && h.rerank_score.is_some_and(|s| s < 2.0)),
+            "every fallback hit must be flagged low-confidence and sit below the floor"
+        );
+        assert!(
+            response
+                .results
+                .windows(2)
+                .all(|w| w[0].rerank_score >= w[1].rerank_score),
+            "fallback hits stay in rerank order"
         );
         assert_eq!(response.matcher, "recall:hybrid+rerank");
         let warning = response
@@ -2546,6 +2622,27 @@ mod tests {
         assert!(warning.reason.contains("none cleared the relevance floor"));
         assert!(warning.reason.contains("2.000"));
         assert!(warning.reason.contains("highest rerank score"));
+        assert!(warning.reason.contains("low_confidence"));
+
+        // The fallback never exceeds the requested max_results.
+        let capped = recall(
+            temp.path(),
+            RecallOptions {
+                query: "zxqv-pure-nonsense-no-real-token-anywhere-in-this-repo".to_string(),
+                mode: Some(RetrievalMode::Hybrid),
+                max_results: 2,
+                source_types: vec![],
+                include_stale: None,
+                accepted_only: None,
+                use_reranker: None,
+                min_rerank_score: None,
+                log_metrics: false,
+                surface: None,
+            },
+        )
+        .expect("recall");
+        assert_eq!(capped.results.len(), 2);
+        assert!(capped.results.iter().all(|h| h.low_confidence));
     }
 
     #[test]
@@ -2592,7 +2689,12 @@ mod tests {
         )
         .expect("recall");
 
-        assert!(response.results.is_empty());
+        // The dropped fact comes back low-confidence; the dropped default-
+        // bundle doc must not (a doc enters the default bundle only by
+        // clearing its floor, decisions 90/91).
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(response.results[0].source_type, "fact");
+        assert!(response.results[0].low_confidence);
         let warning = response
             .warnings
             .iter()
@@ -2647,6 +2749,10 @@ mod tests {
                 .iter()
                 .all(|warning| warning.kind != "rerank_floor_dropped_all"),
             "a non-empty rerank result must not report an all-dropped warning"
+        );
+        assert!(
+            response.results.iter().all(|h| !h.low_confidence),
+            "hits that clear the (disabled) floor are never low-confidence"
         );
     }
 
