@@ -118,9 +118,9 @@ pub fn history(start: &Path, kind: NarrativeKind, limit: usize) -> Result<Vec<Na
 /// Replace every `arch_sections` row with the heading sections of the
 /// latest `project_arch` body (issue #232). Sections are derived data:
 /// only the current architecture is ever searchable. Old rows are deleted
-/// explicitly so their FTS and embedding delete triggers fire
-/// (recursive_triggers is OFF, so the `project_arch` FK cascade would
-/// not). `mode` gates eager embedding exactly as for every other writer.
+/// explicitly so their FTS and embedding delete triggers fire without
+/// relying on the `project_arch` FK cascade. `mode` gates eager embedding
+/// exactly as for every other writer.
 pub(crate) fn rederive_arch_sections(tx: &Transaction<'_>, mode: RetrievalMode) -> Result<()> {
     tx.execute("DELETE FROM arch_sections WHERE project_id = 1", [])?;
     let latest: Option<(i64, String)> = tx
