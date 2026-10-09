@@ -36,7 +36,6 @@ fn active_template(path: &Path) -> bool {
         .unwrap_or_default();
     match name {
         "metrics" => cfg!(feature = "metrics"),
-        "viz" => cfg!(feature = "viz"),
         _ => true,
     }
 }
@@ -230,10 +229,8 @@ fn skill_resync_additive_idempotent_and_conservative() {
         opencode_commands_dir.join("recall.md").is_file(),
         "a known OpenCode command wrapper must land on disk"
     );
-    for (name, enabled) in [
-        ("metrics", cfg!(feature = "metrics")),
-        ("viz", cfg!(feature = "viz")),
-    ] {
+    // viz has no template in any build, so no viz wrapper is ever installed.
+    for (name, enabled) in [("metrics", cfg!(feature = "metrics")), ("viz", false)] {
         for path in installed_wrapper_paths(home.path(), name) {
             assert_eq!(
                 path.exists(),
@@ -320,10 +317,8 @@ fn hibernated_wrappers_are_reported_without_mutation() {
 
     for dry in [true, false] {
         let report = sync_skills(repo, dry);
-        for (name, hibernated) in [
-            ("metrics", !cfg!(feature = "metrics")),
-            ("viz", !cfg!(feature = "viz")),
-        ] {
+        // A leftover viz wrapper is an orphan in every build.
+        for (name, hibernated) in [("metrics", !cfg!(feature = "metrics")), ("viz", true)] {
             for path in installed_wrapper_paths(home.path(), name) {
                 assert_eq!(
                     report_contains_path(&report.orphans, home.path(), &path),

@@ -502,7 +502,7 @@ pub fn show_global(start: &Path, ident: &str) -> Result<Option<(Document, Vec<Do
     }
 }
 
-/// Count of ingested documents (for `status` / dashboards).
+/// Count of ingested documents (for `status`).
 pub fn count(start: &Path) -> Result<i64> {
     let ctx = db::open_project(start)?;
     let n: i64 = ctx

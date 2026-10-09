@@ -91,15 +91,14 @@ pub struct RecallOptions {
     /// Append a `recall_metrics` row for this call (component A of
     /// decision 74's token-accounting subsystem). The agent-facing
     /// call sites — CLI and MCP server — set this to `true`. Eval
-    /// sweeps and the viz dashboard's recall inspector pass `false`
-    /// because calibration runs and human inspection are not the
-    /// "real usage" the dashboard reports on. The `metrics.enabled`
+    /// sweeps pass `false` because calibration runs are not the
+    /// "real usage" the metrics panel reports on. The `metrics.enabled`
     /// master switch gates the actual insert separately, so setting
     /// this `true` on a non-opted-in install is still a no-op.
     pub log_metrics: bool,
     /// Which surface issued this call — `Some(Cli)` / `Some(Mcp)` at the
     /// two agent-facing entry points, `None` everywhere else (eval
-    /// sweeps, the dashboard's recall inspector, the upgrade smoke
+    /// sweeps, the upgrade smoke
     /// check, and unit tests that never log a row). Only consulted when
     /// `log_metrics` is true; `None` there is accurate, not a gap, since
     /// those callers never write to `recall_metrics` at all.
@@ -3751,9 +3750,9 @@ mod tests {
     #[cfg(feature = "metrics")]
     #[test]
     fn metrics_log_opt_out_skips_insert_even_when_enabled() {
-        // Eval and dashboard set log_metrics = false. Pin that
+        // Eval sets log_metrics = false. Pin that
         // behavior so a future refactor can't silently start logging
-        // calibration sweeps to the dashboard.
+        // calibration sweeps to recall_metrics.
         let temp = tempdir().expect("tempdir");
         init::run(temp.path()).expect("init");
         let cfg_path = temp.path().join(".memhub/config.toml");

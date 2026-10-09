@@ -86,8 +86,8 @@ fn try_log_recall(
         0
     };
     let result_count = response.results.len() as i64;
-    // NULL for internal callers (eval sweeps, dashboard inspector, upgrade
-    // smoke check) — none of them reach here anyway since they all pass
+    // NULL for internal callers (eval sweeps, upgrade smoke
+    // check) — none of them reach here anyway since they all pass
     // `log_metrics: false`. 'cli' / 'mcp' for the two agent-facing entry
     // points (issue #70 / Wave 4 gate Q17).
     let surface_str = surface.map(RecallSurface::as_str);

@@ -50,15 +50,6 @@ pub enum TopLevelCommand {
         json: bool,
     },
     Serve,
-    #[cfg(feature = "viz")]
-    Viz {
-        #[arg(long, default_value = "127.0.0.1")]
-        host: String,
-        #[arg(long, default_value_t = 0)]
-        port: u16,
-        #[arg(long)]
-        open: bool,
-    },
     IngestGit {
         #[arg(long)]
         since: Option<String>,

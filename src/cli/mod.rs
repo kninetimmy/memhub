@@ -392,10 +392,6 @@ pub fn run(cli: Cli) -> Result<()> {
         TopLevelCommand::Serve => {
             crate::mcp::serve(&cwd)?;
         }
-        #[cfg(feature = "viz")]
-        TopLevelCommand::Viz { host, port, open } => {
-            run_viz(&cwd, host, port, open)?;
-        }
         TopLevelCommand::IngestGit { since } => {
             let summary = commands::ingest_git::run(&cwd, since.as_deref())?;
             println!(
@@ -2313,9 +2309,4 @@ pub fn run(cli: Cli) -> Result<()> {
     }
 
     Ok(())
-}
-
-#[cfg(feature = "viz")]
-fn run_viz(cwd: &std::path::Path, host: String, port: u16, open: bool) -> Result<()> {
-    crate::dashboard::serve_blocking(cwd, crate::dashboard::DashboardOptions { host, port, open })
 }

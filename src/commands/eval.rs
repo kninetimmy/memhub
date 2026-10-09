@@ -165,7 +165,7 @@ pub fn run_retrieval(start: &Path, opts: EvalOptions) -> Result<EvalSummary> {
             use_reranker: opts.use_reranker,
             min_rerank_score: opts.min_rerank_score,
             // Calibration sweeps are not "real usage" — keep them out
-            // of recall_metrics so the dashboard's numbers reflect
+            // of recall_metrics so the metrics numbers reflect
             // actual agent + user activity.
             log_metrics: false,
             surface: None,
