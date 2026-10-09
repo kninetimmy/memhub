@@ -5,7 +5,7 @@
 //!
 //! - **Component A — recall proxy**: every `memhub recall` call
 //!   appends a row to `recall_metrics` with the bundle size and the
-//!   ledger-equivalent baseline so the dashboard can report
+//!   ledger-equivalent baseline so the metrics panel can report
 //!   "context offset vs full-ledger baseline". Local arithmetic only;
 //!   cannot break across Claude Code updates.
 //! - **Component B — session accounting**: scrapes agent transcript

@@ -45,23 +45,9 @@ fn metrics_command_returns_in_reactivated_build() {
     }
 }
 
-#[cfg(not(feature = "viz"))]
 #[test]
-fn viz_command_is_absent_from_hibernated_build() {
+fn viz_command_is_absent_from_every_build() {
     assert!(Cli::try_parse_from(["memhub", "viz"]).is_err());
-}
-
-#[cfg(feature = "viz")]
-#[test]
-fn viz_command_returns_in_reactivated_build() {
-    match parse(&["viz"]) {
-        TopLevelCommand::Viz { host, port, open } => {
-            assert_eq!(host, "127.0.0.1");
-            assert_eq!(port, 0);
-            assert!(!open);
-        }
-        other => panic!("expected Viz, got {other:?}"),
-    }
 }
 
 #[test]

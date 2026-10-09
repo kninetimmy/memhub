@@ -2,7 +2,7 @@
 //! parity, and the README install blocks plus the two tracked
 //! orientation files must not drift away from the actual skill set.
 //!
-//! Metrics and viz templates intentionally remain in parity as dormant
+//! Metrics templates intentionally remain in parity as dormant
 //! reactivation assets, but default install blocks exclude them while the
 //! subsystem is hibernated.
 //!
@@ -135,7 +135,6 @@ fn canonical_skill_set() -> BTreeSet<String> {
 fn default_installed_skill_set() -> BTreeSet<String> {
     let mut set = canonical_skill_set();
     set.remove("metrics");
-    set.remove("viz");
     set
 }
 
@@ -283,8 +282,8 @@ fn opencode_json_commands_block_matches_default_installed_skill_set() {
     assert_eq!(
         commands, canonical,
         "opencode.json's `commands` block must define exactly the canonical \
-         memhub skill set minus the hibernated set (metrics, viz) — it must \
-         gain a skill the moment one ships and lose metrics/viz, which stay \
+         memhub skill set minus the hibernated metrics skill — it must \
+         gain a skill the moment one ships and lose metrics, which stays \
          hibernated in a default build"
     );
 }
@@ -295,7 +294,7 @@ fn opencode_json_discovers_only_default_installed_skills() {
         opencode_json_discovered_skill_names(),
         default_installed_skill_set(),
         "opencode.json must discover every active skill by its path-derived ID without \
-         scanning the metrics/viz reactivation templates"
+         scanning the metrics reactivation templates"
     );
 }
 
@@ -382,7 +381,7 @@ fn opencode_v2_effective_config_smoke() {
     assert_eq!(
         opencode_discovered_skill_names(&skill_sources),
         default_installed_skill_set(),
-        "OpenCode project discovery must exclude hibernated metrics and viz skills"
+        "OpenCode project discovery must exclude the hibernated metrics skill"
     );
 }
 
@@ -503,14 +502,38 @@ fn copy_destination(line: &str) -> Option<&str> {
     }
 }
 
+/// The names a copy line excludes: the `case "$(basename ..)" in a|b)` pattern
+/// of a POSIX line (which must also `continue`), or the `-notin 'a','b'` list
+/// of a PowerShell line. `None` when the line has no exclusion at all.
+fn copy_exclusions(line: &str, is_ps: bool) -> Option<Vec<String>> {
+    let list = if is_ps {
+        let (_, rest) = line.split_once("-notin ")?;
+        rest.split(" }").next()?.split(',').collect::<Vec<_>>()
+    } else {
+        let (_, rest) = line.split_once("\" in ")?;
+        let (pattern, after) = rest.split_once(')')?;
+        if !after.contains("continue") {
+            return None;
+        }
+        pattern.split('|').collect()
+    };
+    Some(
+        list.into_iter()
+            .map(|t| t.trim().trim_matches('\'').to_string())
+            .collect(),
+    )
+}
+
 /// Checks every skill/command-wrapper copy line of every README `<details>`
 /// block, in both the POSIX (`cp`) and PowerShell (`Copy-Item`) halves:
-/// it must skip the hibernated `metrics`/`viz` subsystems, and its
-/// destination must have been created by an earlier `mkdir -p` /
-/// `New-Item -ItemType Directory` line of the same block (without that,
-/// `Copy-Item -Recurse` into a missing directory turns the first skill
-/// directory into the destination — task 137). Returns the number of
-/// `(posix, powershell)` copy lines checked, or the first violation.
+/// it must skip exactly the hibernated `metrics` subsystem, in the form that
+/// matches what it copies (`metrics.md` for a `*.md` file glob, `metrics`
+/// for a directory copy), and its destination must have been created by an
+/// earlier `mkdir -p` / `New-Item -ItemType Directory` line of the same
+/// block (without that, `Copy-Item -Recurse` into a missing directory turns
+/// the first skill directory into the destination — task 137). Returns the
+/// number of `(posix, powershell)` copy lines checked, or the first
+/// violation.
 fn check_readme_install_blocks(readme: &str) -> Result<(usize, usize), String> {
     let (mut posix, mut ps, mut blocks) = (0, 0, 0);
     for block in readme.split("<details>") {
@@ -534,17 +557,33 @@ fn check_readme_install_blocks(readme: &str) -> Result<(usize, usize), String> {
                 continue;
             }
             block_copies += 1;
-            let skips = if is_ps {
-                line.contains("-notin") && line.contains("metrics") && line.contains("viz")
+            let is_dir = if is_ps {
+                line.contains("-Directory")
             } else {
-                line.contains("metrics") && line.contains("viz") && line.contains("continue")
+                line.contains("cp -R")
             };
-            if !skips {
-                return Err(format!(
-                    "README copies from a skill/command template directory \
-                     without skipping metrics/viz — hibernated subsystems \
-                     must never be installed by a default build: {line:?}"
-                ));
+            let (form, expected) = if is_dir {
+                ("directory", "metrics")
+            } else {
+                ("file", "metrics.md")
+            };
+            match copy_exclusions(line, is_ps) {
+                None => {
+                    return Err(format!(
+                        "README copies from a skill/command template directory \
+                         without a metrics exclusion — the hibernated metrics \
+                         subsystem must never be installed by a default build: \
+                         {line:?}"
+                    ));
+                }
+                Some(found) if found != [expected] => {
+                    return Err(format!(
+                        "README {form} copy line excludes {found:?} but must \
+                         exclude exactly [{expected:?}] (the {form} form of the \
+                         hibernated metrics template): {line:?}"
+                    ));
+                }
+                Some(_) => {}
             }
             let dest = copy_destination(line)
                 .map(norm_install_path)
@@ -566,11 +605,12 @@ fn check_readme_install_blocks(readme: &str) -> Result<(usize, usize), String> {
             blocks += 1;
         }
     }
-    // Claude, Codex, OpenCode quickstarts + Install by hand.
-    if blocks != 4 || posix < 8 || ps < 8 {
+    // Claude, Codex, OpenCode quickstarts + Install by hand; more copy
+    // lines per block are fine, fewer blocks are not.
+    if blocks < 4 || posix < 8 || ps < 8 {
         return Err(format!(
-            "expected skill-copy lines in 4 install blocks (Claude/Codex/\
-             OpenCode quickstarts + Install by hand), 8 POSIX and 8 \
+            "expected skill-copy lines in at least 4 install blocks (Claude/\
+             Codex/OpenCode quickstarts + Install by hand), 8 POSIX and 8 \
              PowerShell lines in total; found {blocks} blocks, {posix} \
              POSIX, {ps} PowerShell"
         ));
@@ -578,45 +618,49 @@ fn check_readme_install_blocks(readme: &str) -> Result<(usize, usize), String> {
     Ok((posix, ps))
 }
 
-/// Onboarding surfaces must never install or offer the two hibernated
-/// subsystems (metrics, viz) in a default build. The three CLI quickstart
-/// blocks already skip them with a `case ... continue;;` guard (POSIX) or
-/// a `Where-Object { $_.Name -notin ... }` filter (PowerShell) on the
-/// command that copies each skill; "Install by hand" used to copy the
-/// same globs with a bare `cp`, silently installing `metrics.md`/`viz.md`
-/// and the `codex`/`opencode` `metrics/`/`viz/` directories. This scans
-/// every skill/command-wrapper copy line in the whole README — including
-/// Install by hand — and fails if any of them lost the guard or writes
-/// into a directory its block never creates.
+/// Onboarding surfaces must never install or offer the hibernated metrics
+/// subsystem in a default build. The three CLI quickstart blocks already
+/// skip it with a `case ... continue;;` guard (POSIX) or a
+/// `Where-Object { $_.Name -notin ... }` filter (PowerShell) on the command
+/// that copies each skill; "Install by hand" used to copy the same globs
+/// with a bare `cp`, silently installing `metrics.md` and the
+/// `codex`/`opencode` `metrics/` directories. This scans every
+/// skill/command-wrapper copy line in the whole README — including Install
+/// by hand — and fails if any of them lost the guard or writes into a
+/// directory its block never creates.
 #[test]
-fn readme_skill_copy_commands_skip_metrics_and_viz() {
+fn readme_skill_copy_commands_skip_metrics() {
     let readme = fs::read_to_string(repo_root().join("README.md")).expect("read README.md");
     if let Err(msg) = check_readme_install_blocks(&readme) {
         panic!("{msg}");
     }
 }
 
-/// Proves the checker above actually rejects each defect, by feeding it the
-/// real README with one line mutated at a time: every copy line losing its
-/// metrics/viz guard, and every destination-creation line (or each of its
-/// paths) being removed.
-#[test]
-fn readme_install_block_checker_rejects_mutations() {
-    let readme = lf(&fs::read_to_string(repo_root().join("README.md")).expect("read README.md"));
-    check_readme_install_blocks(&readme).expect("unmutated README passes");
+/// Feeds `check_readme_install_blocks` mutated copies of `readme` (one line
+/// changed at a time) and requires each to be rejected for the expected
+/// reason: every copy line losing its metrics guard or swapping it for the
+/// wrong form, and every destination-creation line (or each of its paths)
+/// being removed. Reasons are asserted, not just failure.
+fn assert_checker_rejects_mutations(readme: &str) {
+    check_readme_install_blocks(readme).expect("unmutated README passes");
 
-    // Replace the line at `idx` with `new_line` and require rejection.
-    let reject = |idx: usize, new_line: &str, what: &str| {
+    // Replace the line at `idx` with `new_line` and require a rejection whose
+    // message contains `reason`.
+    let reject = |idx: usize, new_line: &str, reason: &str, what: &str| {
         let mutated: Vec<&str> = readme
             .lines()
             .enumerate()
             .map(|(i, l)| if i == idx { new_line } else { l })
             .collect();
-        assert!(
-            check_readme_install_blocks(&mutated.join("\n")).is_err(),
+        let err = check_readme_install_blocks(&mutated.join("\n")).expect_err(&format!(
             "checker accepted a README with {what}: line {} was {:?}",
             idx + 1,
             readme.lines().nth(idx).unwrap()
+        ));
+        assert!(
+            err.contains(reason),
+            "checker rejected {what} (line {}) for the wrong reason, wanted {reason:?}: {err}",
+            idx + 1
         );
     };
     // Remove `line[from..to]`, where `to` is the start of `until` after `from`.
@@ -624,6 +668,17 @@ fn readme_install_block_checker_rejects_mutations() {
         let a = line.find(from).expect("guard start present");
         let b = a + line[a..].find(until).expect("guard end present");
         format!("{}{}", &line[..a], &line[b..])
+    };
+    // Swap the exclusion for the other form: `metrics.md` <-> `metrics`.
+    let swap_form = |line: &str, is_ps: bool, is_dir: bool| -> String {
+        let (from, to) = match (is_ps, is_dir) {
+            (false, false) => ("in metrics.md)", "in metrics)"),
+            (false, true) => ("in metrics)", "in metrics.md)"),
+            (true, false) => ("-notin 'metrics.md'", "-notin 'metrics'"),
+            (true, true) => ("-notin 'metrics'", "-notin 'metrics.md'"),
+        };
+        assert!(line.contains(from), "expected {from:?} in {line:?}");
+        line.replacen(from, to, 1)
     };
 
     // Only creations of a directory some copy line writes into matter (the
@@ -636,21 +691,62 @@ fn readme_install_block_checker_rejects_mutations() {
         .map(norm_install_path)
         .collect();
 
+    // How many lines of each install block create each (half, destination):
+    // a creation another line of the block repeats is redundant, so deleting
+    // just one of them is legitimately accepted.
+    let mut block_of_line = Vec::new();
+    let mut block = 0;
+    for line in readme.lines() {
+        if line.contains("<details>") {
+            block += 1;
+        }
+        block_of_line.push(block);
+    }
+    let mut creators: std::collections::BTreeMap<(usize, bool, String), usize> =
+        std::collections::BTreeMap::new();
+    for (idx, line) in readme.lines().enumerate() {
+        let is_ps = line.contains("New-Item");
+        for token in created_tokens(line) {
+            *creators
+                .entry((block_of_line[idx], is_ps, norm_install_path(token)))
+                .or_default() += 1;
+        }
+    }
+
     let (mut guards, mut creations) = (0, 0);
     for (idx, line) in readme.lines().enumerate() {
-        if line.contains("Copy-Item") && line.contains("templates\\") {
+        let copy = if line.contains("Copy-Item") && line.contains("templates\\") {
             guards += 1;
             reject(
                 idx,
                 &cut(line, "| Where-Object", "| ForEach-Object"),
-                "a PowerShell copy line lacking the metrics/viz exclusion",
+                "without a metrics exclusion",
+                "a PowerShell copy line lacking the metrics exclusion",
             );
+            Some(true)
         } else if line.contains("cp ") && line.contains("templates/") {
             guards += 1;
             reject(
                 idx,
                 &cut(line, "case ", "cp "),
-                "a POSIX copy line lacking the metrics/viz exclusion",
+                "without a metrics exclusion",
+                "a POSIX copy line lacking the metrics exclusion",
+            );
+            Some(false)
+        } else {
+            None
+        };
+        if let Some(is_ps) = copy {
+            let is_dir = if is_ps {
+                line.contains("-Directory")
+            } else {
+                line.contains("cp -R")
+            };
+            reject(
+                idx,
+                &swap_form(line, is_ps, is_dir),
+                "copy line excludes",
+                "a copy line excluding the wrong form of the metrics template",
             );
         }
         let tokens: Vec<&str> = created_tokens(line)
@@ -659,20 +755,62 @@ fn readme_install_block_checker_rejects_mutations() {
             .collect();
         if !tokens.is_empty() {
             creations += 1;
-            reject(idx, "", "a destination-creation line deleted");
+            let is_ps = line.contains("New-Item");
+            let redundant =
+                |token: &str| creators[&(block_of_line[idx], is_ps, norm_install_path(token))] > 1;
+            if tokens.iter().all(|t| !redundant(t)) {
+                reject(idx, "", "no earlier", "a destination-creation line deleted");
+            }
             for token in tokens {
-                reject(
-                    idx,
-                    &line.replacen(token, "", 1),
-                    "a destination path dropped from its creation line",
-                );
+                if !redundant(token) {
+                    reject(
+                        idx,
+                        &line.replacen(token, "", 1),
+                        "no earlier",
+                        "a destination path dropped from its creation line",
+                    );
+                }
             }
         }
     }
-    // 8 POSIX + 8 PowerShell copy lines; 1 creation line per half in each
-    // quickstart and 2 per half in Install by hand.
-    assert_eq!(guards, 16, "mutated {guards} copy lines");
-    assert_eq!(creations, 10, "mutated {creations} creation lines");
+    // The README ships 8 POSIX + 8 PowerShell copy lines and 10 creation
+    // lines (1 per half in each quickstart, 2 per half in Install by hand);
+    // legitimate growth only raises these, so they are floors.
+    assert!(guards >= 16, "mutated only {guards} copy lines");
+    assert!(creations >= 10, "mutated only {creations} creation lines");
+}
+
+/// Proves the checker actually rejects each defect, on the real README.
+#[test]
+fn readme_install_block_checker_rejects_mutations() {
+    let readme = lf(&fs::read_to_string(repo_root().join("README.md")).expect("read README.md"));
+    assert_checker_rejects_mutations(&readme);
+}
+
+/// Legitimate README growth must not trip either install-block test: one
+/// more correctly guarded copy line (its destination already created) after
+/// every existing copy line, plus a repeated destination-creation line,
+/// still passes the checker and the mutation battery.
+#[test]
+fn readme_install_block_checker_tolerates_added_copy_lines() {
+    let readme = lf(&fs::read_to_string(repo_root().join("README.md")).expect("read README.md"));
+    let mut grown = Vec::new();
+    let mut repeated_creation = false;
+    for line in readme.lines() {
+        grown.push(line);
+        let is_copy = (line.contains("Copy-Item") && line.contains("templates\\"))
+            || (line.contains("cp ") && line.contains("templates/"));
+        if is_copy {
+            grown.push(line);
+        } else if !repeated_creation && !created_tokens(line).is_empty() {
+            repeated_creation = true;
+            grown.push(line);
+        }
+    }
+    assert!(repeated_creation, "no creation line to repeat");
+    let grown = grown.join("\n");
+    check_readme_install_blocks(&grown).expect("README with extra guarded copy lines passes");
+    assert_checker_rejects_mutations(&grown);
 }
 
 /// Normalize line endings for a cross-platform byte comparison: this repo is

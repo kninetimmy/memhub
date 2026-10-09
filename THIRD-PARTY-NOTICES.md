@@ -62,11 +62,6 @@ JavaScript ship as separate crates):
 Each grammar is © its respective authors and licensed MIT (see the MIT License
 text below).
 
-## Vendored browser assets (viz dashboard)
-
-- **uPlot** — `src/dashboard/static/vendor/uplot.min.js`,
-  `src/dashboard/static/vendor/uplot.min.css` — © Leon Sorokin — MIT.
-
 ## Vendored tokenizer data
 
 - **tiktoken `cl100k_base` BPE ranks** — vendored into the binary via
@@ -78,7 +73,7 @@ text below).
 ## MIT License
 
 Applies to the MIT-licensed components above (BGE-small-en-v1.5, the tree-sitter
-core and grammars, uPlot, and the tiktoken/tiktoken-rs data). Copyright is held
+core and grammars, and the tiktoken/tiktoken-rs data). Copyright is held
 by the respective authors of each component named above.
 
 ```

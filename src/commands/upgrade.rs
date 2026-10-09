@@ -2034,13 +2034,11 @@ pub fn sync_skills(source_repo: &Path, dry: bool) -> ResyncReport {
         .map(|k| abbrev(Path::new(k)))
         .collect();
 
-    // Hibernated wrappers are also actionable orphans even when an absent or
-    // corrupt manifest cannot prove memhub installed them. Reporting is the
-    // only action: default resync must neither overwrite nor delete them.
-    for (name, enabled) in [
-        ("metrics", cfg!(feature = "metrics")),
-        ("viz", cfg!(feature = "viz")),
-    ] {
+    // Hibernated (metrics) and deleted (viz) wrappers are also actionable
+    // orphans even when an absent or corrupt manifest cannot prove memhub
+    // installed them. Reporting is the only action: default resync must
+    // neither overwrite nor delete them. viz has no template in any build.
+    for (name, enabled) in [("metrics", cfg!(feature = "metrics")), ("viz", false)] {
         if enabled {
             continue;
         }
@@ -2272,15 +2270,14 @@ fn sync_one(
     }
 }
 
-/// Metrics and viz templates stay in the source tree for an explicit
-/// reactivation build, but normal upgrades must not install their agent
-/// surfaces while the subsystem is hibernated.
+/// Metrics templates stay in the source tree for an explicit reactivation
+/// build, but normal upgrades must not install their agent surfaces while
+/// the subsystem is hibernated.
 fn skill_surface_enabled(name: &std::ffi::OsStr) -> bool {
     let raw = name.to_string_lossy();
     let stem = raw.strip_suffix(".md").unwrap_or(&raw);
     match stem {
         "metrics" => cfg!(feature = "metrics"),
-        "viz" => cfg!(feature = "viz"),
         _ => true,
     }
 }
