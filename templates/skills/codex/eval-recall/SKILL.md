@@ -9,7 +9,7 @@ last_updated: 2026-07-06
 Run the M8 retrieval acceptance gate. Drives `memhub eval retrieval`
 under the hood. Returns a Recall@K number plus per-query pass/fail
 detail, surfaces safety failures (empty-probe queries that leaked
-results), and never writes to durable tables or `writes_log`.
+floor-clearing hits), and never writes to durable tables or `writes_log`.
 
 This is the Codex counterpart to the Claude Code `/eval-recall` skill.
 Both call into the same `memhub eval retrieval` CLI; they differ only
@@ -89,8 +89,11 @@ Headline numbers to report:
   Per the addendum, the M8 acceptance gate is ≥ 75% on the starter
   set.
 - **Safety**. `safety_failures` MUST be zero. A non-zero count means
-  a `kind: empty` probe returned hits — recall is surfacing
-  false-positives that the golden set treats as forbidden.
+  a `kind: empty` probe returned a hit that cleared the relevance
+  floor — recall is surfacing false-positives that the golden set
+  treats as forbidden. An `empty` probe passes when no returned hit
+  clears the floor; low-confidence hits (`low_confidence: true`,
+  returned only when the floor dropped every candidate) do not fail it.
 - **Failing queries**. List by `id` with `failure_reason`. Don't
   paraphrase; quote the reason string so the user can map it to
   the matchers in the golden file.

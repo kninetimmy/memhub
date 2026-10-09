@@ -257,7 +257,7 @@ semantic queries, so a vector-path floor had no safe sweet spot.
 The rerank-score band is similarly noisy on memhub's own corpus, so
 2.0 is a parity calibration rather than an improvement; override with
 `memhub recall --min-rerank-score <F>` or `memhub eval retrieval
---min-rerank-score=<F>` (use the `=` form for negative values).
+--min-rerank-score <F>` (a negative value disables the floor).
 
 **Partial-token FTS (issue #225).** The recall FTS path first requires every
 query token to match one row (a quoted FTS5 `AND`). When no row in the corpus
