@@ -58,7 +58,8 @@ sections.
 
 - `source_types=["fact"]` / `--source-type fact` (repeatable):
   restrict to one or more of `fact`, `decision`, `task`, `arch`,
-  `doc`, `note`. Plain
+  `doc`, `note`. `note` (session notes) is returned only when requested
+  explicitly; plain
   recall (no filter) already surfaces doc chunks once the repo has
   ingested at least one doc (see "Reaching for ingested docs" below);
   scope to `doc` explicitly when you want docs only.
@@ -71,7 +72,9 @@ sections.
 - `accepted_only=true` / `--accepted-only`: only rows whose `source`
   is `user` or `user+agent:<id>`. Use when the user wants
   "approved-only" context and the repo records `agent:<id>`,
-  `git`, or `observed` rows that would otherwise leak in.
+  `git`, or `observed` rows that would otherwise leak in. It also
+  drops tasks, architecture sections, and session notes, which carry
+  no such source.
 - `include_stale=true` / `--include-stale`: include facts past the
   staleness window (90 days unverified). Off by default. Pass when
   the user is explicitly asking about historical state.
