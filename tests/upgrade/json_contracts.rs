@@ -534,7 +534,11 @@ fn task_one_line_output_drops_whitespace_next_to_line_breaks() {
         "[4] [open] x  y - x  y\n[3] [open] (untitled) - a\n[2] [open] (untitled)\n[1] [open] foo\n"
     );
 
-    for (id, header) in [("1", "[1] foo [open]"), ("2", "[2] (untitled) [open]")] {
+    for (id, header) in [
+        ("1", "[1] foo [open]"),
+        ("2", "[2] (untitled) [open]"),
+        ("3", "[3] (untitled) [open]"),
+    ] {
         let out = run_cli(temp.path(), &["task", "show", id]);
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(
