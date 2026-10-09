@@ -498,6 +498,81 @@ fn task_edge_line_breaks_leave_no_edge_spaces() {
 }
 
 #[test]
+fn task_one_line_output_drops_whitespace_next_to_line_breaks() {
+    let _env_guard = crate::support::env_read_lock();
+
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    // A space between two line breaks must not survive as a leading space.
+    let out = run_cli(temp.path(), &["task", "add", "\n \nfoo"]);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "Created task 1: foo\n"
+    );
+    // Blank titles print a placeholder; notes of only line breaks print "(none)".
+    let out = run_cli(temp.path(), &["task", "add", "", "--notes", "\n\r\n"]);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "Created task 2: (untitled)\n"
+    );
+    let out = run_cli(temp.path(), &["task", "add", "\n\n", "--notes", "a \n b"]);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "Created task 3: (untitled)\n"
+    );
+    // Spaces within a line are unchanged.
+    assert!(
+        run_cli(temp.path(), &["task", "add", "x  y", "--notes", "x  y"])
+            .status
+            .success()
+    );
+
+    let out = run_cli(temp.path(), &["task", "list", "--brief"]);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "[4] [open] x  y - x  y\n[3] [open] (untitled) - a\n[2] [open] (untitled)\n[1] [open] foo\n"
+    );
+
+    for (id, header) in [("1", "[1] foo [open]"), ("2", "[2] (untitled) [open]")] {
+        let out = run_cli(temp.path(), &["task", "show", id]);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.starts_with(&format!("{header}\ncreated: ")),
+            "{stdout:?}"
+        );
+    }
+
+    let out = run_cli(temp.path(), &["task", "list"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 8, "{stdout:?}");
+    assert!(
+        lines[0].starts_with("[4] x  y [open] created: "),
+        "{stdout:?}"
+    );
+    assert_eq!(lines[1], "  notes: x  y");
+    assert!(
+        lines[2].starts_with("[3] (untitled) [open] created: "),
+        "{stdout:?}"
+    );
+    assert_eq!(lines[3], "  notes: a b");
+    assert!(
+        lines[4].starts_with("[2] (untitled) [open] created: "),
+        "{stdout:?}"
+    );
+    assert_eq!(lines[5], "  notes: (none)");
+    assert!(
+        lines[6].starts_with("[1] foo [open] created: "),
+        "{stdout:?}"
+    );
+
+    // Stored text and --json are untouched.
+    let shown = run_cli_expecting_success(temp.path(), &["task", "show", "1", "--json"]);
+    assert_eq!(shown["title"], "\n \nfoo");
+}
+
+#[test]
 fn task_list_brief_notes_cap_after_leading_breaks() {
     let _env_guard = crate::support::env_read_lock();
 

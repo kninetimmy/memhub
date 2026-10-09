@@ -88,24 +88,29 @@ fn is_line_break(c: char) -> bool {
     )
 }
 
-/// Drops line breaks at either end, then collapses each inner run to a single space so the
-/// text fits on one line.
+/// Joins the lines of `text` with single spaces so it fits on one line. Whitespace next to a
+/// line break is dropped, along with lines that are blank; spaces within a line are kept.
 fn flatten_line_breaks(text: &str) -> String {
-    let text = text.trim_matches(is_line_break);
-    let mut out = String::with_capacity(text.len());
-    let mut in_run = false;
-    for c in text.chars() {
-        if is_line_break(c) {
-            if !in_run {
-                out.push(' ');
-            }
-            in_run = true;
-        } else {
-            out.push(c);
-            in_run = false;
+    let last = text.split(is_line_break).count() - 1;
+    let mut lines = Vec::new();
+    for (i, line) in text.split(is_line_break).enumerate() {
+        let line = if i > 0 { line.trim_start() } else { line };
+        let line = if i < last { line.trim_end() } else { line };
+        if !line.is_empty() {
+            lines.push(line);
         }
     }
-    out
+    lines.join(" ")
+}
+
+/// A task title flattened to one line, or `(untitled)` when nothing is left.
+fn flatten_title(title: &str) -> String {
+    let flat = flatten_line_breaks(title);
+    if flat.is_empty() {
+        "(untitled)".to_string()
+    } else {
+        flat
+    }
 }
 
 fn task_json(task: &crate::models::Task) -> serde_json::Value {
@@ -882,7 +887,7 @@ pub fn run(cli: Cli) -> Result<()> {
                     });
                     println!("{payload}");
                 } else {
-                    println!("Created task {id}: {}", flatten_line_breaks(&title));
+                    println!("Created task {id}: {}", flatten_title(&title));
                 }
             }
             TaskCommand::Show { id, json: as_json } => {
@@ -893,7 +898,7 @@ pub fn run(cli: Cli) -> Result<()> {
                     println!(
                         "[{}] {} [{}]\ncreated: {}\nupdated: {}\nnotes: {}",
                         task.id,
-                        flatten_line_breaks(&task.title),
+                        flatten_title(&task.title),
                         task.status,
                         task.created_at,
                         task.updated_at,
@@ -940,7 +945,7 @@ pub fn run(cli: Cli) -> Result<()> {
                             first_line.to_string()
                         };
                         let sep = if notes.is_empty() { "" } else { " - " };
-                        let title = flatten_line_breaks(&task.title);
+                        let title = flatten_title(&task.title);
                         println!("[{}] [{}] {title}{sep}{notes}", task.id, task.status);
                     }
                 } else {
@@ -949,7 +954,7 @@ pub fn run(cli: Cli) -> Result<()> {
                         println!(
                             "[{}] {} [{}] created: {} updated: {}\n  notes: {}",
                             task.id,
-                            flatten_line_breaks(&task.title),
+                            flatten_title(&task.title),
                             task.status,
                             task.created_at,
                             task.updated_at,
