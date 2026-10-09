@@ -814,6 +814,7 @@ function renderRecall(payload, originalQuery, refreshed = false) {
       <div class="result-head">
         <h3>${hit.rank}. ${hit.title}</h3>
         <span class="pill">${hit.source_type} #${hit.source_id}</span>
+        ${hit.low_confidence ? '<span class="pill">low-confidence</span>' : ""}
       </div>
       <div class="score-row">
         ${scoreMeter("final", hit.score)}

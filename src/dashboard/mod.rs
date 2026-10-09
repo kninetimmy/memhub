@@ -335,6 +335,9 @@ struct RecallHitPayload {
     stale: bool,
     source: String,
     created_at: String,
+    /// Fallback hit that did not clear the relevance floor; omitted when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    low_confidence: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -602,6 +605,7 @@ fn run_recall(start: &Path, query: String) -> Result<RecallPayload> {
                 stale: hit.stale,
                 source: hit.source,
                 created_at: hit.created_at,
+                low_confidence: hit.low_confidence,
             })
             .collect(),
     })
