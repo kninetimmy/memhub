@@ -211,8 +211,8 @@ test_path_penalty = 0.90
 
 # Token accounting (decision 74; hibernated by Wave 7 Q30). Normal builds
 # preserve this config and existing rows but ignore the entire subsystem.
-# Reactivate explicitly with a `--features metrics` build (`viz` implies
-# metrics), then opt in per machine via `memhub metrics enable`.
+# Reactivate explicitly with a `--features metrics` build, then opt in
+# per machine via `memhub metrics enable`.
 # recall_proxy is component A (cheap,
 # local arithmetic, cannot break across Claude Code updates).
 # session_accounting is component B (transcript JSONL scraping) and

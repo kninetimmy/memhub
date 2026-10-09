@@ -383,12 +383,14 @@ calibration signal, not the enforced gate.
 
 **Hibernated by default (Wave 7 Q30).** Normal builds preserve the metrics
 schema, config, stored rows, and source implementation, but compile out all
-collection, maintenance, rendering, CLI, MCP, calibration, dashboard, and
-agent-skill surfaces. A pre-existing `metrics.enabled = true` is inert and is
-not rewritten or deleted. Reactivation is explicit: build with
-`--features metrics`; build with `--features viz` for the dashboard (`viz`
-implies `metrics`). Default skill installation also skips `/metrics` and
-`/viz`. Transcript archiving remains independent and available.
+collection, maintenance, rendering, CLI, MCP, calibration, and agent-skill
+surfaces. A pre-existing `metrics.enabled = true` is inert and is not
+rewritten or deleted. Reactivation is explicit: build with
+`--features metrics`. Default skill installation also skips `/metrics`.
+Transcript archiving remains independent and available. The web dashboard
+(`memhub viz`, the `viz` feature, `/viz`) was deleted; `memhub upgrade` still
+reports a leftover `viz` wrapper as an orphan without touching it, and the
+code is recoverable from git history.
 
 The retained feature behaves as follows when explicitly compiled in. Opt in
 per machine with `memhub metrics enable` — this
@@ -439,9 +441,7 @@ percentage shown on an aligned line beneath so the gap is visible. The column
 is **machine-local, not exported, and not applied retroactively** — existing
 sessions are already past their first-turn offset, so the empirical baseline
 accrues from new sessions forward (an uncalibrated/empty install renders only
-the assumed line, byte-identical to before). The dashboard burn-up chart
-(`query_series`) still uses the assumed ledger counterfactual; only the period
-block changed.
+the assumed line, byte-identical to before).
 
 **Tokenizer caveat:** tiktoken cl100k is ±10% off Anthropic's real
 tokenizer. Ratios stay sound because both sides of every comparison use the
@@ -623,7 +623,7 @@ source files only — the deny-list still applies on top, and vendored/
 minified `*.min.*` bundles are excluded (a real `.js` extension that is not
 hand-written code). The grammar registry is the single source of truth for
 "indexable source", so a new language row is auto-included; non-source
-files (docs, `Cargo.lock`, JSON/YAML/TOML, `uplot.min.js`) are dropped and
+files (docs, `Cargo.lock`, JSON/YAML/TOML, a vendored `*.min.js`) are dropped and
 auto-pruned from any pre-task-69 index on the next `memhub code index`.
 This deliberately reverses the earlier "index every tracked path" behavior:
 on `tests/code_locate_golden.json` it lifted fusion Recall@1 0%→44% and
