@@ -18,6 +18,7 @@ use crate::models::{
 const PROJECT_FILENAME: &str = "PROJECT.md";
 const LEDGER_FILENAME: &str = "PROJECT_LEDGER.md";
 const SESSION_NOTE_RENDER_LIMIT: usize = 10;
+const NOTE_STUB_MAX_CHARS: usize = 300;
 const RECENT_WRITE_RENDER_LIMIT: usize = 50;
 const RECENT_WRITE_WINDOW_DAYS: i64 = 30;
 
@@ -456,9 +457,18 @@ fn format_project_md(s: &RenderSnapshot) -> String {
     out.push_str("## Architecture\n\n");
     match &s.arch {
         Some(entry) => {
-            out.push_str(strip_leading_heading(&entry.body, "## Architecture").trim_end());
-            out.push('\n');
-            out.push('\n');
+            out.push_str("Sections:\n\n");
+            for path in architecture_section_index(&entry.body) {
+                if path.is_empty() {
+                    out.push_str("- _(untitled opening)_\n");
+                } else {
+                    out.push_str(&format!("- {path}\n"));
+                }
+            }
+            out.push_str(
+                "\nThese sections are recall-searchable (`memhub recall --source-type arch \"<question>\"`); \
+                 `memhub arch show` prints the full text.\n\n",
+            );
             out.push_str(&format!(
                 "_Last updated {} by {}._\n\n",
                 entry.created_at, entry.actor
@@ -480,9 +490,13 @@ fn format_project_md(s: &RenderSnapshot) -> String {
                 "- **{}** ({}) — {}\n",
                 note.created_at,
                 note.actor,
-                collapse_inline(&note.text)
+                note_stub(&collapse_inline(&note.text))
             ));
         }
+        out.push_str(
+            "\nNotes are shortened here; the full text is available through `memhub note list` \
+             and recall scoped to notes (`memhub recall --source-type note \"<question>\"`).\n",
+        );
     }
 
     if let Some(section) = &s.token_accounting_section {
@@ -653,6 +667,37 @@ fn render_header(s: &RenderSnapshot) -> String {
          <!-- Generated at: {} by memhub {} -->\n",
         s.generated_at, s.memhub_version
     )
+}
+
+/// Heading path of every architecture section, in body order, with
+/// consecutive repeats (over-long sections split into several chunks)
+/// collapsed. An empty path is the untitled text before the first heading.
+fn architecture_section_index(body: &str) -> Vec<String> {
+    let mut paths: Vec<String> = crate::commands::doc::chunk_markdown(body)
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect();
+    paths.dedup();
+    paths
+}
+
+/// Shorten `text` to at most `NOTE_STUB_MAX_CHARS` characters including the
+/// trailing ellipsis, cutting at a word boundary. Shorter text is unchanged.
+fn note_stub(text: &str) -> String {
+    if text.chars().count() <= NOTE_STUB_MAX_CHARS {
+        return text.to_string();
+    }
+    let keep = NOTE_STUB_MAX_CHARS - 1;
+    let head: String = text.chars().take(keep).collect();
+    let at_boundary = text.chars().nth(keep).is_some_and(char::is_whitespace);
+    let cut = if at_boundary {
+        head.as_str()
+    } else {
+        // No whitespace in the window: hard cut rather than render nothing.
+        head.rsplit_once(char::is_whitespace)
+            .map_or(head.as_str(), |(before, _)| before)
+    };
+    format!("{}…", cut.trim_end())
 }
 
 fn collapse_inline(text: &str) -> String {

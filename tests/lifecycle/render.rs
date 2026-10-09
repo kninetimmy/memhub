@@ -138,7 +138,8 @@ fn render_includes_state_arch_decisions_tasks_facts() {
 
     let project = read_string(&result.project_md_path);
     assert!(project.contains("Currently shipping the render slice."));
-    assert!(project.contains("Rust CLI + SQLite + render."));
+    assert!(project.contains("- Subsystems\n"));
+    assert!(!project.contains("Rust CLI + SQLite + render."));
 
     let ledger = read_string(&result.ledger_md_path);
     assert!(ledger.contains("D1 — Adopt two-file render shape"));
@@ -361,7 +362,129 @@ fn render_does_not_double_up_section_headings_in_narrative_bodies() {
         "expected exactly one '## Architecture' heading, found {arch_heading_count}:\n{project}",
     );
     assert!(project.contains("M8 retrieval slice."));
-    assert!(project.contains("Rust CLI + SQLite."));
+    assert!(project.contains("- Architecture\n"));
+}
+
+#[test]
+fn render_lists_architecture_sections_and_stubs_long_notes_without_touching_the_db() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    let arch_body = "Opening text before any heading.\n\n# Overview\n\nOverview body.\n\n\
+                     ## Storage\n\nStorage body.\n\n## Other\n\nOther.\n\n## Storage\n\nSecond.\n";
+    narrative::set(
+        temp.path(),
+        NarrativeKind::Arch,
+        arch_body,
+        "cli:user",
+        "cli:user",
+    )
+    .expect("arch set");
+    // 60 words of 9 chars + space = 600 chars, well over the 300 cap.
+    let long_note = "abcdefgh ".repeat(60).trim_end().to_string();
+    let short_note = "Short note, unchanged.";
+    session_note::add(temp.path(), &long_note, "user", "cli:user").expect("long note");
+    session_note::add(temp.path(), short_note, "user", "cli:user").expect("short note");
+
+    let result = render::run(temp.path(), "cli:user").expect("render");
+    let project = read_string(&result.project_md_path);
+
+    assert!(
+        project.contains(
+            "- _(untitled opening)_\n- Overview\n- Overview > Storage\n- Overview > Other\n- Overview > Storage\n"
+        ),
+        "non-adjacent same-path sections stay listed:\n{project}"
+    );
+    assert!(!project.contains("Overview body."));
+    assert!(project.contains("recall-searchable"));
+    assert!(project.contains("`memhub arch show` prints the full text"));
+
+    assert!(project.contains(&format!("— {short_note}\n")));
+    assert!(!project.contains(&long_note));
+    let stub_line = project
+        .lines()
+        .find(|l| l.contains("abcdefgh abcdefgh"))
+        .expect("stub line");
+    let stub = stub_line.split(" — ").nth(1).expect("stub text");
+    assert!(stub.ends_with("abcdefgh…"), "word-boundary cut: {stub}");
+    assert!(stub.chars().count() <= 300);
+    assert!(project.contains("`memhub note list`"));
+
+    let shown = narrative::show(temp.path(), NarrativeKind::Arch)
+        .expect("arch show")
+        .expect("arch entry");
+    assert_eq!(shown.body, arch_body.trim());
+    let notes = session_note::list(temp.path(), 10, None, None).expect("note list");
+    assert!(notes.iter().any(|n| n.text == long_note));
+}
+
+#[test]
+fn render_collapses_consecutive_split_chunks_of_one_section() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+    let paragraph = "word ".repeat(300);
+    let body = format!(
+        "## Big\n\n{}\n\n## After\n\nTail.\n",
+        [paragraph.as_str(); 8].join("\n\n")
+    );
+    narrative::set(
+        temp.path(),
+        NarrativeKind::Arch,
+        &body,
+        "cli:user",
+        "cli:user",
+    )
+    .expect("arch set");
+
+    let result = render::run(temp.path(), "cli:user").expect("render");
+    let project = read_string(&result.project_md_path);
+    assert_eq!(project.matches("- Big\n").count(), 1, "{project}");
+    assert!(project.contains("- Big\n- After\n"));
+}
+
+#[test]
+fn state_set_warns_on_stderr_past_the_soft_limit_but_still_stores() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    let at_limit = "a".repeat(4_000);
+    let ok = run_cli(temp.path(), &["state", "set", &at_limit]);
+    assert!(ok.status.success());
+    assert!(ok.stderr.is_empty(), "no warning at the soft limit");
+
+    let long = "b".repeat(4_001);
+    let plain = run_cli(temp.path(), &["state", "set", &long]);
+    assert!(plain.status.success());
+    let err = String::from_utf8_lossy(&plain.stderr);
+    assert!(
+        err.contains("4001") && err.contains("4000"),
+        "stderr: {err}"
+    );
+
+    let json = run_cli(temp.path(), &["state", "set", "--json", &long]);
+    assert!(json.status.success());
+    assert!(String::from_utf8_lossy(&json.stderr).contains("4001"));
+    let value: serde_json::Value =
+        serde_json::from_slice(&json.stdout).expect("stdout stays pure JSON");
+    assert_eq!(value["kind"], "state");
+
+    let huge = "c".repeat(50_000);
+    let huge_path = temp.path().join("huge.md");
+    fs::write(&huge_path, &huge).expect("write huge body");
+    let big = run_cli(
+        temp.path(),
+        &[
+            "state",
+            "set",
+            "--from-file",
+            huge_path.to_str().expect("utf8 path"),
+        ],
+    );
+    assert!(big.status.success());
+    let shown = narrative::show(temp.path(), NarrativeKind::State)
+        .expect("show")
+        .expect("entry");
+    assert_eq!(shown.body, huge);
 }
 
 #[test]

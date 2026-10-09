@@ -116,6 +116,15 @@ fn run_narrative(
             let body_text = resolve_narrative_body(kind, body, from_file)?;
             let actor = resolve_actor(actor.as_deref())?;
             let entry = commands::narrative::set(cwd, kind, &body_text, &actor, &actor)?;
+            let body_chars = entry.body.chars().count();
+            if matches!(kind, NarrativeKind::State)
+                && body_chars > commands::narrative::STATE_SOFT_LIMIT
+            {
+                eprintln!(
+                    "warning: state body is {body_chars} characters, over the {} character soft limit; PROJECT.md renders it in full, so keep it to current work and move detail into architecture, decisions, or docs.",
+                    commands::narrative::STATE_SOFT_LIMIT
+                );
+            }
             if as_json {
                 println!("{}", narrative_entry_to_json(kind, &entry));
             } else {
