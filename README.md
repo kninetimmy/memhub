@@ -54,11 +54,11 @@ Please install memhub for me, then turn on hybrid recall.
 
        POSIX shell (bash/zsh):
        mkdir -p ~/.claude/commands
-       for f in ~/src/memhub/templates/skills/claude/*.md; do case "$(basename "$f")" in metrics.md|viz.md) continue;; esac; cp "$f" ~/.claude/commands/; done
+       for f in ~/src/memhub/templates/skills/claude/*.md; do case "$(basename "$f")" in metrics.md) continue;; esac; cp "$f" ~/.claude/commands/; done
 
        Windows PowerShell:
        New-Item -ItemType Directory -Force -Path "$HOME\.claude\commands" | Out-Null
-       Get-ChildItem "$HOME\src\memhub\templates\skills\claude\*.md" | Where-Object { $_.Name -notin 'metrics.md','viz.md' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.claude\commands\" }
+       Get-ChildItem "$HOME\src\memhub\templates\skills\claude\*.md" | Where-Object { $_.Name -notin 'metrics.md' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.claude\commands\" }
 
 6. cd back to this repo and run `memhub init`, then `memhub status`.
    Tell me what status reports.
@@ -155,11 +155,11 @@ Please install memhub for me, then turn on hybrid recall.
 
        POSIX shell (bash/zsh):
        mkdir -p ~/.codex/skills
-       for d in ~/src/memhub/templates/skills/codex/*; do case "$(basename "$d")" in metrics|viz) continue;; esac; cp -R "$d" ~/.codex/skills/; done
+       for d in ~/src/memhub/templates/skills/codex/*; do case "$(basename "$d")" in metrics) continue;; esac; cp -R "$d" ~/.codex/skills/; done
 
        Windows PowerShell:
        New-Item -ItemType Directory -Force -Path "$HOME\.codex\skills" | Out-Null
-       Get-ChildItem "$HOME\src\memhub\templates\skills\codex" -Directory | Where-Object { $_.Name -notin 'metrics','viz' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.codex\skills\" -Recurse -Force }
+       Get-ChildItem "$HOME\src\memhub\templates\skills\codex" -Directory | Where-Object { $_.Name -notin 'metrics' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.codex\skills\" -Recurse -Force }
 
 6. cd back to this repo and run `memhub init`, then `memhub status`.
    Tell me what status reports.
@@ -262,13 +262,13 @@ Please install memhub for me, then turn on hybrid recall.
 
        POSIX shell (bash/zsh):
        mkdir -p ~/.config/opencode/skills ~/.config/opencode/commands
-       for d in ~/src/memhub/templates/skills/opencode/*; do case "$(basename "$d")" in metrics|viz) continue;; esac; cp -R "$d" ~/.config/opencode/skills/; done
-       for f in ~/src/memhub/templates/commands/opencode/*.md; do case "$(basename "$f")" in metrics.md|viz.md) continue;; esac; cp "$f" ~/.config/opencode/commands/; done
+       for d in ~/src/memhub/templates/skills/opencode/*; do case "$(basename "$d")" in metrics) continue;; esac; cp -R "$d" ~/.config/opencode/skills/; done
+       for f in ~/src/memhub/templates/commands/opencode/*.md; do case "$(basename "$f")" in metrics.md) continue;; esac; cp "$f" ~/.config/opencode/commands/; done
 
        Windows PowerShell:
        New-Item -ItemType Directory -Force -Path "$HOME\.config\opencode\skills","$HOME\.config\opencode\commands" | Out-Null
-       Get-ChildItem "$HOME\src\memhub\templates\skills\opencode" -Directory | Where-Object { $_.Name -notin 'metrics','viz' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.config\opencode\skills\" -Recurse -Force }
-       Get-ChildItem "$HOME\src\memhub\templates\commands\opencode\*.md" | Where-Object { $_.Name -notin 'metrics.md','viz.md' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.config\opencode\commands\" }
+       Get-ChildItem "$HOME\src\memhub\templates\skills\opencode" -Directory | Where-Object { $_.Name -notin 'metrics' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.config\opencode\skills\" -Recurse -Force }
+       Get-ChildItem "$HOME\src\memhub\templates\commands\opencode\*.md" | Where-Object { $_.Name -notin 'metrics.md' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.config\opencode\commands\" }
 
 6. Restart OpenCode so it reloads config, skills, and commands.
 7. cd back to this repo and run `memhub init`, then `memhub status`.
@@ -355,11 +355,11 @@ memhub code status   # confirm files indexed
 
 # 5. Agent skills / command wrappers (Claude + Codex + OpenCode)
 mkdir -p ~/.claude/commands ~/.codex/skills
-for f in ~/src/memhub/templates/skills/claude/*.md; do case "$(basename "$f")" in metrics.md|viz.md) continue;; esac; cp "$f" ~/.claude/commands/; done
-for d in ~/src/memhub/templates/skills/codex/*; do case "$(basename "$d")" in metrics|viz) continue;; esac; cp -R "$d" ~/.codex/skills/; done
+for f in ~/src/memhub/templates/skills/claude/*.md; do case "$(basename "$f")" in metrics.md) continue;; esac; cp "$f" ~/.claude/commands/; done
+for d in ~/src/memhub/templates/skills/codex/*; do case "$(basename "$d")" in metrics) continue;; esac; cp -R "$d" ~/.codex/skills/; done
 mkdir -p ~/.config/opencode/skills ~/.config/opencode/commands
-for d in ~/src/memhub/templates/skills/opencode/*; do case "$(basename "$d")" in metrics|viz) continue;; esac; cp -R "$d" ~/.config/opencode/skills/; done
-for f in ~/src/memhub/templates/commands/opencode/*.md; do case "$(basename "$f")" in metrics.md|viz.md) continue;; esac; cp "$f" ~/.config/opencode/commands/; done
+for d in ~/src/memhub/templates/skills/opencode/*; do case "$(basename "$d")" in metrics) continue;; esac; cp -R "$d" ~/.config/opencode/skills/; done
+for f in ~/src/memhub/templates/commands/opencode/*.md; do case "$(basename "$f")" in metrics.md) continue;; esac; cp "$f" ~/.config/opencode/commands/; done
 ```
 
 Windows PowerShell equivalent for step 5 (the `for`/`case`/`basename` loops above are POSIX-only):
@@ -367,11 +367,11 @@ Windows PowerShell equivalent for step 5 (the `for`/`case`/`basename` loops abov
 ```powershell
 # 5. Agent skills / command wrappers (Claude + Codex + OpenCode)
 New-Item -ItemType Directory -Force -Path "$HOME\.claude\commands","$HOME\.codex\skills" | Out-Null
-Get-ChildItem "$HOME\src\memhub\templates\skills\claude\*.md" | Where-Object { $_.Name -notin 'metrics.md','viz.md' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.claude\commands\" }
-Get-ChildItem "$HOME\src\memhub\templates\skills\codex" -Directory | Where-Object { $_.Name -notin 'metrics','viz' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.codex\skills\" -Recurse -Force }
+Get-ChildItem "$HOME\src\memhub\templates\skills\claude\*.md" | Where-Object { $_.Name -notin 'metrics.md' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.claude\commands\" }
+Get-ChildItem "$HOME\src\memhub\templates\skills\codex" -Directory | Where-Object { $_.Name -notin 'metrics' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.codex\skills\" -Recurse -Force }
 New-Item -ItemType Directory -Force -Path "$HOME\.config\opencode\skills","$HOME\.config\opencode\commands" | Out-Null
-Get-ChildItem "$HOME\src\memhub\templates\skills\opencode" -Directory | Where-Object { $_.Name -notin 'metrics','viz' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.config\opencode\skills\" -Recurse -Force }
-Get-ChildItem "$HOME\src\memhub\templates\commands\opencode\*.md" | Where-Object { $_.Name -notin 'metrics.md','viz.md' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.config\opencode\commands\" }
+Get-ChildItem "$HOME\src\memhub\templates\skills\opencode" -Directory | Where-Object { $_.Name -notin 'metrics' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.config\opencode\skills\" -Recurse -Force }
+Get-ChildItem "$HOME\src\memhub\templates\commands\opencode\*.md" | Where-Object { $_.Name -notin 'metrics.md' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.config\opencode\commands\" }
 ```
 
 ```bash
@@ -762,7 +762,6 @@ Sync state (`[sync]` config and the per-machine baseline marker) is wiring, not 
 | `memhub eval locate` | Recall@K harness for the code locator |
 | `memhub stats --window 7d` | Write activity by actor, review rate, stale-fact counts |
 | `memhub metrics enable/status` | Hibernated; available only in an explicit `--features metrics` build |
-| `memhub viz` | Hibernated; available only in an explicit `--features viz` build |
 | `memhub export/import` | Portable JSON backup; cross-machine restore |
 | `memhub sync enable/status/snapshot/check/adopt/commit` | Cross-machine Drive sync (M10); push/pull a whole-DB snapshot through a synced folder |
 | `memhub upgrade` | Rebuild + install the binary and bring every memhub instance on this machine to head schema; resync skill wrappers |
@@ -814,7 +813,7 @@ include_docs_in_default = false  # auto-flips on first `doc add --global`
 
 - Reads `CLAUDE.md` at session start.
 - MCP server registered repo-scoped via the committed [`.mcp.json`](.mcp.json) — nothing to set up per machine.
-- User-level slash commands at `~/.claude/commands/`: `/wrap-up`, `/catch-up`, `/check-init`, `/init-project`, `/recall`, `/locate`, `/reindex`, `/eval-recall`, `/doc`, `/global`, `/audit-md`, `/upgrade`. Dormant `/metrics` and `/viz` templates are retained for feature builds but not installed by default.
+- User-level slash commands at `~/.claude/commands/`: `/wrap-up`, `/catch-up`, `/check-init`, `/init-project`, `/recall`, `/locate`, `/reindex`, `/eval-recall`, `/doc`, `/global`, `/audit-md`, `/upgrade`. The dormant `/metrics` template is retained for feature builds but not installed by default.
 - Skill writes are attributed `actor=claude:wrap-up`, `source=user+agent:claude-code`.
 
 **Codex CLI**
@@ -941,7 +940,6 @@ memhub CLI / MCP
    ├── src/mcp/         stdio MCP server, client identity normalization
    ├── src/retrieval/   BGE-small bi-encoder + ms-marco cross-encoder, hybrid recall
    ├── src/code_index/  tree-sitter chunker + walker + `locate` over the sibling code index
-   ├── src/dashboard/   hibernated read-only local web UI (`viz` feature)
    ├── src/metrics/     hibernated token accounting (`metrics` feature)
    ├── src/render/      PROJECT.md and PROJECT_LEDGER.md emit
    └── src/export/      v1 portable JSON
@@ -952,13 +950,13 @@ memhub CLI / MCP
 
 ---
 
-## Hibernated: token metrics & web dashboard
+## Hibernated: token metrics
 
-Two subsystems are fully implemented but compiled out of normal builds — the default binary has no metrics surface and no dashboard, and performs no recall logging or transcript scraping.
+Token metrics is fully implemented but compiled out of normal builds — the default binary has no metrics surface, and performs no recall logging or transcript scraping.
 
 - **Token metrics** — per-recall bundle-size accounting and real token totals scraped from Claude Code transcripts. Reactivate with `cargo build --features metrics`.
-- **Web dashboard** — a localhost-only, read-only UI over the same DB. Reactivate with `cargo build --features viz` (implies `metrics`).
-- **The one network call in either build:** `metrics calibrate` sends a fixed built-in corpus (never your project's content) to Anthropic's `count_tokens` endpoint — opt-in, needs `ANTHROPIC_API_KEY`, refuses cleanly without it.
+- **Web dashboard (removed)** — before: hibernated behind `--features viz`; after: deleted, with the `viz` feature, `memhub viz`, and the `/viz` skill. Recoverable from git history (last present at commit `db4da80`).
+- **The one network call in a metrics build:** `metrics calibrate` sends a fixed built-in corpus (never your project's content) to Anthropic's `count_tokens` endpoint — opt-in, needs `ANTHROPIC_API_KEY`, refuses cleanly without it.
 
 ---
 
