@@ -134,7 +134,16 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0024_session_note_provenance",
         include_str!("../../migrations/0024_session_note_provenance.sql"),
     ),
+    (
+        ARCH_SECTIONS_MIGRATION,
+        include_str!("../../migrations/0025_arch_sections.sql"),
+    ),
 ];
+
+/// Migration that adds the derived `arch_sections` table. SQL cannot
+/// chunk markdown, so when this one is applied `apply_all` derives the
+/// sections of an already-stored latest architecture body in Rust.
+const ARCH_SECTIONS_MIGRATION: &str = "0025_arch_sections";
 
 pub fn apply_all(conn: &mut Connection) -> Result<Vec<String>> {
     conn.execute(
@@ -178,6 +187,13 @@ pub fn apply_all(conn: &mut Connection) -> Result<Vec<String>> {
             )?;
             applied.push((*version).to_string());
         }
+    }
+
+    // After the whole batch, so the derive writes against the head schema.
+    // FTS-only: ordinary project open never loads the embedding model;
+    // `memhub index rebuild` embeds these in hybrid mode.
+    if applied.iter().any(|v| v == ARCH_SECTIONS_MIGRATION) {
+        crate::commands::narrative::rederive_arch_sections(&tx, crate::config::RetrievalMode::Fts)?;
     }
 
     tx.commit()?;
@@ -391,7 +407,11 @@ mod tests {
              );",
         )
         .expect("create migration ledger");
-        for (version, _) in &MIGRATIONS[..MIGRATIONS.len() - 1] {
+        // Every migration but 0024 counts as applied, so only 0024 runs.
+        for (version, _) in MIGRATIONS
+            .iter()
+            .filter(|(v, _)| *v != "0024_session_note_provenance")
+        {
             conn.execute(
                 "INSERT INTO schema_migrations(version) VALUES (?1)",
                 [version],
@@ -436,5 +456,116 @@ mod tests {
             })
             .expect("read migrated legacy note");
         assert_eq!(legacy, ("legacy note".to_string(), None));
+    }
+
+    /// Migration 0025 (issue #232) on a DB built by the previous head:
+    /// every existing embeddings row (all five prior source types)
+    /// survives the CHECK-widening rebuild, and an architecture body
+    /// stored before the migration gets its heading sections without a
+    /// new `arch set` and without any embedding (FTS-only on open).
+    #[test]
+    fn migration_0025_preserves_embeddings_and_derives_existing_arch_sections() {
+        let mut conn = Connection::open_in_memory().expect("open");
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (
+                 version TEXT PRIMARY KEY,
+                 applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+             );",
+        )
+        .expect("create migration ledger");
+        for (version, sql) in MIGRATIONS
+            .iter()
+            .filter(|(v, _)| *v != ARCH_SECTIONS_MIGRATION)
+        {
+            conn.execute_batch(sql).expect("apply legacy migration");
+            conn.execute(
+                "INSERT INTO schema_migrations(version) VALUES (?1)",
+                [version],
+            )
+            .expect("record legacy migration");
+        }
+        conn.execute(
+            "INSERT INTO projects(id, root_path, schema_version) VALUES (1, 'test', 'test')",
+            [],
+        )
+        .expect("seed projects row");
+        for source_type in ["fact", "decision", "task", "doc_chunk", "note"] {
+            conn.execute(
+                "INSERT INTO embeddings(
+                    project_id, source_type, source_id, model_name,
+                    dimension, vector, content_hash
+                 ) VALUES (1, ?1, 7, 'test-model', 1, X'01', 'hash')",
+                [source_type],
+            )
+            .expect("seed legacy embedding");
+        }
+        let before: Vec<(i64, String, i64, String)> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, source_type, source_id, content_hash FROM embeddings ORDER BY id",
+                )
+                .expect("prepare");
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                .expect("query")
+                .collect::<std::result::Result<_, _>>()
+                .expect("collect")
+        };
+        conn.execute(
+            "INSERT INTO project_arch(project_id, body, actor, actor_raw)
+             VALUES (1, '# System\n\nIntro.\n\n## Storage\n\nSQLite holds the quokkastore.', 'user', 'cli:user')",
+            [],
+        )
+        .expect("seed legacy arch body");
+
+        let applied = apply_all(&mut conn).expect("auto-apply 0025");
+        assert_eq!(applied, vec![ARCH_SECTIONS_MIGRATION]);
+
+        let after: Vec<(i64, String, i64, String)> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, source_type, source_id, content_hash FROM embeddings ORDER BY id",
+                )
+                .expect("prepare");
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                .expect("query")
+                .collect::<std::result::Result<_, _>>()
+                .expect("collect")
+        };
+        assert_eq!(before, after, "every pre-0025 embedding row must survive");
+
+        let paths: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT heading_path FROM arch_sections ORDER BY ord")
+                .expect("prepare");
+            stmt.query_map([], |r| r.get(0))
+                .expect("query")
+                .collect::<std::result::Result<_, _>>()
+                .expect("collect")
+        };
+        assert_eq!(paths, vec!["System", "System > Storage"]);
+        let fts_hits: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM arch_sections_fts WHERE arch_sections_fts MATCH 'quokkastore'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("fts query");
+        assert_eq!(fts_hits, 1, "derived sections must be FTS-indexed");
+        let arch_vectors: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM embeddings WHERE source_type = 'arch_section'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count arch vectors");
+        assert_eq!(arch_vectors, 0, "open-time derive must not embed");
+        conn.execute(
+            "INSERT INTO embeddings(
+                project_id, source_type, source_id, model_name,
+                dimension, vector, content_hash
+             ) VALUES (1, 'arch_section', 1, 'test-model', 1, X'01', 'hash')",
+            [],
+        )
+        .expect("widened CHECK must admit 'arch_section'");
     }
 }

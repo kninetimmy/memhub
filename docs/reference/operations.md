@@ -293,6 +293,30 @@ the floor (low-confidence hits allowed), and each match outcome reports
 `matched_low_confidence`. The golden set carries `kw-` keyword-bag variants
 and `near-` related-but-no-answer probes for this.
 
+**Architecture sections (issue #232).** The latest architecture narrative
+(`memhub arch set`) is split by markdown heading, with the same chunker
+`memhub doc add` uses, into a derived `arch_sections` table (migration
+0025), and each section is a recall hit of source type `arch_section`,
+titled `Architecture — <heading path>`. Sections are part of the default
+recall bundle alongside facts, decisions, and tasks, with the same
+`min_rerank_score` floor and the same low-confidence fallback eligibility;
+no config flag gates them, unlike docs. Scope a recall to them alone with
+`memhub recall <query> --source-type arch` (CLI) or
+`memhub.recall(query=..., source_types=["arch"])` (MCP). Before this change
+the architecture narrative never entered recall; it was only rendered into
+`PROJECT.md`. Only the latest body is searchable: every `arch set` deletes
+the previous sections and re-derives them in the same transaction, embedding
+them eagerly in hybrid mode. A DB whose latest body was stored before
+migration 0025 gets its sections on the next open, FTS-only (open never
+loads the embedding model); in hybrid mode `memhub index rebuild` embeds
+them, and `memhub index status` counts them. Sections are derived data:
+`memhub export` omits them, `memhub import` re-derives them from the
+imported latest body, and Drive sync snapshots carry them as part of the
+whole-DB copy while the sync digest exempts them (`project_arch` itself is
+digested). This applies to the architecture narrative only: the state
+narrative (`memhub state set`) still never enters recall, and session notes
+remain reachable only through an explicit `note` scope (gate Q9).
+
 Decisions can carry an optional natural-language `summary` (migration
 0011, decision 72). When set, the summary is prepended to BOTH the
 bi-encoder's embed text and the cross-encoder's rerank input, letting

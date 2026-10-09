@@ -15,7 +15,8 @@ use clap::Parser;
 #[cfg(feature = "metrics")]
 use memhub::cli::MetricsCommand;
 use memhub::cli::{
-    AuditCommand, Cli, CommandCommand, DecisionCommand, DocCommand, FactCommand, TopLevelCommand,
+    AuditCommand, Cli, CommandCommand, DecisionCommand, DocCommand, FactCommand,
+    RecallSourceTypeArg, TopLevelCommand,
 };
 use memhub::code_index::locate::DEFAULT_LOCATE_LIMIT;
 
@@ -413,4 +414,24 @@ fn locate_without_flags_defaults() {
         }
         other => panic!("expected Locate, got {other:?}"),
     }
+}
+
+/// Issue #232: `--source-type arch` scopes recall to architecture
+/// sections; an unknown value still fails and the error lists `arch`.
+#[test]
+fn recall_source_type_accepts_arch_and_lists_it_on_error() {
+    match parse(&["recall", "storage", "--source-type", "arch"]) {
+        TopLevelCommand::Recall { source_type, .. } => {
+            assert!(matches!(
+                source_type.as_slice(),
+                [RecallSourceTypeArg::Arch]
+            ));
+        }
+        other => panic!("expected Recall, got {other:?}"),
+    }
+    let err = Cli::try_parse_from(["memhub", "recall", "q", "--source-type", "blueprint"])
+        .expect_err("unknown source type must fail");
+    let message = err.to_string();
+    assert!(message.contains("blueprint"), "unexpected error: {message}");
+    assert!(message.contains("arch"), "error must list arch: {message}");
 }

@@ -742,7 +742,7 @@ Sync state (`[sync]` config and the per-machine baseline marker) is wiring, not 
 |---|---|
 | `memhub init` | Set up `.memhub/` in a repo |
 | `memhub status` | Open tasks, stale facts, pending writes, schema version |
-| `memhub recall <query>` | Hybrid ranked bundle of facts/decisions/tasks/docs |
+| `memhub recall <query>` | Hybrid ranked bundle of facts/decisions/tasks/architecture sections/docs |
 | `memhub fact add/list/verify` | Durable key-value facts (build commands, MSRV, etc.); `verify` refreshes `verified_at` only, no confidence/source rewrite |
 | `memhub decision add/list` | Decisions with rationale, FTS-indexed and embedded |
 | `memhub task add/list/done` | Lightweight task tracking |

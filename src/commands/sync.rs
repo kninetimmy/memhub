@@ -2718,6 +2718,11 @@ mod tests {
             "machine-local archive-pointer rows under gitignored .memhub/; excluded from \
              `memhub export`",
         ),
+        (
+            "arch_sections",
+            "derived heading sections of the latest project_arch body (which is digested); \
+             re-derived on `arch set` and import, excluded from `memhub export`",
+        ),
     ];
 
     /// FTS5 external-content virtual tables. Each is a derived keyword
@@ -2733,6 +2738,7 @@ mod tests {
         "tasks_fts",
         "doc_chunks_fts",
         "session_notes_fts",
+        "arch_sections_fts",
     ];
 
     /// Columns of an otherwise-digested table that are intentionally NOT

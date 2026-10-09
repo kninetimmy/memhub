@@ -595,6 +595,8 @@ pub enum RecallSourceTypeArg {
     Task,
     Doc,
     Note,
+    /// Sections of the latest architecture narrative (`memhub arch set`).
+    Arch,
 }
 
 impl RecallSourceTypeArg {
@@ -605,6 +607,7 @@ impl RecallSourceTypeArg {
             Self::Task => SourceType::Task,
             Self::Doc => SourceType::DocChunk,
             Self::Note => SourceType::Note,
+            Self::Arch => SourceType::ArchSection,
         }
     }
 }

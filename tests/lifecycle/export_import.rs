@@ -1051,3 +1051,59 @@ fn init_from_backup_refuses_when_db_already_exists() {
         "preexisting data should remain when recovery refuses"
     );
 }
+
+/// Issue #232: architecture sections are derived data. Export carries
+/// only `project_arch`; import re-derives the latest body's sections so
+/// recall finds them on the target.
+#[test]
+fn export_omits_arch_sections_and_import_rederives_them() {
+    let source = tempdir().expect("source tempdir");
+    init::run(source.path()).expect("source init");
+    narrative::set(
+        source.path(),
+        NarrativeKind::Arch,
+        "# Overview\n\n## Storage\n\nThe zebrafinch ledger is one SQLite file.\n",
+        "user",
+        "cli:user",
+    )
+    .expect("arch entry");
+
+    let export_path = source.path().join("export.json");
+    export::run(source.path(), &export_path).expect("export succeeds");
+    let raw = fs::read_to_string(&export_path).expect("read export");
+    let value: serde_json::Value = serde_json::from_str(&raw).expect("parse json");
+    assert!(value.get("arch_sections").is_none());
+    // `heading_path` is a section-only column; no exported row has one.
+    assert!(
+        !raw.contains("heading_path"),
+        "export must not carry architecture-section rows"
+    );
+
+    let target = tempdir().expect("target tempdir");
+    init::run(target.path()).expect("target init");
+    import::run(target.path(), &export_path, false).expect("import succeeds");
+
+    let response = memhub::retrieval::recall(
+        target.path(),
+        memhub::retrieval::RecallOptions {
+            query: "zebrafinch".to_string(),
+            mode: Some(memhub::config::RetrievalMode::Fts),
+            max_results: 5,
+            source_types: vec![],
+            include_stale: None,
+            accepted_only: None,
+            use_reranker: None,
+            min_rerank_score: None,
+            log_metrics: false,
+            surface: None,
+        },
+    )
+    .expect("recall");
+    assert!(
+        response
+            .results
+            .iter()
+            .any(|h| h.source_type == "arch_section" && h.title.ends_with("Storage")),
+        "import must re-derive the imported body's sections"
+    );
+}

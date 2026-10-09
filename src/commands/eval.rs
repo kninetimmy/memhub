@@ -256,10 +256,11 @@ fn validate_query(q: &GoldenQuery) -> Result<()> {
             // `doc_chunk` added Wave 4 R10 (issue #74) so the golden set
             // can pin doc-chunk hits to source type, same as the other
             // three durable rows.
-            "fact" | "decision" | "task" | "doc_chunk" => {}
+            // `arch_section` added with issue #232's default-recall source.
+            "fact" | "decision" | "task" | "doc_chunk" | "arch_section" => {}
             other => {
                 return Err(MemhubError::InvalidInput(format!(
-                    "golden query `{}` has unknown source_type `{}` (expected fact|decision|task|doc_chunk)",
+                    "golden query `{}` has unknown source_type `{}` (expected fact|decision|task|doc_chunk|arch_section)",
                     q.id, other
                 )));
             }

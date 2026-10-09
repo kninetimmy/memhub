@@ -18,7 +18,7 @@ continues to read from the PRD as-written.
 |---|---|---|
 | §2 "Why this exists" — final paragraph (markdown as entry point) | **Inverted.** Markdown is now an *output* of the DB. | K9 deprecation track. |
 | §6.2 "Layout per repo" — local render output not previously listed | **Extended.** `memhub render` emits `PROJECT.md` and `PROJECT_LEDGER.md` into `.memhub/rendered/` by default. Render output is local generated state, not committed by default. | Render slice (`c3fbef0`), machine-local default update (2026-05-14). |
-| §8 "Data model" — `project_state` and `project_arch` tables not present | **Extended.** Migration `0007_project_narrative` added both as durable-text-blob tables. | Render slice step 1 (`2757a0a`). |
+| §8 "Data model" — `project_state` and `project_arch` tables not present | **Extended.** Migration `0007_project_narrative` added both as durable-text-blob tables. Migration `0025_arch_sections` adds derived per-heading `arch_sections` for `project_arch` only (issue #232, see §2). | Render slice step 1 (`2757a0a`). |
 | §13 "CLI surface" — no `state`, `arch`, `render`, `note add` commands | **Extended.** All four ship; full list in §3 below. | Render slice + wrap-up step 1 (`5037033`). |
 | §16 "Milestones" — Milestone 5+ list | **Extended.** "Milestone 6: K9 deprecation" added with shipped slices listed. | This addendum. |
 
@@ -69,6 +69,20 @@ in `agent_docs/project_decisions.md` (decision dated 2026-05-12) and
 in `docs/archive/memhub-render-design.md` §2. Future schema work can
 decompose if querying patterns demand it; blob ships first because
 narrative resists clean decomposition without losing prose flow.
+
+**Before issue #232:** `project_arch` was a single blob and nothing
+else. The latest body was rendered into `PROJECT.md` but never entered
+recall in any form.
+
+**After issue #232:** `project_arch` is unchanged, still the
+single-blob, append-only source of truth. Migration `0025_arch_sections`
+adds a derived `arch_sections` table holding the latest body split by
+markdown heading (the `doc add` chunker). Every `arch set` and every
+`memhub import` re-derives it, `memhub export` omits it, and its rows
+are part of default recall as source type `arch_section` (scope with
+`--source-type arch` or `source_types=["arch"]`). This decomposes for
+retrieval only, and only for `project_arch`: `project_state` stays a
+blob outside recall.
 
 ## 3. CLI surface added since PRD v2
 

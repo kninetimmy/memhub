@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Transaction, params};
 
-use crate::commands::search;
+use crate::commands::{narrative, search};
+use crate::config::RetrievalMode;
 use crate::db;
 use crate::export::{EXPORT_VERSION, Export, v1};
 use crate::{MemhubError, Result};
@@ -99,6 +100,10 @@ pub fn run(start: &Path, source: &Path, force: bool) -> Result<ImportSummary> {
     insert_session_notes(&tx, &payload.session_notes)?;
     insert_narrative(&tx, "project_state", &payload.project_state)?;
     insert_narrative(&tx, "project_arch", &payload.project_arch)?;
+    // Sections are export-excluded derived data: rebuild them from the
+    // imported latest body. FTS-only like every other imported row;
+    // hybrid vectors come from `memhub index rebuild`.
+    narrative::rederive_arch_sections(&tx, RetrievalMode::Fts)?;
 
     search::sync_decision_chunks(&tx)?;
 
@@ -174,6 +179,9 @@ fn wipe_durable_tables(tx: &Transaction<'_>) -> Result<()> {
         "DELETE FROM chunks WHERE project_id = 1 AND source_type = 'decision'",
         [],
     )?;
+    // Before `project_arch`: an explicit delete fires the FTS/embedding
+    // triggers, which the FK cascade would not (recursive_triggers OFF).
+    tx.execute("DELETE FROM arch_sections WHERE project_id = 1", [])?;
     for table in [
         "writes_log",
         "pending_writes",
