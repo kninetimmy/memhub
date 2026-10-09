@@ -180,7 +180,7 @@ fn wipe_durable_tables(tx: &Transaction<'_>) -> Result<()> {
         [],
     )?;
     // Before `project_arch`: an explicit delete fires the FTS/embedding
-    // triggers, which the FK cascade would not (recursive_triggers OFF).
+    // triggers without relying on the FK cascade.
     tx.execute("DELETE FROM arch_sections WHERE project_id = 1", [])?;
     for table in [
         "writes_log",

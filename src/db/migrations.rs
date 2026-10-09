@@ -542,7 +542,7 @@ mod tests {
                 .collect::<std::result::Result<_, _>>()
                 .expect("collect")
         };
-        assert_eq!(paths, vec!["System", "System > Storage"]);
+        assert_eq!(paths, vec!["", "Storage"], "the System wrapper is left out");
         let fts_hits: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM arch_sections_fts WHERE arch_sections_fts MATCH 'quokkastore'",

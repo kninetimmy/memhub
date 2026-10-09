@@ -30,8 +30,9 @@
 --      SQLite's table-rebuild guidance.
 --   4. `arch_sections_delete_embeddings`, so the explicit section delete
 --      on every re-derive clears the matching vectors.
---      recursive_triggers is OFF, so the FK cascade from `project_arch`
---      would NOT fire it; writers delete sections explicitly instead.
+--      The FK cascade from `project_arch` would fire it too, even with
+--      recursive_triggers OFF; writers still delete sections explicitly
+--      so the cleanup does not depend on the cascade.
 
 CREATE TABLE IF NOT EXISTS arch_sections (
     id INTEGER PRIMARY KEY,

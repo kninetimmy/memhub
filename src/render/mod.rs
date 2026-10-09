@@ -669,21 +669,23 @@ fn render_header(s: &RenderSnapshot) -> String {
     )
 }
 
-/// Heading path of every architecture section, in body order, with
-/// consecutive repeats (over-long sections split into several chunks)
-/// collapsed. An empty path is the untitled text before the first heading.
+/// Heading path of every architecture section, in body order, one per
+/// section (the pieces of an over-long section count once). An empty path is
+/// untitled text, such as the text before the first heading.
 fn architecture_section_index(body: &str) -> Vec<String> {
-    let mut paths: Vec<String> = crate::commands::doc::chunk_markdown(body)
+    crate::commands::narrative::arch_sections(body)
         .into_iter()
-        .map(|(path, _)| path)
-        .collect();
-    paths.dedup();
-    paths
+        .filter(|s| s.starts_section)
+        .map(|s| s.heading_path)
+        .collect()
 }
 
 /// Shorten `text` to at most `NOTE_STUB_MAX_CHARS` characters including the
 /// trailing ellipsis, cutting at a word boundary. Shorter text is unchanged.
+/// Leading whitespace is dropped first (imported notes are stored untrimmed),
+/// so the word-boundary cut can never land before the first character.
 fn note_stub(text: &str) -> String {
+    let text = text.trim_start();
     if text.chars().count() <= NOTE_STUB_MAX_CHARS {
         return text.to_string();
     }
@@ -729,7 +731,9 @@ fn escape_table_cell(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{RenderSnapshot, format_ledger_md, strip_leading_heading};
+    use super::{
+        RenderSnapshot, collapse_inline, format_ledger_md, note_stub, strip_leading_heading,
+    };
     use crate::models::Fact;
 
     #[test]
@@ -757,6 +761,45 @@ mod tests {
     fn does_not_strip_when_heading_text_is_only_a_prefix_of_a_paragraph() {
         let body = "## Currently building tools that...\n";
         assert_eq!(strip_leading_heading(body, "## Currently building"), body,);
+    }
+
+    // --- Note stubs ---
+
+    #[test]
+    fn note_stub_counts_characters_not_bytes() {
+        let text = "é".repeat(300);
+        assert_eq!(note_stub(&text), text, "300 chars fits even at 600 bytes");
+        let stub = note_stub(&"é".repeat(301));
+        assert_eq!(stub, format!("{}…", "é".repeat(299)));
+        assert_eq!(stub.chars().count(), 300);
+    }
+
+    #[test]
+    fn note_stub_hard_cuts_text_without_whitespace() {
+        let stub = note_stub(&"x".repeat(400));
+        assert_eq!(stub, format!("{}…", "x".repeat(299)));
+    }
+
+    #[test]
+    fn note_stub_of_collapsed_newlines_cuts_at_a_word_boundary() {
+        let text = collapse_inline(&"line one\nline two\r\n".repeat(30));
+        let stub = note_stub(&text);
+        assert!(!stub.contains('\n') && !stub.contains('\r'));
+        assert!(stub.ends_with("line…"), "{stub}");
+        assert!(stub.chars().count() <= 300);
+    }
+
+    #[test]
+    fn note_stub_never_renders_a_bare_ellipsis_for_leading_whitespace() {
+        // `memhub import` stores note text untrimmed.
+        let stub = note_stub(&format!(" {}", "x".repeat(400)));
+        assert_eq!(stub, format!("{}…", "x".repeat(299)));
+        let stub = note_stub(&collapse_inline(&format!("\n\n{}", "word ".repeat(100))));
+        assert!(
+            stub.starts_with("word word") && stub.ends_with("word…"),
+            "{stub}"
+        );
+        assert!(stub.chars().count() <= 300);
     }
 
     // --- Token Accounting section rendering ---

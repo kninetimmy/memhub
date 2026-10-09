@@ -443,6 +443,59 @@ fn render_collapses_consecutive_split_chunks_of_one_section() {
 }
 
 #[test]
+fn render_lists_adjacent_same_heading_sections_and_drops_a_wrapper_heading() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+    let body = "# memhub architecture\n\n## Purpose\n\nWhy.\n\n## Storage\n\nFirst.\n\n\
+                ## Storage\n\nSecond.\n";
+    narrative::set(
+        temp.path(),
+        NarrativeKind::Arch,
+        body,
+        "cli:user",
+        "cli:user",
+    )
+    .expect("arch set");
+
+    let result = render::run(temp.path(), "cli:user").expect("render");
+    let project = read_string(&result.project_md_path);
+    assert!(
+        project.contains("Sections:\n\n- Purpose\n- Storage\n- Storage\n\n"),
+        "{project}"
+    );
+    assert!(!project.contains("memhub architecture"), "{project}");
+}
+
+#[test]
+fn render_stubs_non_ascii_and_whitespace_free_notes_by_characters() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+    let accents = "é".repeat(400);
+    let solid = "x".repeat(400);
+    let lines = "first line\nsecond line\n".repeat(40);
+    for text in [&accents, &solid, &lines] {
+        session_note::add(temp.path(), text, "user", "cli:user").expect("note");
+    }
+
+    let result = render::run(temp.path(), "cli:user").expect("render");
+    let project = read_string(&result.project_md_path);
+    let stub_of = |needle: &str| -> String {
+        let line = project
+            .lines()
+            .find(|l| l.contains(needle))
+            .expect("stub line");
+        line.split(" — ").nth(1).expect("stub text").to_string()
+    };
+    assert_eq!(stub_of("ééé"), format!("{}…", "é".repeat(299)));
+    assert_eq!(stub_of("xxx"), format!("{}…", "x".repeat(299)));
+    let multi = stub_of("first line second line");
+    assert!(
+        multi.ends_with("line…") && multi.chars().count() <= 300,
+        "{multi}"
+    );
+}
+
+#[test]
 fn state_set_warns_on_stderr_past_the_soft_limit_but_still_stores() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
@@ -459,6 +512,15 @@ fn state_set_warns_on_stderr_past_the_soft_limit_but_still_stores() {
     assert!(
         err.contains("4001") && err.contains("4000"),
         "stderr: {err}"
+    );
+    let out = String::from_utf8_lossy(&plain.stdout);
+    assert!(
+        out.starts_with("Recorded state entry ") && out.contains("(4001 chars)"),
+        "stdout: {out}"
+    );
+    assert!(
+        !out.contains("warning") && !out.contains("soft limit"),
+        "stdout carries no warning text: {out}"
     );
 
     let json = run_cli(temp.path(), &["state", "set", "--json", &long]);

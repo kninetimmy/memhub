@@ -8,13 +8,14 @@
 //! knowledge and not an agent claim, so ingestion writes directly with
 //! `source = 'user'` and no review gate.
 //!
-//! Trigger invariant: SQLite `recursive_triggers` is OFF (see
-//! `db::open_project`), so a foreign-key cascade delete of `doc_chunks`
-//! does NOT fire `doc_chunks_delete_embeddings` / `doc_chunks_fts_ad`.
-//! Every code path that drops a document's chunks therefore deletes the
-//! `doc_chunks` rows EXPLICITLY first (which fires those AFTER-DELETE
-//! triggers) and only then touches the parent `documents` row. The
-//! `ON DELETE CASCADE` FK stays as a row-integrity backstop.
+//! Trigger invariant: a foreign-key cascade delete of `doc_chunks` fires
+//! `doc_chunks_delete_embeddings` / `doc_chunks_fts_ad` for every cascaded
+//! row, even with `recursive_triggers` OFF (see `db::open_project`); a
+//! test below pins that. Every code path that drops a document's chunks
+//! still deletes the `doc_chunks` rows EXPLICITLY first and only then
+//! touches the parent `documents` row, so the cleanup does not depend on
+//! the cascade. The `ON DELETE CASCADE` FK stays as a row-integrity
+//! backstop.
 
 use std::fs;
 use std::path::Path;
@@ -140,7 +141,7 @@ fn ingest_in_tx(
         }
         Some((id, _)) => {
             // Explicit chunk delete first so the AFTER-DELETE triggers
-            // clear embeddings + FTS (recursive_triggers is OFF).
+            // clear embeddings + FTS without relying on the FK cascade.
             tx.execute("DELETE FROM doc_chunks WHERE doc_id = ?1", params![id])?;
             tx.execute(
                 "UPDATE documents
@@ -407,8 +408,8 @@ fn remove_in_tx(tx: &Transaction<'_>, ident: &str, actor: &str) -> Result<bool> 
     let Some(doc_id) = resolve_doc_id(tx, ident)? else {
         return Ok(false);
     };
-    // Explicit chunk delete first (recursive_triggers OFF) so embeddings
-    // + FTS are cleaned; then the parent row.
+    // Explicit chunk delete first so embeddings + FTS are cleaned without
+    // relying on the FK cascade; then the parent row.
     tx.execute("DELETE FROM doc_chunks WHERE doc_id = ?1", params![doc_id])?;
     tx.execute("DELETE FROM documents WHERE id = ?1", params![doc_id])?;
     db::log_write(
@@ -651,7 +652,7 @@ fn soft_split(body: &str) -> Vec<String> {
     pieces
 }
 
-fn parse_heading(trimmed: &str) -> Option<(usize, String)> {
+pub(crate) fn parse_heading(trimmed: &str) -> Option<(usize, String)> {
     if !trimmed.starts_with('#') {
         return None;
     }
@@ -763,10 +764,10 @@ mod tests {
 
     #[test]
     fn hybrid_reingest_and_remove_leave_no_orphan_embeddings() {
-        // The load-bearing invariant: recursive_triggers is OFF, so a
-        // doc's chunks (and their embeddings + FTS rows) only get
-        // cleaned because the writer deletes doc_chunks EXPLICITLY
-        // before the parent. This must hold in hybrid mode, where
+        // The load-bearing invariant: a doc's chunks (and their
+        // embeddings + FTS rows) are cleaned because the writer deletes
+        // doc_chunks EXPLICITLY before the parent, independent of the FK
+        // cascade. This must hold in hybrid mode, where
         // eager_embed_in_tx actually writes embedding rows. FTS-mode
         // tests can't catch a regression here.
         let temp = tempdir().expect("tempdir");
@@ -818,6 +819,50 @@ mod tests {
         assert!(remove(temp.path(), &first.doc_id.to_string(), "cli:user").expect("rm"));
         let (c3, e3) = counts("after rm");
         assert_eq!((c3, e3), (0, 0), "remove clears chunks and embeddings");
+    }
+
+    #[test]
+    fn deleting_a_document_row_cascades_chunk_cleanup_through_the_triggers() {
+        // On the connection memhub opens (foreign_keys ON, recursive_triggers
+        // OFF), the ON DELETE CASCADE from documents to doc_chunks still fires
+        // the doc_chunks AFTER DELETE triggers, so embeddings and FTS rows go.
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let cfg_path = temp.path().join(".memhub/config.toml");
+        let mut cfg = crate::config::ProjectConfig::load(&cfg_path).expect("load cfg");
+        cfg.retrieval.mode = crate::config::RetrievalMode::Hybrid;
+        cfg.save(&cfg_path).expect("save cfg");
+        let doc = temp.path().join("spec.md");
+        fs::write(
+            &doc,
+            "# Spec
+
+## A
+
+zebrafish
+
+## B
+
+beta
+",
+        )
+        .expect("write");
+        let added = add(temp.path(), &doc, None, "cli:user").expect("add");
+
+        let ctx = db::open_project(temp.path()).expect("open");
+        let count = |sql: &str| -> i64 { ctx.conn.query_row(sql, [], |r| r.get(0)).expect(sql) };
+        let embeddings = "SELECT COUNT(*) FROM embeddings WHERE source_type = 'doc_chunk'";
+        let fts = "SELECT COUNT(*) FROM doc_chunks_fts WHERE doc_chunks_fts MATCH 'zebrafish'";
+        assert_eq!(count(embeddings) as usize, added.chunk_count);
+        assert_eq!(count(fts), 1);
+
+        // The parent row only: no explicit doc_chunks delete.
+        ctx.conn
+            .execute("DELETE FROM documents WHERE id = ?1", params![added.doc_id])
+            .expect("delete document");
+        assert_eq!(count("SELECT COUNT(*) FROM doc_chunks"), 0);
+        assert_eq!(count(embeddings), 0, "cascade fires the embeddings trigger");
+        assert_eq!(count(fts), 0, "cascade fires the FTS trigger");
     }
 
     #[test]
