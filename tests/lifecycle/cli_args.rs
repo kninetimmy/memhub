@@ -47,7 +47,8 @@ fn metrics_command_returns_in_reactivated_build() {
 
 #[test]
 fn viz_command_is_absent_from_every_build() {
-    assert!(Cli::try_parse_from(["memhub", "viz"]).is_err());
+    let err = Cli::try_parse_from(["memhub", "viz"]).expect_err("viz must not parse");
+    assert_eq!(err.kind(), clap::error::ErrorKind::InvalidSubcommand);
 }
 
 #[test]
