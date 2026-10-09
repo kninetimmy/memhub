@@ -457,9 +457,22 @@ fn readme_install_blocks_enumerate_every_skill() {
 
 /// Creation tokens (raw, unnormalized destination paths) of a `mkdir -p` or
 /// `New-Item -ItemType Directory ... -Path a,b` README line; empty otherwise.
+/// A `mkdir -p` list ends at the first `;`, so a creation joined to a copy on
+/// one line (`mkdir -p d; for ...; cp "$f" d/; done`) does not count the
+/// copy's destination as a second creation.
 fn created_tokens(line: &str) -> Vec<&str> {
     if let Some(i) = line.find("mkdir -p ") {
-        line[i + "mkdir -p ".len()..].split_whitespace().collect()
+        let mut tokens = Vec::new();
+        for t in line[i + "mkdir -p ".len()..].split_whitespace() {
+            let path = t.trim_end_matches(';');
+            if !path.is_empty() {
+                tokens.push(path);
+            }
+            if path.len() != t.len() {
+                break;
+            }
+        }
+        tokens
     } else if line.contains("New-Item -ItemType Directory") {
         let Some((_, rest)) = line.split_once("-Path ") else {
             return Vec::new();
@@ -546,6 +559,20 @@ fn copy_exclusions(line: &str, is_ps: bool) -> Option<Vec<String>> {
     )
 }
 
+/// The single definition of an install block, shared by the checker and the
+/// mutation battery: the index of the `<details>` block each README line
+/// belongs to (0 before the first `<details>`).
+fn install_block_of_line(readme: &str) -> Vec<usize> {
+    let mut block = 0;
+    readme
+        .lines()
+        .map(|line| {
+            block += line.matches("<details>").count();
+            block
+        })
+        .collect()
+}
+
 /// Checks every skill/command-wrapper copy line of every README `<details>`
 /// block, in both the POSIX (`cp`) and PowerShell (`Copy-Item`) halves:
 /// it must skip exactly the hibernated `metrics` subsystem, in the form that
@@ -557,72 +584,71 @@ fn copy_exclusions(line: &str, is_ps: bool) -> Option<Vec<String>> {
 /// number of `(posix, powershell)` copy lines checked, or the first
 /// violation.
 fn check_readme_install_blocks(readme: &str) -> Result<(usize, usize), String> {
-    let (mut posix, mut ps, mut blocks) = (0, 0, 0);
-    for block in readme.split("<details>") {
-        let mut created = BTreeSet::new();
-        let mut block_copies = 0;
-        for raw in block.lines() {
-            let line = raw.trim();
-            // Each half must create its own directories.
-            created.extend(
-                created_tokens(line)
-                    .into_iter()
-                    .map(|t| (line.contains("New-Item"), norm_install_path(t))),
-            );
-            let Some(is_ps) = template_copy_kind(line) else {
-                continue;
-            };
-            block_copies += 1;
-            let is_dir = if is_ps {
-                line.contains("-Directory")
-            } else {
-                line.contains("cp -R")
-            };
-            let (form, expected) = if is_dir {
-                ("directory", "metrics")
-            } else {
-                ("file", "metrics.md")
-            };
-            match copy_exclusions(line, is_ps) {
-                None => {
-                    return Err(format!(
-                        "README copies from a skill/command template directory \
-                         without a metrics exclusion — the hibernated metrics \
-                         subsystem must never be installed by a default build: \
-                         {line:?}"
-                    ));
-                }
-                Some(found) if found != [expected] => {
-                    return Err(format!(
-                        "README {form} copy line excludes {found:?} but must \
-                         exclude exactly [{expected:?}] (the {form} form of the \
-                         hibernated metrics template): {line:?}"
-                    ));
-                }
-                Some(_) => {}
-            }
-            let dest = copy_destination(line)
-                .map(norm_install_path)
-                .ok_or_else(|| format!("cannot find the copy destination in {line:?}"))?;
-            if !created.contains(&(is_ps, dest.clone())) {
+    let (mut posix, mut ps) = (0, 0);
+    let (mut current, mut created) = (0, BTreeSet::new());
+    let mut copy_blocks = BTreeSet::new();
+    for (raw, block) in readme.lines().zip(install_block_of_line(readme)) {
+        if block != current {
+            (current, created) = (block, BTreeSet::new());
+        }
+        let line = raw.trim();
+        // Each half must create its own directories.
+        created.extend(
+            created_tokens(line)
+                .into_iter()
+                .map(|t| (line.contains("New-Item"), norm_install_path(t))),
+        );
+        let Some(is_ps) = template_copy_kind(line) else {
+            continue;
+        };
+        copy_blocks.insert(block);
+        let is_dir = if is_ps {
+            line.contains("-Directory")
+        } else {
+            line.contains("cp -R")
+        };
+        let (form, expected) = if is_dir {
+            ("directory", "metrics")
+        } else {
+            ("file", "metrics.md")
+        };
+        match copy_exclusions(line, is_ps) {
+            None => {
                 return Err(format!(
-                    "README copy line writes into {dest:?}, which no earlier \
-                     mkdir -p / New-Item -ItemType Directory line in the same \
-                     install block creates: {line:?}"
+                    "README copies from a skill/command template directory \
+                     without a metrics exclusion — the hibernated metrics \
+                     subsystem must never be installed by a default build: \
+                     {line:?}"
                 ));
             }
-            if is_ps {
-                ps += 1;
-            } else {
-                posix += 1;
+            Some(found) if found != [expected] => {
+                return Err(format!(
+                    "README {form} copy line excludes {found:?} but must \
+                     exclude exactly [{expected:?}] (the {form} form of the \
+                     hibernated metrics template): {line:?}"
+                ));
             }
+            Some(_) => {}
         }
-        if block_copies > 0 {
-            blocks += 1;
+        let dest = copy_destination(line)
+            .map(norm_install_path)
+            .ok_or_else(|| format!("cannot find the copy destination in {line:?}"))?;
+        if !created.contains(&(is_ps, dest.clone())) {
+            return Err(format!(
+                "README copy line writes into {dest:?}, which no earlier \
+                 mkdir -p / New-Item -ItemType Directory line in the same \
+                 install block creates: {line:?}"
+            ));
+        }
+        if is_ps {
+            ps += 1;
+        } else {
+            posix += 1;
         }
     }
     // Claude, Codex, OpenCode quickstarts + Install by hand; more copy
     // lines per block are fine, fewer blocks are not.
+    let blocks = copy_blocks.len();
     if blocks < 4 || posix < 8 || ps < 8 {
         return Err(format!(
             "expected skill-copy lines in at least 4 install blocks (Claude/\
@@ -710,14 +736,7 @@ fn assert_checker_rejects_mutations(readme: &str) {
     // Which lines of each install block create each (half, destination), and
     // which copy lines write into it. Deleting a creation line is only
     // accepted when another creation still precedes every such copy line.
-    let mut block_of_line = Vec::new();
-    let mut block = 0;
-    for line in readme.lines() {
-        if line.contains("<details>") {
-            block += 1;
-        }
-        block_of_line.push(block);
-    }
+    let block_of_line = install_block_of_line(readme);
     type Key = (usize, bool, String);
     let mut creators: std::collections::BTreeMap<Key, Vec<usize>> =
         std::collections::BTreeMap::new();
@@ -756,29 +775,20 @@ fn assert_checker_rejects_mutations(readme: &str) {
 
     let (mut guards, mut creations) = (0, 0);
     for (idx, line) in readme.lines().enumerate() {
-        let copy = template_copy_kind(line);
-        match copy {
-            Some(true) => {
-                guards += 1;
-                reject(
-                    idx,
-                    &cut(line, "| Where-Object", "| ForEach-Object"),
-                    "without a metrics exclusion",
+        if let Some(is_ps) = template_copy_kind(line) {
+            guards += 1;
+            let (unguarded, what) = if is_ps {
+                (
+                    cut(line, "| Where-Object", "| ForEach-Object"),
                     "a PowerShell copy line lacking the metrics exclusion",
-                );
-            }
-            Some(false) => {
-                guards += 1;
-                reject(
-                    idx,
-                    &cut(line, "case ", "cp "),
-                    "without a metrics exclusion",
+                )
+            } else {
+                (
+                    cut(line, "case ", "cp "),
                     "a POSIX copy line lacking the metrics exclusion",
-                );
-            }
-            None => {}
-        }
-        if let Some(is_ps) = copy {
+                )
+            };
+            reject(idx, &unguarded, "without a metrics exclusion", what);
             let is_dir = if is_ps {
                 line.contains("-Directory")
             } else {
@@ -828,40 +838,30 @@ fn readme_install_block_checker_rejects_mutations() {
 
 /// Legitimate README growth must not trip either install-block test: one
 /// more correctly guarded copy line (its destination already created) after
-/// every existing copy line, plus a repeated destination-creation line, and a
-/// repeat of each copy's creation line placed after the copy (which must not
-/// count as creating the destination in time), still passes the checker and
-/// the mutation battery.
+/// every existing copy line, plus a repeat of each block's creation lines
+/// placed after all of its copies (which must not count as creating a
+/// destination in time), still passes the checker and the mutation battery.
+/// No copy line gains a second creation ahead of it, so the battery still
+/// demands a rejection for deleting every original creation line in every
+/// half of every block.
 #[test]
 fn readme_install_block_checker_tolerates_added_copy_lines() {
     let readme = lf(&fs::read_to_string(repo_root().join("README.md")).expect("read README.md"));
     let mut grown = Vec::new();
-    let (mut repeated_creation, mut repeated_after_copy) = (false, false);
+    let mut repeated_after_copy = false;
     let mut creations: Vec<&str> = Vec::new();
     for line in readme.lines() {
+        if line.contains("</details>") {
+            repeated_after_copy |= !creations.is_empty();
+            grown.append(&mut creations);
+        }
         grown.push(line);
-        if let Some(is_ps) = template_copy_kind(line) {
+        if template_copy_kind(line).is_some() {
             grown.push(line);
-            let dest = copy_destination(line.trim()).map(norm_install_path);
-            let creator = creations.iter().rev().find(|c| {
-                c.contains("New-Item") == is_ps
-                    && created_tokens(c)
-                        .into_iter()
-                        .any(|t| Some(norm_install_path(t)) == dest)
-            });
-            if let Some(&creator) = creator {
-                repeated_after_copy = true;
-                grown.push(creator);
-            }
         } else if !created_tokens(line).is_empty() {
             creations.push(line);
-            if !repeated_creation {
-                repeated_creation = true;
-                grown.push(line);
-            }
         }
     }
-    assert!(repeated_creation, "no creation line to repeat");
     assert!(
         repeated_after_copy,
         "no creation line to repeat after a copy"
@@ -871,30 +871,52 @@ fn readme_install_block_checker_tolerates_added_copy_lines() {
     assert_checker_rejects_mutations(&grown);
 }
 
-/// One PowerShell line that both creates a destination directory and copies
-/// into it (the creation counts as preceding the copy on the same line) must
-/// pass the checker, and deleting it must not demand a rejection: the copy
-/// goes with the line.
+/// An extra destination-creation line ahead of a copy (here: every creation
+/// line repeated right after itself) is harmless README growth too: it still
+/// passes the checker and the mutation battery, which then no longer demands
+/// a rejection for deleting one of the two identical creations.
+#[test]
+fn readme_install_block_checker_tolerates_extra_creation_before_copy() {
+    let readme = lf(&fs::read_to_string(repo_root().join("README.md")).expect("read README.md"));
+    let mut grown = Vec::new();
+    for line in readme.lines() {
+        grown.push(line);
+        if !created_tokens(line).is_empty() {
+            grown.push(line);
+        }
+    }
+    let grown = grown.join("\n");
+    check_readme_install_blocks(&grown).expect("README with repeated creation lines passes");
+    assert_checker_rejects_mutations(&grown);
+}
+
+/// One line (PowerShell and POSIX alike) that both creates a destination
+/// directory and copies into it (the creation counts as preceding the copy on
+/// the same line) must pass the checker, and deleting it must not demand a
+/// rejection: the copy goes with the line.
 #[test]
 fn readme_install_block_checker_accepts_combined_create_and_copy_line() {
     let readme = lf(&fs::read_to_string(repo_root().join("README.md")).expect("read README.md"));
     let lines: Vec<&str> = readme.lines().collect();
-    let i = (0..lines.len() - 1)
-        .find(|&i| {
-            let tokens = created_tokens(lines[i]);
-            lines[i].contains("New-Item")
-                && template_copy_kind(lines[i + 1]) == Some(true)
-                && tokens.len() == 1
-                && copy_destination(lines[i + 1].trim()).map(norm_install_path)
-                    == Some(norm_install_path(tokens[0]))
-        })
-        .expect("a PowerShell creation line followed by a copy into it");
-    let combined = format!("{}; {}", lines[i].trim_end(), lines[i + 1].trim());
-    let variant = [&lines[..i], &[combined.as_str()], &lines[i + 2..]]
-        .concat()
-        .join("\n");
-    check_readme_install_blocks(&variant).expect("combined create-and-copy line passes");
-    assert_checker_rejects_mutations(&variant);
+    for is_ps in [true, false] {
+        let i = (0..lines.len() - 1)
+            .find(|&i| {
+                let tokens = created_tokens(lines[i]);
+                lines[i].contains("New-Item") == is_ps
+                    && template_copy_kind(lines[i + 1]) == Some(is_ps)
+                    && tokens.len() == 1
+                    && copy_destination(lines[i + 1].trim()).map(norm_install_path)
+                        == Some(norm_install_path(tokens[0]))
+            })
+            .unwrap_or_else(|| panic!("no creation line (powershell: {is_ps}) followed by a copy"));
+        let combined = format!("{}; {}", lines[i].trim_end(), lines[i + 1].trim());
+        let variant = [&lines[..i], &[combined.as_str()], &lines[i + 2..]]
+            .concat()
+            .join("\n");
+        check_readme_install_blocks(&variant)
+            .unwrap_or_else(|e| panic!("combined line (powershell: {is_ps}) rejected: {e}"));
+        assert_checker_rejects_mutations(&variant);
+    }
 }
 
 /// Normalize line endings for a cross-platform byte comparison: this repo is
