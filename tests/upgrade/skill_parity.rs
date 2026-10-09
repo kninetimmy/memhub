@@ -691,9 +691,9 @@ fn assert_checker_rejects_mutations(readme: &str) {
         .map(norm_install_path)
         .collect();
 
-    // How many lines of each install block create each (half, destination):
-    // a creation another line of the block repeats is redundant, so deleting
-    // just one of them is legitimately accepted.
+    // Which lines of each install block create each (half, destination), and
+    // which copy lines write into it. Deleting a creation line is only
+    // accepted when another creation still precedes every such copy line.
     let mut block_of_line = Vec::new();
     let mut block = 0;
     for line in readme.lines() {
@@ -702,16 +702,42 @@ fn assert_checker_rejects_mutations(readme: &str) {
         }
         block_of_line.push(block);
     }
-    let mut creators: std::collections::BTreeMap<(usize, bool, String), usize> =
+    type Key = (usize, bool, String);
+    let mut creators: std::collections::BTreeMap<Key, Vec<usize>> =
         std::collections::BTreeMap::new();
+    let mut copies: std::collections::BTreeMap<Key, Vec<usize>> = std::collections::BTreeMap::new();
     for (idx, line) in readme.lines().enumerate() {
         let is_ps = line.contains("New-Item");
         for token in created_tokens(line) {
-            *creators
+            creators
                 .entry((block_of_line[idx], is_ps, norm_install_path(token)))
-                .or_default() += 1;
+                .or_default()
+                .push(idx);
+        }
+        let copy_is_ps = (line.contains("Copy-Item") && line.contains("templates\\"))
+            .then_some(true)
+            .or_else(|| (line.contains("cp ") && line.contains("templates/")).then_some(false));
+        if let (Some(is_ps), Some(dest)) = (copy_is_ps, copy_destination(line.trim())) {
+            copies
+                .entry((block_of_line[idx], is_ps, norm_install_path(dest)))
+                .or_default()
+                .push(idx);
         }
     }
+    // True when dropping `token` from the creation on line `idx` leaves a copy
+    // line writing into it with no earlier creation left in its block.
+    let needs_rejection = |idx: usize, token: &str| {
+        let key = (
+            block_of_line[idx],
+            readme.lines().nth(idx).unwrap().contains("New-Item"),
+            norm_install_path(token),
+        );
+        copies.get(&key).is_some_and(|copy_lines| {
+            copy_lines
+                .iter()
+                .any(|&c| !creators[&key].iter().any(|&j| j != idx && j < c))
+        })
+    };
 
     let (mut guards, mut creations) = (0, 0);
     for (idx, line) in readme.lines().enumerate() {
@@ -755,14 +781,11 @@ fn assert_checker_rejects_mutations(readme: &str) {
             .collect();
         if !tokens.is_empty() {
             creations += 1;
-            let is_ps = line.contains("New-Item");
-            let redundant =
-                |token: &str| creators[&(block_of_line[idx], is_ps, norm_install_path(token))] > 1;
-            if tokens.iter().all(|t| !redundant(t)) {
+            if tokens.iter().any(|t| needs_rejection(idx, t)) {
                 reject(idx, "", "no earlier", "a destination-creation line deleted");
             }
             for token in tokens {
-                if !redundant(token) {
+                if needs_rejection(idx, token) {
                     reject(
                         idx,
                         &line.replacen(token, "", 1),
