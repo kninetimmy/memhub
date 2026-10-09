@@ -457,13 +457,17 @@ fn readme_install_blocks_enumerate_every_skill() {
 
 /// Creation tokens (raw, unnormalized destination paths) of a `mkdir -p` or
 /// `New-Item -ItemType Directory ... -Path a,b` README line; empty otherwise.
-/// A `mkdir -p` list ends at the first `;`, so a creation joined to a copy on
-/// one line (`mkdir -p d; for ...; cp "$f" d/; done`) does not count the
-/// copy's destination as a second creation.
+/// A `mkdir -p` list ends at the first token ending in `;` or equal to a shell
+/// control operator (`&&`, `||`, `|`), so a creation joined to a copy on one
+/// line (`mkdir -p d; for ...; cp "$f" d/; done`, `mkdir -p d && cp x d/`)
+/// does not count the copy's destination as a second creation.
 fn created_tokens(line: &str) -> Vec<&str> {
     if let Some(i) = line.find("mkdir -p ") {
         let mut tokens = Vec::new();
         for t in line[i + "mkdir -p ".len()..].split_whitespace() {
+            if matches!(t, "&&" | "||" | "|") {
+                break;
+            }
             let path = t.trim_end_matches(';');
             if !path.is_empty() {
                 tokens.push(path);
@@ -678,12 +682,26 @@ fn readme_skill_copy_commands_skip_metrics() {
     }
 }
 
+#[test]
+fn created_tokens_stop_at_shell_control_operators() {
+    for op in ["&&", "||", "|", ";"] {
+        let line = format!("mkdir -p d e {op} cp x d/");
+        assert_eq!(created_tokens(&line), ["d", "e"], "operator {op:?}");
+    }
+    assert_eq!(created_tokens("mkdir -p d && cp x d/"), ["d"]);
+    assert_eq!(created_tokens("mkdir -p a b; cp x a/ b/"), ["a", "b"]);
+    assert_eq!(created_tokens("mkdir -p a b;"), ["a", "b"]);
+    assert_eq!(created_tokens("mkdir -p a b"), ["a", "b"]);
+}
+
 /// Feeds `check_readme_install_blocks` mutated copies of `readme` (one line
 /// changed at a time) and requires each to be rejected for the expected
 /// reason: every copy line losing its metrics guard or swapping it for the
 /// wrong form, and every destination-creation line (or each of its paths)
-/// being removed. Reasons are asserted, not just failure.
-fn assert_checker_rejects_mutations(readme: &str) {
+/// being removed. Reasons are asserted, not just failure. Returns how many
+/// creation-line deletions the battery demanded (and confirmed) a rejection
+/// for, so each caller can assert what applies to its README.
+fn assert_checker_rejects_mutations(readme: &str) -> usize {
     check_readme_install_blocks(readme).expect("unmutated README passes");
 
     // Replace the line at `idx` with `new_line` and require a rejection whose
@@ -773,7 +791,7 @@ fn assert_checker_rejects_mutations(readme: &str) {
         })
     };
 
-    let (mut guards, mut creations) = (0, 0);
+    let (mut guards, mut demanded_deletions) = (0, 0);
     for (idx, line) in readme.lines().enumerate() {
         if let Some(is_ps) = template_copy_kind(line) {
             guards += 1;
@@ -806,9 +824,9 @@ fn assert_checker_rejects_mutations(readme: &str) {
             .filter(|t| destinations.contains(&norm_install_path(t)))
             .collect();
         if !tokens.is_empty() {
-            creations += 1;
             if tokens.iter().any(|t| needs_rejection(idx, t, true)) {
                 reject(idx, "", "no earlier", "a destination-creation line deleted");
+                demanded_deletions += 1;
             }
             for token in tokens {
                 if needs_rejection(idx, token, false) {
@@ -822,18 +840,24 @@ fn assert_checker_rejects_mutations(readme: &str) {
             }
         }
     }
-    // The README ships 8 POSIX + 8 PowerShell copy lines and 10 creation
-    // lines (1 per half in each quickstart, 2 per half in Install by hand);
-    // legitimate growth only raises these, so they are floors.
+    // The README ships 8 POSIX + 8 PowerShell copy lines; legitimate growth
+    // only raises this, so it is a floor.
     assert!(guards >= 16, "mutated only {guards} copy lines");
-    assert!(creations >= 10, "mutated only {creations} creation lines");
+    demanded_deletions
 }
 
 /// Proves the checker actually rejects each defect, on the real README.
 #[test]
 fn readme_install_block_checker_rejects_mutations() {
     let readme = lf(&fs::read_to_string(repo_root().join("README.md")).expect("read README.md"));
-    assert_checker_rejects_mutations(&readme);
+    // The README ships 10 creation lines (1 per half in each quickstart, 2 per
+    // half in Install by hand), each of whose deletion must be rejected;
+    // legitimate growth only raises this, so it is a floor.
+    let demanded = assert_checker_rejects_mutations(&readme);
+    assert!(
+        demanded >= 10,
+        "battery demanded only {demanded} creation-deletion rejections"
+    );
 }
 
 /// Legitimate README growth must not trip either install-block test: one
@@ -868,7 +892,12 @@ fn readme_install_block_checker_tolerates_added_copy_lines() {
     );
     let grown = grown.join("\n");
     check_readme_install_blocks(&grown).expect("README with extra guarded copy lines passes");
-    assert_checker_rejects_mutations(&grown);
+    let demanded_grown = assert_checker_rejects_mutations(&grown);
+    let demanded_original = assert_checker_rejects_mutations(&readme);
+    assert_eq!(
+        demanded_grown, demanded_original,
+        "a repeated creation landed ahead of a copy, so the battery no longer demands a rejection for deleting every original creation line"
+    );
 }
 
 /// An extra destination-creation line ahead of a copy (here: every creation
