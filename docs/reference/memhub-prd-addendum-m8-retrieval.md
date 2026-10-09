@@ -164,10 +164,13 @@ CREATE INDEX embeddings_model
     ON embeddings(model_name);
 ```
 
-The `source_type` values above are the original three. Later migrations
-widened the `CHECK`: `doc_chunk` (0014), `note` (0022), and
-`arch_section` (0025). The current set is `'fact' | 'decision' | 'task' |
-'doc_chunk' | 'note' | 'arch_section'`.
+The `source_type` values above are the original three. The excerpt is
+schematic and omits the constraint: migration 0009 created the table with
+`CHECK (source_type IN ('fact', 'decision', 'task'))`. Later migrations
+rebuilt the table (SQLite cannot alter a `CHECK`) with it widened:
+`doc_chunk` (0014), `note` (0022), and `arch_section` (0025). The current
+set is `'fact' | 'decision' | 'task' | 'doc_chunk' | 'note' |
+'arch_section'`.
 
 Notes:
 
