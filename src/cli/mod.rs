@@ -80,6 +80,32 @@ fn require_global_target(global: bool) -> Result<()> {
     }
 }
 
+/// Characters that end a line in task text: LF, CR, VT, FF, NEL, LS, PS.
+fn is_line_break(c: char) -> bool {
+    matches!(
+        c,
+        '\n' | '\r' | '\u{000B}' | '\u{000C}' | '\u{0085}' | '\u{2028}' | '\u{2029}'
+    )
+}
+
+/// Collapses each run of line breaks to a single space so the text fits on one line.
+fn flatten_line_breaks(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_run = false;
+    for c in text.chars() {
+        if is_line_break(c) {
+            if !in_run {
+                out.push(' ');
+            }
+            in_run = true;
+        } else {
+            out.push(c);
+            in_run = false;
+        }
+    }
+    out
+}
+
 fn task_json(task: &crate::models::Task) -> serde_json::Value {
     json!({
         "id": task.id,
@@ -865,7 +891,7 @@ pub fn run(cli: Cli) -> Result<()> {
                     println!(
                         "[{}] {} [{}]\ncreated: {}\nupdated: {}\nnotes: {}",
                         task.id,
-                        task.title,
+                        flatten_line_breaks(&task.title),
                         task.status,
                         task.created_at,
                         task.updated_at,
@@ -899,9 +925,12 @@ pub fn run(cli: Cli) -> Result<()> {
                         let first_line = task
                             .notes
                             .as_deref()
-                            .and_then(|n| n.lines().next())
-                            .unwrap_or("")
-                            .trim();
+                            .and_then(|n| {
+                                n.split(is_line_break)
+                                    .map(str::trim)
+                                    .find(|l| !l.is_empty())
+                            })
+                            .unwrap_or("");
                         let notes = if first_line.chars().count() > 120 {
                             let cut: String = first_line.chars().take(117).collect();
                             format!("{cut}...")
@@ -909,7 +938,7 @@ pub fn run(cli: Cli) -> Result<()> {
                             first_line.to_string()
                         };
                         let sep = if notes.is_empty() { "" } else { " - " };
-                        let title = task.title.replace(['\r', '\n'], " ");
+                        let title = flatten_line_breaks(&task.title);
                         println!("[{}] [{}] {title}{sep}{notes}", task.id, task.status);
                     }
                 } else {
