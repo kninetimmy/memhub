@@ -310,6 +310,116 @@ fn task_list_brief_flattens_line_breaks_in_titles() {
     assert!(stdout.contains("[1] [open] Multi line title\n"));
 }
 
+/// Every line-break form `--brief` and `task show` must flatten.
+const LINE_BREAKS: [&str; 8] = [
+    "\n", "\r\n", "\r", "\u{2028}", "\u{2029}", "\u{0085}", "\u{000B}", "\u{000C}",
+];
+
+#[test]
+fn task_list_brief_stays_one_line_for_every_line_break() {
+    let _env_guard = crate::support::env_read_lock();
+
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    // Per line break: one task with it in the title, one with it in the notes.
+    for (i, lb) in LINE_BREAKS.iter().enumerate() {
+        let title = format!("T{i}a{lb}b");
+        let notes = format!("first{lb}second");
+        assert!(
+            run_cli(temp.path(), &["task", "add", &title])
+                .status
+                .success()
+        );
+        let titled = format!("N{i}");
+        assert!(
+            run_cli(temp.path(), &["task", "add", &titled, "--notes", &notes])
+                .status
+                .success()
+        );
+    }
+    // Blank leading lines, mixed breaks, and a break run inside a title.
+    assert!(
+        run_cli(
+            temp.path(),
+            &[
+                "task",
+                "add",
+                "Blank",
+                "--notes",
+                "\n\r\n \u{2028}\t\u{0085}text here\nnext"
+            ],
+        )
+        .status
+        .success()
+    );
+    assert!(
+        run_cli(temp.path(), &["task", "add", "Run\r\n\n\u{2029}end"])
+            .status
+            .success()
+    );
+
+    let out = run_cli(temp.path(), &["task", "list", "--brief"]);
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let task_count = 2 * LINE_BREAKS.len() + 2;
+    let lines: Vec<&str> = stdout.split('\n').collect();
+    assert_eq!(lines.len(), task_count + 1, "{stdout:?}");
+    assert_eq!(lines[task_count], "", "{stdout:?}");
+    for c in [
+        '\r', '\u{2028}', '\u{2029}', '\u{0085}', '\u{000B}', '\u{000C}',
+    ] {
+        assert!(!stdout.contains(c), "{c:?} leaked: {stdout:?}");
+    }
+    for i in 0..LINE_BREAKS.len() {
+        assert!(stdout.contains(&format!("] T{i}a b\n")), "{stdout:?}");
+        assert!(stdout.contains(&format!("] N{i} - first\n")), "{stdout:?}");
+    }
+    assert!(stdout.contains("] Blank - text here\n"), "{stdout:?}");
+    assert!(stdout.contains("] Run end\n"), "{stdout:?}");
+}
+
+#[test]
+fn task_show_flattens_title_and_keeps_notes() {
+    let _env_guard = crate::support::env_read_lock();
+
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    assert!(
+        run_cli(
+            temp.path(),
+            &[
+                "task",
+                "add",
+                "Multi\r\nline\u{2028}title",
+                "--notes",
+                "keep\nthis\nas-is"
+            ],
+        )
+        .status
+        .success()
+    );
+
+    let out = run_cli(temp.path(), &["task", "show", "1"]);
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.starts_with("[1] Multi line title [open]\ncreated: "),
+        "{stdout:?}"
+    );
+    assert!(stdout.ends_with("notes: keep\nthis\nas-is\n"), "{stdout:?}");
+}
+
+#[test]
+fn task_list_help_describes_limit() {
+    let temp = tempdir().expect("tempdir");
+    let out = run_cli(temp.path(), &["task", "list", "--help"]);
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Show at most this many tasks"), "{stdout}");
+}
+
 #[test]
 fn review_accept_json_emits_contract_shape() {
     let _env_guard = crate::support::env_read_lock();

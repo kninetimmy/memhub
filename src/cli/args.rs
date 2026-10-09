@@ -1006,6 +1006,7 @@ pub enum TaskCommand {
     List {
         #[arg(long, value_enum)]
         status: Option<TaskStatus>,
+        /// Show at most this many tasks (most recently updated first).
         #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
         limit: Option<u64>,
         /// One line per task: id, status, title, first notes line (<=120 chars).
