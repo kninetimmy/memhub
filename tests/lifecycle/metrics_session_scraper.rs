@@ -24,9 +24,10 @@ use tempfile::tempdir;
 // level further up.
 const FIXTURE: &str = include_str!("../fixtures/claude_session_sample.jsonl");
 
-// The fixture hardcodes a single calendar date (see `fixture_with_recent_date`). The 90-day default metrics retention window means a
-// fixed date eventually ages out from under these tests (it did: see issue
-// #189), so every row that must survive the retention prune substitutes
+// The fixture hardcodes a single calendar date (see
+// `fixture_with_recent_date`). The 90-day default metrics retention window
+// means a fixed date eventually ages out from under these tests (it did: see
+// issue #189), so every row that must survive the retention prune substitutes
 // this runtime-computed "yesterday" for that date instead. Timestamps that
 // exist to be pruned would stay hardcoded, but none of this file's do.
 fn recent_date() -> String {
