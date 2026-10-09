@@ -10,6 +10,9 @@ use crate::models::{NarrativeEntry, NarrativeKind};
 use crate::retrieval::{SourceType, arch_section_embed_text, eager_embed_batch_in_tx};
 
 pub const MAX_BODY_LEN: usize = 65_536;
+/// Advisory length for a `project_state` body: PROJECT.md renders it in
+/// full, so `memhub state set` warns past this. `MAX_BODY_LEN` stays the cap.
+pub const STATE_SOFT_LIMIT: usize = 4_000;
 pub const DEFAULT_HISTORY_LIMIT: usize = 25;
 
 pub fn set(

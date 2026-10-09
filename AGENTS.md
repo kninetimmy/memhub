@@ -18,10 +18,13 @@ This file is the Codex / OpenCode counterpart to `CLAUDE.md`, and is **generated
 This repo is memhub-primary as of M7-002 (2026-05-13). The DB at
 `.memhub/project.sqlite` is the source of truth; rendered markdown is
 the local human-readable view under `.memhub/rendered/`. At session
-start, read `.memhub/rendered/PROJECT.md` if present for the
-"currently building / next up / open questions" state, the
-architecture narrative, and recent session notes; if it is missing,
-fall back to `memhub recall` / `memhub status`.
+start, read `.memhub/rendered/PROJECT.md` if present. It is a compact
+frame: the "currently building / next up / open questions" state in
+full, an index of the architecture's section headings, and the recent
+session notes shortened to stubs. Pull the architecture text with
+`memhub recall` (sections are recall-searchable) or `memhub arch show`,
+and full notes with `memhub note list` or note-scoped recall. If
+PROJECT.md is missing, fall back to `memhub recall` / `memhub status`.
 
 The mid-session routing rules — prefer recall over the
 `PROJECT_LEDGER.md` ledger, and the turn-1-only PROJECT.md read —

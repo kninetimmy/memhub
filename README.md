@@ -434,7 +434,7 @@ Three views: the system as a whole, how memory follows you between machines, and
   <img src="docs/images/system-overview-motion.gif" alt="memhub system overview" width="920"/>
 </p>
 
-Your agents call memhub over [MCP](https://modelcontextprotocol.io/) or the CLI. Reads come back as a small ranked bundle pulled from the SQLite database sitting next to your code. When an agent wants to *save* something durable — a fact, a decision — the write is staged in `pending_writes` and waits at the review gate until you accept it. Low-stakes writes (tasks, notes, commands) go straight in, and `memhub render` keeps a human-readable `PROJECT.md` view of the whole thing.
+Your agents call memhub over [MCP](https://modelcontextprotocol.io/) or the CLI. Reads come back as a small ranked bundle pulled from the SQLite database sitting next to your code. When an agent wants to *save* something durable — a fact, a decision — the write is staged in `pending_writes` and waits at the review gate until you accept it. Low-stakes writes (tasks, notes, commands) go straight in, and `memhub render` keeps a compact `PROJECT.md` frame: the current state in full, an index of the architecture sections, and stubs of recent session notes, with the full text a recall away.
 
 ### Sync between your machines
 
@@ -756,7 +756,7 @@ Sync state (`[sync]` config and the per-machine baseline marker) is wiring, not 
 | `memhub code index/status/rm` | Build / inspect / drop the local code index (`.memhub/code_index.sqlite`) |
 | `memhub global enable/disable/status` | Opt this repo into the optional machine-wide store (`~/.memhub/global.sqlite`) |
 | `memhub review list/accept/reject` | Triage agent-proposed writes |
-| `memhub render` | Emit local `PROJECT.md` and `PROJECT_LEDGER.md` from the DB |
+| `memhub render` | Emit local `PROJECT.md` (state, architecture section index, session-note stubs) and `PROJECT_LEDGER.md` from the DB |
 | `memhub index status/rebuild` | Embedding coverage; backfill for `fts → hybrid` migrations |
 | `memhub eval retrieval` | Run the Recall@K harness against `tests/retrieval_golden.json` |
 | `memhub eval locate` | Recall@K harness for the code locator |
