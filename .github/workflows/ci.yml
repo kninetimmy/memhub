@@ -66,11 +66,11 @@ jobs:
             features: ""
           - os: macos-latest
             features: ""
-          # One feature-enabled lane so the hibernated metrics/viz surface
-          # (axum + tower-http, gated behind `viz` which implies `metrics`)
-          # still builds and tests instead of quietly rotting.
+          # One feature-enabled lane so the hibernated metrics surface
+          # (gated behind `metrics`) still builds and tests instead of
+          # quietly rotting.
           - os: macos-latest
-            features: viz
+            features: metrics
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -95,8 +95,8 @@ jobs:
       # build.rs's pinned SHA-256 values (or anything else about how the
       # assets are fetched/staged) change, and otherwise hits — reusing both
       # the ~150 MB of downloaded model bytes and prior compiled build
-      # output. Keyed per OS and per feature set so the `viz` lane (extra
-      # axum/tower-http deps) doesn't collide with the default-feature lane.
+      # output. Keyed per OS and per feature set so the `metrics` lane (extra
+      # ureq dep) doesn't collide with the default-feature lane.
       - name: Cache build output and pinned model assets
         uses: actions/cache@v4
         with:
