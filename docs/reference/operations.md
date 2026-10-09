@@ -317,6 +317,21 @@ digested). This applies to the architecture narrative only: the state
 narrative (`memhub state set`) still never enters recall, and session notes
 remain reachable only through an explicit `note` scope (gate Q9).
 
+**PROJECT.md shape (issue #233).** `memhub render` writes `PROJECT.md` as a
+compact frame, not a dump of the narratives: `## Currently building` carries
+the latest state body in full; `## Architecture` lists the heading path of
+every section of the latest architecture body (same chunker as the sections
+above, consecutive repeats of a split section collapsed, text before the
+first heading shown as an untitled opening entry) plus a pointer to
+`memhub recall --source-type arch` and `memhub arch show`;
+`## Recent session notes` keeps the latest 10 notes, each cut to at most 300
+characters at a word boundary with an ellipsis, plus a pointer to
+`memhub note list` and `memhub recall --source-type note`. Render only
+reads the DB for this; stored architecture bodies and notes are untouched.
+`memhub state set` warns on stderr (exit 0, stdout unchanged) when a body
+exceeds 4,000 characters, since PROJECT.md renders it in full; the 65,536
+hard cap is unchanged.
+
 Decisions can carry an optional natural-language `summary` (migration
 0011, decision 72). When set, the summary is prepended to BOTH the
 bi-encoder's embed text and the cross-encoder's rerank input, letting

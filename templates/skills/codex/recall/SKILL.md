@@ -18,9 +18,11 @@ telemetry the host captures.
 
 Use this instead of grepping `PROJECT_LEDGER.md` whenever you need
 project context mid-session. `PROJECT.md` is already in your
-session-start context for the big-picture summary; reach for the
-ledger only if recall comes up empty for something you suspect is
-recorded.
+session-start context, but only as a frame: the current state, an index
+of the architecture's section headings, and shortened session-note
+stubs. Recall fetches the full architecture sections (`--source-type
+arch`) and notes (`--source-type note`); reach for the ledger only if
+recall comes up empty for something you suspect is recorded.
 
 ## Preconditions
 
@@ -194,8 +196,9 @@ the warning just means hybrid scoring may be undercounting some rows.
 - For decision text search with no fact/task crossover, the
   legacy `memhub search "decision <terms>"` still works but
   `recall` covers it.
-- For session notes — they are write-only scratch and intentionally
-  not indexed in recall.
+- For session notes — default recall leaves them out; scope to them
+  with `--source-type note` (MCP `source_types=["note"]`), or list them
+  with `memhub note list`. `PROJECT.md` shows only shortened stubs.
 - For commands (build/test/run/lint) — use `memhub get_command` or
   `memhub list_facts`; recall does not surface the `commands` table.
 

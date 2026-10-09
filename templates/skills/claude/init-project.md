@@ -84,9 +84,10 @@ Produce two drafts, kept separate so each can be approved on its own.
 
 2. **`arch` body.** Purpose / stack / layout / key subsystems /
    known gaps. Sparse is fine for a fresh project — purpose + stack +
-   folder inventory is enough. Match the section style used by
-   `memhub render` so PROJECT.md stays readable: short paragraphs,
-   bullet lists for layout and subsystems.
+   folder inventory is enough. Use clear `##` headings per topic:
+   `memhub render` lists them as the architecture index in PROJECT.md
+   and each section is recalled separately. Short paragraphs, bullet
+   lists for layout and subsystems.
 
 ## Approval gate
 
@@ -193,7 +194,7 @@ check whether one exists at repo root:
 
   ## Build / test / run
 
-  <commands from interview, or "see Architecture in PROJECT.md">
+  <commands from interview, or "see `memhub arch show`">
   ```
 
   Approval gate before writing. If the user is on Codex, offer
