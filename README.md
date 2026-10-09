@@ -793,7 +793,7 @@ The `[retrieval]` block in `.memhub/config.toml`:
 [retrieval]
 mode = "hybrid"                  # "fts" | "hybrid"
 default_max_results = 6
-accepted_only_by_default = true  # filter to source IN ('user', 'user+agent:%')
+accepted_only_by_default = false # filter to source IN ('user', 'user+agent:%')
 include_stale_by_default = false # hide stale facts unless asked
 
 [retrieval.scoring]

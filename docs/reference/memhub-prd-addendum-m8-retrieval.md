@@ -148,7 +148,7 @@ behavior depends on the legacy `chunks` table after PR2 lands.
 CREATE TABLE embeddings (
     id              INTEGER PRIMARY KEY,
     project_id      INTEGER NOT NULL,
-    source_type     TEXT    NOT NULL,    -- 'fact' | 'decision' | 'task'
+    source_type     TEXT    NOT NULL,    -- 'fact' | 'decision' | 'task' (as of M8; widened since, see below)
     source_id       INTEGER NOT NULL,
     model_name      TEXT    NOT NULL,    -- e.g. 'bge-small-en-v1.5'
     dimension       INTEGER NOT NULL,    -- 384 for BGE-small
@@ -163,6 +163,11 @@ CREATE INDEX embeddings_lookup
 CREATE INDEX embeddings_model
     ON embeddings(model_name);
 ```
+
+The `source_type` values above are the original three. Later migrations
+widened the `CHECK`: `doc_chunk` (0014), `note` (0022), and
+`arch_section` (0025). The current set is `'fact' | 'decision' | 'task' |
+'doc_chunk' | 'note' | 'arch_section'`.
 
 Notes:
 

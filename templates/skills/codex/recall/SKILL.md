@@ -59,10 +59,12 @@ user explicitly asks to see it.
 ## Filters
 
 Pick a filter only when the question narrows naturally; otherwise let
-the default behavior surface across all three source types.
+the default behavior surface facts, decisions, tasks, and architecture
+sections.
 
 - `source_types=["fact"]` / `--source-type fact` (repeatable):
-  restrict to one or more of `fact`, `decision`, `task`, `doc`. Plain
+  restrict to one or more of `fact`, `decision`, `task`, `arch`,
+  `doc`, `note`. Plain
   recall already surfaces doc chunks once the repo has ingested at
   least one doc (see "Reaching for ingested docs" below); scope to
   `doc` explicitly for docs only.
