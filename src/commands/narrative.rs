@@ -177,7 +177,7 @@ pub(crate) struct ArchSection {
 ///   keeps two adjacent sections with the same heading apart from the several
 ///   pieces of one over-long section.
 /// - A wrapper is a first heading, with nothing before it, that every other
-///   heading is nested under (e.g. `# memhub architecture` over the whole
+///   heading, of which there is at least one, is nested under (e.g. `# memhub architecture` over the whole
 ///   body). It is left out of every heading path, and dropped as a section of
 ///   its own when it has no text beyond the heading line.
 ///
@@ -314,8 +314,16 @@ mod tests {
     fn no_wrapper_when_a_heading_sits_outside_the_first_one() {
         let two_tops = "# One\n\n## A\n\nx\n\n# Two\n\n## B\n\ny\n";
         assert_eq!(paths(two_tops), ["One", "One > A", "Two", "Two > B"]);
+    }
+
+    #[test]
+    fn no_wrapper_when_text_precedes_the_first_heading() {
         let opening = "Opening.\n\n# Overview\n\n## Storage\n\nx\n";
         assert_eq!(paths(opening), ["", "Overview", "Overview > Storage"]);
+    }
+
+    #[test]
+    fn no_wrapper_for_a_lone_heading_with_nothing_nested_under_it() {
         assert_eq!(paths("# Only\n\nJust text.\n"), ["Only"]);
     }
 }
