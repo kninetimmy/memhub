@@ -33,6 +33,12 @@ returns structured JSON directly and avoids shell quoting.
 memhub.recall(query="<one-line natural-language question>")
 ```
 
+Phrase the query as a natural-language question ("are task writes
+reviewed or direct writes?"), not a keyword list ("task writes ungated
+review require_review"). The cross-encoder scores question phrasings
+several logits higher, so a keyword bag can miss the relevance floor
+even when the row exists.
+
 CLI fallback (no MCP, or you want to pipe to other shell tools):
 
 ```bash
@@ -108,6 +114,12 @@ need day to day (issue #72) — no `rank`/`score`/`fts_score`/
   run for this call (fts mode, or hybrid with the re-ranker off);
   positive means relevant, and nonsense candidates are dropped before
   they ever reach you (the `min_rerank_score` floor).
+- `low_confidence: true` (CLI text: `[low-confidence]`) marks a hit
+  that did NOT clear the floor. It is returned only when the floor
+  dropped every candidate (alongside a `rerank_floor_dropped_all`
+  warning), as a weak lead: verify it against the source before
+  relying on it, and say it is low-confidence when you cite it. If any
+  hit cleared the floor, none are flagged.
 - `stale = true` means a fact past the verification window or a
   decision marked superseded/draft or a task marked done. Surface
   staleness when it matters; don't quote a stale fact as current.
@@ -148,12 +160,14 @@ section when you use one.
 
 ## Empty results
 
-When `results` is empty:
+When `results` is empty (nothing matched at all, or the only
+candidates were doc chunks that missed their own floor — docs are never
+returned as low-confidence leads):
 
 1. State that recall returned nothing for the query and quote the
    exact query you ran.
-2. Offer one of: rephrase the query, broaden filters
-   (drop `--accepted-only` or `--source-type`), or — if the question
+2. Offer one of: rephrase the query as a natural-language question,
+   broaden filters (drop `--accepted-only` or `--source-type`), or — if the question
    really needs the full ledger — open the configured rendered
    `PROJECT_LEDGER.md` directly.
 

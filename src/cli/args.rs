@@ -224,7 +224,7 @@ pub enum TopLevelCommand {
         /// call. Ignored in fts mode and when the re-ranker is off.
         /// Negative values disable the floor; positive values tighten
         /// nonsense rejection.
-        #[arg(long, value_name = "F")]
+        #[arg(long, value_name = "F", allow_negative_numbers = true)]
         min_rerank_score: Option<f32>,
         #[arg(long)]
         json: bool,
@@ -399,7 +399,7 @@ pub enum EvalCommand {
         /// to fts or when the re-ranker is disabled. Negative values
         /// disable the floor; positive values tighten nonsense
         /// rejection at the cost of recall on borderline matches.
-        #[arg(long, value_name = "F")]
+        #[arg(long, value_name = "F", allow_negative_numbers = true)]
         min_rerank_score: Option<f32>,
         #[arg(long)]
         json: bool,
@@ -421,8 +421,7 @@ pub enum EvalCommand {
         /// Harness-side cross-encoder floor: drop returned hits whose rerank
         /// logit is below this before scoring. Ignored without `--rerank`.
         /// Sweep it to decide whether locate needs a nonsense-rejection floor.
-        /// Use the `=` form for negative values: `--min-rerank-score=-2`.
-        #[arg(long, value_name = "F")]
+        #[arg(long, value_name = "F", allow_negative_numbers = true)]
         min_rerank_score: Option<f32>,
         #[arg(long)]
         json: bool,
@@ -1064,6 +1063,51 @@ impl CommandKind {
             Self::Run => "run",
             Self::Lint => "lint",
             Self::Other => "other",
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn floor(args: &[&str]) -> Option<f32> {
+        let mut argv = vec!["memhub"];
+        argv.extend_from_slice(args);
+        match Cli::try_parse_from(argv)
+            .expect("args should parse")
+            .command
+        {
+            TopLevelCommand::Recall {
+                min_rerank_score, ..
+            } => min_rerank_score,
+            TopLevelCommand::Eval {
+                command:
+                    EvalCommand::Retrieval {
+                        min_rerank_score, ..
+                    },
+            } => min_rerank_score,
+            TopLevelCommand::Eval {
+                command:
+                    EvalCommand::Locate {
+                        min_rerank_score, ..
+                    },
+            } => min_rerank_score,
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn min_rerank_score_accepts_space_separated_negative_value() {
+        for cmd in [
+            &["recall", "x"][..],
+            &["eval", "retrieval"][..],
+            &["eval", "locate"][..],
+        ] {
+            let spaced = [cmd, &["--min-rerank-score", "-1000"]].concat();
+            let equals = [cmd, &["--min-rerank-score=-1000"]].concat();
+            assert_eq!(floor(&spaced), Some(-1000.0), "{cmd:?}");
+            assert_eq!(floor(&spaced), floor(&equals), "{cmd:?}");
         }
     }
 }
