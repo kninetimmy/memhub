@@ -181,3 +181,20 @@ fn decision_add_rejects_source_outside_documented_vocabulary() {
         "no decision should be written when source is invalid"
     );
 }
+
+/// `rust-version` in Cargo.toml is what activates `clippy::incompatible_msrv`
+/// in the lint lane; if the key is deleted that check silently switches off.
+/// Cargo exposes the manifest value at compile time, empty when absent.
+#[test]
+fn cargo_toml_declares_a_dotted_numeric_rust_version() {
+    let msrv = env!("CARGO_PKG_RUST_VERSION");
+    let parts: Vec<&str> = msrv.split('.').collect();
+    assert!(
+        (2..=3).contains(&parts.len())
+            && parts
+                .iter()
+                .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())),
+        "Cargo.toml [package] must declare rust-version as a dotted numeric \
+         version (e.g. \"1.87\"); got {msrv:?}"
+    );
+}
