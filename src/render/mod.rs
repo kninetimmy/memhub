@@ -683,9 +683,13 @@ fn architecture_section_index(body: &str) -> Vec<String> {
 /// Shorten `text` to at most `NOTE_STUB_MAX_CHARS` characters including the
 /// trailing ellipsis, cutting at a word boundary. Shorter text is unchanged.
 /// Leading whitespace is dropped first (imported notes are stored untrimmed),
-/// so the word-boundary cut can never land before the first character.
+/// so the word-boundary cut can never land before the first character. A
+/// blank note (empty or whitespace-only) renders a placeholder, never nothing.
 fn note_stub(text: &str) -> String {
     let text = text.trim_start();
+    if text.is_empty() {
+        return "_(empty note)_".to_string();
+    }
     if text.chars().count() <= NOTE_STUB_MAX_CHARS {
         return text.to_string();
     }
@@ -800,6 +804,13 @@ mod tests {
             "{stub}"
         );
         assert!(stub.chars().count() <= 300);
+    }
+
+    #[test]
+    fn note_stub_of_a_blank_note_is_a_non_empty_placeholder() {
+        for blank in ["", " ", "   "] {
+            assert_eq!(note_stub(&collapse_inline(blank)), "_(empty note)_");
+        }
     }
 
     // --- Token Accounting section rendering ---
