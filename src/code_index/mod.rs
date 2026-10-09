@@ -616,7 +616,7 @@ fn is_indexable_source(path: &str) -> bool {
 }
 
 /// A generated/minified bundle that has a real source extension but is not
-/// hand-written code we want surfacing as a hit (e.g. `uplot.min.js`). The
+/// hand-written code we want surfacing as a hit (e.g. `jquery.min.js`). The
 /// `.min.` filename infix is the precise marker; matching it rather than a
 /// `vendor/` directory name avoids excluding hand-written code that merely
 /// lives under such a path.

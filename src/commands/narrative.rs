@@ -177,9 +177,10 @@ pub(crate) struct ArchSection {
 ///   keeps two adjacent sections with the same heading apart from the several
 ///   pieces of one over-long section.
 /// - A wrapper is a first heading, with nothing before it, that every other
-///   heading, of which there is at least one, is nested under (e.g. `# memhub architecture` over the whole
-///   body). It is left out of every heading path, and dropped as a section of
-///   its own when it has no text beyond the heading line.
+///   heading, of which there is at least one, is nested under (e.g.
+///   `# memhub architecture` over the whole body). It is left out of every
+///   heading path, and dropped as a section of its own when it has no text
+///   beyond the heading line.
 ///
 /// shortcut: nesting is detected on the joined `" > "` path text, so a later
 /// top-level heading literally named `"<wrapper> > x"` would pass as nested;

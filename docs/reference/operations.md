@@ -313,21 +313,20 @@ them, and `memhub index status` counts them. A lone wrapper heading is
 left out of section titles: when the body's first heading has nothing before
 it and every other heading, of which there is at least one, is nested under
 it (for example one `# memhub architecture` over the whole body), the
-wrapper is dropped from
-every heading path, in both the `PROJECT.md` index entries and the recall
-titles, and is dropped as a section of its own when it has no text beyond the
-heading line (with text it stays as an untitled section). A second top-level
-heading, any text before the first heading, or a body with only one heading,
-means there is no wrapper and nothing is stripped. The rule runs when sections are derived, while the
-`PROJECT.md` index is derived from the latest body at render time; so
-sections stored before the rule existed keep wrapper-prefixed recall titles
-beside stripped index entries until they are re-derived on the next
-`memhub arch set` or `memhub import`. `memhub upgrade` does not re-derive
-them. Sections are derived data:
-`memhub export` omits them, `memhub import` re-derives them from the
-imported latest body, and Drive sync snapshots carry them as part of the
-whole-DB copy while the sync digest exempts them (`project_arch` itself is
-digested). This applies to the architecture narrative only: the state
+wrapper is dropped from every heading path, in both the `PROJECT.md` index
+entries and the recall titles, and is dropped as a section of its own when it
+has no text beyond the heading line (with text it stays as an untitled
+section). A second top-level heading, any text before the first heading, or a
+body with only one heading, means there is no wrapper and nothing is
+stripped. The rule runs when sections are derived, while the `PROJECT.md`
+index is derived from the latest body at render time; so sections stored
+before the rule existed keep wrapper-prefixed recall titles beside stripped
+index entries until they are re-derived on the next `memhub arch set` or
+`memhub import`. `memhub upgrade` does not re-derive them. Sections are
+derived data: `memhub export` omits them, `memhub import` re-derives them
+from the imported latest body, and Drive sync snapshots carry them as part of
+the whole-DB copy while the sync digest exempts them (`project_arch` itself
+is digested). This applies to the architecture narrative only: the state
 narrative (`memhub state set`) still never enters recall, and session notes
 remain reachable only through an explicit `note` scope (gate Q9).
 
