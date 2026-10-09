@@ -314,8 +314,16 @@ mod tests {
     fn no_wrapper_when_a_heading_sits_outside_the_first_one() {
         let two_tops = "# One\n\n## A\n\nx\n\n# Two\n\n## B\n\ny\n";
         assert_eq!(paths(two_tops), ["One", "One > A", "Two", "Two > B"]);
+    }
+
+    #[test]
+    fn no_wrapper_when_text_precedes_the_first_heading() {
         let opening = "Opening.\n\n# Overview\n\n## Storage\n\nx\n";
         assert_eq!(paths(opening), ["", "Overview", "Overview > Storage"]);
+    }
+
+    #[test]
+    fn no_wrapper_for_a_lone_heading_with_nothing_nested_under_it() {
         assert_eq!(paths("# Only\n\nJust text.\n"), ["Only"]);
     }
 }
