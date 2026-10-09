@@ -756,6 +756,16 @@ fn rerank_floor_warning(
         ),
         (None, None) => unreachable!("an all-dropped rerank applies at least one floor"),
     };
+    let outcome = if low_confidence_returned == 0 {
+        "No fallback hits were returned because default-included doc chunks are never \
+         fallback hits."
+            .to_string()
+    } else {
+        format!(
+            "{low_confidence_returned} top reranked candidate(s) are returned flagged \
+             low_confidence: treat them as leads, not answers."
+        )
+    };
     RecallWarning {
         kind: "rerank_floor_dropped_all".to_string(),
         stale_count: 0,
@@ -763,8 +773,7 @@ fn rerank_floor_warning(
         reason: format!(
             "Candidates existed, but none cleared the relevance {floors}; \
              the highest rerank score among dropped candidates was {highest_score:.3}. \
-             {low_confidence_returned} top reranked candidate(s) are returned flagged \
-             low_confidence: treat them as leads, not answers."
+             {outcome}"
         ),
         fix: fix.to_string(),
     }
@@ -2705,6 +2714,58 @@ mod tests {
         assert!(warning.reason.contains("highest rerank score"));
         assert!(warning.fix.contains("min_rerank_score"));
         assert!(warning.fix.contains("doc_min_rerank_score"));
+    }
+
+    #[test]
+    fn hybrid_all_dropped_only_default_docs_returns_no_fallback_hits() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        // Two docs: the rerank pass needs at least two candidates.
+        for name in ["floor-docs-a.md", "floor-docs-b.md"] {
+            let doc_file = temp.path().join(name);
+            std::fs::write(
+                &doc_file,
+                "# floordocsprobe\n\nDefault doc candidate for the doc-only floor test.\n",
+            )
+            .expect("write doc");
+            doc::add(temp.path(), &doc_file, None, "cli:user").expect("ingest doc");
+        }
+
+        let cfg_path = temp.path().join(".memhub/config.toml");
+        let mut cfg = ProjectConfig::load(&cfg_path).expect("load config");
+        cfg.retrieval.mode = RetrievalMode::Hybrid;
+        cfg.retrieval.scoring.doc_min_rerank_score = 1001.0;
+        cfg.save(&cfg_path).expect("save config");
+
+        let response = recall(
+            temp.path(),
+            RecallOptions {
+                query: "floordocsprobe".to_string(),
+                mode: Some(RetrievalMode::Hybrid),
+                max_results: 5,
+                source_types: vec![],
+                include_stale: None,
+                accepted_only: None,
+                use_reranker: None,
+                min_rerank_score: None,
+                log_metrics: false,
+                surface: None,
+            },
+        )
+        .expect("recall");
+
+        assert!(
+            response.results.is_empty(),
+            "default-included docs are never low-confidence fallback hits"
+        );
+        let warning = response
+            .warnings
+            .iter()
+            .find(|warning| warning.kind == "rerank_floor_dropped_all")
+            .expect("all-dropped doc-only pool must still warn callers");
+        assert!(warning.reason.contains("doc_min_rerank_score = 1001.000"));
+        assert!(!warning.reason.contains("flagged"));
+        assert!(warning.reason.contains("never fallback hits"));
     }
 
     #[test]

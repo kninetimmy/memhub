@@ -377,6 +377,15 @@ Output shape (cited evidence bundle):
 `provenance` is required per PRD §10.4. Empty `results` returns an
 empty array, never a hallucinated guess (decision 33).
 
+Decision 186 changed the all-dropped case:
+
+- Before: a recall whose candidates were all dropped by the rerank floor
+  returned an empty array (decision 33).
+- After: it returns up to 3 hits flagged `low_confidence` plus a
+  `rerank_floor_dropped_all` warning. Default-included doc chunks are never
+  such hits (decision 189), so a recall whose only candidates were such
+  docs still returns an empty array plus the warning.
+
 MCP write tools are unchanged in M8. Agent-originated facts and
 decisions continue to stage through `pending_writes` and require
 review (PRD §11.3); `recall` is read-only.

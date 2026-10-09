@@ -112,8 +112,9 @@ need day to day (issue #72) — no `rank`/`score`/`fts_score`/
   place in `results` — array order is the final rank, there is no
   separate `rank` field on this path. `null` when the re-ranker didn't
   run for this call (fts mode, or hybrid with the re-ranker off);
-  positive means relevant, and nonsense candidates are dropped before
-  they ever reach you (the `min_rerank_score` floor).
+  positive means relevant, and nonsense candidates are dropped by the
+  `min_rerank_score` floor — unless every candidate was dropped, in
+  which case the top ones are returned flagged `low_confidence` (below).
 - `low_confidence: true` (CLI text: `[low-confidence]`) marks a hit
   that did NOT clear the floor. It is returned only when the floor
   dropped every candidate (alongside a `rerank_floor_dropped_all`
