@@ -865,9 +865,10 @@ fn readme_install_block_checker_rejects_mutations() {
 /// every existing copy line, plus a repeat of each block's creation lines
 /// placed after all of its copies (which must not count as creating a
 /// destination in time), still passes the checker and the mutation battery.
-/// No copy line gains a second creation ahead of it, so the battery still
-/// demands a rejection for deleting every original creation line in every
-/// half of every block.
+/// No copy line gains a second creation ahead of it, so the battery demands
+/// as many creation-deletion rejections as on the unmodified README. (The
+/// count comparison cannot see a repeat placed between a destination's two
+/// copy lines, which leaves the counts equal.)
 #[test]
 fn readme_install_block_checker_tolerates_added_copy_lines() {
     let readme = lf(&fs::read_to_string(repo_root().join("README.md")).expect("read README.md"));
@@ -896,7 +897,7 @@ fn readme_install_block_checker_tolerates_added_copy_lines() {
     let demanded_original = assert_checker_rejects_mutations(&readme);
     assert_eq!(
         demanded_grown, demanded_original,
-        "a repeated creation landed ahead of a copy, so the battery no longer demands a rejection for deleting every original creation line"
+        "the battery demands {demanded_grown} creation-deletion rejections on the grown README but {demanded_original} on the unmodified one"
     );
 }
 
@@ -916,7 +917,11 @@ fn readme_install_block_checker_tolerates_extra_creation_before_copy() {
     }
     let grown = grown.join("\n");
     check_readme_install_blocks(&grown).expect("README with repeated creation lines passes");
-    assert_checker_rejects_mutations(&grown);
+    let demanded = assert_checker_rejects_mutations(&grown);
+    assert_eq!(
+        demanded, 0,
+        "battery demanded {demanded} creation-deletion rejections although every creation line is doubled"
+    );
 }
 
 /// One line (PowerShell and POSIX alike) that both creates a destination
