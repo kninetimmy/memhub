@@ -926,7 +926,9 @@ fn count_orphaned_embeddings(conn: &Connection) -> rusqlite::Result<i64> {
          WHERE (e.source_type = 'fact' AND NOT EXISTS (SELECT 1 FROM facts f WHERE f.id = e.source_id))
             OR (e.source_type = 'decision' AND NOT EXISTS (SELECT 1 FROM decisions d WHERE d.id = e.source_id))
             OR (e.source_type = 'task' AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.id = e.source_id))
-            OR (e.source_type = 'doc_chunk' AND NOT EXISTS (SELECT 1 FROM doc_chunks c WHERE c.id = e.source_id))",
+            OR (e.source_type = 'doc_chunk' AND NOT EXISTS (SELECT 1 FROM doc_chunks c WHERE c.id = e.source_id))
+            OR (e.source_type = 'note' AND NOT EXISTS (SELECT 1 FROM session_notes n WHERE n.id = e.source_id))
+            OR (e.source_type = 'arch_section' AND NOT EXISTS (SELECT 1 FROM arch_sections a WHERE a.id = e.source_id))",
         [],
         |r| r.get(0),
     )
@@ -1543,6 +1545,25 @@ mod tests {
         let orphan = find(&checks, "orphaned_embeddings");
         assert_eq!(orphan.status, Status::Warn);
         assert!(orphan.message.contains('1'));
+    }
+
+    /// Issue #232: the check covers every embedding source type, including
+    /// session notes (previously omitted) and architecture sections.
+    #[test]
+    fn orphaned_note_and_arch_section_embeddings_are_counted() {
+        let temp = healthy_repo();
+        let ctx = db::open_project(temp.path()).expect("open");
+        for source_type in ["note", "arch_section"] {
+            ctx.conn
+                .execute(
+                    "INSERT INTO embeddings(project_id, source_type, source_id, model_name, dimension, vector, content_hash)
+                     VALUES (1, ?1, 999999, 'test-model', 1, x'00', 'deadbeef')",
+                    [source_type],
+                )
+                .expect("seed orphan");
+        }
+
+        assert_eq!(count_orphaned_embeddings(&ctx.conn).expect("count"), 2);
     }
 
     #[test]
