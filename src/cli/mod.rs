@@ -88,8 +88,10 @@ fn is_line_break(c: char) -> bool {
     )
 }
 
-/// Collapses each run of line breaks to a single space so the text fits on one line.
+/// Drops line breaks at either end, then collapses each inner run to a single space so the
+/// text fits on one line.
 fn flatten_line_breaks(text: &str) -> String {
+    let text = text.trim_matches(is_line_break);
     let mut out = String::with_capacity(text.len());
     let mut in_run = false;
     for c in text.chars() {
@@ -880,7 +882,7 @@ pub fn run(cli: Cli) -> Result<()> {
                     });
                     println!("{payload}");
                 } else {
-                    println!("Created task {id}: {title}");
+                    println!("Created task {id}: {}", flatten_line_breaks(&title));
                 }
             }
             TaskCommand::Show { id, json: as_json } => {
@@ -943,11 +945,11 @@ pub fn run(cli: Cli) -> Result<()> {
                     }
                 } else {
                     for task in tasks {
-                        let notes = task.notes.unwrap_or_default();
+                        let notes = flatten_line_breaks(task.notes.as_deref().unwrap_or_default());
                         println!(
                             "[{}] {} [{}] created: {} updated: {}\n  notes: {}",
                             task.id,
-                            task.title,
+                            flatten_line_breaks(&task.title),
                             task.status,
                             task.created_at,
                             task.updated_at,

@@ -412,6 +412,123 @@ fn task_show_flattens_title_and_keeps_notes() {
 }
 
 #[test]
+fn task_plain_list_and_add_flatten_line_breaks() {
+    let _env_guard = crate::support::env_read_lock();
+
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    // Plain `task add` confirmation, for every line-break form.
+    for (i, lb) in LINE_BREAKS.iter().enumerate() {
+        let title = format!("A{i}{lb}b{lb}{lb}c");
+        let out = run_cli(temp.path(), &["task", "add", &title]);
+        assert!(out.status.success());
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(stdout, format!("Created task {}: A{i} b c\n", i + 1));
+    }
+    let out = run_cli(temp.path(), &["task", "add", "\nfoo\n"]);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "Created task 9: foo\n"
+    );
+
+    // Plain `task list`: exactly two lines per task, with multi-line notes flattened.
+    let notes = "\r\nfirst\u{2028}second\n\r";
+    assert!(
+        run_cli(
+            temp.path(),
+            &["task", "add", "Z\u{000B}title\u{0085}x", "--notes", notes]
+        )
+        .status
+        .success()
+    );
+    let out = run_cli(temp.path(), &["task", "list"]);
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let task_count = LINE_BREAKS.len() + 2;
+    let lines: Vec<&str> = stdout.split('\n').collect();
+    assert_eq!(lines.len(), 2 * task_count + 1, "{stdout:?}");
+    assert_eq!(lines[2 * task_count], "", "{stdout:?}");
+    for c in [
+        '\r', '\u{2028}', '\u{2029}', '\u{0085}', '\u{000B}', '\u{000C}',
+    ] {
+        assert!(!stdout.contains(c), "{c:?} leaked: {stdout:?}");
+    }
+    assert!(
+        lines[0].starts_with("[10] Z title x [open] created: "),
+        "{stdout:?}"
+    );
+    assert_eq!(lines[1], "  notes: first second", "{stdout:?}");
+    assert!(
+        lines[2].starts_with("[9] foo [open] created: "),
+        "{stdout:?}"
+    );
+    assert_eq!(lines[3], "  notes: (none)", "{stdout:?}");
+    for i in 0..LINE_BREAKS.len() {
+        let header = format!("[{}] A{i} b c [open] created: ", i + 1);
+        assert!(stdout.contains(&header), "{stdout:?}");
+    }
+}
+
+#[test]
+fn task_edge_line_breaks_leave_no_edge_spaces() {
+    let _env_guard = crate::support::env_read_lock();
+
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    assert!(
+        run_cli(temp.path(), &["task", "add", "\nfoo\n"])
+            .status
+            .success()
+    );
+
+    let out = run_cli(temp.path(), &["task", "list", "--brief"]);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "[1] [open] foo\n");
+    let out = run_cli(temp.path(), &["task", "show", "1"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.starts_with("[1] foo [open]\ncreated: "),
+        "{stdout:?}"
+    );
+
+    // Stored text and --json are untouched.
+    let shown = run_cli_expecting_success(temp.path(), &["task", "show", "1", "--json"]);
+    assert_eq!(shown["title"], "\nfoo\n");
+}
+
+#[test]
+fn task_list_brief_notes_cap_after_leading_breaks() {
+    let _env_guard = crate::support::env_read_lock();
+
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    let long = "y".repeat(200);
+    for (title, lead) in [("Blank", "\n\n  \n"), ("Cr", "\r")] {
+        let notes = format!("{lead}{long}\nsecond");
+        assert!(
+            run_cli(temp.path(), &["task", "add", title, "--notes", &notes])
+                .status
+                .success()
+        );
+    }
+
+    let out = run_cli(temp.path(), &["task", "list", "--brief"]);
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let expected = format!("{}...", "y".repeat(117));
+    assert!(
+        stdout.contains(&format!("[2] [open] Cr - {expected}\n")),
+        "{stdout:?}"
+    );
+    assert!(
+        stdout.contains(&format!("[1] [open] Blank - {expected}\n")),
+        "{stdout:?}"
+    );
+}
+
+#[test]
 fn task_list_help_describes_limit() {
     let temp = tempdir().expect("tempdir");
     let out = run_cli(temp.path(), &["task", "list", "--help"]);
