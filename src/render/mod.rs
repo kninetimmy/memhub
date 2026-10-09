@@ -808,7 +808,7 @@ mod tests {
 
     #[test]
     fn note_stub_of_a_blank_note_is_a_non_empty_placeholder() {
-        for blank in ["", " ", "   "] {
+        for blank in ["", " ", "   ", "\n\n", "\t"] {
             assert_eq!(note_stub(&collapse_inline(blank)), "_(empty note)_");
         }
     }

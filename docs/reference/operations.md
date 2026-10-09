@@ -311,13 +311,14 @@ migration 0025 gets its sections on the next open, FTS-only (open never
 loads the embedding model); in hybrid mode `memhub index rebuild` embeds
 them, and `memhub index status` counts them. A lone wrapper heading is
 left out of section titles: when the body's first heading has nothing before
-it and every other heading is nested under it (for example one
-`# memhub architecture` over the whole body), the wrapper is dropped from
+it and every other heading, of which there is at least one, is nested under
+it (for example one `# memhub architecture` over the whole body), the
+wrapper is dropped from
 every heading path, in both the `PROJECT.md` index entries and the recall
 titles, and is dropped as a section of its own when it has no text beyond the
 heading line (with text it stays as an untitled section). A second top-level
-heading, or any text before the first heading, means there is no wrapper and
-nothing is stripped. The rule runs when sections are derived, while the
+heading, any text before the first heading, or a body with only one heading,
+means there is no wrapper and nothing is stripped. The rule runs when sections are derived, while the
 `PROJECT.md` index is derived from the latest body at render time; so
 sections stored before the rule existed keep wrapper-prefixed recall titles
 beside stripped index entries until they are re-derived on the next
