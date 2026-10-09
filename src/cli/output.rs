@@ -202,6 +202,7 @@ pub(crate) fn index_status_to_json(s: &commands::index::IndexStatusSummary) -> s
         "decisions": { "total": s.decisions_total, "embedded": s.decisions_embedded },
         "tasks": { "total": s.tasks_total, "embedded": s.tasks_embedded },
         "doc_chunks": { "total": s.doc_chunks_total, "embedded": s.doc_chunks_embedded },
+        "notes": { "total": s.notes_total, "embedded": s.notes_embedded },
         "arch_sections": { "total": s.arch_sections_total, "embedded": s.arch_sections_embedded },
         "total_embeddings": s.total_embeddings,
         "missing_count": s.missing_count,
@@ -227,6 +228,10 @@ pub(crate) fn print_index_status(s: &commands::index::IndexStatusSummary) {
     println!(
         "Doc chunks:{} embedded / {} total",
         s.doc_chunks_embedded, s.doc_chunks_total,
+    );
+    println!(
+        "Notes:     {} embedded / {} total",
+        s.notes_embedded, s.notes_total,
     );
     println!(
         "Arch sections: {} embedded / {} total",
@@ -1357,6 +1362,34 @@ pub(crate) fn print_wrapup_policy_human(r: &WrapupPolicyReport) {
 mod tests {
     use super::*;
     use crate::retrieval::RecallHit;
+
+    /// Issue #237: session notes' counts appear in `index status --json`
+    /// alongside the other source types.
+    #[test]
+    fn index_status_json_reports_notes_counts() {
+        let s = commands::index::IndexStatusSummary {
+            model: "m".to_string(),
+            mode: RetrievalMode::Fts,
+            facts_total: 0,
+            facts_embedded: 0,
+            decisions_total: 0,
+            decisions_embedded: 0,
+            tasks_total: 0,
+            tasks_embedded: 0,
+            doc_chunks_total: 0,
+            doc_chunks_embedded: 0,
+            notes_total: 4,
+            notes_embedded: 3,
+            arch_sections_total: 0,
+            arch_sections_embedded: 0,
+            total_embeddings: 0,
+            missing_count: 1,
+            stale_ratio: 0.0,
+        };
+        let v = index_status_to_json(&s);
+        assert_eq!(v["notes"]["total"], 4);
+        assert_eq!(v["notes"]["embedded"], 3);
+    }
 
     fn untagged_hit() -> RecallHit {
         RecallHit {
