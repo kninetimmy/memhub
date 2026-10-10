@@ -873,10 +873,12 @@ observed                    Reserved for observed signals
 
 `memhub upgrade` installs a user-scope SessionStart hook so Claude Code and Codex get this repo's `PROJECT.md` frame at session start without the agent having to read it. The hook runs `memhub hook session-start` (hidden from `memhub --help`), which prints the current repo's rendered `PROJECT.md` to stdout, byte for byte, and nothing else. Outside a memhub repo, or when the repo's config or `PROJECT.md` can't be read, it prints nothing and exits 0. It never opens the database or writes a file, so it prints what the last `memhub render` wrote.
 
-Upgrade merges one entry into each of two files, with the handler `{"type": "command", "command": "memhub hook session-start", "timeout": 30}`:
+Upgrade merges one entry into each of two files:
 
-- `~/.claude/settings.json`, matcher `startup|resume|clear|compact`
-- `~/.codex/hooks.json`, matcher `startup|resume`
+- `~/.claude/settings.json`, matcher `startup|resume|clear|compact`, handler `{"type": "command", "command": "memhub hook session-start", "timeout": 30}`
+- `~/.codex/hooks.json`, matcher `startup|resume`, handler `{"type": "command", "command": "memhub hook session-start", "timeout": 30, "additionalContextLimit": 4000}`
+
+The Codex handler carries `additionalContextLimit` because Codex's default limit is about 2,500 tokens per hook output (past that it saves the full text to a file and shows the model only a head-and-tail preview), and `PROJECT.md` is capped at 8,000 bytes, which sits near that. The Claude Code handler doesn't need it. If an existing memhub entry in `~/.codex/hooks.json` lacks the field (before #300 the Codex handler was written without it), upgrade adds it, and Codex asks for `/hooks` approval again because the hook changed.
 
 Upgrade only acts on an agent whose directory exists: if `~/.claude` or `~/.codex` doesn't exist, that row is reported as skipped (for example `skipped (no ~/.codex)`) and nothing is created, so `memhub doctor`'s verdict for that agent is unchanged (its Codex check keys on `~/.codex` existing; its Claude Code check reads the repo's `.mcp.json` and `~/.claude.json`, not `~/.claude`). Inside an existing directory, a missing file is created. Every other setting and hook in those files keeps its value (key order may change), the write is atomic, and an existing memhub entry is never duplicated. A file that isn't valid JSON, or that memhub can't write (for example read-only), is left untouched and the report says the hook was not installed there. If you delete the memhub entry, later upgrades leave it out and say so. `memhub upgrade --no-hooks` skips the step; `memhub upgrade --dry-run` reports which entries it would add without writing either file. The first upgrade from a binary older than this change can't take `--no-hooks` (the old binary rejects the flag); to skip the hook then, run `cargo install --path .` in the memhub source repo first, then `memhub upgrade --no-hooks`.
 

@@ -803,48 +803,103 @@ cannot be read, it prints nothing and exits 0. It never opens or migrates
 the DB and never writes a file, so what it prints is whatever the last
 `memhub render` wrote.
 
-`memhub upgrade` installs a user-scope SessionStart entry that runs it,
-with the handler `{"type": "command", "command": "memhub hook
-session-start", "timeout": 30}`:
+`memhub upgrade` installs a user-scope SessionStart entry that runs it:
 
-- `~/.claude/settings.json`, matcher `startup|resume|clear|compact`;
-- `~/.codex/hooks.json`, matcher `startup|resume`.
+- `~/.claude/settings.json`, matcher `startup|resume|clear|compact`,
+  handler `{"type": "command", "command": "memhub hook session-start",
+  "timeout": 30}`;
+- `~/.codex/hooks.json`, matcher `startup|resume`, handler `{"type":
+  "command", "command": "memhub hook session-start", "timeout": 30,
+  "additionalContextLimit": 4000}`.
+
+`timeout` is in seconds in both tools. The Codex handler carries
+`additionalContextLimit` because Codex shows the model at most about
+2,500 tokens of a hook's output by default and, past that, saves the full
+text to a file and hands the model only a head-and-tail preview;
+PROJECT.md is capped at 8,000 bytes, which sits near that limit. (Before
+#300 both agents got the same handler, without the field.) The Claude
+Code handler does not carry it.
 
 The install runs in the `--finish` pass (the freshly installed binary),
 so the first upgrade from a binary that predates it still installs the
-hook. It acts only on an agent that is set up: if `~/.claude` or
+hook. It acts only on an agent whose directory exists: if `~/.claude` or
 `~/.codex` does not exist, that row reads `skipped (no ~/.codex)` (or
-`~/.claude`) and nothing is created for it. Because no directory is
-ever created and `~/.claude.json` is never touched, `memhub doctor`'s
-MCP-registration verdicts are unaffected (its Codex check keys on
-`~/.codex` existing, its Claude check on `~/.claude.json`). It is a
-merge, not an overwrite: every other key, setting, and
-hook (including other SessionStart groups) keeps its value — key order
-may change, because memhub's JSON writer does not preserve order — and
-the write goes to a temp file in the same directory and is renamed into
-place (a pid-unique temp, fsynced; removed if any step fails). Inside
-an existing agent directory a missing file is created; an entry that
-already runs `memhub
-hook session-start` is never duplicated (and the file is not rewritten).
-A file that is not valid JSON, or whose `hooks` / `hooks.SessionStart`
-is not an object / array, or that memhub cannot open for writing (e.g.
+`~/.claude`) and nothing is created for it; if the path exists but is
+not a directory, the row reads `skipped (~/.codex is not a directory)`
+(or `~/.claude`) and nothing is created or changed. No agent directory
+is ever created, and `~/.claude.json` is never touched. Writing the
+install record (below) may create `~/.memhub` if it is missing, so that
+is the one directory the step can create. `memhub doctor`'s
+MCP-registration verdicts are unaffected: its Codex check keys on
+`~/.codex` existing, and its Claude check passes on a repo-scoped
+`.mcp.json` that registers memhub before it reads `~/.claude.json`.
+It is a merge, not an overwrite: every other key, setting, and hook
+(including other SessionStart groups) keeps its value — key order may
+change, because memhub's JSON writer does not preserve order, and that
+also applies when an existing Codex entry is updated — and the write goes
+to a temp file in the same directory and is renamed into place (a
+pid-unique temp, fsynced; removed if any step fails; on Unix the
+directory of the replaced file is fsynced after the rename). Inside an
+existing agent directory a missing file is created.
+
+What counts as the memhub entry: a command that is exactly one program
+token followed by `hook session-start`, where the token is unquoted (no
+whitespace, quotes, or shell characters) or wrapped whole in one pair of
+`"` or `'`, and its last path component is `memhub` or `memhub.exe` in
+any letter case. So `/home/me/.cargo/bin/memhub hook session-start` and
+`"C:\Users\me\.cargo\bin\memhub.exe" hook session-start` count as
+present; a command that runs another program (`echo /x/memhub hook
+session-start`) or passes a memhub path as an argument does not. (Before
+#300 only the exact string `memhub hook session-start` counted.) An
+entry that counts is never duplicated and, for Claude, the file is not
+rewritten. For Codex, an existing memhub handler that lacks
+`additionalContextLimit` gets `"additionalContextLimit": 4000` added
+(any other value already there is left alone); the row reads `updated
+SessionStart entry` (`would update SessionStart entry` under
+`--dry-run`) and says to approve the changed hook again in Codex's
+`/hooks` screen, because Codex re-asks whenever a hook's definition
+changes (it records trust against the hook's hash) and skips the hook
+until you do.
+
+A file that is not valid JSON, or whose `hooks` / `hooks.SessionStart` is
+not an object / array, or that memhub cannot open for writing (e.g.
 read-only), is left byte-for-byte unchanged and reported as `not
-installed`; the rest of the upgrade still completes. memhub
-records each file it added the entry to in
-`~/.memhub/installed-hooks.json`; if you later delete the entry, upgrade
-reports it `left out` and does not add it back (delete that record to
-opt back in). `--no-hooks` skips the step (both rows read `skipped`);
-`--dry-run` reports `would add` without writing either file or the
-record. The first upgrade from a binary older than this change cannot
-take `--no-hooks`: that run is orchestrated by the old binary, whose
-argument parser rejects the flag. To skip the hook on that first
-upgrade, run `cargo install --path .` in the source repo first, then
-`memhub upgrade --no-hooks`. Codex runs a new or changed hook only after the user approves
-it once in its `/hooks` screen, so whenever upgrade adds the Codex entry
-its report row says to do that. OpenCode is not supported: it has no
-config-only session-start hook (it would need a TypeScript plugin), so
-upgrade installs nothing for it. `CLAUDE_CONFIG_DIR` and `CODEX_HOME`
-are not honored; the files are always under the home directory.
+installed`; the rest of the upgrade still completes. So is a dangling
+symlink at the hook file: nothing is created, and the row reads `not
+installed` with "a symlink whose target does not exist; left
+unchanged".
+
+memhub records each file it added the entry to, or found it in, in
+`~/.memhub/installed-hooks.json`, keyed by `~/.claude/settings.json` /
+`~/.codex/hooks.json` rather than absolute paths (so a removed entry
+stays removed however HOME is spelled; records written with absolute
+paths are still read). If you later delete the entry, upgrade reports it
+`left out` ("memhub's entry was in this file at an earlier upgrade and
+has since been removed; not put back") and does not add it back (delete
+that record to opt back in). `--no-hooks` skips the step (both rows read
+`skipped`); `--dry-run` reports `would add` / `would update` without
+writing either file or the record. The first upgrade from a binary older
+than this change cannot take `--no-hooks`: that run is orchestrated by
+the old binary, whose argument parser rejects the flag. To skip the hook
+on that first upgrade, run `cargo install --path .` in the source repo
+first, then `memhub upgrade --no-hooks`. Codex runs a new or changed
+hook only after the user approves it once in its `/hooks` screen, so
+whenever upgrade adds the Codex entry its report row says to do that.
+OpenCode is not supported: it has no config-only session-start hook (it
+would need a TypeScript plugin), so upgrade installs nothing for it.
+`CLAUDE_CONFIG_DIR` and `CODEX_HOME` are not honored; the files are
+always under the home directory.
+
+Known limits of the write the installer makes when it adds or updates an
+entry (it replaces the file through a temp file and a rename):
+
+- hard links and Windows ACLs on the replaced file are not kept;
+- a change another program writes to the same file during the install
+  can be lost;
+- the JSON writer is built without `preserve_order`,
+  `arbitrary_precision`, or `float_roundtrip`, so integers outside the
+  64-bit range and some floats may not round-trip exactly, a duplicated
+  key keeps only its last value, and key order may change.
 
 **Build-artifact GC (`memhub gc`).** Cargo's `target/<profile>/deps/`
 is append-only — every rebuild writes a new hash-suffixed artifact and
