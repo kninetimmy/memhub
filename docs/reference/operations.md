@@ -731,10 +731,15 @@ installs always take effect; already-a-symlink is an idempotent no-op;
 a non-symlink shadow is replaced only after a y/N confirm or `--yes`,
 otherwise the manual `ln -sf` is printed) → installed-skill resync
 (decision 97; below) → **re-exec the freshly installed binary** for the
-migrate+verify pass so migrations run under new code → per-instance
-`ready/migrated/skipped/ERROR` table plus a per-agent skills line
-(`--json` carries a `skills` array). `--dry-run` reports the plan
-(including would-sync skill counts) and changes nothing.
+migrate+verify pass so migrations run under new code → session-start
+hook install (below; run by that re-exec'd binary) → per-instance
+`ready/migrated/skipped/ERROR` table plus a per-agent skills line and a
+per-file hooks line (`--json` carries `skills` and `hooks` arrays).
+`--dry-run` reports the plan (including would-sync skill counts and
+would-add hook entries) and changes nothing. Before issue #286 the flow
+wrote no agent-CLI config file at all; it now merges one hook entry into
+`~/.claude/settings.json` and `~/.codex/hooks.json` (MCP registration is
+still manual, and `memhub doctor` still only reads agent-CLI config).
 
 Skill resync (decision 97; resolves task 50, internalizes the fact-10
 manual `cp`): the same `memhub upgrade` also refreshes the installed
@@ -778,7 +783,52 @@ likewise only ever writes into an agent dir that already exists — it
 never creates `~/.claude/commands`, `~/.codex/skills`,
 `~/.config/opencode/skills`, or `~/.config/opencode/commands`, and a
 non-directory at that path is a clean skip, not a clobber (mirrors the
-PATH-shadow and global-store "only act on what exists" rule).
+PATH-shadow and global-store "only act on what exists" rule). That rule
+holds for those three steps only, not for every upgrade step: the
+session-start hook install creates `~/.claude/settings.json` and
+`~/.codex/hooks.json` (and their directories) when they are missing.
+
+**Session-start hook (issue #286).** `memhub hook session-start` is a
+hidden command (not in `memhub --help`) that prints the current repo's
+rendered `PROJECT.md` (`<repo>/<[render] output_dir>/PROJECT.md`) to
+stdout byte for byte and nothing else, so an agent CLI gets the frame at
+session start without the agent obeying a "read PROJECT.md" instruction.
+It finds the repo from the working directory the same way every command
+does (walking up to the nearest `.memhub/`), and it never breaks a
+session: outside a memhub repo, or when the repo's config or `PROJECT.md`
+cannot be read, it prints nothing and exits 0. It never opens or migrates
+the DB and never writes a file, so what it prints is whatever the last
+`memhub render` wrote.
+
+`memhub upgrade` installs a user-scope SessionStart entry that runs it,
+with the handler `{"type": "command", "command": "memhub hook
+session-start", "timeout": 30}`:
+
+- `~/.claude/settings.json`, matcher `startup|resume|clear|compact`;
+- `~/.codex/hooks.json`, matcher `startup|resume`.
+
+The install runs in the `--finish` pass (the freshly installed binary),
+so the first upgrade from a binary that predates it still installs the
+hook. It is a merge, not an overwrite: every other key, setting, and
+hook (including other SessionStart groups) keeps its value — key order
+may change, because memhub's JSON writer does not preserve order — and
+the write goes to a temp file in the same directory and is renamed into
+place. A missing file is created; an entry that already runs `memhub
+hook session-start` is never duplicated (and the file is not rewritten).
+A file that is not valid JSON, or whose `hooks` / `hooks.SessionStart`
+is not an object / array, is left byte-for-byte unchanged and reported
+as `not installed`; the rest of the upgrade still completes. memhub
+records each file it added the entry to in
+`~/.memhub/installed-hooks.json`; if you later delete the entry, upgrade
+reports it `left out` and does not add it back (delete that record to
+opt back in). `--no-hooks` skips the step (both rows read `skipped`);
+`--dry-run` reports `would add` without writing either file or the
+record. Codex runs a new or changed hook only after the user approves
+it once in its `/hooks` screen, so whenever upgrade adds the Codex entry
+its report row says to do that. OpenCode is not supported: it has no
+config-only session-start hook (it would need a TypeScript plugin), so
+upgrade installs nothing for it. `CLAUDE_CONFIG_DIR` and `CODEX_HOME`
+are not honored; the files are always under the home directory.
 
 **Build-artifact GC (`memhub gc`).** Cargo's `target/<profile>/deps/`
 is append-only — every rebuild writes a new hash-suffixed artifact and
