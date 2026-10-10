@@ -1,0 +1,3908 @@
+{
+  "version": 1,
+  "description": "Live-database retrieval golden set (task 174). Unlike tests/retrieval_golden.json, which scores a seeded hermetic fixture in CI, this file is scored against the memhub project database of the repository it is run in (this repo's own `.memhub/project.sqlite`, about 1,000 candidate rows including facts, decisions, tasks, ingested doc chunks and architecture sections). It is NOT run in CI: an A/B comparison is two back-to-back local runs of `memhub eval retrieval --golden tests/retrieval_golden_live.json --k 5 --json` on the same database, one on the old binary or settings and one on the new, then `memhub eval compare old.json new.json`. Matchers are case-insensitive substring checks against the hit's title and body. A `match` query passes when any top-K hit satisfies the primary answer or an `also_accept` entry; every match query's `notes` name the row (type and id) that answers it, led by the primary answer. A `kind: empty` probe asks about a topic no row covers and passes when no hit clears the relevance floor (low-confidence fallback hits are tolerated). Id prefixes: `seed-NN` real agent recall queries taken verbatim from this repo's session history (NN is the position in the original list; seed 13 is omitted because no row stores an Orch plan); `kw-` keyword bags; `semantic-` natural-language paraphrases; `two-` two-part questions (every row answering either part is accepted); `vm-` vocabulary-mismatch queries written the way an agent would ask without knowing the stored wording, sharing no whole word of four or more letters with the title of any row named in their notes; `doc-` queries answered by an ingested doc chunk (pinned with a body needle unique to that chunk); `arch-` queries answered by a section of the architecture narrative; `empty-` and `near-` empty probes (`near-` ones are adjacent to topics memhub does cover). Row ids in `notes` refer to this repo's own database as of 2026-10-10 (`doc_chunk` ids are repo-scope chunk ids; the machine-global store holds other docs whose chunk ids can reuse the same numbers); the matchers, not the ids, decide pass or fail, so the set survives id shifts but a row edit or removal can invalidate a query. Numbers from this set are not comparable to the hermetic baseline (memhub fact retrieval.live-eval-not-comparable) and many queries are expected to fail under current settings: that headroom is the point.",
+  "queries": [
+    {
+      "id": "seed-01",
+      "query": "How does the memhub eval harness measure Recall@K against the golden set?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "memhub eval retrieval"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "task",
+          "title_contains": [
+            "PR6: eval harness"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Eval metric: Recall@3"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "/eval-recall skill"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "doc_chunk",
+          "title_contains": [
+            " > Retrieval"
+          ],
+          "body_contains": [
+            "Baseline recorded 2026-07-06"
+          ]
+        },
+        {
+          "source_type": "doc_chunk",
+          "title_contains": [
+            " > Retrieval"
+          ],
+          "body_contains": [
+            "Hermetic golden fixture"
+          ]
+        }
+      ],
+      "notes": "answer: decision 51; also: task 16, decision 36, decision 37, doc_chunk 466, doc_chunk 465. category: seed"
+    },
+    {
+      "id": "seed-02",
+      "query": "How should the README Project status section be refreshed after a run (decision 201, Recently fixed entries)?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "After every Delivery"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Review-follow-up runs"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 164; also: decision 201. category: seed"
+    },
+    {
+      "id": "seed-03",
+      "query": "How should the architecture section index handle a wrapper heading or repeated headings?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Architecture sections"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "doc_chunk",
+          "title_contains": [
+            " > Retrieval"
+          ],
+          "body_contains": [
+            "consecutive repeats of a split section collapsed"
+          ]
+        },
+        {
+          "source_type": "doc_chunk",
+          "title_contains": [
+            " > Retrieval"
+          ],
+          "body_contains": [
+            "A lone wrapper heading is"
+          ]
+        }
+      ],
+      "notes": "answer: decision 194; also: doc_chunk 464, doc_chunk 463. category: seed"
+    },
+    {
+      "id": "seed-04",
+      "query": "Is the viz dashboard hibernated, and what was decided about keeping or fixing it?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Delete the viz dashboard"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Keep metrics hibernated"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "task",
+          "title_contains": [
+            "Delete the viz dashboard"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Hibernate metrics/viz/calibrate"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 193; also: decision 195, task 165, decision 154. category: seed"
+    },
+    {
+      "id": "seed-05",
+      "query": "PROJECT.md render size cap note stubs SessionStart hook install upgrade",
+      "kind": "match",
+      "source_type": "task",
+      "title_contains": [
+        "SessionStart hook:"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "PROJECT.md is capped"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "memhub may install"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "The session-start hook is"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "task",
+          "title_contains": [
+            "Cap the PROJECT.md"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: task 178; also: decision 202, decision 199, decision 203, task 177. category: seed"
+    },
+    {
+      "id": "seed-06",
+      "query": "README Project status Recently-fixed entry sentence cap",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Review-follow-up runs"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "task",
+          "title_contains": [
+            "Review follow-ups from run-20261010T141912Z"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "task",
+          "title_contains": [
+            "Review follow-ups from run-20261009T230102Z"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 201; also: task 182, task 173. category: seed"
+    },
+    {
+      "id": "seed-07",
+      "query": "Recently-fixed entry at most seven sentences README status test",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Review-follow-up runs"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "task",
+          "title_contains": [
+            "Review follow-ups from run-20261010T141912Z"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 201; also: task 182. category: seed"
+    },
+    {
+      "id": "seed-08",
+      "query": "Was it decided that the state and architecture narratives or session notes should not be recall sources?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "The architecture narrative"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "arch_section",
+          "title_contains": [
+            "Key Subsystems"
+          ],
+          "body_contains": [
+            "state narrative is not indexed"
+          ]
+        },
+        {
+          "source_type": "doc_chunk",
+          "title_contains": [
+            " > Retrieval"
+          ],
+          "body_contains": [
+            "remain reachable only through an explicit"
+          ]
+        }
+      ],
+      "notes": "answer: decision 190; also: arch_section 6, doc_chunk 463. category: seed"
+    },
+    {
+      "id": "seed-09",
+      "query": "What decisions were made about the retrieval golden set and eval baseline?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Golden set mixes keyword-style"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Eval metric: Recall@3"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Golden queries are"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "memhub eval retrieval"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "retrieval.live-eval-not-comparable"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "doc_chunk",
+          "title_contains": [
+            " > Retrieval"
+          ],
+          "body_contains": [
+            "Baseline recorded 2026-07-06"
+          ]
+        }
+      ],
+      "notes": "answer: decision 69; also: decision 36, decision 53, decision 51, fact 56, doc_chunk 466. category: seed"
+    },
+    {
+      "id": "seed-10",
+      "query": "What did decision 186 and decision 189 decide about low_confidence fallback and doc chunks?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Recall returns top-3"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Default-included doc"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "doc_chunk",
+          "title_contains": [
+            " > Retrieval"
+          ],
+          "body_contains": [
+            "Low-confidence fallback (issue #225)"
+          ]
+        }
+      ],
+      "notes": "answer: decision 186; also: decision 189, doc_chunk 462. category: seed, two-part"
+    },
+    {
+      "id": "seed-11",
+      "query": "What did the fix recommendations doc say about bounding PROJECT.md size, session notes and the architecture body?",
+      "kind": "match",
+      "source_type": "task",
+      "title_contains": [
+        "Bound PROJECT.md: cap"
+      ],
+      "body_contains": [],
+      "notes": "answer: task 155. category: seed"
+    },
+    {
+      "id": "seed-12",
+      "query": "What did the obsidian-mind comparison find about recall evaluation and McNemar testing?",
+      "kind": "match",
+      "source_type": "task",
+      "title_contains": [
+        "Grow the recall golden"
+      ],
+      "body_contains": [],
+      "notes": "answer: task 174. category: seed"
+    },
+    {
+      "id": "seed-14",
+      "query": "What do the README Recently-fixed entries need to follow for sentence length and Before/After structure?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Review-follow-up runs"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "After every Delivery"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 201; also: decision 164. category: seed"
+    },
+    {
+      "id": "seed-15",
+      "query": "What does decision 201 say about README Recently-fixed entries, and which runs get a README status entry?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Review-follow-up runs"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "After every Delivery"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 201; also: decision 164. category: seed, two-part"
+    },
+    {
+      "id": "seed-16",
+      "query": "blast radius enumeration PR body who writes it after pr-open",
+      "kind": "match",
+      "source_type": "task",
+      "title_contains": [
+        "Orch repo: give orch-scout"
+      ],
+      "body_contains": [],
+      "notes": "answer: task 164. category: seed"
+    },
+    {
+      "id": "seed-17",
+      "query": "does local clippy flag code that the CI lint lane accepts, and which one is authoritative?",
+      "kind": "match",
+      "source_type": "task",
+      "title_contains": [
+        "Re-align local clippy"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "clippy.local-version-drift"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "clippy.local-clean"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "ci-lint-unix-only-surface"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: task 125; also: fact 33, fact 60, fact 31. category: seed"
+    },
+    {
+      "id": "seed-18",
+      "query": "how does memhub upgrade install the session-start hook into Claude Code and Codex settings, and what was decided about hook install safety?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "The session-start hook is"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "memhub may install"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "task",
+          "title_contains": [
+            "SessionStart hook:"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "agent-cli-configs.write-scope"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "The Codex hook handler"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "The session-start hook installer"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 203; also: decision 199, task 178, fact 62, decision 206, decision 207. category: seed, two-part"
+    },
+    {
+      "id": "seed-19",
+      "query": "how does the README install-block test check copy lines and destination creation order?",
+      "kind": "match",
+      "source_type": "task",
+      "title_contains": [
+        "Extend the README install-block"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "README install paths"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "task",
+          "title_contains": [
+            "Review follow-ups from run-20261009T180059Z"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "task",
+          "title_contains": [
+            "Review follow-ups from run-20261009T185803Z"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: task 137; also: decision 173, task 168, task 169. category: seed"
+    },
+    {
+      "id": "seed-20",
+      "query": "how is the min_rerank_score floor calibrated and when must the eval be re-run?",
+      "kind": "match",
+      "source_type": "fact",
+      "title_contains": [
+        "retrieval.min_rerank_score-calibration"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Retire min_vector_score;"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: fact 6; also: decision 71. category: seed, two-part"
+    },
+    {
+      "id": "seed-21",
+      "query": "how should one-line task output handle whitespace and blank titles?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Blank task titles print"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "One-line task output"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 197; also: decision 200. category: seed"
+    },
+    {
+      "id": "seed-22",
+      "query": "how should task list --brief format titles and notes, and what did we decide about task show?",
+      "kind": "match",
+      "source_type": "task",
+      "title_contains": [
+        "PR #222 non-blocking"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "One-line task output"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Blank task titles print"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: task 153; also: decision 200, decision 197. category: seed, two-part"
+    },
+    {
+      "id": "seed-23",
+      "query": "how should task list and task show print multi-line task titles and notes?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "One-line task output"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Blank task titles print"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "task",
+          "title_contains": [
+            "PR #222 non-blocking"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "task",
+          "title_contains": [
+            "Review follow-ups from run-20261009T210758Z"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "task",
+          "title_contains": [
+            "Review follow-ups from run-20261009T214524Z"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 200; also: decision 197, task 153, task 170, task 172. category: seed"
+    },
+    {
+      "id": "seed-24",
+      "query": "how should task list and task show print titles with line breaks or edge spaces?",
+      "kind": "match",
+      "source_type": "task",
+      "title_contains": [
+        "Review follow-ups from run-20261009T214524Z"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "One-line task output"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Blank task titles print"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "task",
+          "title_contains": [
+            "Review follow-ups from run-20261009T230102Z"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "task",
+          "title_contains": [
+            "Review follow-ups from run-20261009T210758Z"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: task 172; also: decision 200, decision 197, task 173, task 170. category: seed"
+    },
+    {
+      "id": "seed-25",
+      "query": "local clippy newer than CI pin; executor verification gotchas",
+      "kind": "match",
+      "source_type": "task",
+      "title_contains": [
+        "Re-align local clippy"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "clippy.local-version-drift"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "clippy.local-clean"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "ci-lint-unix-only-surface"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: task 125; also: fact 33, fact 60, fact 31. category: seed"
+    },
+    {
+      "id": "seed-26",
+      "query": "memhub upgrade Windows MCP server running binary lock staged relaunch",
+      "kind": "match",
+      "source_type": "fact",
+      "title_contains": [
+        "upgrade.windows-binary-lock"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "upgrade.windows-self-stage"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "upgrade.windows-resync-lag"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "task",
+          "title_contains": [
+            "memhub upgrade: rename-aside"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: fact 27; also: fact 14, fact 23, task 108. category: seed"
+    },
+    {
+      "id": "seed-27",
+      "query": "near-duplicate detection when proposing a fact, confidence levels, contradiction probe",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Accept-time contradiction"
+      ],
+      "body_contains": [],
+      "notes": "answer: decision 147. category: seed"
+    },
+    {
+      "id": "seed-28",
+      "query": "orch plan risk_domains values accepted",
+      "kind": "match",
+      "source_type": "fact",
+      "title_contains": [
+        "orch.plan-vocabulary"
+      ],
+      "body_contains": [],
+      "notes": "answer: fact 66. category: seed"
+    },
+    {
+      "id": "seed-29",
+      "query": "query expansion rewrite HyDE local model recall",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Query rewriting stays"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "task",
+          "title_contains": [
+            "Multi-query recall:"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 198; also: task 175. category: seed"
+    },
+    {
+      "id": "seed-30",
+      "query": "task 99 trim duplicated routing AGENTS.md keep the CLAUDE.md pointer",
+      "kind": "match",
+      "source_type": "task",
+      "title_contains": [
+        "Q41 spike: can the"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "task",
+          "title_contains": [
+            "Trim redundant Session"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: task 99; also: task 78. category: seed"
+    },
+    {
+      "id": "seed-31",
+      "query": "what conventions apply to the README install-block tests and the clippy version pin in CI?",
+      "kind": "match",
+      "source_type": "task",
+      "title_contains": [
+        "Extend the README install-block"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "README install paths"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "task",
+          "title_contains": [
+            "Re-align local clippy"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "clippy.local-version-drift"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "ci-lint-unix-only-surface"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "clippy.local-clean"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: task 137; also: decision 173, task 125, fact 33, fact 31, fact 60. category: seed, two-part"
+    },
+    {
+      "id": "seed-32",
+      "query": "what should recall return when no candidate clears the rerank floor?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Recall returns top-3"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "doc_chunk",
+          "title_contains": [
+            " > Retrieval"
+          ],
+          "body_contains": [
+            "Low-confidence fallback (issue #225)"
+          ]
+        },
+        {
+          "source_type": "task",
+          "title_contains": [
+            "Emit a warning when"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "task",
+          "title_contains": [
+            "Fix hybrid recall returning"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 186; also: doc_chunk 462, task 144, task 152. category: seed"
+    },
+    {
+      "id": "seed-33",
+      "query": "which risk_domains value did the Orch plan declare for the session-start hook issue #290, and what does decision 201 say about Recently-fixed README entries for follow-up runs?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Review-follow-up runs"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "orch.plan-vocabulary"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 201; also: fact 66. category: seed, two-part"
+    },
+    {
+      "id": "seed-34",
+      "query": "why did we decide to delete the viz dashboard instead of maintaining it, and what about metrics hibernation?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Delete the viz dashboard"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Keep metrics hibernated"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "task",
+          "title_contains": [
+            "Delete the viz dashboard"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 193; also: decision 195, task 165. category: seed, two-part"
+    },
+    {
+      "id": "kw-fts5-source-tables",
+      "query": "FTS5 virtual tables triggers synced with source tables",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "FTS5 virtual tables"
+      ],
+      "body_contains": [],
+      "notes": "answer: decision 26. category: keyword bag"
+    },
+    {
+      "id": "kw-eager-embed-transaction",
+      "query": "eager embed on write same transaction",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Eager-embed on writes"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Eager-embed is gated"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 27; also: decision 44. category: keyword bag"
+    },
+    {
+      "id": "kw-content-hash-drift",
+      "query": "content_hash drift detection stale embedding",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "content_hash drift"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "SHA256-hex over UTF-8"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 28; also: decision 43. category: keyword bag"
+    },
+    {
+      "id": "kw-fastembed-onnx",
+      "query": "fastembed ONNX runtime embedding library",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Embedding library:"
+      ],
+      "body_contains": [],
+      "notes": "answer: decision 22. category: keyword bag"
+    },
+    {
+      "id": "kw-sqlite-blob-cosine",
+      "query": "brute-force cosine SQLite BLOB vectors",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Vector storage: SQLite"
+      ],
+      "body_contains": [],
+      "notes": "answer: decision 24. category: keyword bag"
+    },
+    {
+      "id": "kw-snapshot-last-writer-wins",
+      "query": "whole-DB snapshot last-writer-wins sync",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "M10 cross-machine sync:"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "M10 scope boundary:"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 102; also: decision 103. category: keyword bag"
+    },
+    {
+      "id": "kw-synchronous-normal-wal",
+      "query": "synchronous NORMAL WAL fsync",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Adopt SQLite synchronous"
+      ],
+      "body_contains": [],
+      "notes": "answer: decision 140. category: keyword bag"
+    },
+    {
+      "id": "kw-doctor-strict-groups",
+      "query": "doctor check groups strict exit code",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "memhub doctor: CLI-only"
+      ],
+      "body_contains": [],
+      "notes": "answer: decision 141. category: keyword bag"
+    },
+    {
+      "id": "kw-adopt-vacuum-backup",
+      "query": "adopt VACUUM INTO safety copy online-backup restore",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Sync adopt replaces"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "doc_chunk",
+          "title_contains": [
+            "Cross-machine Drive sync"
+          ],
+          "body_contains": [
+            "last-replaced.sqlite"
+          ]
+        }
+      ],
+      "notes": "answer: decision 162; also: doc_chunk 457. category: keyword bag"
+    },
+    {
+      "id": "kw-content-tables-drift-test",
+      "query": "CONTENT_TABLES pragma_table_info drift test",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "CONTENT_TABLES stays"
+      ],
+      "body_contains": [],
+      "notes": "answer: decision 163. category: keyword bag"
+    },
+    {
+      "id": "kw-msrv-rust-version",
+      "query": "rust-version 1.87 MSRV Cargo.toml",
+      "kind": "match",
+      "source_type": "fact",
+      "title_contains": [
+        "rust.msrv.v0.2.2"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Declare memhub's true"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "task",
+          "title_contains": [
+            "Add a test asserting"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "rust.msrv"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: fact 51; also: decision 172, task 136, fact 38. category: keyword bag"
+    },
+    {
+      "id": "kw-first-tagged-release",
+      "query": "v0.2.0 first tagged GitHub release",
+      "kind": "match",
+      "source_type": "fact",
+      "title_contains": [
+        "github.releases"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "memhub ships tagged"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: fact 40; also: decision 174. category: keyword bag"
+    },
+    {
+      "id": "kw-codex-additional-context-limit",
+      "query": "additionalContextLimit Codex SessionStart hook output cap",
+      "kind": "match",
+      "source_type": "fact",
+      "title_contains": [
+        "codex.hook-output-contract"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "The Codex hook handler"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: fact 65; also: decision 206. category: keyword bag"
+    },
+    {
+      "id": "kw-project-md-byte-budget",
+      "query": "PROJECT.md 8,000-byte budget drop order",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "PROJECT.md is capped"
+      ],
+      "body_contains": [],
+      "notes": "answer: decision 202. category: keyword bag"
+    },
+    {
+      "id": "kw-memdolt-dolt-sibling",
+      "query": "memdolt Dolt Go sibling project",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "memdolt greenlit as"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "memdolt.prd"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 178; also: fact 43. category: keyword bag"
+    },
+    {
+      "id": "kw-readme-hero-gif",
+      "query": "README hero GIF frame generator static SVG",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "README motion graphics"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "README hero animation"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "readme.animated-hero-regen"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "README hero is the"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 181; also: decision 180, fact 46, decision 179. category: keyword bag"
+    },
+    {
+      "id": "kw-stale-embeddings-reindex",
+      "query": "stale_embeddings warning ask before /reindex",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Stale-embedding UX:"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "CLAUDE.md and AGENTS.md teach"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "stale-embeddings ask-before-/reindex"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 29; also: decision 50, decision 126. category: keyword bag"
+    },
+    {
+      "id": "kw-mcp-direct-vs-staged-writes",
+      "query": "MCP direct writes staged writes claims intent",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "MCP tool trust split:"
+      ],
+      "body_contains": [],
+      "notes": "answer: decision 17. category: keyword bag"
+    },
+    {
+      "id": "kw-orch-default-role-profiles",
+      "query": "Orch v0.12.0 default role profiles machine-local model pins",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Adopt Orch v0.12.0"
+      ],
+      "body_contains": [],
+      "notes": "answer: decision 185. category: keyword bag"
+    },
+    {
+      "id": "kw-cargo-install-locked",
+      "query": "cargo install --locked Cargo.lock dependency bump",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "memhub upgrade installs"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "task",
+          "title_contains": [
+            "memhub upgrade: cargo"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 158; also: task 93. category: keyword bag"
+    },
+    {
+      "id": "kw-gitignore-config-example",
+      "query": ".gitignore /.memhub/* config.example.toml re-include",
+      "kind": "match",
+      "source_type": "fact",
+      "title_contains": [
+        "gitignore.memhub-exception-resolved"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            ".gitignore .memhub/"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "decision",
+          "title_contains": [
+            ".memhub/config.example.toml"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: fact 29; also: decision 159, decision 67. category: keyword bag"
+    },
+    {
+      "id": "kw-branch-protection-checks",
+      "query": "branch protection required checks enforce_admins",
+      "kind": "match",
+      "source_type": "fact",
+      "title_contains": [
+        "github.branch-protection"
+      ],
+      "body_contains": [],
+      "notes": "answer: fact 32. category: keyword bag"
+    },
+    {
+      "id": "kw-cfg-windows-dead-code",
+      "query": "cfg(windows) dead code ubuntu lint",
+      "kind": "match",
+      "source_type": "fact",
+      "title_contains": [
+        "ci-lint-unix-only-surface"
+      ],
+      "body_contains": [],
+      "notes": "answer: fact 31. category: keyword bag"
+    },
+    {
+      "id": "kw-fk-cascade-child-triggers",
+      "query": "ON DELETE CASCADE child AFTER DELETE triggers recursive_triggers",
+      "kind": "match",
+      "source_type": "fact",
+      "title_contains": [
+        "sqlite.fk-cascade-fires-child-triggers"
+      ],
+      "body_contains": [],
+      "notes": "answer: fact 57. category: keyword bag"
+    },
+    {
+      "id": "kw-orch-merge-5xx-landed",
+      "query": "orch run merge 5xx squash already landed retry",
+      "kind": "match",
+      "source_type": "fact",
+      "title_contains": [
+        "orch.merge-5xx-may-have-landed"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "task",
+          "title_contains": [
+            "Orch repo: PR-body"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: fact 58; also: task 171. category: keyword bag"
+    },
+    {
+      "id": "kw-opencode-client-name-cli",
+      "query": "OpenCode clientInfo name cli MCP handshake",
+      "kind": "match",
+      "source_type": "fact",
+      "title_contains": [
+        "opencode.v2-mcp-client-name"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Normalize OpenCode"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: fact 50; also: decision 182. category: keyword bag"
+    },
+    {
+      "id": "kw-pending-write-expiry",
+      "query": "pending writes 30-day auto expiry",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Auto pending-write"
+      ],
+      "body_contains": [],
+      "notes": "answer: decision 146. category: keyword bag"
+    },
+    {
+      "id": "kw-global-write-opted-in-cwd",
+      "query": "global-scoped writes opted-in repo cwd",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Global-scoped writes"
+      ],
+      "body_contains": [],
+      "notes": "answer: decision 94. category: keyword bag"
+    },
+    {
+      "id": "kw-int8-reranker",
+      "query": "int8 quantized cross-encoder model_int8",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "int8 reranker adopted:"
+      ],
+      "body_contains": [],
+      "notes": "answer: decision 149. category: keyword bag"
+    },
+    {
+      "id": "kw-locate-reranker-off",
+      "query": "locate reranker off no score floor",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "M11 locate keeps reranker"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Locate reranker re-measured"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "locate.rerank-calibration"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 114; also: decision 122, fact 13. category: keyword bag"
+    },
+    {
+      "id": "kw-agents-md-regen",
+      "query": "AGENTS.md generated CLAUDE.md MEMHUB_REGEN skill_parity",
+      "kind": "match",
+      "source_type": "fact",
+      "title_contains": [
+        "agents-md.regen"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "AGENTS.md is a generated"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: fact 18; also: decision 144. category: keyword bag"
+    },
+    {
+      "id": "kw-three-harness-binaries",
+      "query": "three cargo harness binaries filter by substring",
+      "kind": "match",
+      "source_type": "fact",
+      "title_contains": [
+        "tests.harness-layout"
+      ],
+      "body_contains": [],
+      "notes": "answer: fact 19. category: keyword bag"
+    },
+    {
+      "id": "kw-rerank-candidate-pool",
+      "query": "rerank_candidate_pool top candidates before truncating",
+      "kind": "match",
+      "source_type": "doc_chunk",
+      "title_contains": [
+        " > Retrieval"
+      ],
+      "body_contains": [
+        "`[retrieval] rerank_candidate_pool`"
+      ],
+      "notes": "answer: doc_chunk 460. category: keyword bag"
+    },
+    {
+      "id": "kw-fact-retire-doc-archive",
+      "query": "fact retire doc archive recall without deletion",
+      "kind": "match",
+      "source_type": "task",
+      "title_contains": [
+        "Add fact retire and"
+      ],
+      "body_contains": [],
+      "notes": "answer: task 156. category: keyword bag"
+    },
+    {
+      "id": "kw-ledger-bound-backups",
+      "query": "PROJECT_LEDGER.md size render backups accumulate",
+      "kind": "match",
+      "source_type": "task",
+      "title_contains": [
+        "Bound PROJECT_LEDGER.md"
+      ],
+      "body_contains": [],
+      "notes": "answer: task 158. category: keyword bag"
+    },
+    {
+      "id": "kw-mcp-tool-annotations",
+      "query": "MCP tool annotations readOnlyHint destructiveHint sync_adopt",
+      "kind": "match",
+      "source_type": "task",
+      "title_contains": [
+        "Add MCP tool annotations:"
+      ],
+      "body_contains": [],
+      "notes": "answer: task 179. category: keyword bag"
+    },
+    {
+      "id": "kw-recall-explain-dropped",
+      "query": "recall explain flag counts per drop reason",
+      "kind": "match",
+      "source_type": "task",
+      "title_contains": [
+        "Recall explain: report"
+      ],
+      "body_contains": [],
+      "notes": "answer: task 176. category: keyword bag"
+    },
+    {
+      "id": "kw-correction-sweep",
+      "query": "correction sweep supersede accept old value still mentioned",
+      "kind": "match",
+      "source_type": "task",
+      "title_contains": [
+        "Correction sweep: on"
+      ],
+      "body_contains": [],
+      "notes": "answer: task 180. category: keyword bag"
+    },
+    {
+      "id": "kw-verification-confidence-cap",
+      "query": "proposal verification field confidence verified inferred unverified",
+      "kind": "match",
+      "source_type": "task",
+      "title_contains": [
+        "Add a structured verification"
+      ],
+      "body_contains": [],
+      "notes": "answer: task 181. category: keyword bag"
+    },
+    {
+      "id": "kw-mcp-startup-warm-models",
+      "query": "MCP startup timeout warm_models defer initialize",
+      "kind": "match",
+      "source_type": "task",
+      "title_contains": [
+        "MCP startup: timing"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Keep the ONNX models"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: task 157; also: decision 196. category: keyword bag"
+    },
+    {
+      "id": "kw-pi5-benchmark-pool",
+      "query": "Pi 5 ARM benchmark hybrid recall pool=20 tailnet",
+      "kind": "match",
+      "source_type": "task",
+      "title_contains": [
+        "Run Q3: benchmark hybrid"
+      ],
+      "body_contains": [],
+      "notes": "answer: task 138. category: keyword bag"
+    },
+    {
+      "id": "kw-metrics-tool-result-attribution",
+      "query": "metrics follow-on read attribution tool_result",
+      "kind": "match",
+      "source_type": "task",
+      "title_contains": [
+        "Metrics T4: follow-on"
+      ],
+      "body_contains": [],
+      "notes": "answer: task 92. category: keyword bag"
+    },
+    {
+      "id": "kw-gc-staging-sweep-predicate",
+      "query": "staging sweep predicate gc.rs upgrade.rs shared",
+      "kind": "match",
+      "source_type": "task",
+      "title_contains": [
+        "De-dup U3 staging-sweep"
+      ],
+      "body_contains": [],
+      "notes": "answer: task 100. category: keyword bag"
+    },
+    {
+      "id": "kw-transcript-prune-toctou",
+      "query": "prune TOCTOU symlink swap transcripts collision check",
+      "kind": "match",
+      "source_type": "task",
+      "title_contains": [
+        "PR #126 residual hardening"
+      ],
+      "body_contains": [],
+      "notes": "answer: task 122. category: keyword bag"
+    },
+    {
+      "id": "semantic-embeddings-as-blobs",
+      "query": "Why are embeddings stored as plain SQLite blobs instead of in a vector database?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Vector storage: SQLite"
+      ],
+      "body_contains": [],
+      "notes": "answer: decision 24. category: paraphrase"
+    },
+    {
+      "id": "semantic-no-agent-narrative-writes",
+      "query": "Why can't an agent overwrite the project state or architecture text over MCP?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "State and arch narratives"
+      ],
+      "body_contains": [],
+      "notes": "answer: decision 18. category: paraphrase"
+    },
+    {
+      "id": "semantic-render-hand-edits",
+      "query": "What happens to hand edits in a rendered markdown file the next time render runs?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Render conflict semantics:"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "arch_section",
+          "title_contains": [
+            "Key Subsystems"
+          ],
+          "body_contains": [
+            "DB-wins-with-backup"
+          ]
+        }
+      ],
+      "notes": "answer: decision 8; also: arch_section 6. category: paraphrase"
+    },
+    {
+      "id": "semantic-diverged-machines",
+      "query": "What happens if both of my machines changed memory before syncing?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "M10 scope boundary:"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "M10 cross-machine sync:"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 103; also: decision 102. category: paraphrase"
+    },
+    {
+      "id": "semantic-drive-connector",
+      "query": "Can the claude.ai Google Drive connector be used to move the database between computers?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "M10 transport: Google"
+      ],
+      "body_contains": [],
+      "notes": "answer: decision 104. category: paraphrase"
+    },
+    {
+      "id": "semantic-why-vector-floor-removed",
+      "query": "Why did we stop using a cosine threshold to filter weak vector matches?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Retire min_vector_score;"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "retrieval.min_vector_score-calibration"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "min_vector_score=0.7"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 71; also: fact 4, decision 70. category: paraphrase"
+    },
+    {
+      "id": "semantic-bakeoff-winner",
+      "query": "Which cross-encoder model was chosen for reranking and why?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "MiniLM-L-6-v2 wins"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "int8 reranker adopted:"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 68; also: decision 149. category: paraphrase"
+    },
+    {
+      "id": "semantic-locate-reranker-default",
+      "query": "Does the code locator run the cross-encoder by default?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "M11 locate keeps reranker"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Locate reranker re-measured"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "locate.rerank-calibration"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 114; also: decision 122, fact 13. category: paraphrase"
+    },
+    {
+      "id": "semantic-nonrust-chunking",
+      "query": "How does the code index split Python, Go and TypeScript files into chunks?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Multi-language AST"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "M11 T4 Python chunker"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "M11 T5 Go chunker contract:"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "M11 T3 chunker contract"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 115; also: decision 119, decision 120, decision 118. category: paraphrase"
+    },
+    {
+      "id": "semantic-index-source-files-only",
+      "query": "Why does the code locator ignore markdown files and lockfiles?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Scope the code index"
+      ],
+      "body_contains": [],
+      "notes": "answer: decision 121. category: paraphrase"
+    },
+    {
+      "id": "semantic-precompact-hook",
+      "query": "Should memhub install a hook that runs before context compaction?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "memhub may install"
+      ],
+      "body_contains": [],
+      "notes": "answer: decision 199. category: paraphrase"
+    },
+    {
+      "id": "semantic-hook-missing-agent-dir",
+      "query": "What does the hook installer do when an agent's config folder doesn't exist?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "The session-start hook is"
+      ],
+      "body_contains": [],
+      "notes": "answer: decision 203. category: paraphrase"
+    },
+    {
+      "id": "semantic-gaps-found-in-run",
+      "query": "When a run turns up gaps nobody planned for, do we log them for later or fix them in the next run?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Gaps found during a"
+      ],
+      "body_contains": [],
+      "notes": "answer: decision 192. category: paraphrase"
+    },
+    {
+      "id": "semantic-wrong-criterion",
+      "query": "What do we do when a reviewer decides an approved acceptance criterion is wrong?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "A gated acceptance"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "A plan acceptance criterion"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Orch acceptance criteria"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 204; also: decision 175, decision 171. category: paraphrase"
+    },
+    {
+      "id": "semantic-models-in-binary",
+      "query": "Why are the ONNX models compiled into the binary instead of fetched at runtime?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Keep the ONNX models"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Bundle BGE-small via"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "task",
+          "title_contains": [
+            "Build-time HF asset"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Embedding model: BGE-small-en-v1.5,"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 196; also: decision 42, task 52, decision 23. category: paraphrase"
+    },
+    {
+      "id": "semantic-task-write-review",
+      "query": "Should creating a task require human review like a fact does?",
+      "kind": "match",
+      "source_type": "task",
+      "title_contains": [
+        "Decide whether task"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "MCP tool trust split:"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: task 159; also: decision 17. category: paraphrase"
+    },
+    {
+      "id": "semantic-reclaim-cargo-disk",
+      "query": "How do I get back the hundreds of gigabytes cargo test leaves in target?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Build-artifact GC:"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "reclaim target/ disk"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "doc_chunk",
+          "title_contains": [
+            "Machine-wide upgrade"
+          ],
+          "body_contains": [
+            "Build-artifact GC"
+          ]
+        }
+      ],
+      "notes": "answer: decision 100; also: fact 11, doc_chunk 484. category: paraphrase"
+    },
+    {
+      "id": "semantic-eval-audit-trace",
+      "query": "Does running the retrieval eval leave any trace in the audit log?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "memhub eval retrieval"
+      ],
+      "body_contains": [],
+      "notes": "answer: decision 51. category: paraphrase"
+    },
+    {
+      "id": "semantic-recall-readonly-mount",
+      "query": "Is it safe to run recall on a read-only database mount?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Recall must not maintain"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "memhub recall is read-only"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 54; also: decision 48. category: paraphrase"
+    },
+    {
+      "id": "semantic-superseded-still-recalled",
+      "query": "Does a superseded decision still show up in recall results?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Wave 3 Lifecycle rulings"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "arch_section",
+          "title_contains": [
+            "Supersession"
+          ],
+          "body_contains": [
+            "superseded_penalty"
+          ]
+        }
+      ],
+      "notes": "answer: decision 145; also: arch_section 11. category: paraphrase"
+    },
+    {
+      "id": "semantic-os-agnostic",
+      "query": "Can I assume POSIX tools exist when writing a new memhub code path?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "All memhub work is"
+      ],
+      "body_contains": [],
+      "notes": "answer: decision 101. category: paraphrase"
+    },
+    {
+      "id": "semantic-doc-ingest-toggle",
+      "query": "Is there a setting to turn document ingestion on or off?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Doc-ingest stays always-on;"
+      ],
+      "body_contains": [],
+      "notes": "answer: decision 88. category: paraphrase"
+    },
+    {
+      "id": "semantic-pi-build",
+      "query": "Will memhub build on a Raspberry Pi?",
+      "kind": "match",
+      "source_type": "fact",
+      "title_contains": [
+        "linux-build-target"
+      ],
+      "body_contains": [],
+      "notes": "answer: fact 17. category: paraphrase"
+    },
+    {
+      "id": "semantic-opencode-v2-model-pick",
+      "query": "How do I pick a model for a single non-interactive OpenCode 2 run?",
+      "kind": "match",
+      "source_type": "fact",
+      "title_contains": [
+        "opencode.v2-noninteractive"
+      ],
+      "body_contains": [],
+      "notes": "answer: fact 49. category: paraphrase"
+    },
+    {
+      "id": "semantic-wrapup-render-failure",
+      "query": "What happens in wrap-up when render fails after the database writes already landed?",
+      "kind": "match",
+      "source_type": "fact",
+      "title_contains": [
+        "wrapup.render-actor-contract"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Make render actor-attributable"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: fact 25; also: decision 153. category: paraphrase"
+    },
+    {
+      "id": "semantic-codex-hook-approval",
+      "query": "Why does the new startup hook stay silent in Codex until I approve it once?",
+      "kind": "match",
+      "source_type": "fact",
+      "title_contains": [
+        "codex.hooks-enabled"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "codex.hook-output-contract"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: fact 63; also: fact 65. category: paraphrase"
+    },
+    {
+      "id": "semantic-orch-closed-risk-set",
+      "query": "Can an Orch plan invent its own risk domain name?",
+      "kind": "match",
+      "source_type": "fact",
+      "title_contains": [
+        "orch.plan-vocabulary"
+      ],
+      "body_contains": [],
+      "notes": "answer: fact 66. category: paraphrase"
+    },
+    {
+      "id": "semantic-upgrade-from-wrong-dir",
+      "query": "Why does memhub upgrade refuse to run outside the memhub source repo?",
+      "kind": "match",
+      "source_type": "doc_chunk",
+      "title_contains": [
+        "Machine-wide upgrade"
+      ],
+      "body_contains": [
+        "Run it **from the memhub source repo**"
+      ],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "memhub upgrade: registry-in-global-store"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: doc_chunk 481; also: decision 96. category: paraphrase"
+    },
+    {
+      "id": "two-wal-and-synchronous",
+      "query": "Why must a sync snapshot use the online backup API, and what synchronous mode do we run with WAL?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Adopt SQLite synchronous"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "doc_chunk",
+          "title_contains": [
+            "WAL consistency"
+          ],
+          "body_contains": [
+            "online backup API (or `VACUUM INTO`)"
+          ]
+        },
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Sync adopt replaces"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 140; also: doc_chunk 46, decision 162. category: two-part"
+    },
+    {
+      "id": "two-eval-metric-and-floor",
+      "query": "What does the retrieval eval measure and where is the rerank floor set?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Eval metric: Recall@3"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "retrieval.min_rerank_score-calibration"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Retire min_vector_score;"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 36; also: fact 6, decision 71. category: two-part"
+    },
+    {
+      "id": "two-hook-size-and-agents",
+      "query": "How large can the session-start output be and which agents get the hook installed?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "PROJECT.md is capped"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "The session-start hook is"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "codex.hook-output-contract"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 202; also: decision 203, fact 65. category: two-part"
+    },
+    {
+      "id": "two-upgrade-resync-and-gc",
+      "query": "What does memhub upgrade resync besides the binary, and how does gc decide which build artifacts to delete?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Extend memhub upgrade"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Build-artifact GC:"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "doc_chunk",
+          "title_contains": [
+            "Machine-wide upgrade"
+          ],
+          "body_contains": [
+            "Build-artifact GC"
+          ]
+        }
+      ],
+      "notes": "answer: decision 97; also: decision 100, doc_chunk 484. category: two-part"
+    },
+    {
+      "id": "two-mcp-direct-and-accept",
+      "query": "Which MCP writes go straight to the database, and how does accepting a proposal stay atomic?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "MCP tool trust split:"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Review acceptance promotes"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 17; also: decision 38. category: two-part"
+    },
+    {
+      "id": "two-global-enable-and-docs",
+      "query": "How do I enable the machine-global store, and do global docs follow the same opt-in?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "M9 machine-global memory:"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Global doc management"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Global-scoped writes"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 92; also: decision 95, decision 94. category: two-part"
+    },
+    {
+      "id": "two-msrv-and-lint",
+      "query": "What is the minimum Rust version, and why can raising it break the lint lane?",
+      "kind": "match",
+      "source_type": "fact",
+      "title_contains": [
+        "rust.msrv.v0.2.2"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "gotcha.rust-version-activates-clippy-msrv-lint"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Declare memhub's true"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: fact 51; also: fact 39, decision 172. category: two-part"
+    },
+    {
+      "id": "two-windows-lock-and-lag",
+      "query": "Why does the Windows upgrade rename the running exe, and why do resync changes show up one upgrade late?",
+      "kind": "match",
+      "source_type": "fact",
+      "title_contains": [
+        "upgrade.windows-binary-lock"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "upgrade.windows-resync-lag"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "task",
+          "title_contains": [
+            "memhub upgrade: rename-aside"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: fact 27; also: fact 23, task 108. category: two-part"
+    },
+    {
+      "id": "two-partial-fts-and-fallback",
+      "query": "When does recall retry with OR tokens, and what does it return if the floor still drops everything?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Recall falls back to"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Recall returns top-3"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "doc_chunk",
+          "title_contains": [
+            " > Retrieval"
+          ],
+          "body_contains": [
+            "Partial-token FTS (issue #225)"
+          ]
+        },
+        {
+          "source_type": "doc_chunk",
+          "title_contains": [
+            " > Retrieval"
+          ],
+          "body_contains": [
+            "Low-confidence fallback (issue #225)"
+          ]
+        }
+      ],
+      "notes": "answer: decision 188; also: decision 186, doc_chunk 461, doc_chunk 462. category: two-part"
+    },
+    {
+      "id": "two-nonrust-golden-and-locate-recall",
+      "query": "Which golden set covers non-Rust module docs, and what Recall@3 does the code locator reach?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Polyglot code-locate"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "M11 locate: module-doc"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 125; also: decision 123. category: two-part"
+    },
+    {
+      "id": "two-first-push-baseline",
+      "query": "Why did a first push look diverged, and what does a push now record?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Drive-sync push records"
+      ],
+      "body_contains": [],
+      "notes": "answer: decision 156. category: two-part"
+    },
+    {
+      "id": "two-hero-generator",
+      "query": "Who generates the README animation, and why not the diagram skill animate command?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "README hero animation"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "README motion graphics"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "readme.animated-hero-regen"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 180; also: decision 181, fact 46. category: two-part"
+    },
+    {
+      "id": "two-orch-labels-and-risks",
+      "query": "Which Orch plan area labels are valid, and which risk domains exist?",
+      "kind": "match",
+      "source_type": "fact",
+      "title_contains": [
+        "orch.plan-area-labels-reserved-taxonomy"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "orch.plan-vocabulary"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: fact 47; also: fact 66. category: two-part"
+    },
+    {
+      "id": "vm-rewordings-merge",
+      "query": "give the model several rewordings of one question and merge the results",
+      "kind": "match",
+      "source_type": "task",
+      "title_contains": [
+        "Multi-query recall:"
+      ],
+      "body_contains": [],
+      "notes": "answer: task 175. category: vocabulary mismatch"
+    },
+    {
+      "id": "vm-web-ui-nobody-opens",
+      "query": "get rid of the web UI nobody opens",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Delete the viz dashboard"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "task",
+          "title_contains": [
+            "Delete the viz dashboard"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 193; also: task 165. category: vocabulary mismatch"
+    },
+    {
+      "id": "vm-top-title-wrapper",
+      "query": "if the entire design write-up is nested under one big top title, is that title kept in the names of the pieces?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Architecture sections"
+      ],
+      "body_contains": [],
+      "notes": "answer: decision 194. category: vocabulary mismatch"
+    },
+    {
+      "id": "vm-guess-becomes-permanent",
+      "query": "who gets to decide whether a model's guess becomes permanent memory?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "MCP tool trust split:"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Review acceptance promotes"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 17; also: decision 38. category: vocabulary mismatch"
+    },
+    {
+      "id": "vm-summary-file-ballooning",
+      "query": "the summary file loaded at the start of every chat keeps growing, what keeps it from ballooning?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "PROJECT.md is capped"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "PROJECT.md is a frame"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "task",
+          "title_contains": [
+            "Bound PROJECT.md: cap"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 202; also: decision 191, task 155. category: vocabulary mismatch"
+    },
+    {
+      "id": "vm-rebuild-vectors-ask-first",
+      "query": "when the search index looks out of date after changing models, should the assistant just rebuild it?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Stale-embedding UX:"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "stale-embeddings ask-before-/reindex"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "CLAUDE.md and AGENTS.md teach"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 29; also: decision 126, decision 50. category: vocabulary mismatch"
+    },
+    {
+      "id": "vm-random-strings-confident",
+      "query": "what prevents random letter strings getting confident-looking answers?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Retire min_vector_score;"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "retrieval.min_rerank_score-calibration"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 71; also: fact 6. category: vocabulary mismatch"
+    },
+    {
+      "id": "vm-long-question-nothing",
+      "query": "a long question returns nothing even though a row clearly covers part of it",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Recall falls back to"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "task",
+          "title_contains": [
+            "Fix hybrid recall returning"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 188; also: task 152. category: vocabulary mismatch"
+    },
+    {
+      "id": "vm-first-upload-claimed-diverged",
+      "query": "my very first upload from this repo claimed the remote had diverged",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Drive-sync push records"
+      ],
+      "body_contains": [],
+      "notes": "answer: decision 156. category: vocabulary mismatch"
+    },
+    {
+      "id": "vm-startup-silent-until-approved",
+      "query": "why does the startup injection stay silent in OpenAI's CLI until I approve it on a screen?",
+      "kind": "match",
+      "source_type": "fact",
+      "title_contains": [
+        "codex.hooks-enabled"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "codex.hook-output-contract"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: fact 63; also: fact 65. category: vocabulary mismatch"
+    },
+    {
+      "id": "vm-fix-typo-after-approval",
+      "query": "who is allowed to fix a typo in a pull request description once the code was approved?",
+      "kind": "match",
+      "source_type": "task",
+      "title_contains": [
+        "Orch repo: give orch-scout"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "task",
+          "title_contains": [
+            "Orch repo: PR-body"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: task 164; also: task 171. category: vocabulary mismatch"
+    },
+    {
+      "id": "vm-exe-in-use-install-fails",
+      "query": "installing a new build fails because the old executable is in use",
+      "kind": "match",
+      "source_type": "fact",
+      "title_contains": [
+        "upgrade.windows-binary-lock"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "task",
+          "title_contains": [
+            "memhub upgrade: rename-aside"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: fact 27; also: task 108. category: vocabulary mismatch"
+    },
+    {
+      "id": "vm-compare-ranking-variants",
+      "query": "before touching ranking behaviour, what has to be compared and with which statistic?",
+      "kind": "match",
+      "source_type": "task",
+      "title_contains": [
+        "Grow the recall golden"
+      ],
+      "body_contains": [],
+      "notes": "answer: task 174. category: vocabulary mismatch"
+    },
+    {
+      "id": "vm-hook-entry-removed-by-user",
+      "query": "I removed the entry the updater added; will it come back on the next upgrade?",
+      "kind": "match",
+      "source_type": "arch_section",
+      "title_contains": [
+        "Key Subsystems"
+      ],
+      "body_contains": [
+        "never re-adds an entry the user"
+      ],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "The session-start hook is"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: arch_section 6; also: decision 203. category: vocabulary mismatch"
+    },
+    {
+      "id": "vm-pasted-spec-only-on-topic",
+      "query": "why does a pasted spec only show up in answers when it's really on topic?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Docs join default recall"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Refinements to decision"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Document ingestion"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 90; also: decision 91, decision 86. category: vocabulary mismatch"
+    },
+    {
+      "id": "vm-disk-full-of-old-test-programs",
+      "query": "my laptop disk filled up with old compiled test programs",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Build-artifact GC:"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "doc_chunk",
+          "title_contains": [
+            "Machine-wide upgrade"
+          ],
+          "body_contains": [
+            "Build-artifact GC"
+          ]
+        }
+      ],
+      "notes": "answer: decision 100; also: doc_chunk 484. category: vocabulary mismatch"
+    },
+    {
+      "id": "vm-noun-bundles-vs-questions",
+      "query": "short noun bundles versus full questions when writing the checks for search quality",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Golden set mixes keyword-style"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Golden queries are"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 69; also: decision 53. category: vocabulary mismatch"
+    },
+    {
+      "id": "vm-power-loss-faster-setting",
+      "query": "what do we risk if the machine loses power mid-write with the faster setting?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Adopt SQLite synchronous"
+      ],
+      "body_contains": [],
+      "notes": "answer: decision 140. category: vocabulary mismatch"
+    },
+    {
+      "id": "vm-union-records-both-computers",
+      "query": "why not union individual records from both computers instead of replacing one side with the other?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "M10 cross-machine sync:"
+      ],
+      "body_contains": [],
+      "notes": "answer: decision 102. category: vocabulary mismatch"
+    },
+    {
+      "id": "vm-scrub-credentials-from-logs",
+      "query": "can saved conversation logs have credentials scrubbed out of them?",
+      "kind": "match",
+      "source_type": "task",
+      "title_contains": [
+        "transcript mode: optional"
+      ],
+      "body_contains": [],
+      "notes": "answer: task 103. category: vocabulary mismatch"
+    },
+    {
+      "id": "vm-cloud-llm-reorder-hits",
+      "query": "could a cloud-hosted LLM reorder search hits, falling back to on-device scoring if offline?",
+      "kind": "match",
+      "source_type": "task",
+      "title_contains": [
+        "A4: optional Haiku"
+      ],
+      "body_contains": [],
+      "notes": "answer: task 98. category: vocabulary mismatch"
+    },
+    {
+      "id": "vm-tiny-passes-no-blurbs",
+      "query": "why don't we write status-page blurbs for tiny cleanup passes any more?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Review-follow-up runs"
+      ],
+      "body_contains": [],
+      "notes": "answer: decision 201. category: vocabulary mismatch"
+    },
+    {
+      "id": "vm-sync-all-copies-of-program",
+      "query": "which single command syncs all the copies of this program on my computer to the newest build?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "memhub upgrade: registry-in-global-store"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "doc_chunk",
+          "title_contains": [
+            "Machine-wide upgrade"
+          ],
+          "body_contains": [
+            "one dependable command"
+          ]
+        }
+      ],
+      "notes": "answer: decision 96; also: doc_chunk 481. category: vocabulary mismatch"
+    },
+    {
+      "id": "vm-shared-server-box-down",
+      "query": "what do we lose if the shared server box is unreachable mid-session?",
+      "kind": "match",
+      "source_type": "doc_chunk",
+      "title_contains": [
+        "Honest cost ledger"
+      ],
+      "body_contains": [
+        "Pi down = no memory"
+      ],
+      "notes": "answer: doc_chunk 295. category: vocabulary mismatch"
+    },
+    {
+      "id": "vm-open-source-cli-session-details",
+      "query": "which details about the assistant session get stored alongside notes when using the open-source CLI?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Keep OpenCode runtime"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "arch_section",
+          "title_contains": [
+            "Key Subsystems"
+          ],
+          "body_contains": [
+            "Session notes may carry optional structured OpenCode runtime provenance"
+          ]
+        }
+      ],
+      "notes": "answer: decision 183; also: arch_section 6. category: vocabulary mismatch"
+    },
+    {
+      "id": "vm-typed-by-person-vs-machine-made",
+      "query": "which of the two top-level instruction files is typed by a person and which is machine-made?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "AGENTS.md is a generated"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "agents-md.regen"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: decision 144; also: fact 18. category: vocabulary mismatch"
+    },
+    {
+      "id": "vm-squash-server-error-in-main",
+      "query": "the squash call returned a server error yet the change appears in main",
+      "kind": "match",
+      "source_type": "fact",
+      "title_contains": [
+        "orch.merge-5xx-may-have-landed"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "task",
+          "title_contains": [
+            "Orch repo: PR-body"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: fact 58; also: task 171. category: vocabulary mismatch"
+    },
+    {
+      "id": "vm-real-database-scores-worse",
+      "query": "why do scores from the real database look worse than the seeded test fixture ones?",
+      "kind": "match",
+      "source_type": "fact",
+      "title_contains": [
+        "retrieval.live-eval-not-comparable"
+      ],
+      "body_contains": [],
+      "notes": "answer: fact 56. category: vocabulary mismatch"
+    },
+    {
+      "id": "vm-linter-complains-pipeline-passes",
+      "query": "my machine's linter complains about code that the pipeline passes",
+      "kind": "match",
+      "source_type": "task",
+      "title_contains": [
+        "Re-align local clippy"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "clippy.local-version-drift"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "ci-lint-unix-only-surface"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "clippy.local-clean"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: task 125; also: fact 33, fact 31, fact 60. category: vocabulary mismatch"
+    },
+    {
+      "id": "vm-obscurely-named-ruling",
+      "query": "how can an obscurely named ruling be found with ordinary wording?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Embed-text augmentation"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "doc_chunk",
+          "title_contains": [
+            " > Retrieval"
+          ],
+          "body_contains": [
+            "Decisions can carry an optional natural-language"
+          ]
+        }
+      ],
+      "notes": "answer: decision 72; also: doc_chunk 464. category: vocabulary mismatch"
+    },
+    {
+      "id": "vm-characters-before-cut-in-claude",
+      "query": "how many characters can the startup injection hold in Claude before it gets cut?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "PROJECT.md is capped"
+      ],
+      "body_contains": [],
+      "notes": "answer: decision 202. category: vocabulary mismatch"
+    },
+    {
+      "id": "vm-people-with-copies-versioned-drop",
+      "query": "which people with copies of our repository should hear that a versioned drop shipped?",
+      "kind": "match",
+      "source_type": "task",
+      "title_contains": [
+        "Notify the three reachable"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "memhub ships tagged"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: task 135; also: decision 174. category: vocabulary mismatch"
+    },
+    {
+      "id": "vm-top-slot-vs-top-three",
+      "query": "reranking helps the top slot but hurts the top three for source files, so what did we ship?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "Locate reranker re-measured"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "M11 locate keeps reranker"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "doc_chunk",
+          "title_contains": [
+            "Retrieval: fusion default"
+          ],
+          "body_contains": [
+            "Recall@1 booster but a Recall@3 regressor"
+          ]
+        }
+      ],
+      "notes": "answer: decision 122; also: decision 114, doc_chunk 56. category: vocabulary mismatch"
+    },
+    {
+      "id": "vm-two-copies-same-numbering",
+      "query": "why do integer identifiers from two computers collide when we try to reconcile them?",
+      "kind": "match",
+      "source_type": "decision",
+      "title_contains": [
+        "M10 cross-machine sync:"
+      ],
+      "body_contains": [],
+      "notes": "answer: decision 102. category: vocabulary mismatch"
+    },
+    {
+      "id": "vm-skip-gate-for-trusted-edits",
+      "query": "could chores like closing a to-do item skip the human approval step?",
+      "kind": "match",
+      "source_type": "task",
+      "title_contains": [
+        "Decide whether task"
+      ],
+      "body_contains": [],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "MCP tool trust split:"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: task 159; also: decision 17. category: vocabulary mismatch"
+    },
+    {
+      "id": "vm-schema-newer-than-server",
+      "query": "what should a client do when its database layout is newer than what the shared box runs?",
+      "kind": "match",
+      "source_type": "doc_chunk",
+      "title_contains": [
+        "Version skew"
+      ],
+      "body_contains": [
+        "Mismatch fails loudly"
+      ],
+      "notes": "answer: doc_chunk 299. category: vocabulary mismatch"
+    },
+    {
+      "id": "doc-maintenance-on-open",
+      "query": "Why does running recall sometimes apply a schema migration or expire pending writes?",
+      "kind": "match",
+      "source_type": "doc_chunk",
+      "title_contains": [
+        "Maintenance-on-open"
+      ],
+      "body_contains": [
+        "open_project_maintained"
+      ],
+      "also_accept": [
+        {
+          "source_type": "task",
+          "title_contains": [
+            "Audit C6: codify maintenance-on-open"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: doc_chunk 453; also: task 120. category: doc chunk"
+    },
+    {
+      "id": "doc-mac-to-windows-no-sync",
+      "query": "How do I move my memory from a Mac to a Windows PC without sync?",
+      "kind": "match",
+      "source_type": "doc_chunk",
+      "title_contains": [
+        "Cross-machine workflow"
+      ],
+      "body_contains": [
+        "bootstrap a target that has no DB yet"
+      ],
+      "notes": "answer: doc_chunk 451. category: doc chunk"
+    },
+    {
+      "id": "doc-adopt-safety-copy",
+      "query": "What exactly does sync adopt do to the local file before replacing it?",
+      "kind": "match",
+      "source_type": "doc_chunk",
+      "title_contains": [
+        "Cross-machine Drive sync"
+      ],
+      "body_contains": [
+        "last-replaced.sqlite"
+      ],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Sync adopt replaces"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: doc_chunk 457; also: decision 162. category: doc chunk"
+    },
+    {
+      "id": "doc-snapshot-file-naming",
+      "query": "How are published snapshot files named so a crashed push cannot leave a half file?",
+      "kind": "match",
+      "source_type": "doc_chunk",
+      "title_contains": [
+        "Cross-machine Drive sync"
+      ],
+      "body_contains": [
+        "immutable, content-addressed"
+      ],
+      "also_accept": [
+        {
+          "source_type": "task",
+          "title_contains": [
+            "Audit B3: sync publication"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: doc_chunk 458; also: task 114. category: doc chunk"
+    },
+    {
+      "id": "doc-baseline-stale-after-upgrade",
+      "query": "Why did my first sync check after upgrading report a stale baseline?",
+      "kind": "match",
+      "source_type": "doc_chunk",
+      "title_contains": [
+        "Cross-machine Drive sync"
+      ],
+      "body_contains": [
+        "One-time baseline-stale note"
+      ],
+      "notes": "answer: doc_chunk 459. category: doc chunk"
+    },
+    {
+      "id": "doc-partial-token-retry",
+      "query": "How does recall retry when no row contains every word of my question?",
+      "kind": "match",
+      "source_type": "doc_chunk",
+      "title_contains": [
+        " > Retrieval"
+      ],
+      "body_contains": [
+        "Partial-token FTS (issue #225)"
+      ],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Recall falls back to"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: doc_chunk 461; also: decision 188. category: doc chunk"
+    },
+    {
+      "id": "doc-low-confidence-json-field",
+      "query": "How does a flagged fallback hit show up in recall JSON and in the CLI text?",
+      "kind": "match",
+      "source_type": "doc_chunk",
+      "title_contains": [
+        " > Retrieval"
+      ],
+      "body_contains": [
+        "\"low_confidence\": true"
+      ],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Recall returns top-3"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: doc_chunk 462; also: decision 186. category: doc chunk"
+    },
+    {
+      "id": "doc-first-baseline-fallback-matches",
+      "query": "How was the 36-query golden set scored on its first baseline, and how many matches came from the fallback?",
+      "kind": "match",
+      "source_type": "doc_chunk",
+      "title_contains": [
+        " > Retrieval"
+      ],
+      "body_contains": [
+        "three of the keyword-bag matches"
+      ],
+      "notes": "answer: doc_chunk 466. category: doc chunk"
+    },
+    {
+      "id": "doc-cache-churn",
+      "query": "What does the cache churn line in the token block report?",
+      "kind": "match",
+      "source_type": "doc_chunk",
+      "title_contains": [
+        "Token Accounting"
+      ],
+      "body_contains": [
+        "Cache churn"
+      ],
+      "notes": "answer: doc_chunk 471. category: doc chunk"
+    },
+    {
+      "id": "doc-exclude-docs-from-export",
+      "query": "Do ingested reference docs travel in an export, and how do I restore them elsewhere?",
+      "kind": "match",
+      "source_type": "doc_chunk",
+      "title_contains": [
+        "Doc Ingestion"
+      ],
+      "body_contains": [
+        "excluded from `memhub export`"
+      ],
+      "notes": "answer: doc_chunk 473. category: doc chunk"
+    },
+    {
+      "id": "doc-locate-no-refresh",
+      "query": "How does locate avoid re-embedding the tree on every call, and how do I skip the freshness pass?",
+      "kind": "match",
+      "source_type": "doc_chunk",
+      "title_contains": [
+        "Code Index"
+      ],
+      "body_contains": [
+        "--no-refresh"
+      ],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "memhub locate auto-refreshes"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: doc_chunk 476; also: decision 109. category: doc chunk"
+    },
+    {
+      "id": "doc-locate-scoring-config",
+      "query": "Why does the code locator have its own fusion weights instead of sharing the recall scoring table?",
+      "kind": "match",
+      "source_type": "doc_chunk",
+      "title_contains": [
+        "Code Index"
+      ],
+      "body_contains": [
+        "Scoring config is independent of recall"
+      ],
+      "notes": "answer: doc_chunk 478. category: doc chunk"
+    },
+    {
+      "id": "doc-registry-vs-global-optin",
+      "query": "Does being listed in the upgrade registry change what recall returns?",
+      "kind": "match",
+      "source_type": "doc_chunk",
+      "title_contains": [
+        "Machine-wide upgrade"
+      ],
+      "body_contains": [
+        "registry membership is **not** M9"
+      ],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "memhub upgrade: registry-in-global-store"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: doc_chunk 483; also: decision 96. category: doc chunk"
+    },
+    {
+      "id": "doc-audit-adopt-coordination",
+      "query": "What did the audit find missing in how adopt coordinates with other running memhub processes?",
+      "kind": "match",
+      "source_type": "doc_chunk",
+      "title_contains": [
+        "F4"
+      ],
+      "body_contains": [
+        "There is no BEGIN IMMEDIATE probe"
+      ],
+      "also_accept": [
+        {
+          "source_type": "task",
+          "title_contains": [
+            "Audit B1: sync adopt"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: doc_chunk 202; also: task 112. category: doc chunk"
+    },
+    {
+      "id": "doc-audit-document-state-sync",
+      "query": "Why could two machines that each added a different document look in sync?",
+      "kind": "match",
+      "source_type": "doc_chunk",
+      "title_contains": [
+        "F2"
+      ],
+      "body_contains": [
+        "equal logical versions can produce UpToDate"
+      ],
+      "also_accept": [
+        {
+          "source_type": "task",
+          "title_contains": [
+            "Audit B2: LogicalVersion"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: doc_chunk 199; also: task 113. category: doc chunk"
+    },
+    {
+      "id": "doc-prd-m10-byte-stable",
+      "query": "Why not detect sync divergence by comparing file checksums?",
+      "kind": "match",
+      "source_type": "doc_chunk",
+      "title_contains": [
+        "Change detection is logical"
+      ],
+      "body_contains": [
+        "SQLite files are **not byte-stable**"
+      ],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "M10 cross-machine sync:"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: doc_chunk 42; also: decision 102. category: doc chunk"
+    },
+    {
+      "id": "doc-prd-m9-promotable",
+      "query": "What kinds of knowledge should be promoted to the machine-global store and what stays per-repo?",
+      "kind": "match",
+      "source_type": "doc_chunk",
+      "title_contains": [
+        "anti-noise rule"
+      ],
+      "body_contains": [
+        "Promotable to global"
+      ],
+      "notes": "answer: doc_chunk 28. category: doc chunk"
+    },
+    {
+      "id": "doc-prd-m11-reranker-tradeoff",
+      "query": "Which recall cutoff did the cross-encoder hurt on code search?",
+      "kind": "match",
+      "source_type": "doc_chunk",
+      "title_contains": [
+        "Retrieval: fusion default"
+      ],
+      "body_contains": [
+        "Recall@1 booster but a Recall@3 regressor"
+      ],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "M11 locate keeps reranker"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: doc_chunk 56; also: decision 114. category: doc chunk"
+    },
+    {
+      "id": "doc-review-no-ci",
+      "query": "What did the July review say about a public repo with no workflow checks?",
+      "kind": "match",
+      "source_type": "doc_chunk",
+      "title_contains": [
+        "Zero CI/CD"
+      ],
+      "body_contains": [
+        "Zero CI/CD"
+      ],
+      "also_accept": [
+        {
+          "source_type": "task",
+          "title_contains": [
+            "Audit C1: initial CI"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: doc_chunk 408; also: task 115. category: doc chunk"
+    },
+    {
+      "id": "doc-review-doc-add-file-read",
+      "query": "Which review finding let an agent pull an arbitrary file into memory?",
+      "kind": "match",
+      "source_type": "doc_chunk",
+      "title_contains": [
+        "doc_add"
+      ],
+      "body_contains": [
+        "arbitrary-file read"
+      ],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "MCP doc_add path confinement:"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: doc_chunk 410; also: decision 139. category: doc chunk"
+    },
+    {
+      "id": "doc-review-available-docs-nudge",
+      "query": "Why did recall report hundreds of available docs when this repo had none ingested?",
+      "kind": "match",
+      "source_type": "doc_chunk",
+      "title_contains": [
+        "Token / context economics"
+      ],
+      "body_contains": [
+        "available_docs"
+      ],
+      "notes": "answer: doc_chunk 440. category: doc chunk"
+    },
+    {
+      "id": "doc-spec-rmcp-tasks-support",
+      "query": "Does the Rust MCP SDK we depend on support the Tasks extension yet?",
+      "kind": "match",
+      "source_type": "doc_chunk",
+      "title_contains": [
+        "Research resolutions"
+      ],
+      "body_contains": [
+        "supports the Tasks extension"
+      ],
+      "notes": "answer: doc_chunk 306. category: doc chunk"
+    },
+    {
+      "id": "arch-which-crate-parses-cli",
+      "query": "Which crate parses the command-line arguments?",
+      "kind": "match",
+      "source_type": "arch_section",
+      "title_contains": [
+        "Stack and Versions"
+      ],
+      "body_contains": [
+        "`clap` for CLI parsing"
+      ],
+      "notes": "answer: arch_section 2. category: architecture section"
+    },
+    {
+      "id": "arch-hook-source-location",
+      "query": "Where does the hidden session-start hook command live in the source tree?",
+      "kind": "match",
+      "source_type": "arch_section",
+      "title_contains": [
+        "Layout"
+      ],
+      "body_contains": [
+        "`hook.rs` holds the hidden"
+      ],
+      "notes": "answer: arch_section 4. category: architecture section"
+    },
+    {
+      "id": "arch-recall-readonly-invariant",
+      "query": "Which guardrail says recall and eval never write to the database?",
+      "kind": "match",
+      "source_type": "arch_section",
+      "title_contains": [
+        "Security Invariants"
+      ],
+      "body_contains": [
+        "Recall and eval retrieval are read-only"
+      ],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "memhub recall is read-only"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "memhub eval retrieval"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: arch_section 7; also: decision 48, decision 51. category: architecture section"
+    },
+    {
+      "id": "arch-confidence-decay-status",
+      "query": "Is continuous confidence decay implemented yet?",
+      "kind": "match",
+      "source_type": "arch_section",
+      "title_contains": [
+        "Known Gaps"
+      ],
+      "body_contains": [
+        "Continuous confidence decay"
+      ],
+      "notes": "answer: arch_section 8. category: architecture section"
+    },
+    {
+      "id": "arch-global-accept-replay-safe",
+      "query": "How does accepting a global-scoped pending write avoid duplicates after a crash?",
+      "kind": "match",
+      "source_type": "arch_section",
+      "title_contains": [
+        "Machine-global memory"
+      ],
+      "body_contains": [
+        "idempotency marker"
+      ],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Global pending-write"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: arch_section 10; also: decision 99. category: architecture section"
+    },
+    {
+      "id": "arch-superseded-demotion-stack",
+      "query": "How does the superseded penalty combine with the stale penalty in recall?",
+      "kind": "match",
+      "source_type": "arch_section",
+      "title_contains": [
+        "Supersession"
+      ],
+      "body_contains": [
+        "superseded_penalty"
+      ],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Wave 3 Lifecycle rulings"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: arch_section 11; also: decision 145. category: architecture section"
+    },
+    {
+      "id": "arch-doc-chunk-cleanup-order",
+      "query": "In what order are doc chunks and their parent row deleted on re-ingest?",
+      "kind": "match",
+      "source_type": "arch_section",
+      "title_contains": [
+        "Document Ingestion"
+      ],
+      "body_contains": [
+        "Writer owns chunk cleanup"
+      ],
+      "also_accept": [
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "sqlite.fk-cascade-fires-child-triggers"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: arch_section 9; also: fact 57. category: architecture section"
+    },
+    {
+      "id": "arch-source-of-truth",
+      "query": "What is the single source of truth for project memory and what is the rendered markdown?",
+      "kind": "match",
+      "source_type": "arch_section",
+      "title_contains": [
+        "Purpose"
+      ],
+      "body_contains": [
+        "source of truth"
+      ],
+      "notes": "answer: arch_section 1. category: architecture section"
+    },
+    {
+      "id": "arch-ci-lanes",
+      "query": "Which CI lanes exist and which of them are required by branch protection?",
+      "kind": "match",
+      "source_type": "arch_section",
+      "title_contains": [
+        "Layout"
+      ],
+      "body_contains": [
+        "ubuntu `fmt --check`"
+      ],
+      "also_accept": [
+        {
+          "source_type": "fact",
+          "title_contains": [
+            "github.branch-protection"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: arch_section 4; also: fact 32. category: architecture section"
+    },
+    {
+      "id": "arch-mcp-doc-add-confinement",
+      "query": "What stops an agent from pointing doc_add at a file outside the repo?",
+      "kind": "match",
+      "source_type": "arch_section",
+      "title_contains": [
+        "Security Invariants"
+      ],
+      "body_contains": [
+        "confines agent-supplied paths"
+      ],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "MCP doc_add path confinement:"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: arch_section 7; also: decision 139. category: architecture section"
+    },
+    {
+      "id": "arch-project-md-drop-order",
+      "query": "What gets dropped first when PROJECT.md is over its byte budget?",
+      "kind": "match",
+      "source_type": "arch_section",
+      "title_contains": [
+        "Key Subsystems"
+      ],
+      "body_contains": [
+        "render drops the Token Accounting section"
+      ],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "PROJECT.md is capped"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: arch_section 6; also: decision 202. category: architecture section"
+    },
+    {
+      "id": "arch-publication-atomic",
+      "query": "How does remote sync publication stay atomic?",
+      "kind": "match",
+      "source_type": "arch_section",
+      "title_contains": [
+        "Security Invariants"
+      ],
+      "body_contains": [
+        "manifest rename as the single publication point"
+      ],
+      "also_accept": [
+        {
+          "source_type": "doc_chunk",
+          "title_contains": [
+            "Cross-machine Drive sync"
+          ],
+          "body_contains": [
+            "immutable, content-addressed"
+          ]
+        }
+      ],
+      "notes": "answer: arch_section 7; also: doc_chunk 458. category: architecture section"
+    },
+    {
+      "id": "arch-bundled-models",
+      "query": "Which embedding model and which reranker model are bundled into the binary?",
+      "kind": "match",
+      "source_type": "arch_section",
+      "title_contains": [
+        "Stack and Versions"
+      ],
+      "body_contains": [
+        "ms-marco-MiniLM-L-6-v2"
+      ],
+      "also_accept": [
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "MiniLM-L-6-v2 wins"
+          ],
+          "body_contains": []
+        },
+        {
+          "source_type": "decision",
+          "title_contains": [
+            "Embedding model: BGE-small-en-v1.5,"
+          ],
+          "body_contains": []
+        }
+      ],
+      "notes": "answer: arch_section 2; also: decision 68, decision 23. category: architecture section"
+    },
+    {
+      "id": "arch-global-store-export",
+      "query": "Is the machine-global store included in memhub export?",
+      "kind": "match",
+      "source_type": "arch_section",
+      "title_contains": [
+        "Machine-global memory"
+      ],
+      "body_contains": [
+        "per-machine and is not"
+      ],
+      "notes": "answer: arch_section 10. category: architecture section"
+    },
+    {
+      "id": "empty-kubernetes-helm",
+      "query": "Kubernetes helm chart values for deploying memhub to a cluster",
+      "kind": "empty",
+      "notes": "unrelated infrastructure topic"
+    },
+    {
+      "id": "empty-graphql-federation",
+      "query": "GraphQL schema federation resolver caching",
+      "kind": "empty",
+      "notes": "unrelated web-stack topic"
+    },
+    {
+      "id": "empty-stripe-billing",
+      "query": "Stripe subscription billing webhook retries",
+      "kind": "empty",
+      "notes": "unrelated payments topic"
+    },
+    {
+      "id": "empty-postgres-replication",
+      "query": "PostgreSQL logical replication slot lag",
+      "kind": "empty",
+      "notes": "unrelated database topic"
+    },
+    {
+      "id": "empty-react-native-push",
+      "query": "React Native push notification certificate rotation",
+      "kind": "empty",
+      "notes": "unrelated mobile topic"
+    },
+    {
+      "id": "empty-lora-adapter",
+      "query": "fine-tuning a LoRA adapter on the golden queries",
+      "kind": "empty",
+      "notes": "unrelated model-training topic"
+    },
+    {
+      "id": "empty-terraform-autoscaling",
+      "query": "Terraform AWS autoscaling group launch template",
+      "kind": "empty",
+      "notes": "unrelated cloud topic"
+    },
+    {
+      "id": "empty-unity-shader",
+      "query": "Unity shader graph normal map blending",
+      "kind": "empty",
+      "notes": "unrelated game-dev topic"
+    },
+    {
+      "id": "empty-freelancer-taxes",
+      "query": "quarterly estimated tax payments for freelancers",
+      "kind": "empty",
+      "notes": "unrelated personal-finance topic"
+    },
+    {
+      "id": "empty-sourdough",
+      "query": "sourdough starter hydration ratio and feeding schedule",
+      "kind": "empty",
+      "notes": "unrelated cooking topic"
+    },
+    {
+      "id": "empty-kafka-rebalance",
+      "query": "Kafka consumer group rebalance timeout tuning",
+      "kind": "empty",
+      "notes": "unrelated streaming topic"
+    },
+    {
+      "id": "near-license-key-seats",
+      "query": "paid license key activation and seat counting for team tiers",
+      "kind": "empty",
+      "notes": "near-miss: licensing is an MIT manifest question only, no paid tiers or activation exist"
+    },
+    {
+      "id": "near-redis-cache",
+      "query": "Redis cache eviction policy for recall results",
+      "kind": "empty",
+      "notes": "near-miss: no external cache exists"
+    },
+    {
+      "id": "near-msi-installer",
+      "query": "Windows MSI installer with code signing certificate",
+      "kind": "empty",
+      "notes": "near-miss: install is cargo-based, no installer or signing"
+    },
+    {
+      "id": "near-postgres-backend",
+      "query": "Postgres as an alternative backend for the memory database",
+      "kind": "empty",
+      "notes": "near-miss: storage is SQLite only, no alternative backend discussed"
+    },
+    {
+      "id": "near-cuda-embeddings",
+      "query": "CUDA GPU acceleration for the embedding model",
+      "kind": "empty",
+      "notes": "near-miss: embeddings run on CPU, GPU never discussed"
+    },
+    {
+      "id": "near-slack-notifications",
+      "query": "Slack bot that posts a message when a task is closed",
+      "kind": "empty",
+      "notes": "near-miss: no chat integrations exist"
+    },
+    {
+      "id": "near-pdf-ocr-ingest",
+      "query": "OCR scanned PDF ingestion for the doc command",
+      "kind": "empty",
+      "notes": "near-miss: doc ingest handles markdown only, OCR never discussed"
+    }
+  ]
+}

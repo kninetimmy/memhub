@@ -301,3 +301,37 @@ fn shipped_golden_file_parses_cleanly() {
         "starter golden set must keep the 11 keyword-style match queries per addendum §9; got {keyword}",
     );
 }
+
+#[test]
+fn live_golden_file_passes_golden_validation() {
+    // The live-database set is only ever scored by hand against a developer's
+    // own `.memhub/project.sqlite` (CI has no such database), so this guards
+    // the file itself: valid JSON, the golden-file validation `memhub eval
+    // retrieval --golden` applies, and the size floors task 174 asked for.
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/retrieval_golden_live.json");
+    let parsed = memhub::commands::eval::load_golden(&path)
+        .unwrap_or_else(|e| panic!("{} failed golden-file validation: {e}", path.display()));
+    let matches = parsed
+        .queries
+        .iter()
+        .filter(|q| q.kind == GoldenKind::Match)
+        .count();
+    let empties = parsed.queries.len() - matches;
+    let vm = parsed
+        .queries
+        .iter()
+        .filter(|q| q.kind == GoldenKind::Match && q.id.starts_with("vm-"))
+        .count();
+    assert!(
+        matches >= 150,
+        "live golden set needs >= 150 match queries; got {matches}"
+    );
+    assert!(
+        empties >= 15,
+        "live golden set needs >= 15 empty probes; got {empties}"
+    );
+    assert!(
+        vm >= 30,
+        "live golden set needs >= 30 `vm-` match queries; got {vm}"
+    );
+}

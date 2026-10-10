@@ -138,6 +138,37 @@ means the difference is unlikely to be chance; with few discordant
 queries the test cannot reach significance, which is not evidence of
 no difference. Read-only: it only reads the two files.
 
+## Live golden set (A/B on this repo's own database)
+
+`tests/retrieval_golden_live.json` is a second, larger golden set
+(190 match queries, 18 empty probes) that is scored against the
+repository's own memhub database instead of a seeded fixture, so it
+has real distractors among roughly 1,000 candidate rows. It is not run
+in CI. Use it to measure any retrieval change (tasks 160, 175, 98, an
+embedder swap) before it lands. The hermetic `tests/retrieval_golden.json`
+cannot tell close variants apart, and numbers from the two sets are not
+comparable.
+
+To A/B a code change, run both binaries against the same database,
+back to back, with nothing writing memhub state in between (no `add`,
+`accept`, `doc add`, `index rebuild`, `upgrade` or wrap-up, and no other
+agent session writing to the repo):
+
+```bash
+<old-memhub> eval retrieval --golden tests/retrieval_golden_live.json --k 5 --json > a.json
+<new-memhub> eval retrieval --golden tests/retrieval_golden_live.json --k 5 --json > b.json
+memhub eval compare a.json b.json       # add --json for structured output
+```
+
+Save the files with a redirect that writes UTF-8 (Git Bash, zsh, bash,
+or PowerShell 7 and later). Windows PowerShell 5.1's `>` writes UTF-16,
+which `eval compare` rejects. For a settings-only change, one binary
+with a flag such as `--no-rerank` or `--min-rerank-score` works for
+run B. Report both commits, the settings and the counts, and say the
+numbers come from this machine's database. The first baseline and the
+full step-by-step procedure are in `docs/reference/operations.md`
+(Retrieval section).
+
 ## Multi-answer golden queries
 
 A golden query normally names one acceptable answer

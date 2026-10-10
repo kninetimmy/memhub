@@ -427,6 +427,81 @@ update `seed_hermetic_corpus` to match and re-run
 root (what `/eval-recall` still drives by default) remains a self-hosted
 calibration signal, not the enforced gate.
 
+**Live golden set (task 174).** `tests/retrieval_golden_live.json` is a
+second, larger golden set (190 match queries and 18 empty probes) that is
+scored against the repository's own memhub project database rather than a
+seeded fixture. The hermetic set seeds about 19 rows, each one a query's
+answer, so it cannot tell close retrieval variants apart; the live database
+has about 1,000 candidate rows with real distractors. Any change to
+retrieval (tasks 160, 175 and 98, or an embedder swap) is measured on this
+set before it lands. It is **not run in CI**, because CI has no such
+database: `cargo test` only checks that the file is valid JSON and passes
+golden-file validation (`live_golden_file_passes_golden_validation`). Its
+queries are the real agent recall queries from this repo's session history
+(`seed-` ids), plus keyword bags (`kw-`), natural-language paraphrases
+(`semantic-`), two-part questions (`two-`), a vocabulary-mismatch group
+(`vm-`: phrased the way an agent asks without knowing the stored wording,
+sharing no whole word of four or more letters with the title of the row
+that answers it), and questions answered by an ingested doc chunk (`doc-`)
+or an architecture section (`arch-`). Where several rows genuinely answer a
+query, `also_accept` lists them. The 18 empty probes (`empty-`, `near-`)
+ask about topics no row covers. Each query's `notes` name the answering row
+by type and id as of 2026-10-10; the matchers (title and body substrings),
+not the ids, decide pass or fail.
+
+First baseline, recorded 2026-10-10 with a debug build of main at 7e17fff
+against this machine's database (live config: hybrid mode, re-ranker on,
+`rerank_candidate_pool` 20, `min_rerank_score` 2.0; K = 5):
+
+| Run | Rank-1 | Found@5 | Empty probes passed |
+|---|---|---|---|
+| default | 146/190 | 160/190 | 18/18 |
+| `--no-rerank` | 110/190 | 153/190 | 0/18 |
+
+For the 36 `vm-` queries alone, the default run found 16 within the top
+5 (14 at rank 1) and the `--no-rerank` run 15 (9 at rank 1). With the
+re-ranker off no relevance floor applies, so every empty probe returns hits;
+that is why the second row fails all 18. `memhub eval compare` with A =
+default and B = `--no-rerank` reports, for rank-1, 43 queries that only A
+passed and 7 that only B passed (exact McNemar p = 2.1e-07), and for
+found@5, 14 only A and 7 only B (p = 0.189); all 18 empty probes differ,
+each with run B returning a hit. These numbers belong to one machine's
+database on that date. Adding, superseding or editing a row, or running on
+another machine's database, changes them, and they are not comparable to
+the hermetic 36-query baseline above (memhub fact
+`retrieval.live-eval-not-comparable`), so never compare a fresh run against
+a number recorded elsewhere: always take run A and run B yourself.
+
+**A/B procedure for a code change.** An A/B is two back-to-back local runs
+on the same database, compared with `memhub eval compare`:
+
+1. Work from one repo root whose `.memhub/project.sqlite` is the database to
+   score, and do nothing that writes memhub state between the two runs (no
+   `add`, `accept`, `doc add`, `index rebuild`, `upgrade` or wrap-up on that
+   repo, and no other agent session writing to it). If anything wrote,
+   discard both runs and start again.
+2. Build the old and the new binary, for example with `cargo build
+   --release` in the base commit's checkout and in the changed one, and note
+   both paths. For a settings-only change, one binary plus a flag
+   (`--no-rerank`, `--min-rerank-score`, `--mode`) or a config edit is
+   enough.
+3. Run A with the old binary: `<old-memhub> eval retrieval --golden
+   tests/retrieval_golden_live.json --k 5 --json > a.json`.
+4. Immediately run B with the new binary and the same arguments: `<new-memhub>
+   eval retrieval --golden tests/retrieval_golden_live.json --k 5 --json >
+   b.json`. Save the files with a redirect that writes UTF-8 (Git Bash, zsh,
+   bash, or PowerShell 7 and later); Windows PowerShell 5.1's `>` writes
+   UTF-16, which `eval compare` rejects.
+5. Run `memhub eval compare a.json b.json` (add `--json` for structured
+   output). Read rank-1 and found@5 separately: each run's pass count, the
+   queries only A or only B passed, the exact McNemar p-value, and any empty
+   probe whose result differs. A small p-value (conventionally under 0.05)
+   means the difference is unlikely to be chance; few discordant queries
+   cannot reach significance, which is not evidence of no difference.
+6. Record the date, both commits, the settings the runs used and the
+   counts in the task or pull request, and say they come from this
+   machine's database.
+
 ## Token Accounting
 
 **Hibernated by default (Wave 7 Q30).** Normal builds preserve the metrics
