@@ -555,20 +555,29 @@ fn memhub_run_by_full_or_quoted_path_counts_as_present() {
     assert_eq!(std::fs::read(&claude).unwrap(), claude_bytes);
     assert_eq!(std::fs::read(&codex).unwrap(), codex_bytes);
 
-    // Another program with the same arguments is not memhub's entry. Forget
-    // the record first, or the file would read as user-removed.
-    std::fs::remove_file(home.path().join(".memhub").join("installed-hooks.json"))
-        .expect("rm record");
-    std::fs::write(
-        &codex,
-        serde_json::to_vec(&file_with("/usr/bin/other hook session-start")).unwrap(),
-    )
-    .expect("codex other");
-    assert_eq!(
-        status_of(&install_session_hooks(false), "codex").status,
-        HookStatus::Added
-    );
-    assert_eq!(memhub_groups(&codex).len(), 1);
+    // Another program with the same arguments is not memhub's entry: the
+    // real entry is added and the user's handler is left exactly as it was
+    // (no limit field added). Forget the record first each time, or the
+    // file would read as user-removed.
+    for other in [
+        "/usr/bin/other hook session-start",
+        "other /usr/bin/memhub hook session-start",
+    ] {
+        std::fs::remove_file(home.path().join(".memhub").join("installed-hooks.json"))
+            .expect("rm record");
+        let users = json!({"hooks": {"SessionStart": [{"hooks": [
+            {"type": "command", "command": other, "timeout": 5}
+        ]}]}});
+        std::fs::write(&codex, serde_json::to_vec(&users).unwrap()).expect("codex other");
+        let row = status_of(&install_session_hooks(false), "codex");
+        assert_eq!(row.status, HookStatus::Added, "{other:?}: {}", row.line());
+        let after: Value = serde_json::from_slice(&std::fs::read(&codex).unwrap()).unwrap();
+        assert_eq!(
+            after["hooks"]["SessionStart"][0], users["hooks"]["SessionStart"][0],
+            "{other:?}: the user's handler must not change"
+        );
+        assert_eq!(memhub_groups(&codex).len(), 1, "{other:?}");
+    }
 }
 
 #[test]

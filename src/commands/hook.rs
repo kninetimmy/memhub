@@ -385,10 +385,15 @@ fn is_memhub_handler(handler: &Value) -> bool {
         .is_some_and(runs_memhub_command)
 }
 
-/// `<program> hook session-start`, where `<program>` (optionally wrapped in
-/// one pair of `"` or `'`) is `memhub` or `memhub.exe` in any letter case,
-/// bare or as the last component of a path. Before #298 only the exact
-/// string [`SESSION_START_COMMAND`] counted.
+/// `<program> hook session-start`, where `<program>` is exactly one program
+/// token: either unquoted with no whitespace, quote, or shell
+/// metacharacter (`; & | < > ( ) $` and backtick), or wrapped whole in one
+/// pair of `"` or `'` with no further instance of that quote inside (and no
+/// `$` or backtick inside `"`, which the shell would expand). Its last
+/// path component must be `memhub` or `memhub.exe` in any letter case.
+/// Extra words (`echo /x/memhub`, `true && memhub`) never count: they run
+/// another program. Before #298 only the exact string
+/// [`SESSION_START_COMMAND`] counted.
 fn runs_memhub_command(command: &str) -> bool {
     let Some(program) = command
         .trim()
@@ -400,10 +405,22 @@ fn runs_memhub_command(command: &str) -> bool {
     else {
         return false;
     };
-    let program = ['"', '\'']
-        .iter()
-        .find_map(|q| program.strip_prefix(*q)?.strip_suffix(*q))
-        .unwrap_or(program);
+    const UNQUOTED_FORBIDDEN: [char; 11] = ['"', '\'', ';', '&', '|', '<', '>', '(', ')', '$', '`'];
+    let program = match program.chars().next() {
+        Some(q @ ('"' | '\'')) => {
+            let Some(inner) = program[1..].strip_suffix(q) else {
+                return false;
+            };
+            if inner.contains(q) || (q == '"' && inner.contains(['$', '`'])) {
+                return false;
+            }
+            inner
+        }
+        _ if program.contains(|c: char| c.is_whitespace() || UNQUOTED_FORBIDDEN.contains(&c)) => {
+            return false;
+        }
+        _ => program,
+    };
     let name = program.rsplit(['/', '\\']).next().unwrap_or(program);
     name.eq_ignore_ascii_case("memhub") || name.eq_ignore_ascii_case("memhub.exe")
 }
@@ -480,6 +497,18 @@ mod tests {
             "memhubhook session-start",
             "memhub status",
             "\"memhub' hook session-start",
+            // Review B1: words before the program run another program.
+            "echo /usr/bin/memhub hook session-start",
+            "other ./memhub hook session-start",
+            "true && /x/memhub hook session-start",
+            r#""/a b/x" "/c/memhub" hook session-start"#,
+            // An unquoted path with spaces is not one program to a shell.
+            r"C:\Program Files\memhub\memhub.exe hook session-start",
+            "true&&/x/memhub hook session-start",
+            "a\"/memhub hook session-start",
+            "\"$(other)/memhub\" hook session-start",
+            "\"/a\"/memhub\" hook session-start",
+            "\" hook session-start",
         ] {
             assert!(!runs_memhub_command(no), "{no:?} must not count");
         }
