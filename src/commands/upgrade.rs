@@ -788,14 +788,7 @@ fn orchestrate_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
     //    first upgrade from a binary that predates it still installs it.
     //    Do not "unify" this with the staged helper — the flag sets
     //    differ on purpose.
-    let mut child = Command::new(&cargo_bin);
-    child
-        .arg("upgrade")
-        .arg("--finish")
-        .current_dir(cwd)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
+    let mut child = finish_command(&cargo_bin, cwd, args);
     if let Ok(js) = serde_json::to_string(&resync.agents) {
         child.env(SKILLS_ENV, js);
     }
@@ -811,15 +804,6 @@ fn orchestrate_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
             child.env(OLD_EXE_ENV, js);
         }
     }
-    if args.json {
-        child.arg("--json");
-    }
-    if args.no_hooks {
-        child.arg("--no-hooks");
-    }
-    for p in &args.also {
-        child.arg("--also").arg(p);
-    }
     let code = child
         .status()
         .map_err(|e| MemhubError::ExternalCommand {
@@ -832,6 +816,31 @@ fn orchestrate_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
         // rather than 0 (F6).
         .unwrap_or(1);
     std::process::exit(code);
+}
+
+/// The `--finish` re-exec: `--json`, `--no-hooks` and `--also` only. Kept
+/// separate from [`staged_relaunch_command`] on purpose (see the comment
+/// at its call site in the orchestrate phase); a function so the
+/// forwarded flags are testable.
+fn finish_command(cargo_bin: &Path, cwd: &Path, args: &UpgradeArgs) -> Command {
+    let mut child = Command::new(cargo_bin);
+    child
+        .arg("upgrade")
+        .arg("--finish")
+        .current_dir(cwd)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    if args.json {
+        child.arg("--json");
+    }
+    if args.no_hooks {
+        child.arg("--no-hooks");
+    }
+    for p in &args.also {
+        child.arg("--also").arg(p);
+    }
+    child
 }
 
 fn ensure_source_repo(cwd: &Path) -> Result<()> {
@@ -2839,6 +2848,34 @@ mod tests {
         assert!(!a.iter().any(|x| x == "--allow-self-stage"));
         assert!(!a.iter().any(|x| x == "--dry-run"));
         assert!(!a.iter().any(|x| x == "--finish"));
+    }
+
+    #[test]
+    fn finish_command_forwards_no_hooks_only_when_given() {
+        // The hook install runs in the `--finish` child, so dropping
+        // `--no-hooks` here would install hooks the user opted out of.
+        let a = argv(&finish_command(
+            Path::new("/bin/memhub"),
+            Path::new("/cwd"),
+            &upgrade_args(true, true, true, true, true, &["/repo/a"]),
+        ));
+        assert_eq!(
+            a,
+            [
+                "upgrade",
+                "--finish",
+                "--json",
+                "--no-hooks",
+                "--also",
+                "/repo/a"
+            ]
+        );
+        let a = argv(&finish_command(
+            Path::new("/bin/memhub"),
+            Path::new("/cwd"),
+            &upgrade_args(false, true, true, true, false, &[]),
+        ));
+        assert_eq!(a, ["upgrade", "--finish"]);
     }
 
     #[test]
