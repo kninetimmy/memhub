@@ -9,9 +9,10 @@
 //!
 //! `memhub upgrade` installs the user-scope hook entry that runs it into
 //! `~/.claude/settings.json` and `~/.codex/hooks.json`. These files belong
-//! to other tools, so the install is a conservative merge: a file that is
-//! not valid JSON (or not the expected shape) is left byte-for-byte
-//! unchanged, an existing memhub entry is never duplicated, the write is
+//! to other tools, so the install is a conservative merge: an agent whose
+//! directory (`~/.claude`, `~/.codex`) does not exist is skipped and
+//! nothing is created for it, a file that is not valid JSON (or not the
+//! expected shape) or not writable is left byte-for-byte unchanged, an existing memhub entry is never duplicated, the write is
 //! atomic, and an entry the user deleted after memhub added it is not
 //! re-added (remembered in `~/.memhub/installed-hooks.json`).
 
@@ -132,8 +133,9 @@ pub fn skipped_all(reason: &str) -> Vec<HookInstall> {
 }
 
 /// Merge memhub's SessionStart entry into both user files. Best-effort and
-/// never fatal: every problem becomes a `NotInstalled` row. `dry` reports
-/// without writing anything.
+/// never fatal: every problem becomes a `NotInstalled` row. An agent whose
+/// home directory is missing is `Skipped` (creating `~/.codex` would make
+/// `memhub doctor` read Codex as set up). `dry` reports without writing.
 pub fn install_session_hooks(dry: bool) -> Vec<HookInstall> {
     let home = match db::home_dir() {
         Ok(h) => h,
@@ -162,8 +164,12 @@ pub fn install_session_hooks(dry: bool) -> Vec<HookInstall> {
     let reports = TARGETS
         .iter()
         .map(|(agent, rel, matcher)| {
-            let path = home.join(rel[0]).join(rel[1]);
-            let (status, mut detail) = install_one(&path, matcher, &mut installed, dry);
+            let dir = home.join(rel[0]);
+            let (status, mut detail) = if dir.is_dir() {
+                install_one(&dir.join(rel[1]), matcher, &mut installed, dry)
+            } else {
+                (HookStatus::Skipped, Some(format!("no ~/{}", rel[0])))
+            };
             if *agent == "codex" && matches!(status, HookStatus::Added | HookStatus::WouldAdd) {
                 detail = Some(CODEX_APPROVAL_NOTE.to_string());
             }
@@ -178,8 +184,12 @@ pub fn install_session_hooks(dry: bool) -> Vec<HookInstall> {
 
     if !dry
         && installed != before
-        && let Ok(bytes) = serde_json::to_vec_pretty(&installed)
-        && let Err(e) = write_atomic(&marker, &bytes)
+        && let Err(e) = serde_json::to_vec_pretty(&installed)
+            .map_err(std::io::Error::from)
+            .and_then(|bytes| {
+                std::fs::create_dir_all(home.join(db::GLOBAL_MEMHUB_DIRNAME))?;
+                write_atomic(&marker, &bytes)
+            })
     {
         log::debug!("installed-hooks record save skipped: {e}");
     }
@@ -288,22 +298,33 @@ fn runs_memhub(group: &Value) -> bool {
         })
 }
 
-/// Temp file in the target's own directory, then rename. A symlinked file
-/// is written through to its target so the link itself survives, and the
-/// original's permissions carry over.
+/// Temp file in the target's own directory (pid-unique), fsynced, then
+/// renamed over the target; the temp is removed on every failure. Never
+/// creates a directory. A target that exists but cannot be opened for
+/// writing is refused rather than replaced by the rename (which only needs
+/// directory permission on Unix). A symlinked file is written through to
+/// its target so the link survives, and the original's permissions carry
+/// over.
 fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let real: PathBuf = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    if let Some(parent) = real.parent() {
-        std::fs::create_dir_all(parent)?;
+    let original = std::fs::metadata(&real).ok();
+    if original.is_some() {
+        std::fs::OpenOptions::new().write(true).open(&real)?;
     }
-    let mut tmp_name = real.file_name().unwrap_or_default().to_os_string();
-    tmp_name.push(".memhub-tmp");
-    let tmp = real.with_file_name(tmp_name);
-    std::fs::write(&tmp, bytes)?;
-    if let Ok(meta) = std::fs::metadata(&real) {
-        let _ = std::fs::set_permissions(&tmp, meta.permissions());
-    }
-    std::fs::rename(&tmp, &real).inspect_err(|_| {
+    let name = real.file_name().unwrap_or_default().to_string_lossy();
+    let tmp = real.with_file_name(format!(".{name}.{}.memhub-tmp", std::process::id()));
+    let result = (|| {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        drop(f);
+        if let Some(meta) = &original {
+            std::fs::set_permissions(&tmp, meta.permissions())?;
+        }
+        std::fs::rename(&tmp, &real)
+    })();
+    if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
-    })
+    }
+    result
 }
