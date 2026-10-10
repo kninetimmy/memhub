@@ -156,6 +156,9 @@ fn install_merges_preserves_dedupes_and_respects_removal() {
     let claude = home.path().join(".claude").join("settings.json");
     let codex = home.path().join(".codex").join("hooks.json");
     let marker = home.path().join(".memhub").join("installed-hooks.json");
+    // Both agents are set up (their dirs exist); the files do not exist yet.
+    std::fs::create_dir_all(claude.parent().unwrap()).expect("mk .claude");
+    std::fs::create_dir_all(codex.parent().unwrap()).expect("mk .codex");
 
     // Criterion 8 (dry run): reports both additions, writes nothing.
     let dry = install_session_hooks(true);
@@ -178,7 +181,6 @@ fn install_merges_preserves_dedupes_and_respects_removal() {
             ]
         }
     });
-    std::fs::create_dir_all(claude.parent().unwrap()).expect("mk .claude");
     std::fs::write(&claude, serde_json::to_vec_pretty(&seeded).unwrap()).expect("seed");
 
     // Criteria 4 + 9: added to both; the missing Codex file is created and
@@ -307,6 +309,8 @@ fn upgrade_report_covers_no_hooks_dry_run_and_install() {
     let claude = home.path().join(".claude").join("settings.json");
     let codex = home.path().join(".codex").join("hooks.json");
     let pair = |a: &str, b: &str| vec![("claude".into(), a.into()), ("codex".into(), b.into())];
+    std::fs::create_dir_all(claude.parent().unwrap()).expect("mk .claude");
+    std::fs::create_dir_all(codex.parent().unwrap()).expect("mk .codex");
 
     // Criterion 8: --no-hooks touches neither file.
     let out = upgrade(
@@ -351,4 +355,65 @@ fn upgrade_report_covers_no_hooks_dry_run_and_install() {
     assert_eq!(json_hooks(&out), pair("already_present", "already_present"));
     assert_eq!(memhub_groups(&claude).len(), 1);
     assert_eq!(memhub_groups(&codex).len(), 1);
+}
+
+#[test]
+fn install_skips_missing_agent_dir_and_refuses_unwritable_file() {
+    let _env_guard = crate::support::env_lock();
+    let home = tempdir().expect("home");
+    unsafe {
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("USERPROFILE", home.path());
+    }
+    let codex_dir = home.path().join(".codex");
+    let claude = home.path().join(".claude").join("settings.json");
+    std::fs::create_dir_all(claude.parent().unwrap()).expect("mk .claude");
+
+    // No ~/.codex: nothing is created for Codex, in a dry run or a real one,
+    // so `memhub doctor` keeps reading Codex as not set up.
+    for dry in [true, false] {
+        let row = status_of(&install_session_hooks(dry), "codex");
+        assert_eq!(row.status, HookStatus::Skipped, "dry={dry}");
+        assert_eq!(row.detail.as_deref(), Some("no ~/.codex"));
+        assert!(
+            row.line().contains("skipped (no ~/.codex)"),
+            "{}",
+            row.line()
+        );
+        assert!(
+            !codex_dir.exists(),
+            "~/.codex must not be created (dry={dry})"
+        );
+    }
+    assert_eq!(memhub_groups(&claude).len(), 1, "claude still installed");
+
+    // A target without write permission is left unchanged, not replaced.
+    // Forget the earlier install so memhub would otherwise add the entry.
+    std::fs::remove_file(home.path().join(".memhub").join("installed-hooks.json"))
+        .expect("rm record");
+    std::fs::remove_file(&claude).expect("rm settings");
+    std::fs::write(&claude, b"{}").expect("seed settings");
+    let mut perms = std::fs::metadata(&claude).unwrap().permissions();
+    perms.set_readonly(true);
+    std::fs::set_permissions(&claude, perms.clone()).expect("make read-only");
+    // Privileged users (e.g. root) can write anyway; nothing to assert then.
+    let writable = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&claude)
+        .is_ok();
+    if !writable {
+        let row = status_of(&install_session_hooks(false), "claude");
+        assert_eq!(row.status, HookStatus::NotInstalled, "{}", row.line());
+        assert_eq!(std::fs::read(&claude).unwrap(), b"{}");
+        let leftovers: Vec<_> = std::fs::read_dir(claude.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .filter(|n| n != "settings.json")
+            .collect();
+        assert!(leftovers.is_empty(), "temp file left behind: {leftovers:?}");
+    }
+    #[allow(clippy::permissions_set_readonly_false)]
+    perms.set_readonly(false);
+    std::fs::set_permissions(&claude, perms).expect("restore");
 }

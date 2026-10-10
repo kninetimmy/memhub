@@ -783,10 +783,11 @@ likewise only ever writes into an agent dir that already exists — it
 never creates `~/.claude/commands`, `~/.codex/skills`,
 `~/.config/opencode/skills`, or `~/.config/opencode/commands`, and a
 non-directory at that path is a clean skip, not a clobber (mirrors the
-PATH-shadow and global-store "only act on what exists" rule). That rule
-holds for those three steps only, not for every upgrade step: the
-session-start hook install creates `~/.claude/settings.json` and
-`~/.codex/hooks.json` (and their directories) when they are missing.
+PATH-shadow and global-store "only act on what exists" rule). The
+session-start hook install follows the same rule at the directory level:
+it never creates `~/.claude` or `~/.codex`, and skips an agent whose
+directory is missing. It differs at the file level: inside a directory
+that exists, it creates a missing `settings.json` / `hooks.json`.
 
 **Session-start hook (issue #286).** `memhub hook session-start` is a
 hidden command (not in `memhub --help`) that prints the current repo's
@@ -809,21 +810,34 @@ session-start", "timeout": 30}`:
 
 The install runs in the `--finish` pass (the freshly installed binary),
 so the first upgrade from a binary that predates it still installs the
-hook. It is a merge, not an overwrite: every other key, setting, and
+hook. It acts only on an agent that is set up: if `~/.claude` or
+`~/.codex` does not exist, that row reads `skipped (no ~/.codex)` (or
+`~/.claude`) and nothing is created for it. Because no directory is
+ever created and `~/.claude.json` is never touched, `memhub doctor`'s
+MCP-registration verdicts are unaffected (its Codex check keys on
+`~/.codex` existing, its Claude check on `~/.claude.json`). It is a
+merge, not an overwrite: every other key, setting, and
 hook (including other SessionStart groups) keeps its value — key order
 may change, because memhub's JSON writer does not preserve order — and
 the write goes to a temp file in the same directory and is renamed into
-place. A missing file is created; an entry that already runs `memhub
+place (a pid-unique temp, fsynced; removed if any step fails). Inside
+an existing agent directory a missing file is created; an entry that
+already runs `memhub
 hook session-start` is never duplicated (and the file is not rewritten).
 A file that is not valid JSON, or whose `hooks` / `hooks.SessionStart`
-is not an object / array, is left byte-for-byte unchanged and reported
-as `not installed`; the rest of the upgrade still completes. memhub
+is not an object / array, or that memhub cannot open for writing (e.g.
+read-only), is left byte-for-byte unchanged and reported as `not
+installed`; the rest of the upgrade still completes. memhub
 records each file it added the entry to in
 `~/.memhub/installed-hooks.json`; if you later delete the entry, upgrade
 reports it `left out` and does not add it back (delete that record to
 opt back in). `--no-hooks` skips the step (both rows read `skipped`);
 `--dry-run` reports `would add` without writing either file or the
-record. Codex runs a new or changed hook only after the user approves
+record. The first upgrade from a binary older than this change cannot
+take `--no-hooks`: that run is orchestrated by the old binary, whose
+argument parser rejects the flag. To skip the hook on that first
+upgrade, run `cargo install --path .` in the source repo first, then
+`memhub upgrade --no-hooks`. Codex runs a new or changed hook only after the user approves
 it once in its `/hooks` screen, so whenever upgrade adds the Codex entry
 its report row says to do that. OpenCode is not supported: it has no
 config-only session-start hook (it would need a TypeScript plugin), so
