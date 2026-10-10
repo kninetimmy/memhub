@@ -444,7 +444,7 @@ struct Trim {
 
 /// PROJECT.md, trimmed to `PROJECT_MD_BUDGET_BYTES` and ended by a size line.
 /// Content is removed lowest value first: the Token Accounting section, then
-/// session note stubs from the oldest, then the architecture section list. The
+/// session note stubs from the oldest, then the architecture section index. The
 /// state text is never shortened; if it alone is over budget the file is still
 /// returned, with a size line saying so.
 fn format_project_md(s: &RenderSnapshot) -> String {
@@ -493,11 +493,13 @@ fn describe_removed(s: &RenderSnapshot, trim: &Trim) -> String {
         parts.push("Token Accounting section".to_string());
     }
     let cut = s.recent_session_notes.len() - trim.notes;
-    if cut > 0 {
+    if cut > 0 && trim.notes == 0 {
+        parts.push("all session note stubs".to_string());
+    } else if cut > 0 {
         parts.push(format!("{cut} oldest session note stub(s)"));
     }
     if !trim.arch_index && s.arch.is_some() {
-        parts.push("architecture section list".to_string());
+        parts.push("architecture section index".to_string());
     }
     parts.join(", ")
 }
@@ -506,7 +508,11 @@ fn describe_removed(s: &RenderSnapshot, trim: &Trim) -> String {
 /// includes the line itself, so the digits are iterated to a fixed point.
 fn size_line(body_len: usize, removed: &str, over: bool) -> String {
     let build = |total: usize| {
-        let budget = PROJECT_MD_BUDGET_BYTES;
+        let budget = format!(
+            "{},{:03}",
+            PROJECT_MD_BUDGET_BYTES / 1000,
+            PROJECT_MD_BUDGET_BYTES % 1000
+        );
         let text = if over {
             let after = if removed.is_empty() {
                 String::new()
@@ -574,10 +580,13 @@ fn project_md_body(s: &RenderSnapshot, trim: &Trim) -> String {
                 }
                 out.push('\n');
             }
-            out.push_str(
+            out.push_str(if trim.arch_index {
                 "These sections are recall-searchable (`memhub recall --source-type arch \"<question>\"`); \
-                 `memhub arch show` prints the full text.\n\n",
-            );
+                 `memhub arch show` prints the full text.\n\n"
+            } else {
+                "Architecture sections are recall-searchable (`memhub recall --source-type arch \"<question>\"`); \
+                 `memhub arch show` prints the full text.\n\n"
+            });
             out.push_str(&format!(
                 "_Last updated {} by {}._\n\n",
                 entry.created_at, entry.actor
@@ -605,10 +614,13 @@ fn project_md_body(s: &RenderSnapshot, trim: &Trim) -> String {
         if trim.notes > 0 {
             out.push('\n');
         }
-        out.push_str(
+        out.push_str(if trim.notes > 0 {
             "Notes are shortened here; the full text is available through `memhub note list` \
-             and recall scoped to notes (`memhub recall --source-type note \"<question>\"`).\n",
-        );
+             and recall scoped to notes (`memhub recall --source-type note \"<question>\"`).\n"
+        } else {
+            "The full text of session notes is available through `memhub note list` \
+             and recall scoped to notes (`memhub recall --source-type note \"<question>\"`).\n"
+        });
     }
 
     if let (true, Some(section)) = (trim.token_accounting, &s.token_accounting_section) {
@@ -848,8 +860,8 @@ fn escape_table_cell(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        RenderSnapshot, collapse_inline, format_ledger_md, format_project_md, note_stub,
-        strip_leading_heading,
+        RenderSnapshot, Trim, collapse_inline, describe_removed, format_ledger_md,
+        format_project_md, note_stub, project_md_body, size_line, strip_leading_heading,
     };
     use crate::models::{Fact, NarrativeEntry, SessionNote};
 
@@ -1195,6 +1207,13 @@ _1 fact(s), 0 stale._
         s
     }
 
+    /// Whether PROJECT.md with this trim and its (non-over) size line is within budget.
+    fn fits(s: &RenderSnapshot, trim: &Trim) -> bool {
+        let body = project_md_body(s, trim);
+        let line = size_line(body.len(), &describe_removed(s, trim), false);
+        body.len() + line.len() <= 8000
+    }
+
     fn last_line(md: &str) -> &str {
         md.trim_end().lines().last().expect("a last line")
     }
@@ -1247,12 +1266,115 @@ _1 fact(s), 0 stale._
         assert!(md.len() > 8000);
         assert!(md.contains(&state), "state text must never be shortened");
         assert!(!md.contains("Sections:") && !md.contains("- **2026-01-"));
-        assert!(md.contains("These sections are recall-searchable"));
-        assert!(md.contains("Notes are shortened here"));
+        assert!(md.contains("Architecture sections are recall-searchable"));
+        assert!(!md.contains("These sections"));
+        assert!(!md.contains("Notes are shortened here"));
+        assert!(md.contains("`memhub note list`") && md.contains("--source-type note"));
+        assert!(md.contains("--source-type arch") && md.contains("`memhub arch show`"));
         assert_size_line(&md);
         let line = last_line(&md);
-        assert!(line.contains("over the 8000-byte budget"), "{line}");
+        assert!(line.contains("over the 8,000-byte budget"), "{line}");
         assert!(line.contains("shorten the Currently building"), "{line}");
-        assert!(line.contains("architecture section list"), "{line}");
+        assert!(
+            line.contains("all session note stubs") && !line.contains("oldest"),
+            "{line}"
+        );
+        assert!(line.contains("architecture section index"), "{line}");
+    }
+
+    #[test]
+    fn project_md_without_token_accounting_removes_note_stubs_first() {
+        let md = format_project_md(&budget_snapshot(&"é".repeat(2_000), 10, 0));
+        assert!(md.len() <= 8000);
+        assert!(md.contains("Sections:") && !md.contains("**2026-01-01**"));
+        assert_size_line(&md);
+        let line = last_line(&md);
+        assert!(line.contains("8,000-byte budget"), "{line}");
+        assert!(line.contains("removed to fit: "), "{line}");
+        assert!(line.contains("oldest session note stub(s)."), "{line}");
+        assert!(!line.contains("Token Accounting"), "{line}");
+    }
+
+    #[test]
+    fn project_md_removes_every_stub_and_the_index_to_fit() {
+        // Fits only with no stubs and no index: the index alone is already too much.
+        let mut snapshot = budget_snapshot(&"x".repeat(7_100), 3, 0);
+        let sections: String = (1..=20)
+            .map(|i| {
+                format!(
+                    "## Section {i}
+
+body
+
+"
+                )
+            })
+            .collect();
+        snapshot.arch = Some(narrative(&sections));
+        let md = format_project_md(&snapshot);
+        assert!(md.len() <= 8000, "{}", md.len());
+        assert!(!md.contains("Sections:") && !md.contains("- **2026-01-"));
+        assert!(md.contains("Architecture sections are recall-searchable"));
+        assert!(!md.contains("Notes are shortened here"));
+        assert!(md.contains("`memhub note list`") && md.contains("--source-type note"));
+        assert!(md.contains("--source-type arch") && md.contains("`memhub arch show`"));
+        assert_size_line(&md);
+        let line = last_line(&md);
+        assert!(
+            line.contains(
+                "8,000-byte budget; removed to fit: all session note stubs, architecture section index."
+            ),
+            "{line}"
+        );
+        assert!(fits(
+            &snapshot,
+            &Trim {
+                token_accounting: false,
+                notes: 0,
+                arch_index: false,
+            }
+        ));
+        assert!(!fits(
+            &snapshot,
+            &Trim {
+                token_accounting: false,
+                notes: 0,
+                arch_index: true,
+            }
+        ));
+    }
+
+    #[test]
+    fn project_md_removing_some_stubs_keeps_newest_stubs_and_index() {
+        let snapshot = budget_snapshot(&"x".repeat(5_200), 5, 0);
+        let md = format_project_md(&snapshot);
+        assert!(md.len() <= 8000);
+        assert!(md.contains("Sections:\n\n- Alpha\n- Beta\n"));
+        assert!(md.contains("These sections are recall-searchable"));
+        assert!(md.contains("Notes are shortened here"));
+        assert!(md.contains("**2026-01-05**") && !md.contains("**2026-01-01**"));
+        assert_size_line(&md);
+        let line = last_line(&md);
+        assert!(
+            line.contains("8,000-byte budget; removed to fit: "),
+            "{line}"
+        );
+        let kept = md.matches("- **2026-01-").count();
+        assert!((1..5).contains(&kept), "{kept} stubs kept");
+        // The newest stubs are the ones kept, and one more would not fit.
+        assert!(md.contains(&format!("**2026-01-{:02}**", 6 - kept)));
+        assert!(
+            line.contains(&format!("{} oldest session note stub(s).", 5 - kept)),
+            "{line}"
+        );
+        assert!(!line.contains("all session note stubs") && !line.contains("architecture"));
+        assert!(!fits(
+            &snapshot,
+            &Trim {
+                token_accounting: false,
+                notes: kept + 1,
+                arch_index: true,
+            }
+        ));
     }
 }
