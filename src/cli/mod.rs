@@ -88,19 +88,15 @@ fn is_line_break(c: char) -> bool {
     )
 }
 
-/// Joins the lines of `text` with single spaces so it fits on one line. Whitespace next to a
-/// line break is dropped, along with lines that are blank; spaces within a line are kept.
+/// Joins the lines of `text` with single spaces so it fits on one line. Unicode whitespace at
+/// the start and end of every line (so also at the outer ends of the text) is dropped, along
+/// with lines that are blank; spaces within a line are kept.
 fn flatten_line_breaks(text: &str) -> String {
-    let last = text.split(is_line_break).count() - 1;
-    let mut lines = Vec::new();
-    for (i, line) in text.split(is_line_break).enumerate() {
-        let line = if i > 0 { line.trim_start() } else { line };
-        let line = if i < last { line.trim_end() } else { line };
-        if !line.is_empty() {
-            lines.push(line);
-        }
-    }
-    lines.join(" ")
+    text.split(is_line_break)
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// A task title flattened to one line, or `(untitled)` when nothing is left.
