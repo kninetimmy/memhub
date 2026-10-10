@@ -12,7 +12,7 @@
 //!
 //! This test seeds a disposable tempdir project whose facts/decisions/task
 //! reproduce (faithfully, not gamed) the specific rows the shipped golden
-//! set's 18 queries target, switches it to hybrid mode *before* seeding (so
+//! set's queries target, switches it to hybrid mode *before* seeding (so
 //! every row is eagerly embedded per decision 27 — writing the rows first
 //! and flipping modes after would leave the embeddings table empty), then
 //! drives the real compiled `memhub eval retrieval --json` binary against

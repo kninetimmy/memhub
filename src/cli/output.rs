@@ -440,10 +440,13 @@ pub(crate) fn eval_summary_to_json(summary: &commands::eval::EvalSummary) -> ser
             "match_queries": summary.match_queries,
             "empty_queries": summary.empty_queries,
             "match_passes": summary.match_passes,
+            "match_passes_at_1": summary.match_passes_at_1,
             "empty_passes": summary.empty_passes,
             "safety_failures": summary.safety_failures,
         },
+        "settings": summary.settings,
         "recall_at_k": summary.recall_at_k,
+        "recall_at_1": summary.recall_at_1,
         "elapsed_ms": summary.elapsed_ms,
         // Report-only (Wave 4 R10, issue #74): median per-query latency
         // after a throwaway warm-up call, never a pass/fail gate. See
@@ -472,6 +475,16 @@ pub(crate) fn print_eval_summary(summary: &commands::eval::EvalSummary) {
         passes = summary.match_passes,
         total = summary.match_queries,
         pct = summary.recall_at_k * 100.0,
+    );
+    println!(
+        "Recall@1: {passes}/{total} = {pct:.1}%",
+        passes = summary.match_passes_at_1,
+        total = summary.match_queries,
+        pct = summary.recall_at_1 * 100.0,
+    );
+    println!(
+        "Settings: {}",
+        format_run_settings(summary.mode, Some(&summary.settings))
     );
     if summary.empty_queries > 0 {
         println!(
@@ -517,6 +530,81 @@ pub(crate) fn print_eval_summary(summary: &commands::eval::EvalSummary) {
         if let Some(reason) = &outcome.failure_reason {
             println!("        {reason}");
         }
+    }
+}
+
+fn format_run_settings(
+    mode: RetrievalMode,
+    settings: Option<&commands::eval::RunSettings>,
+) -> String {
+    match settings {
+        Some(s) => format!(
+            "mode {}, reranker {}, rerank floor {}, rerank pool {}",
+            recall_mode_label(s.mode),
+            if s.reranker { "on" } else { "off" },
+            s.min_rerank_score,
+            s.rerank_candidate_pool,
+        ),
+        None => format!(
+            "mode {} (other settings not recorded)",
+            recall_mode_label(mode)
+        ),
+    }
+}
+
+pub(crate) fn eval_comparison_to_json(c: &commands::eval::Comparison) -> serde_json::Value {
+    serde_json::to_value(c).expect("Comparison serializes to JSON")
+}
+
+pub(crate) fn print_eval_comparison(c: &commands::eval::Comparison) {
+    println!(
+        "memhub eval compare — K {}, {} match queries, {} empty probes",
+        c.k, c.match_queries, c.empty_queries,
+    );
+    for (label, run) in [("A", &c.a), ("B", &c.b)] {
+        println!("Run {label}: {}", run.path);
+        println!("  {}", format_run_settings(run.mode, run.settings.as_ref()));
+    }
+    for (title, r) in [
+        ("Rank-1".to_string(), &c.rank_1),
+        (format!("Found@{}", c.k), &c.found_at_k),
+    ] {
+        println!();
+        println!(
+            "{title}: A {}/{}  |  B {}/{}  |  McNemar exact p = {:.6}",
+            r.passes_a, c.match_queries, r.passes_b, c.match_queries, r.p_value,
+        );
+        println!(
+            "  only A passed ({}): {}",
+            r.only_a.len(),
+            join_ids(&r.only_a)
+        );
+        println!(
+            "  only B passed ({}): {}",
+            r.only_b.len(),
+            join_ids(&r.only_b)
+        );
+    }
+    println!();
+    if c.empty_probe_diffs.is_empty() {
+        println!("Empty probes: no differences");
+    } else {
+        println!("Empty probes that differ:");
+        for d in &c.empty_probe_diffs {
+            println!(
+                "  {} — run {} returned a hit",
+                d.id,
+                d.hit_in.to_uppercase()
+            );
+        }
+    }
+}
+
+fn join_ids(ids: &[String]) -> String {
+    if ids.is_empty() {
+        "-".to_string()
+    } else {
+        ids.join(", ")
     }
 }
 
