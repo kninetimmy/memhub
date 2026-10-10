@@ -68,7 +68,7 @@ not fall through to Grep/Read/manual scan:
 - find code by what it does / \"where is X\" → `locate`
 - session start (turn 1 only) → read `.memhub/rendered/PROJECT.md` once, unless its frame
   (starting `<!-- memhub:rendered -->`) is already in your context from the session-start hook
-  (it may drop the architecture section index and the session note stubs to fit its size budget)
+  (it may drop the architecture section index and the session note stubs to keep it within its size budget)
 - new task / mark done → `task_add` / `task_done`; ingest a spec doc → `doc_add`
 Never Grep for code by intent before `locate`. Never read `PROJECT_LEDGER.md` before `recall`
 (it is the fallback). Never write facts/decisions directly — stage via `propose_fact` /
