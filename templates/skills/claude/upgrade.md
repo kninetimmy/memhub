@@ -58,6 +58,7 @@ memhub upgrade --dry-run  # show what would happen; NO install/symlink/migration
 memhub upgrade --json     # machine-readable instance table + skills array
 memhub upgrade --yes      # don't prompt before replacing a non-symlink shadow
 memhub upgrade --no-skills # skip the skill-wrapper resync; binary + DB migrate still run
+memhub upgrade --no-hooks  # skip the session-start hook install (Claude Code, Codex)
 memhub upgrade --allow-self-stage # Windows + no TTY (CI/agent): permit the staged relaunch
 ```
 
@@ -91,6 +92,14 @@ about what will change.
    migrations).
 5. For each instance: open (auto-applies migrations) → compare schema
    → tiny FTS recall smoke → row in the table.
+6. **Session-start hook:** `memhub upgrade` installs the session-start
+   hook for Claude Code and Codex (in that same freshly installed pass):
+   a user-scope SessionStart entry running `memhub hook session-start`,
+   into `~/.claude/settings.json` and `~/.codex/hooks.json` (only for an
+   agent whose dir exists; never duplicated; a deleted entry stays out). `--no-hooks` skips it.
+   Codex runs a new or changed hook only after a one-time approval in
+   its `/hooks` screen, so tell the user to approve it there. OpenCode
+   gets nothing.
 
 ## Reading the table
 

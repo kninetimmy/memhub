@@ -13,4 +13,5 @@ Workflow:
 - Run `memhub upgrade --dry-run` first unless the user already requested a real upgrade.
 - For real upgrades, run `memhub upgrade` and report binary, DB, GC, and skill/command sync results.
 - OpenCode sync covers `~/.config/opencode/skills/` and `~/.config/opencode/commands/` when those directories already exist.
+- `memhub upgrade` also installs the session-start hook for Claude Code and Codex (not OpenCode); `--no-hooks` skips it. Codex runs the hook only after a one-time approval in its `/hooks` screen, so tell the user to approve it there.
 - Do not commit anything.
