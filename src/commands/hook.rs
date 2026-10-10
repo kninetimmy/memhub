@@ -46,6 +46,7 @@ const INSTALLED_FILENAME: &str = "installed-hooks.json";
 const CODEX_APPROVAL_NOTE: &str =
     "approve it once in Codex's /hooks screen; Codex skips a new hook until you do";
 const CODEX_REAPPROVAL_NOTE: &str = "added \"additionalContextLimit\": 4000; approve the changed hook again in Codex's /hooks screen; Codex skips it until you do";
+const CODEX_WOULD_REAPPROVAL_NOTE: &str = "would add \"additionalContextLimit\": 4000; the changed hook would need approving again in Codex's /hooks screen; Codex skips it until you do";
 
 /// The rendered PROJECT.md bytes for the memhub repo containing `start`,
 /// or `None` outside a repo / when the config or the file cannot be read.
@@ -208,6 +209,14 @@ pub fn install_session_hooks(dry: bool) -> Vec<HookInstall> {
                     HookStatus::Skipped,
                     Some(format!("~/{} is not a directory", rel[0])),
                 ),
+                // metadata follows links, so a dangling link also lands here.
+                Err(_) if dir.symlink_metadata().is_ok() => (
+                    HookStatus::Skipped,
+                    Some(format!(
+                        "~/{} is a symlink whose target does not exist",
+                        rel[0]
+                    )),
+                ),
                 Err(_) => (HookStatus::Skipped, Some(format!("no ~/{}", rel[0]))),
             };
             if *agent == "codex" {
@@ -215,8 +224,11 @@ pub fn install_session_hooks(dry: bool) -> Vec<HookInstall> {
                     HookStatus::Added | HookStatus::WouldAdd => {
                         detail = Some(CODEX_APPROVAL_NOTE.to_string());
                     }
-                    HookStatus::Updated | HookStatus::WouldUpdate => {
+                    HookStatus::Updated => {
                         detail = Some(CODEX_REAPPROVAL_NOTE.to_string());
+                    }
+                    HookStatus::WouldUpdate => {
+                        detail = Some(CODEX_WOULD_REAPPROVAL_NOTE.to_string());
                     }
                     _ => {}
                 }
@@ -235,8 +247,15 @@ pub fn install_session_hooks(dry: bool) -> Vec<HookInstall> {
         && let Err(e) = serde_json::to_vec_pretty(&installed)
             .map_err(std::io::Error::from)
             .and_then(|bytes| {
-                std::fs::create_dir_all(home.join(db::GLOBAL_MEMHUB_DIRNAME))?;
-                write_atomic(&marker, &bytes)
+                // A dangling link would be replaced by a regular file.
+                if marker.exists() || marker.symlink_metadata().is_err() {
+                    std::fs::create_dir_all(home.join(db::GLOBAL_MEMHUB_DIRNAME))?;
+                    write_atomic(&marker, &bytes)
+                } else {
+                    Err(std::io::Error::other(
+                        "record is a symlink whose target does not exist",
+                    ))
+                }
             })
     {
         log::debug!("installed-hooks record save skipped: {e}");

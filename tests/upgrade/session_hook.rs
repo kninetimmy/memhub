@@ -487,6 +487,9 @@ fn codex_entry_gains_context_limit_once_and_keeps_everything_else() {
 
     let dry = status_of(&install_session_hooks(true), "codex");
     assert_eq!(dry.status, HookStatus::WouldUpdate, "{}", dry.line());
+    let detail = dry.detail.as_deref().expect("dry-run detail");
+    assert!(detail.starts_with("would add"), "{detail}");
+    assert!(!detail.contains("added"), "{detail}");
     assert_eq!(
         std::fs::read(&codex).unwrap(),
         seeded_bytes,
@@ -666,6 +669,58 @@ fn dangling_symlink_hook_files_are_left_alone() {
                 "a file was created next to {link:?}"
             );
         }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn dangling_symlink_install_record_is_left_alone() {
+    let _env_guard = crate::support::env_lock();
+    let home = tempdir().expect("home");
+    set_home(home.path());
+    std::fs::create_dir_all(home.path().join(".claude")).expect("mk .claude");
+    let memhub_dir = home.path().join(".memhub");
+    std::fs::create_dir_all(&memhub_dir).expect("mk .memhub");
+    let (link, target) = (
+        memhub_dir.join("installed-hooks.json"),
+        memhub_dir.join("missing-target.json"),
+    );
+    std::os::unix::fs::symlink(&target, &link).expect("symlink");
+
+    let rows = install_session_hooks(false);
+    assert_eq!(status_of(&rows, "claude").status, HookStatus::Added);
+    assert!(
+        link.symlink_metadata().unwrap().file_type().is_symlink(),
+        "install record replaced"
+    );
+    assert_eq!(std::fs::read_link(&link).unwrap(), target);
+    assert!(!target.exists(), "{target:?} created");
+}
+
+#[cfg(unix)]
+#[test]
+fn dangling_symlink_agent_dirs_are_named_in_the_skip_detail() {
+    let _env_guard = crate::support::env_lock();
+    let home = tempdir().expect("home");
+    set_home(home.path());
+    for dir in [".claude", ".codex"] {
+        std::os::unix::fs::symlink(home.path().join("gone"), home.path().join(dir))
+            .expect("symlink");
+    }
+    for dry in [true, false] {
+        let rows = install_session_hooks(dry);
+        assert!(
+            rows.iter().all(|r| r.status == HookStatus::Skipped),
+            "{rows:?}"
+        );
+        assert_eq!(
+            status_of(&rows, "claude").detail.as_deref(),
+            Some("~/.claude is a symlink whose target does not exist")
+        );
+        assert_eq!(
+            status_of(&rows, "codex").detail.as_deref(),
+            Some("~/.codex is a symlink whose target does not exist")
+        );
     }
 }
 
