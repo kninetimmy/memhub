@@ -64,6 +64,7 @@ use std::process::{Command, Stdio};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::commands::hook::{self, HookInstall};
 use crate::commands::install_manifest::{self, InstallManifest};
 use crate::config::RetrievalMode;
 use crate::db;
@@ -94,6 +95,8 @@ pub struct UpgradeArgs {
     pub no_skills: bool,
     /// Skip the `target/` build-artifact GC step (`memhub gc`).
     pub no_gc: bool,
+    /// Skip installing the SessionStart hook entry (`hook` module).
+    pub no_hooks: bool,
     /// Report the outcome of the most recent upgrade from
     /// `~/.memhub/last_upgrade.json` and exit 0/1/3. Does not rebuild.
     pub verify_last: bool,
@@ -382,6 +385,9 @@ fn staged_relaunch_command(shim: &Path, cwd: &Path, args: &UpgradeArgs) -> Comma
     }
     if args.no_gc {
         cmd.arg("--no-gc");
+    }
+    if args.no_hooks {
+        cmd.arg("--no-hooks");
     }
     if args.json {
         cmd.arg("--json");
@@ -776,10 +782,12 @@ fn orchestrate_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
     //    `--finish` child only migrates + verifies. The skill resync,
     //    GC, and PATH-shadow fix have already run in THIS (orchestrate)
     //    process, so `--no-gc` / `--no-skills` / `--yes` are irrelevant
-    //    to it by design. Only `--json` (output shape) and `--also`
-    //    (extra roots to migrate) carry into the finish phase. Do not
-    //    "unify" this with the staged helper — the flag sets differ on
-    //    purpose.
+    //    to it by design. Only `--json` (output shape), `--also`
+    //    (extra roots to migrate) and `--no-hooks` carry into the finish
+    //    phase. The hook install runs THERE, under the new binary, so a
+    //    first upgrade from a binary that predates it still installs it.
+    //    Do not "unify" this with the staged helper — the flag sets
+    //    differ on purpose.
     let mut child = Command::new(&cargo_bin);
     child
         .arg("upgrade")
@@ -805,6 +813,9 @@ fn orchestrate_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
     }
     if args.json {
         child.arg("--json");
+    }
+    if args.no_hooks {
+        child.arg("--no-hooks");
     }
     for p in &args.also {
         child.arg("--also").arg(p);
@@ -970,10 +981,19 @@ fn finish_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
     // binary (the same reasoning migrate + verify already run here).
     let audit_nag = check_audit_md(cwd);
 
+    // Once-per-machine, like the skill resync, but run here under the NEW
+    // binary (see step 4 in `orchestrate_phase`). Never fatal.
+    let hooks = if args.no_hooks {
+        hook::skipped_all("--no-hooks")
+    } else {
+        hook::install_session_hooks(false)
+    };
+
     emit(
         &reports,
         pruned,
         &skills,
+        &hooks,
         &orphans,
         &old_exe_leftovers,
         &removed_stale_files,
@@ -1489,6 +1509,11 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
     // Read-only regardless of `dry`, so the preview IS the real check
     // (issue #33: "`--dry-run` reports whether it *would* nag").
     let audit_nag = check_audit_md(cwd);
+    let hooks = if args.no_hooks {
+        hook::skipped_all("--no-hooks")
+    } else {
+        hook::install_session_hooks(true)
+    };
 
     if args.json {
         println!(
@@ -1512,6 +1537,7 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
                     "verdict": global_preview.1,
                 },
                 "skills": resync.agents,
+                "hooks": hooks,
                 // Resync orphans (U6): files memhub installed before but no
                 // longer ships, plus hibernated wrappers. Reported, never deleted.
                 "resync_orphans": resync.orphans,
@@ -1560,6 +1586,9 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
     );
     for s in &resync.agents {
         println!("  skills:       {}", s.dry_line());
+    }
+    for h in &hooks {
+        println!("  hooks:        {}", h.line());
     }
     for orphan in &resync.orphans {
         println!("  orphan:       {orphan} ({ORPHAN_REMEDIATION})");
@@ -1621,6 +1650,7 @@ fn emit(
     reports: &[InstanceReport],
     pruned: usize,
     skills: &[SkillSync],
+    hooks: &[HookInstall],
     orphans: &[String],
     old_exe_leftovers: &[String],
     removed_stale_files: &[String],
@@ -1653,6 +1683,8 @@ fn emit(
                 "total": total,
                 "pruned": pruned,
                 "skills": skills,
+                // SessionStart hook entry, one row per user file.
+                "hooks": hooks,
                 // Resync orphans (U6): files memhub installed before but no
                 // longer ships, plus hibernated wrappers. Reported, never deleted.
                 "resync_orphans": orphans,
@@ -1708,6 +1740,9 @@ fn emit(
     }
     for s in skills {
         println!("  skills: {}", s.line());
+    }
+    for h in hooks {
+        println!("  hooks: {}", h.line());
     }
     for orphan in orphans {
         println!("  orphan: {orphan} ({ORPHAN_REMEDIATION})");
@@ -2749,6 +2784,7 @@ mod tests {
         yes: bool,
         no_skills: bool,
         no_gc: bool,
+        no_hooks: bool,
         also: &[&str],
     ) -> UpgradeArgs {
         UpgradeArgs {
@@ -2761,6 +2797,7 @@ mod tests {
             yes,
             no_skills,
             no_gc,
+            no_hooks,
             verify_last: false,
         }
     }
@@ -2778,13 +2815,13 @@ mod tests {
         // effect of the FULL orchestration the child runs — especially
         // `--no-gc`, whose omission silently re-enabled artifact
         // deletion the user explicitly opted out of.
-        let args = upgrade_args(true, true, true, true, &["/repo/a", "/repo/b"]);
+        let args = upgrade_args(true, true, true, true, true, &["/repo/a", "/repo/b"]);
         let cmd = staged_relaunch_command(Path::new("/tmp/shim.exe"), Path::new("/cwd"), &args);
         let a = argv(&cmd);
 
         assert_eq!(a[0], "upgrade");
         assert_eq!(a[1], "--staged");
-        for flag in ["--yes", "--no-skills", "--no-gc", "--json"] {
+        for flag in ["--yes", "--no-skills", "--no-gc", "--no-hooks", "--json"] {
             assert!(
                 a.iter().any(|x| x == flag),
                 "staged relaunch dropped {flag}; argv = {a:?}"
@@ -2809,7 +2846,7 @@ mod tests {
         // The forwarding is conditional, not unconditional: an unset
         // flag must stay absent so the child's parsed args match the
         // operator's actual invocation.
-        let args = upgrade_args(false, false, false, false, &[]);
+        let args = upgrade_args(false, false, false, false, false, &[]);
         let a = argv(&staged_relaunch_command(
             Path::new("/s.exe"),
             Path::new("/c"),
@@ -2824,7 +2861,7 @@ mod tests {
         // job-forbidden fallback both build through this one helper, so
         // their argv must be byte-identical — the regression guard for
         // the original fallback that dropped every forwarded flag.
-        let args = upgrade_args(true, false, true, true, &["/x"]);
+        let args = upgrade_args(true, false, true, true, true, &["/x"]);
         let primary = staged_relaunch_command(Path::new("/s.exe"), Path::new("/c"), &args);
         let fallback = staged_relaunch_command(Path::new("/s.exe"), Path::new("/c"), &args);
         let pa: Vec<_> = primary.get_args().map(|s| s.to_os_string()).collect();

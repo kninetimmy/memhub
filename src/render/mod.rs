@@ -15,7 +15,7 @@ use crate::models::{
     Decision, FACT_STALE_AFTER_DAYS, Fact, NarrativeEntry, RenderResult, SessionNote, Task,
 };
 
-const PROJECT_FILENAME: &str = "PROJECT.md";
+pub(crate) const PROJECT_FILENAME: &str = "PROJECT.md";
 const LEDGER_FILENAME: &str = "PROJECT_LEDGER.md";
 const SESSION_NOTE_RENDER_LIMIT: usize = 10;
 const NOTE_STUB_MAX_CHARS: usize = 300;

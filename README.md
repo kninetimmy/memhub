@@ -779,7 +779,7 @@ Sync state (`[sync]` config and the per-machine baseline marker) is wiring, not 
 | `memhub metrics enable/status` | Hibernated; available only in an explicit `--features metrics` build |
 | `memhub export/import` | Portable JSON backup; cross-machine restore |
 | `memhub sync enable/status/snapshot/check/adopt/commit` | Cross-machine Drive sync (M10); push/pull a whole-DB snapshot through a synced folder |
-| `memhub upgrade` | Rebuild + install the binary and bring every memhub instance on this machine to head schema; resync skill wrappers |
+| `memhub upgrade` | Rebuild + install the binary and bring every memhub instance on this machine to head schema; resync skill wrappers; install the [session-start hook](#session-start-hook) (`--no-hooks` skips it) |
 | `memhub gc` | Reclaim stale Cargo build artifacts (memhub-owned `target/` rlibs and test binaries) |
 | `memhub serve` | Stdio MCP server for Claude Code / Codex / OpenCode |
 
@@ -827,6 +827,7 @@ include_docs_in_default = false  # auto-flips on first `doc add --global`
 **Claude Code**
 
 - Reads `CLAUDE.md` at session start.
+- Gets this repo's `PROJECT.md` at session start from the user-scope hook `memhub upgrade` installs in `~/.claude/settings.json` — see [Session-start hook](#session-start-hook).
 - MCP server registered repo-scoped via the committed [`.mcp.json`](.mcp.json) — nothing to set up per machine.
 - User-level slash commands at `~/.claude/commands/`: `/wrap-up`, `/catch-up`, `/check-init`, `/init-project`, `/recall`, `/locate`, `/reindex`, `/eval-recall`, `/doc`, `/global`, `/audit-md`, `/upgrade`. The dormant `/metrics` template is retained for feature builds but not installed by default.
 - Skill writes are attributed `actor=claude:wrap-up`, `source=user+agent:claude-code`.
@@ -834,6 +835,7 @@ include_docs_in_default = false  # auto-flips on first `doc add --global`
 **Codex CLI**
 
 - Reads `AGENTS.md` at session start (same role as `CLAUDE.md`).
+- Gets this repo's `PROJECT.md` at session start from the user-scope hook `memhub upgrade` installs in `~/.codex/hooks.json`, once you approve it in Codex's `/hooks` screen — see [Session-start hook](#session-start-hook).
 - User-level skills at `~/.codex/skills/`: same set as above.
 - Codex has no repo-scoped MCP config, so registration is a one-time **per-machine** step in `~/.codex/config.toml` — see [Register the MCP server](#register-the-mcp-server).
 - Skill writes are attributed `actor=codex:wrap-up`, `source=user+agent:codex`.
@@ -841,6 +843,7 @@ include_docs_in_default = false  # auto-flips on first `doc add --global`
 **OpenCode CLI**
 
 - Reads `AGENTS.md` at session start (same role as Codex).
+- No session-start hook: OpenCode has no config-only one, so `memhub upgrade` installs nothing for it — see [Session-start hook](#session-start-hook).
 - User-level skills at `~/.config/opencode/skills/` and command wrappers at `~/.config/opencode/commands/`: same set as above.
 - MCP server registered repo-scoped via the `mcp.servers.memhub` block in the tracked `opencode.json` — nothing to set up per machine.
 - Skill writes are attributed `actor=opencode:wrap-up`, `source=user+agent:opencode`.
@@ -864,6 +867,22 @@ user+agent:opencode         Same, OpenCode-side
 git                         Reserved for git ingestion
 observed                    Reserved for observed signals
 ```
+
+### Session-start hook
+
+`memhub upgrade` installs a user-scope SessionStart hook so Claude Code and Codex get this repo's `PROJECT.md` frame at session start without the agent having to read it. The hook runs `memhub hook session-start` (hidden from `memhub --help`), which prints the current repo's rendered `PROJECT.md` to stdout, byte for byte, and nothing else. Outside a memhub repo, or when the repo's config or `PROJECT.md` can't be read, it prints nothing and exits 0. It never opens the database or writes a file, so it prints what the last `memhub render` wrote.
+
+Upgrade merges one entry into each of two files, with the handler `{"type": "command", "command": "memhub hook session-start", "timeout": 30}`:
+
+- `~/.claude/settings.json`, matcher `startup|resume|clear|compact`
+- `~/.codex/hooks.json`, matcher `startup|resume`
+
+Upgrade only acts on an agent whose directory exists: if `~/.claude` or `~/.codex` doesn't exist, that row is reported as skipped (for example `skipped (no ~/.codex)`) and nothing is created, so `memhub doctor`'s verdict for that agent is unchanged (its Codex check keys on `~/.codex` existing; its Claude Code check reads the repo's `.mcp.json` and `~/.claude.json`, not `~/.claude`). Inside an existing directory, a missing file is created. Every other setting and hook in those files keeps its value (key order may change), the write is atomic, and an existing memhub entry is never duplicated. A file that isn't valid JSON, or that memhub can't write (for example read-only), is left untouched and the report says the hook was not installed there. If you delete the memhub entry, later upgrades leave it out and say so. `memhub upgrade --no-hooks` skips the step; `memhub upgrade --dry-run` reports which entries it would add without writing either file. The first upgrade from a binary older than this change can't take `--no-hooks` (the old binary rejects the flag); to skip the hook then, run `cargo install --path .` in the memhub source repo first, then `memhub upgrade --no-hooks`.
+
+- **Codex:** Codex runs a new hook only after you approve it once in its `/hooks` screen. The upgrade report tells you to whenever it adds the Codex entry.
+- **OpenCode:** not supported. OpenCode has no config-only session-start hook (it would need a TypeScript plugin), so upgrade installs nothing for it.
+
+Details: [Operations reference](docs/reference/operations.md), "Machine-wide upgrade".
 
 ### Attribution in depth
 
