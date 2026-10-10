@@ -949,7 +949,7 @@ INTENT → TOOL (always start here; do not fall through to Grep/Read/manual scan
 • ingest a markdown spec/design doc as searchable reference → doc_add
 • new task / mark task done → task_add / task_done
 • cross-machine pull/push of memhub state → sync_check, sync_snapshot, sync_adopt, sync_commit
-• session start (turn 1 ONLY) → read .memhub/rendered/PROJECT.md once, unless its frame (starting `<!-- memhub:rendered -->`) is already in your context from the session-start hook (current state, an architecture section index, note stubs; the index and stubs may be dropped to keep it within its size budget; recall fetches the full text)
+• session start (turn 1 ONLY) → read .memhub/rendered/PROJECT.md once, unless its frame (starting `<!-- memhub:rendered -->`) is already in your context from the session-start hook (current state, an architecture section index, session note stubs; the architecture section index and the session note stubs may be dropped to keep it within its size budget; recall fetches the full text)
 
 OTHER (direct, use when explicitly needed): status, search, list_tasks, list_decisions, list_facts, list_pending_writes, get_command, render (regenerate PROJECT.md), sync_status, log_session_note (write-only scratch; recall(source_types=["note"]) retrieves it explicitly, never in default recall).
 

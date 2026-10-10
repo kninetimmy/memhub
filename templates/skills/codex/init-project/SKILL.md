@@ -91,8 +91,9 @@ Produce two drafts, kept separate so each can be approved on its own.
 2. **`arch` body.** Purpose / stack / layout / key subsystems /
    known gaps. Sparse is fine for a fresh project — purpose + stack +
    folder inventory is enough. Use clear `##` headings per topic:
-   `memhub render` lists them as the architecture index in PROJECT.md
-   and each section is recalled separately. Short paragraphs, bullet
+   each section is recalled separately, and `memhub render` may list
+   them as the architecture section index in PROJECT.md (the index may
+   be dropped to keep PROJECT.md within its size budget). Short paragraphs, bullet
    lists for layout and subsystems.
 
 ## Approval gate
