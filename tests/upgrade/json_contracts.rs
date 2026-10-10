@@ -498,6 +498,81 @@ fn task_edge_line_breaks_leave_no_edge_spaces() {
 }
 
 #[test]
+fn task_one_line_output_trims_outer_whitespace_of_titles_and_notes() {
+    let _env_guard = crate::support::env_read_lock();
+
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    // (stored title, printed title, stored notes, printed plain-list notes)
+    let cases = [
+        (" foo ", "foo", " n1 \nn2 ", "n1 n2"),
+        ("  ", "(untitled)", " \t\r\n ", "(none)"),
+        (" \t ", "(untitled)", "x  y", "x  y"),
+        ("  foo\nbar  ", "foo bar", "", "(none)"),
+        // A tab on either side of a line break.
+        ("a\t\n\tb", "a b", "a\t\n\tb", "a b"),
+        // A no-break space is Unicode whitespace: the trim must cover it too.
+        ("a\u{00A0}\nb", "a b", "a\u{00A0}\nb", "a b"),
+        ("x  y", "x  y", "x  y", "x  y"),
+    ];
+    for (i, (title, printed, notes, _)) in cases.iter().enumerate() {
+        let id = i + 1;
+        let out = run_cli(temp.path(), &["task", "add", title, "--notes", notes]);
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            format!("Created task {id}: {printed}\n")
+        );
+
+        let out = run_cli(temp.path(), &["task", "show", &id.to_string()]);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.starts_with(&format!("[{id}] {printed} [open]\ncreated: ")),
+            "{stdout:?}"
+        );
+
+        // Stored text and --json are untouched.
+        let shown =
+            run_cli_expecting_success(temp.path(), &["task", "show", &id.to_string(), "--json"]);
+        assert_eq!(shown["title"], *title);
+    }
+
+    let out = run_cli(temp.path(), &["task", "list", "--brief"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for (i, (_, printed, _, _)) in cases.iter().enumerate() {
+        let prefix = format!("[{}] [open] {printed}", i + 1);
+        assert!(
+            stdout
+                .lines()
+                .any(|l| l == prefix || l.starts_with(&format!("{prefix} - "))),
+            "{prefix:?} missing: {stdout:?}"
+        );
+    }
+
+    let out = run_cli(temp.path(), &["task", "list"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 2 * cases.len(), "{stdout:?}");
+    // Newest first: task N is at index 2 * (len - N).
+    for (i, (_, printed, _, printed_notes)) in cases.iter().enumerate() {
+        let at = 2 * (cases.len() - (i + 1));
+        assert!(
+            lines[at].starts_with(&format!("[{}] {printed} [open] created: ", i + 1)),
+            "{stdout:?}"
+        );
+        assert_eq!(
+            lines[at + 1],
+            format!("  notes: {printed_notes}"),
+            "{stdout:?}"
+        );
+    }
+
+    // The task show notes body keeps the stored notes.
+    let out = run_cli(temp.path(), &["task", "show", "1"]);
+    assert!(String::from_utf8_lossy(&out.stdout).ends_with("notes:  n1 \nn2 \n"));
+}
+
+#[test]
 fn task_one_line_output_drops_whitespace_next_to_line_breaks() {
     let _env_guard = crate::support::env_read_lock();
 
