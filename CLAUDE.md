@@ -16,10 +16,13 @@ config: .memhub/config.toml
 This repo is memhub-primary as of M7-002 (2026-05-13). The DB at
 `.memhub/project.sqlite` is the source of truth; rendered markdown is
 the local human-readable view under `.memhub/rendered/`. At session
-start, read `.memhub/rendered/PROJECT.md` if present. It is a compact
-frame: the "currently building / next up / open questions" state in
-full, an index of the architecture's section headings, and the recent
-session notes shortened to stubs. Pull the architecture text with
+start, read `.memhub/rendered/PROJECT.md` if present, unless its frame
+(starting `<!-- memhub:rendered -->`) is already in your context from
+the session-start hook. It is a compact frame: the "currently
+building / next up / open questions" state in full, an index of the
+architecture's section headings, and the recent session notes
+shortened to stubs; to keep it within its size budget the stubs and
+the section index may be dropped. Pull the architecture text with
 `memhub recall` (sections are recall-searchable) or `memhub arch show`,
 and full notes with `memhub note list` or note-scoped recall. If
 PROJECT.md is missing, fall back to `memhub recall` / `memhub status`.

@@ -66,7 +66,9 @@ memhub is this repo's project memory. When intent matches, use the memhub MCP to
 not fall through to Grep/Read/manual scan:
 - past decisions / status / \"is there a fact/task about X\" → `recall`
 - find code by what it does / \"where is X\" → `locate`
-- session start (turn 1 only) → read `.memhub/rendered/PROJECT.md` once
+- session start (turn 1 only) → read `.memhub/rendered/PROJECT.md` once, unless its frame
+  (starting `<!-- memhub:rendered -->`) is already in your context from the session-start hook
+  (it may drop the session note stubs and the architecture section list to fit its size budget)
 - new task / mark done → `task_add` / `task_done`; ingest a spec doc → `doc_add`
 Never Grep for code by intent before `locate`. Never read `PROJECT_LEDGER.md` before `recall`
 (it is the fallback). Never write facts/decisions directly — stage via `propose_fact` /
