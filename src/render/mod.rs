@@ -19,6 +19,10 @@ const PROJECT_FILENAME: &str = "PROJECT.md";
 const LEDGER_FILENAME: &str = "PROJECT_LEDGER.md";
 const SESSION_NOTE_RENDER_LIMIT: usize = 10;
 const NOTE_STUB_MAX_CHARS: usize = 300;
+/// PROJECT.md byte budget, sized so the whole frame fits a session-start
+/// hook's output cap (Claude Code: 10,000 characters; Codex: about 2,500
+/// tokens). A fixed constant, not a config key.
+const PROJECT_MD_BUDGET_BYTES: usize = 8_000;
 const RECENT_WRITE_RENDER_LIMIT: usize = 50;
 const RECENT_WRITE_WINDOW_DAYS: i64 = 30;
 
@@ -430,7 +434,109 @@ fn load_recent_writes(conn: &Connection) -> Result<Vec<RecentWrite>> {
     Ok(rows)
 }
 
+/// What `format_project_md` keeps of the removable parts of PROJECT.md.
+struct Trim {
+    token_accounting: bool,
+    /// How many of the (newest first) session note stubs to keep.
+    notes: usize,
+    arch_index: bool,
+}
+
+/// PROJECT.md, trimmed to `PROJECT_MD_BUDGET_BYTES` and ended by a size line.
+/// Content is removed lowest value first: the Token Accounting section, then
+/// session note stubs from the oldest, then the architecture section list. The
+/// state text is never shortened; if it alone is over budget the file is still
+/// returned, with a size line saying so.
 fn format_project_md(s: &RenderSnapshot) -> String {
+    let notes = s.recent_session_notes.len();
+    let mut trims = vec![Trim {
+        token_accounting: true,
+        notes,
+        arch_index: true,
+    }];
+    if s.token_accounting_section.is_some() {
+        trims.push(Trim {
+            token_accounting: false,
+            notes,
+            arch_index: true,
+        });
+    }
+    trims.extend((0..notes).rev().map(|kept| Trim {
+        token_accounting: false,
+        notes: kept,
+        arch_index: true,
+    }));
+    trims.push(Trim {
+        token_accounting: false,
+        notes: 0,
+        arch_index: false,
+    });
+
+    let mut last = (String::new(), String::new());
+    for trim in &trims {
+        let body = project_md_body(s, trim);
+        let removed = describe_removed(s, trim);
+        let line = size_line(body.len(), &removed, false);
+        if body.len() + line.len() <= PROJECT_MD_BUDGET_BYTES {
+            return body + &line;
+        }
+        last = (body, removed);
+    }
+    let (body, removed) = last;
+    let line = size_line(body.len(), &removed, true);
+    body + &line
+}
+
+fn describe_removed(s: &RenderSnapshot, trim: &Trim) -> String {
+    let mut parts = Vec::new();
+    if !trim.token_accounting && s.token_accounting_section.is_some() {
+        parts.push("Token Accounting section".to_string());
+    }
+    let cut = s.recent_session_notes.len() - trim.notes;
+    if cut > 0 {
+        parts.push(format!("{cut} oldest session note stub(s)"));
+    }
+    if !trim.arch_index && s.arch.is_some() {
+        parts.push("architecture section list".to_string());
+    }
+    parts.join(", ")
+}
+
+/// The closing line (blank line first) stating the written file's size, which
+/// includes the line itself, so the digits are iterated to a fixed point.
+fn size_line(body_len: usize, removed: &str, over: bool) -> String {
+    let build = |total: usize| {
+        let budget = PROJECT_MD_BUDGET_BYTES;
+        let text = if over {
+            let after = if removed.is_empty() {
+                String::new()
+            } else {
+                format!(" after removing {removed}")
+            };
+            format!(
+                "PROJECT.md is {total} bytes, over the {budget}-byte budget{after}; \
+                 shorten the Currently building state text (`memhub state set`)."
+            )
+        } else if removed.is_empty() {
+            format!("PROJECT.md is {total} bytes of the {budget}-byte budget.")
+        } else {
+            format!(
+                "PROJECT.md is {total} bytes of the {budget}-byte budget; removed to fit: {removed}."
+            )
+        };
+        format!("\n_{text}_\n")
+    };
+    let mut total = body_len;
+    loop {
+        let line = build(total);
+        if body_len + line.len() == total {
+            return line;
+        }
+        total = body_len + line.len();
+    }
+}
+
+fn project_md_body(s: &RenderSnapshot, trim: &Trim) -> String {
     let mut out = String::new();
     out.push_str(&render_header(s));
     out.push('\n');
@@ -457,16 +563,19 @@ fn format_project_md(s: &RenderSnapshot) -> String {
     out.push_str("## Architecture\n\n");
     match &s.arch {
         Some(entry) => {
-            out.push_str("Sections:\n\n");
-            for path in architecture_section_index(&entry.body) {
-                if path.is_empty() {
-                    out.push_str("- _(untitled opening)_\n");
-                } else {
-                    out.push_str(&format!("- {path}\n"));
+            if trim.arch_index {
+                out.push_str("Sections:\n\n");
+                for path in architecture_section_index(&entry.body) {
+                    if path.is_empty() {
+                        out.push_str("- _(untitled opening)_\n");
+                    } else {
+                        out.push_str(&format!("- {path}\n"));
+                    }
                 }
+                out.push('\n');
             }
             out.push_str(
-                "\nThese sections are recall-searchable (`memhub recall --source-type arch \"<question>\"`); \
+                "These sections are recall-searchable (`memhub recall --source-type arch \"<question>\"`); \
                  `memhub arch show` prints the full text.\n\n",
             );
             out.push_str(&format!(
@@ -485,7 +594,7 @@ fn format_project_md(s: &RenderSnapshot) -> String {
     if s.recent_session_notes.is_empty() {
         out.push_str("_No session notes recorded._\n");
     } else {
-        for note in &s.recent_session_notes {
+        for note in s.recent_session_notes.iter().take(trim.notes) {
             out.push_str(&format!(
                 "- **{}** ({}) — {}\n",
                 note.created_at,
@@ -493,13 +602,16 @@ fn format_project_md(s: &RenderSnapshot) -> String {
                 note_stub(&collapse_inline(&note.text))
             ));
         }
+        if trim.notes > 0 {
+            out.push('\n');
+        }
         out.push_str(
-            "\nNotes are shortened here; the full text is available through `memhub note list` \
+            "Notes are shortened here; the full text is available through `memhub note list` \
              and recall scoped to notes (`memhub recall --source-type note \"<question>\"`).\n",
         );
     }
 
-    if let Some(section) = &s.token_accounting_section {
+    if let (true, Some(section)) = (trim.token_accounting, &s.token_accounting_section) {
         out.push('\n');
         out.push_str("## Token Accounting (last 7 days)\n\n");
         out.push_str(section);
@@ -736,9 +848,10 @@ fn escape_table_cell(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        RenderSnapshot, collapse_inline, format_ledger_md, note_stub, strip_leading_heading,
+        RenderSnapshot, collapse_inline, format_ledger_md, format_project_md, note_stub,
+        strip_leading_heading,
     };
-    use crate::models::Fact;
+    use crate::models::{Fact, NarrativeEntry, SessionNote};
 
     #[test]
     fn strips_matching_leading_heading() {
@@ -1040,5 +1153,106 @@ _1 fact(s), 0 stale._
             ),
             "untagged row must render a blank Kind cell, not be dropped:\n{ledger}"
         );
+    }
+
+    // -- PROJECT.md byte budget (issue #285) -------------------------------
+
+    fn narrative(body: &str) -> NarrativeEntry {
+        NarrativeEntry {
+            id: 1,
+            body: body.to_string(),
+            actor: "user".to_string(),
+            actor_raw: "cli:user".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    /// Note `i` is dated `2026-01-{i:02}`; the list is newest first.
+    fn notes(count: usize, text: &str) -> Vec<SessionNote> {
+        (1..=count)
+            .rev()
+            .map(|i| SessionNote {
+                id: i as i64,
+                actor: "user".to_string(),
+                actor_raw: "cli:user".to_string(),
+                text: text.to_string(),
+                session_id: None,
+                agent_id: None,
+                provider_id: None,
+                model_id: None,
+                variant: None,
+                created_at: format!("2026-01-{i:02}"),
+            })
+            .collect()
+    }
+
+    fn budget_snapshot(state: &str, note_count: usize, token_bytes: usize) -> RenderSnapshot {
+        let mut s = minimal_snapshot(Vec::new());
+        s.state = Some(narrative(state));
+        s.arch = Some(narrative("## Alpha\n\nbody\n\n## Beta\n\nbody\n"));
+        s.recent_session_notes = notes(note_count, &"é".repeat(400));
+        s.token_accounting_section = (token_bytes > 0).then(|| "t".repeat(token_bytes));
+        s
+    }
+
+    fn last_line(md: &str) -> &str {
+        md.trim_end().lines().last().expect("a last line")
+    }
+
+    /// Every render ends with a size line stating the file's exact byte length.
+    fn assert_size_line(md: &str) {
+        assert!(
+            last_line(md).contains(&format!("is {} bytes", md.len())),
+            "{}",
+            last_line(md)
+        );
+    }
+
+    #[test]
+    fn project_md_within_budget_is_unchanged_plus_size_line() {
+        let md = format_project_md(&budget_snapshot("Building.", 3, 100));
+        assert!(md.len() <= 8000);
+        assert!(md.contains("Sections:\n\n- Alpha\n- Beta\n"));
+        assert!(md.contains("## Token Accounting") && md.contains("**2026-01-01**"));
+        assert_size_line(&md);
+        assert!(!last_line(&md).contains("removed"), "{}", last_line(&md));
+    }
+
+    #[test]
+    fn project_md_drops_token_accounting_first() {
+        let md = format_project_md(&budget_snapshot("Building.", 3, 7_500));
+        assert!(md.len() <= 8000);
+        assert!(!md.contains("## Token Accounting"));
+        assert!(md.contains("**2026-01-01**") && md.contains("Sections:"));
+        assert_size_line(&md);
+        assert!(last_line(&md).contains("removed to fit: Token Accounting section."));
+    }
+
+    #[test]
+    fn project_md_drops_oldest_note_stubs_next() {
+        let md = format_project_md(&budget_snapshot(&"é".repeat(2_000), 10, 7_500));
+        assert!(md.len() <= 8000);
+        assert!(!md.contains("## Token Accounting"));
+        assert!(md.contains("**2026-01-10**") && !md.contains("**2026-01-01**"));
+        assert!(md.contains("Sections:") && md.contains("Notes are shortened here"));
+        assert_size_line(&md);
+        assert!(last_line(&md).contains("Token Accounting section, "));
+        assert!(last_line(&md).contains("oldest session note stub(s)"));
+    }
+
+    #[test]
+    fn project_md_over_budget_state_keeps_state_and_pointers_and_says_so() {
+        let state = "é".repeat(9_000);
+        let md = format_project_md(&budget_snapshot(&state, 10, 500));
+        assert!(md.len() > 8000);
+        assert!(md.contains(&state), "state text must never be shortened");
+        assert!(!md.contains("Sections:") && !md.contains("- **2026-01-"));
+        assert!(md.contains("These sections are recall-searchable"));
+        assert!(md.contains("Notes are shortened here"));
+        assert_size_line(&md);
+        let line = last_line(&md);
+        assert!(line.contains("over the 8000-byte budget"), "{line}");
+        assert!(line.contains("shorten the Currently building"), "{line}");
+        assert!(line.contains("architecture section list"), "{line}");
     }
 }
