@@ -1218,6 +1218,12 @@ _1 fact(s), 0 stale._
         md.trim_end().lines().last().expect("a last line")
     }
 
+    // Full pointer sentences, spelled out so any change to the wording breaks a test.
+    const ARCH_POINTER_WITH_INDEX: &str = "These sections are recall-searchable (`memhub recall --source-type arch \"<question>\"`); `memhub arch show` prints the full text.";
+    const ARCH_POINTER_NO_INDEX: &str = "Architecture sections are recall-searchable (`memhub recall --source-type arch \"<question>\"`); `memhub arch show` prints the full text.";
+    const NOTES_POINTER_WITH_STUBS: &str = "Notes are shortened here; the full text is available through `memhub note list` and recall scoped to notes (`memhub recall --source-type note \"<question>\"`).";
+    const NOTES_POINTER_NO_STUBS: &str = "The full text of session notes is available through `memhub note list` and recall scoped to notes (`memhub recall --source-type note \"<question>\"`).";
+
     /// Every render ends with a size line stating the file's exact byte length.
     fn assert_size_line(md: &str) {
         assert!(
@@ -1234,6 +1240,11 @@ _1 fact(s), 0 stale._
         assert!(md.contains("Sections:\n\n- Alpha\n- Beta\n"));
         assert!(md.contains("## Token Accounting") && md.contains("**2026-01-01**"));
         assert_size_line(&md);
+        assert!(
+            last_line(&md).contains("of the 8,000-byte budget."),
+            "{}",
+            last_line(&md)
+        );
         assert!(!last_line(&md).contains("removed"), "{}", last_line(&md));
     }
 
@@ -1253,7 +1264,7 @@ _1 fact(s), 0 stale._
         assert!(md.len() <= 8000);
         assert!(!md.contains("## Token Accounting"));
         assert!(md.contains("**2026-01-10**") && !md.contains("**2026-01-01**"));
-        assert!(md.contains("Sections:") && md.contains("Notes are shortened here"));
+        assert!(md.contains("Sections:") && md.contains(NOTES_POINTER_WITH_STUBS));
         assert_size_line(&md);
         assert!(last_line(&md).contains("Token Accounting section, "));
         assert!(last_line(&md).contains("oldest session note stub(s)"));
@@ -1266,11 +1277,10 @@ _1 fact(s), 0 stale._
         assert!(md.len() > 8000);
         assert!(md.contains(&state), "state text must never be shortened");
         assert!(!md.contains("Sections:") && !md.contains("- **2026-01-"));
-        assert!(md.contains("Architecture sections are recall-searchable"));
+        assert!(md.contains(ARCH_POINTER_NO_INDEX));
         assert!(!md.contains("These sections"));
         assert!(!md.contains("Notes are shortened here"));
-        assert!(md.contains("`memhub note list`") && md.contains("--source-type note"));
-        assert!(md.contains("--source-type arch") && md.contains("`memhub arch show`"));
+        assert!(md.contains(NOTES_POINTER_NO_STUBS));
         assert_size_line(&md);
         let line = last_line(&md);
         assert!(line.contains("over the 8,000-byte budget"), "{line}");
@@ -1314,10 +1324,9 @@ body
         let md = format_project_md(&snapshot);
         assert!(md.len() <= 8000, "{}", md.len());
         assert!(!md.contains("Sections:") && !md.contains("- **2026-01-"));
-        assert!(md.contains("Architecture sections are recall-searchable"));
+        assert!(md.contains(ARCH_POINTER_NO_INDEX));
         assert!(!md.contains("Notes are shortened here"));
-        assert!(md.contains("`memhub note list`") && md.contains("--source-type note"));
-        assert!(md.contains("--source-type arch") && md.contains("`memhub arch show`"));
+        assert!(md.contains(NOTES_POINTER_NO_STUBS));
         assert_size_line(&md);
         let line = last_line(&md);
         assert!(
@@ -1350,8 +1359,8 @@ body
         let md = format_project_md(&snapshot);
         assert!(md.len() <= 8000);
         assert!(md.contains("Sections:\n\n- Alpha\n- Beta\n"));
-        assert!(md.contains("These sections are recall-searchable"));
-        assert!(md.contains("Notes are shortened here"));
+        assert!(md.contains(ARCH_POINTER_WITH_INDEX));
+        assert!(md.contains(NOTES_POINTER_WITH_STUBS));
         assert!(md.contains("**2026-01-05**") && !md.contains("**2026-01-01**"));
         assert_size_line(&md);
         let line = last_line(&md);
