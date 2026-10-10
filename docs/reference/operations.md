@@ -851,10 +851,11 @@ any letter case. So `/home/me/.cargo/bin/memhub hook session-start` and
 present; a command that runs another program (`echo /x/memhub hook
 session-start`) or passes a memhub path as an argument does not. (Before
 #300 only the exact string `memhub hook session-start` counted.) An
-entry that counts is never duplicated and, for Claude, the file is not
-rewritten. For Codex, an existing memhub handler that lacks
-`additionalContextLimit` gets `"additionalContextLimit": 4000` added
-(any other value already there is left alone); the row reads `updated
+entry that counts is never duplicated, and neither agent's file is
+rewritten when no handler changes. The only change made to an existing
+memhub handler is adding `"additionalContextLimit": 4000` to a Codex
+handler that lacks the field (any other value already there is left
+alone); the row reads `updated
 SessionStart entry` (`would update SessionStart entry` under
 `--dry-run`) and says to approve the changed hook again in Codex's
 `/hooks` screen, because Codex re-asks whenever a hook's definition
