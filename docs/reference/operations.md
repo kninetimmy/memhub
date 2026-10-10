@@ -344,11 +344,13 @@ reads the DB for this; stored architecture bodies and notes are untouched.
 whole frame fits a session-start hook's output cap). When the full frame is
 over budget, render removes the lowest-value content first: the
 `## Token Accounting` section (metrics builds only), then session note stubs
-from the oldest, then the list of architecture section headings; the pointer
-sentences stay. The `## Currently building` text is never shortened: if it
+from the oldest, then the architecture section index (the list of section
+headings); the pointer sentences stay, reworded where they would otherwise
+describe content that is no longer shown. The `## Currently building` text is never shortened: if it
 alone keeps the file over budget, the file is written anyway. Every render
 ends `PROJECT.md` with a one-line size meter stating the file's exact byte
-count and the 8,000-byte budget, naming whatever was removed, and, when still
+count and the 8,000-byte budget, naming whatever was removed (all session note
+stubs, or how many of the oldest, and the architecture section index), and, when still
 over budget, saying the state text should be shortened.
 `memhub state set` warns on stderr (exit 0, stdout unchanged) when a body
 exceeds 4,000 characters, since PROJECT.md renders it in full; the 65,536
