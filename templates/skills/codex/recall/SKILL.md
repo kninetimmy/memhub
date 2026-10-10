@@ -19,9 +19,10 @@ telemetry the host captures.
 Use this instead of grepping `PROJECT_LEDGER.md` whenever you need
 project context mid-session. `PROJECT.md` is already in your
 context if the session-start hook delivered it or you read it at
-session start, but only as a frame: the current state, an index of the
-architecture's section headings, and shortened session-note stubs (the
-index and stubs may be dropped to keep it within its size budget). Recall fetches the full architecture sections (`--source-type
+session start, but only as a frame: the current state, an architecture
+section index, and session note stubs (the architecture section index
+and the session note stubs may be dropped to keep it within its size
+budget). Recall fetches the full architecture sections (`--source-type
 arch`) and notes (`--source-type note`); reach for the ledger only if
 recall comes up empty for something you suspect is recorded.
 
@@ -204,7 +205,7 @@ the warning just means hybrid scoring may be undercounting some rows.
   `recall` covers it.
 - For session notes — default recall leaves them out; scope to them
   with `--source-type note` (MCP `source_types=["note"]`), or list them
-  with `memhub note list`. `PROJECT.md` shows only shortened stubs, and may drop them.
+  with `memhub note list`. `PROJECT.md` shows only session note stubs, and may drop them to keep it within its size budget.
 - For commands (build/test/run/lint) — use `memhub get_command` or
   `memhub list_facts`; recall does not surface the `commands` table.
 

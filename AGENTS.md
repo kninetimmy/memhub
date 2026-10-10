@@ -21,10 +21,10 @@ the local human-readable view under `.memhub/rendered/`. At session
 start, read `.memhub/rendered/PROJECT.md` if present, unless its frame
 (starting `<!-- memhub:rendered -->`) is already in your context from
 the session-start hook. It is a compact frame: the "currently
-building / next up / open questions" state in full, an index of the
-architecture's section headings, and the recent session notes
-shortened to stubs; to keep it within its size budget the stubs and
-the section index may be dropped. Pull the architecture text with
+building / next up / open questions" state in full, an architecture
+section index, and session note stubs; to keep it within its size
+budget the architecture section index and the session note stubs may
+be dropped. Pull the architecture text with
 `memhub recall` (sections are recall-searchable) or `memhub arch show`,
 and full notes with `memhub note list` or note-scoped recall. If
 PROJECT.md is missing, fall back to `memhub recall` / `memhub status`.
@@ -85,9 +85,9 @@ Two agent-facing gates never move out of this file, because acting without them 
 
 ## Project state
 
-Current project state (active tasks, durable decisions, known quirks)
-is machine-local and lives in `.memhub/rendered/PROJECT.md`. Use
-`memhub recall` mid-session and `memhub render` to refresh the local
+Current project state is machine-local. `.memhub/rendered/PROJECT.md`
+is the compact frame Session Continuity describes; for tasks, decisions
+and facts use `memhub recall`. Run `memhub render` to refresh the local
 view. Nothing under this section is committed to git — each machine
 maintains its own DB and its own rendered view.
 
@@ -118,7 +118,7 @@ not fall through to Grep/Read/manual scan:
 - find code by what it does / "where is X" → `locate`
 - session start (turn 1 only) → read `.memhub/rendered/PROJECT.md` once, unless its frame
   (starting `<!-- memhub:rendered -->`) is already in your context from the session-start hook
-  (it may drop the session note stubs and the architecture section list to fit its size budget)
+  (it may drop the architecture section index and the session note stubs to fit its size budget)
 - new task / mark done → `task_add` / `task_done`; ingest a spec doc → `doc_add`
 Never Grep for code by intent before `locate`. Never read `PROJECT_LEDGER.md` before `recall`
 (it is the fallback). Never write facts/decisions directly — stage via `propose_fact` /
