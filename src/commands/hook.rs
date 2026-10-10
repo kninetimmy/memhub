@@ -12,9 +12,14 @@
 //! to other tools, so the install is a conservative merge: an agent whose
 //! directory (`~/.claude`, `~/.codex`) does not exist is skipped and
 //! nothing is created for it, a file that is not valid JSON (or not the
-//! expected shape) or not writable is left byte-for-byte unchanged, an existing memhub entry is never duplicated, the write is
-//! atomic, and an entry the user deleted after memhub added it is not
-//! re-added (remembered in `~/.memhub/installed-hooks.json`).
+//! expected shape), not writable, or a symlink whose target does not
+//! exist is left byte-for-byte unchanged, an existing memhub entry is never
+//! duplicated, the write is atomic, and an entry the user deleted after
+//! memhub added or found it is not re-added (remembered in
+//! `~/.memhub/installed-hooks.json`). The Codex handler also carries
+//! `additionalContextLimit` so Codex shows the whole frame instead of its
+//! default ~2,500-token head-and-tail preview; an existing memhub Codex
+//! handler without the field gets it added.
 
 use std::collections::BTreeSet;
 use std::io::Write;
@@ -29,11 +34,18 @@ use crate::db;
 /// The command every installed hook handler runs.
 pub const SESSION_START_COMMAND: &str = "memhub hook session-start";
 const HOOK_TIMEOUT_SECS: u64 = 30;
-/// Files (exact path strings) memhub has added its entry to, so a later
-/// upgrade can tell "never installed" from "the user removed it".
+/// Codex's per-handler cap on model-visible hook output (tokens). Its
+/// default (~2,500) is near the 8,000-byte PROJECT.md cap.
+const CONTEXT_LIMIT_KEY: &str = "additionalContextLimit";
+const CODEX_CONTEXT_LIMIT: u64 = 4000;
+/// Files memhub has added its entry to or found it in, so a later upgrade
+/// can tell "never installed" from "the user removed it". Before #298 the
+/// keys were absolute path strings, so a differently spelled home missed
+/// them; now they are the `~`-relative labels, and old keys are still read.
 const INSTALLED_FILENAME: &str = "installed-hooks.json";
 const CODEX_APPROVAL_NOTE: &str =
     "approve it once in Codex's /hooks screen; Codex skips a new hook until you do";
+const CODEX_REAPPROVAL_NOTE: &str = "added \"additionalContextLimit\": 4000; approve the changed hook again in Codex's /hooks screen; Codex skips it until you do";
 
 /// The rendered PROJECT.md bytes for the memhub repo containing `start`,
 /// or `None` outside a repo / when the config or the file cannot be read.
@@ -70,7 +82,13 @@ pub enum HookStatus {
     /// `--dry-run`: a real run would add the entry.
     WouldAdd,
     AlreadyPresent,
-    /// memhub added it before and the user has since removed it.
+    /// The existing memhub entry gained a field memhub now sets (Codex's
+    /// `additionalContextLimit`).
+    Updated,
+    /// `--dry-run`: a real run would update the entry.
+    WouldUpdate,
+    /// An earlier upgrade added or found the entry here and it has since
+    /// been removed.
     LeftOut,
     /// The file could not be read, parsed, or written; left unchanged.
     NotInstalled,
@@ -93,6 +111,8 @@ impl HookInstall {
             HookStatus::Added => "added SessionStart entry",
             HookStatus::WouldAdd => "would add SessionStart entry",
             HookStatus::AlreadyPresent => "SessionStart entry already present",
+            HookStatus::Updated => "updated SessionStart entry",
+            HookStatus::WouldUpdate => "would update SessionStart entry",
             HookStatus::LeftOut => "left out",
             HookStatus::NotInstalled => "not installed",
             HookStatus::Skipped => "skipped",
@@ -104,15 +124,22 @@ impl HookInstall {
     }
 }
 
-/// (agent, path under home, matcher). Claude Code's `clear`/`compact`
-/// sources have no Codex equivalent.
-const TARGETS: [(&str, [&str; 2], &str); 2] = [
+/// (agent, path under home, matcher, handler `additionalContextLimit`).
+/// Claude Code's `clear`/`compact` sources have no Codex equivalent; only
+/// the Codex handler sets an output limit.
+const TARGETS: [(&str, [&str; 2], &str, Option<u64>); 2] = [
     (
         "claude",
         [".claude", "settings.json"],
         "startup|resume|clear|compact",
+        None,
     ),
-    ("codex", [".codex", "hooks.json"], "startup|resume"),
+    (
+        "codex",
+        [".codex", "hooks.json"],
+        "startup|resume",
+        Some(CODEX_CONTEXT_LIMIT),
+    ),
 ];
 
 fn label(rel: [&str; 2]) -> String {
@@ -123,7 +150,7 @@ fn label(rel: [&str; 2]) -> String {
 pub fn skipped_all(reason: &str) -> Vec<HookInstall> {
     TARGETS
         .iter()
-        .map(|(agent, rel, _)| HookInstall {
+        .map(|(agent, rel, ..)| HookInstall {
             agent: agent.to_string(),
             file: label(*rel),
             status: HookStatus::Skipped,
@@ -142,7 +169,7 @@ pub fn install_session_hooks(dry: bool) -> Vec<HookInstall> {
         Err(e) => {
             return TARGETS
                 .iter()
-                .map(|(agent, rel, _)| HookInstall {
+                .map(|(agent, rel, ..)| HookInstall {
                     agent: agent.to_string(),
                     file: label(*rel),
                     status: HookStatus::NotInstalled,
@@ -157,21 +184,42 @@ pub fn install_session_hooks(dry: bool) -> Vec<HookInstall> {
     // Absent or corrupt => empty: nothing reads as user-removed.
     let before: BTreeSet<String> = std::fs::read(&marker)
         .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default();
+        .and_then(|b| serde_json::from_slice::<BTreeSet<String>>(&b).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(record_key)
+        .collect();
     let mut installed = before.clone();
 
     let reports = TARGETS
         .iter()
-        .map(|(agent, rel, matcher)| {
+        .map(|(agent, rel, matcher, limit)| {
             let dir = home.join(rel[0]);
-            let (status, mut detail) = if dir.is_dir() {
-                install_one(&dir.join(rel[1]), matcher, &mut installed, dry)
-            } else {
-                (HookStatus::Skipped, Some(format!("no ~/{}", rel[0])))
+            let (status, mut detail) = match std::fs::metadata(&dir) {
+                Ok(m) if m.is_dir() => install_one(
+                    &dir.join(rel[1]),
+                    &label(*rel),
+                    matcher,
+                    *limit,
+                    &mut installed,
+                    dry,
+                ),
+                Ok(_) => (
+                    HookStatus::Skipped,
+                    Some(format!("~/{} is not a directory", rel[0])),
+                ),
+                Err(_) => (HookStatus::Skipped, Some(format!("no ~/{}", rel[0]))),
             };
-            if *agent == "codex" && matches!(status, HookStatus::Added | HookStatus::WouldAdd) {
-                detail = Some(CODEX_APPROVAL_NOTE.to_string());
+            if *agent == "codex" {
+                match status {
+                    HookStatus::Added | HookStatus::WouldAdd => {
+                        detail = Some(CODEX_APPROVAL_NOTE.to_string());
+                    }
+                    HookStatus::Updated | HookStatus::WouldUpdate => {
+                        detail = Some(CODEX_REAPPROVAL_NOTE.to_string());
+                    }
+                    _ => {}
+                }
             }
             HookInstall {
                 agent: agent.to_string(),
@@ -196,13 +244,24 @@ pub fn install_session_hooks(dry: bool) -> Vec<HookInstall> {
     reports
 }
 
+/// An installed-hooks record key in its current form: a key written by
+/// the code before #298 (an absolute path ending in a target's path under
+/// home) maps to that target's `~`-relative label; anything else is kept.
+fn record_key(key: String) -> String {
+    TARGETS
+        .iter()
+        .find(|(_, rel, ..)| Path::new(&key).ends_with(Path::new(rel[0]).join(rel[1])))
+        .map_or(key, |(_, rel, ..)| label(*rel))
+}
+
 fn install_one(
     path: &Path,
+    key: &str,
     matcher: &str,
+    context_limit: Option<u64>,
     installed: &mut BTreeSet<String>,
     dry: bool,
 ) -> (HookStatus, Option<String>) {
-    let key = path.to_string_lossy().into_owned();
     let mut root = match std::fs::read(path) {
         Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
             Ok(v) => v,
@@ -213,6 +272,14 @@ fn install_one(
                 );
             }
         },
+        // A dangling symlink also reads as NotFound; writing would replace
+        // the link with a regular file.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && path.symlink_metadata().is_ok() => {
+            return (
+                HookStatus::NotInstalled,
+                Some("a symlink whose target does not exist; left unchanged".to_string()),
+            );
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({}),
         Err(e) => {
             return (
@@ -230,39 +297,64 @@ fn install_one(
             );
         }
     };
-    if groups.iter().any(runs_memhub) {
-        if !dry {
-            installed.insert(key);
+    // Every memhub handler in every SessionStart group; each one missing
+    // the output-limit field gets it (only memhub's own handlers change).
+    let mut found = false;
+    let mut changed = false;
+    for handler in groups
+        .iter_mut()
+        .filter_map(|g| g.get_mut("hooks").and_then(Value::as_array_mut))
+        .flatten()
+        .filter(|h| is_memhub_handler(h))
+    {
+        found = true;
+        if let (Some(limit), Some(obj)) = (context_limit, handler.as_object_mut())
+            && !obj.contains_key(CONTEXT_LIMIT_KEY)
+        {
+            obj.insert(CONTEXT_LIMIT_KEY.to_string(), json!(limit));
+            changed = true;
         }
-        return (HookStatus::AlreadyPresent, None);
     }
-    if installed.contains(&key) {
-        return (
-            HookStatus::LeftOut,
-            Some(
-                "memhub's entry was removed after an earlier upgrade added it; not re-added"
-                    .to_string(),
-            ),
-        );
-    }
-    groups.push(json!({
-        "matcher": matcher,
-        "hooks": [{
+    let (done, would) = if found {
+        if !changed {
+            if !dry {
+                installed.insert(key.to_string());
+            }
+            return (HookStatus::AlreadyPresent, None);
+        }
+        (HookStatus::Updated, HookStatus::WouldUpdate)
+    } else {
+        if installed.contains(key) {
+            return (
+                HookStatus::LeftOut,
+                Some(
+                    "memhub's entry was in this file at an earlier upgrade and has since \
+                     been removed; not put back"
+                        .to_string(),
+                ),
+            );
+        }
+        let mut handler = json!({
             "type": "command",
             "command": SESSION_START_COMMAND,
             "timeout": HOOK_TIMEOUT_SECS,
-        }],
-    }));
+        });
+        if let Some(limit) = context_limit {
+            handler[CONTEXT_LIMIT_KEY] = json!(limit);
+        }
+        groups.push(json!({"matcher": matcher, "hooks": [handler]}));
+        (HookStatus::Added, HookStatus::WouldAdd)
+    };
     if dry {
-        return (HookStatus::WouldAdd, None);
+        return (would, None);
     }
     let written = serde_json::to_string_pretty(&root)
         .map_err(std::io::Error::from)
         .and_then(|text| write_atomic(path, format!("{text}\n").as_bytes()));
     match written {
         Ok(()) => {
-            installed.insert(key);
-            (HookStatus::Added, None)
+            installed.insert(key.to_string());
+            (done, None)
         }
         Err(e) => (
             HookStatus::NotInstalled,
@@ -286,16 +378,34 @@ fn session_start_groups(root: &mut Value) -> std::result::Result<&mut Vec<Value>
         .ok_or("\"hooks.SessionStart\" is not a JSON array")
 }
 
-fn runs_memhub(group: &Value) -> bool {
-    group
-        .get("hooks")
-        .and_then(Value::as_array)
-        .is_some_and(|handlers| {
-            handlers.iter().any(|h| {
-                h.get("command").and_then(Value::as_str).map(str::trim)
-                    == Some(SESSION_START_COMMAND)
-            })
-        })
+fn is_memhub_handler(handler: &Value) -> bool {
+    handler
+        .get("command")
+        .and_then(Value::as_str)
+        .is_some_and(runs_memhub_command)
+}
+
+/// `<program> hook session-start`, where `<program>` (optionally wrapped in
+/// one pair of `"` or `'`) is `memhub` or `memhub.exe` in any letter case,
+/// bare or as the last component of a path. Before #298 only the exact
+/// string [`SESSION_START_COMMAND`] counted.
+fn runs_memhub_command(command: &str) -> bool {
+    let Some(program) = command
+        .trim()
+        .strip_suffix("session-start")
+        .and_then(|r| r.strip_suffix(char::is_whitespace))
+        .and_then(|r| r.trim_end().strip_suffix("hook"))
+        .and_then(|r| r.strip_suffix(char::is_whitespace))
+        .map(str::trim)
+    else {
+        return false;
+    };
+    let program = ['"', '\'']
+        .iter()
+        .find_map(|q| program.strip_prefix(*q)?.strip_suffix(*q))
+        .unwrap_or(program);
+    let name = program.rsplit(['/', '\\']).next().unwrap_or(program);
+    name.eq_ignore_ascii_case("memhub") || name.eq_ignore_ascii_case("memhub.exe")
 }
 
 /// Temp file in the target's own directory (pid-unique), fsynced, then
@@ -304,7 +414,8 @@ fn runs_memhub(group: &Value) -> bool {
 /// writing is refused rather than replaced by the rename (which only needs
 /// directory permission on Unix). A symlinked file is written through to
 /// its target so the link survives, and the original's permissions carry
-/// over.
+/// over. On Unix the directory is synced after the rename so the rename
+/// itself is durable.
 fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let real: PathBuf = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let original = std::fs::metadata(&real).ok();
@@ -326,5 +437,51 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
+    // The file is already replaced, so a failed directory sync is not a
+    // failed write: logged, not returned.
+    #[cfg(unix)]
+    if result.is_ok()
+        && let Some(dir) = real.parent()
+        && let Err(e) = std::fs::File::open(dir).and_then(|d| d.sync_all())
+    {
+        log::debug!(
+            "directory sync after replacing {} skipped: {e}",
+            real.display()
+        );
+    }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::runs_memhub_command;
+
+    #[test]
+    fn memhub_command_matches_bare_full_and_quoted_paths_only() {
+        for yes in [
+            "memhub hook session-start",
+            "  memhub   hook\tsession-start ",
+            "MEMHUB hook session-start",
+            "/home/u/.cargo/bin/memhub hook session-start",
+            r"C:\Users\u\.cargo\bin\memhub.exe hook session-start",
+            r#""C:\Program Files\memhub\Memhub.EXE" hook session-start"#,
+            "'/opt/my tools/memhub' hook session-start",
+        ] {
+            assert!(runs_memhub_command(yes), "{yes:?} must count");
+        }
+        for no in [
+            "other-tool hook session-start",
+            "/usr/bin/notmemhub hook session-start",
+            "memhub-dev hook session-start",
+            "/usr/bin/env memhub hook session-start",
+            "hook session-start",
+            "memhub hook session-start --verbose",
+            "memhub hooksession-start",
+            "memhubhook session-start",
+            "memhub status",
+            "\"memhub' hook session-start",
+        ] {
+            assert!(!runs_memhub_command(no), "{no:?} must not count");
+        }
+    }
 }

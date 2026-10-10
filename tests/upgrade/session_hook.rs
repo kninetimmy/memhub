@@ -7,6 +7,7 @@
 //! child's environment only. Nothing here reads or writes the real home.
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::SystemTime;
@@ -145,14 +146,19 @@ fn status_of(reports: &[HookInstall], agent: &str) -> HookInstall {
         .clone()
 }
 
+/// Point the in-process installer at `home`. Callers hold `env_lock()`.
+fn set_home(home: &Path) {
+    unsafe {
+        std::env::set_var("HOME", home);
+        std::env::set_var("USERPROFILE", home);
+    }
+}
+
 #[test]
 fn install_merges_preserves_dedupes_and_respects_removal() {
     let _env_guard = crate::support::env_lock();
     let home = tempdir().expect("home");
-    unsafe {
-        std::env::set_var("HOME", home.path());
-        std::env::set_var("USERPROFILE", home.path());
-    }
+    set_home(home.path());
     let claude = home.path().join(".claude").join("settings.json");
     let codex = home.path().join(".codex").join("hooks.json");
     let marker = home.path().join(".memhub").join("installed-hooks.json");
@@ -194,14 +200,23 @@ fn install_merges_preserves_dedupes_and_respects_removal() {
         "codex row must point at /hooks: {}",
         codex_row.line()
     );
-    let handler = json!([{"type": "command", "command": CMD, "timeout": 30}]);
+    // #298 criterion 1: only the Codex handler carries the output limit.
     assert_eq!(
         memhub_groups(&claude),
-        vec![json!({"matcher": "startup|resume|clear|compact", "hooks": handler})]
+        vec![json!({
+            "matcher": "startup|resume|clear|compact",
+            "hooks": [{"type": "command", "command": CMD, "timeout": 30}]
+        })]
     );
     assert_eq!(
         memhub_groups(&codex),
-        vec![json!({"matcher": "startup|resume", "hooks": handler})]
+        vec![json!({
+            "matcher": "startup|resume",
+            "hooks": [{
+                "type": "command", "command": CMD, "timeout": 30,
+                "additionalContextLimit": 4000
+            }]
+        })]
     );
 
     // Criterion 5: every prior key, value, and hook entry survives.
@@ -239,6 +254,9 @@ fn install_merges_preserves_dedupes_and_respects_removal() {
     let row = status_of(&later, "claude");
     assert_eq!(row.status, HookStatus::LeftOut);
     assert!(row.line().contains("left out"), "{}", row.line());
+    // #298 criterion 7: the user may have added the entry by hand, so the
+    // row must not claim memhub added it.
+    assert!(!row.line().contains("added"), "{}", row.line());
     assert_eq!(std::fs::read(&claude).unwrap(), removed_bytes);
     assert_eq!(install_session_hooks(true)[0].status, HookStatus::LeftOut);
 
@@ -355,16 +373,34 @@ fn upgrade_report_covers_no_hooks_dry_run_and_install() {
     assert_eq!(json_hooks(&out), pair("already_present", "already_present"));
     assert_eq!(memhub_groups(&claude).len(), 1);
     assert_eq!(memhub_groups(&codex).len(), 1);
+
+    // #298 criterion 2: a Codex entry from before the output limit is
+    // reported by --dry-run without being written, then updated.
+    let old = json!({"hooks": {"SessionStart": [{"matcher": "startup|resume",
+        "hooks": [{"type": "command", "command": CMD, "timeout": 30}]}]}});
+    std::fs::write(&codex, serde_json::to_vec_pretty(&old).unwrap()).expect("seed old codex");
+    let old_bytes = std::fs::read(&codex).unwrap();
+    let out = upgrade(repo, home.path(), &["--dry-run", "--json", "--no-gc"]);
+    assert_eq!(json_hooks(&out), pair("already_present", "would_update"));
+    assert_eq!(std::fs::read(&codex).unwrap(), old_bytes);
+    let out = upgrade(work.path(), home.path(), &["--finish"]);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("hooks: codex   ~/.codex/hooks.json: updated SessionStart entry")
+            && text.contains("approve the changed hook again in Codex's /hooks screen"),
+        "{text}"
+    );
+    assert_eq!(
+        memhub_groups(&codex)[0]["hooks"][0]["additionalContextLimit"],
+        4000
+    );
 }
 
 #[test]
 fn install_skips_missing_agent_dir_and_refuses_unwritable_file() {
     let _env_guard = crate::support::env_lock();
     let home = tempdir().expect("home");
-    unsafe {
-        std::env::set_var("HOME", home.path());
-        std::env::set_var("USERPROFILE", home.path());
-    }
+    set_home(home.path());
     let codex_dir = home.path().join(".codex");
     let claude = home.path().join(".claude").join("settings.json");
     std::fs::create_dir_all(claude.parent().unwrap()).expect("mk .claude");
@@ -396,12 +432,20 @@ fn install_skips_missing_agent_dir_and_refuses_unwritable_file() {
     let mut perms = std::fs::metadata(&claude).unwrap().permissions();
     perms.set_readonly(true);
     std::fs::set_permissions(&claude, perms.clone()).expect("make read-only");
-    // Privileged users (e.g. root) can write anyway; nothing to assert then.
+    // Privileged users (e.g. root) can write anyway; nothing to assert then,
+    // but say so. Written to the raw stderr handle, which libtest does not
+    // capture, so the notice shows in a plain `cargo test` run.
     let writable = std::fs::OpenOptions::new()
         .write(true)
         .open(&claude)
         .is_ok();
-    if !writable {
+    if writable {
+        let _ = writeln!(
+            std::io::stderr(),
+            "install_skips_missing_agent_dir_and_refuses_unwritable_file: \
+             could not make the file read-only; read-only assertions SKIPPED"
+        );
+    } else {
         let row = status_of(&install_session_hooks(false), "claude");
         assert_eq!(row.status, HookStatus::NotInstalled, "{}", row.line());
         assert_eq!(std::fs::read(&claude).unwrap(), b"{}");
@@ -416,4 +460,262 @@ fn install_skips_missing_agent_dir_and_refuses_unwritable_file() {
     #[allow(clippy::permissions_set_readonly_false)]
     perms.set_readonly(false);
     std::fs::set_permissions(&claude, perms).expect("restore");
+}
+
+#[test]
+fn codex_entry_gains_context_limit_once_and_keeps_everything_else() {
+    // #298 criteria 2 + 3.
+    let _env_guard = crate::support::env_lock();
+    let home = tempdir().expect("home");
+    set_home(home.path());
+    let codex = home.path().join(".codex").join("hooks.json");
+    std::fs::create_dir_all(codex.parent().unwrap()).expect("mk .codex");
+    let seeded = json!({
+        "other": {"keep": [1, 2.5, "x", null]},
+        "hooks": {
+            "SessionStart": [
+                {"matcher": "startup", "hooks": [{"type": "command", "command": "other-tool start"}]},
+                {"matcher": "custom", "hooks": [
+                    {"type": "command", "command": CMD, "timeout": 7, "statusMessage": "mine"}
+                ]}
+            ],
+            "Stop": [{"hooks": [{"type": "command", "command": "other-tool stop"}]}]
+        }
+    });
+    std::fs::write(&codex, serde_json::to_vec_pretty(&seeded).unwrap()).expect("seed");
+    let seeded_bytes = std::fs::read(&codex).unwrap();
+
+    let dry = status_of(&install_session_hooks(true), "codex");
+    assert_eq!(dry.status, HookStatus::WouldUpdate, "{}", dry.line());
+    assert_eq!(
+        std::fs::read(&codex).unwrap(),
+        seeded_bytes,
+        "dry run wrote"
+    );
+
+    let row = status_of(&install_session_hooks(false), "codex");
+    assert_eq!(row.status, HookStatus::Updated, "{}", row.line());
+    assert!(
+        row.line()
+            .contains("approve the changed hook again in Codex's /hooks screen"),
+        "{}",
+        row.line()
+    );
+    let mut expected = seeded.clone();
+    expected["hooks"]["SessionStart"][1]["hooks"][0]["additionalContextLimit"] = json!(4000);
+    let after: Value = serde_json::from_slice(&std::fs::read(&codex).unwrap()).unwrap();
+    assert_eq!(after, expected, "only the limit field may be added");
+
+    // Criterion 3: once the field is there (any value) the file is left
+    // byte-for-byte alone.
+    let mut custom = seeded.clone();
+    custom["hooks"]["SessionStart"][1]["hooks"][0]["additionalContextLimit"] = json!(9000);
+    for limit_file in [
+        std::fs::read(&codex).unwrap(),
+        serde_json::to_vec(&custom).unwrap(),
+    ] {
+        std::fs::write(&codex, &limit_file).expect("seed limit");
+        let row = status_of(&install_session_hooks(false), "codex");
+        assert_eq!(row.status, HookStatus::AlreadyPresent, "{}", row.line());
+        assert_eq!(std::fs::read(&codex).unwrap(), limit_file);
+    }
+}
+
+#[test]
+fn memhub_run_by_full_or_quoted_path_counts_as_present() {
+    // #298 criterion 4.
+    let _env_guard = crate::support::env_lock();
+    let home = tempdir().expect("home");
+    set_home(home.path());
+    let claude = home.path().join(".claude").join("settings.json");
+    let codex = home.path().join(".codex").join("hooks.json");
+    std::fs::create_dir_all(claude.parent().unwrap()).expect("mk .claude");
+    std::fs::create_dir_all(codex.parent().unwrap()).expect("mk .codex");
+    let file_with = |command: &str| {
+        json!({"hooks": {"SessionStart": [{"hooks": [
+            {"type": "command", "command": command, "additionalContextLimit": 4000}
+        ]}]}})
+    };
+    let quoted = r#""C:\Program Files\memhub\MEMHUB.exe" hook session-start"#;
+    std::fs::write(&claude, serde_json::to_vec(&file_with(quoted)).unwrap()).expect("claude");
+    std::fs::write(
+        &codex,
+        serde_json::to_vec(&file_with("/home/u/.cargo/bin/memhub hook session-start")).unwrap(),
+    )
+    .expect("codex");
+    let (claude_bytes, codex_bytes) = (
+        std::fs::read(&claude).unwrap(),
+        std::fs::read(&codex).unwrap(),
+    );
+    let rows = install_session_hooks(false);
+    assert!(
+        rows.iter().all(|r| r.status == HookStatus::AlreadyPresent),
+        "{rows:?}"
+    );
+    assert_eq!(std::fs::read(&claude).unwrap(), claude_bytes);
+    assert_eq!(std::fs::read(&codex).unwrap(), codex_bytes);
+
+    // Another program with the same arguments is not memhub's entry. Forget
+    // the record first, or the file would read as user-removed.
+    std::fs::remove_file(home.path().join(".memhub").join("installed-hooks.json"))
+        .expect("rm record");
+    std::fs::write(
+        &codex,
+        serde_json::to_vec(&file_with("/usr/bin/other hook session-start")).unwrap(),
+    )
+    .expect("codex other");
+    assert_eq!(
+        status_of(&install_session_hooks(false), "codex").status,
+        HookStatus::Added
+    );
+    assert_eq!(memhub_groups(&codex).len(), 1);
+}
+
+#[test]
+fn removal_record_survives_home_spelling_and_old_record_format() {
+    // #298 criterion 5.
+    let _env_guard = crate::support::env_lock();
+    let home = tempdir().expect("home");
+    set_home(home.path());
+    let claude = home.path().join(".claude").join("settings.json");
+    let marker = home.path().join(".memhub").join("installed-hooks.json");
+    std::fs::create_dir_all(claude.parent().unwrap()).expect("mk .claude");
+    assert_eq!(
+        status_of(&install_session_hooks(false), "claude").status,
+        HookStatus::Added
+    );
+    std::fs::write(&claude, b"{}").expect("user removes the entry");
+
+    // The same home with a `.` component.
+    set_home(&home.path().join("."));
+    let row = status_of(&install_session_hooks(false), "claude");
+    assert_eq!(row.status, HookStatus::LeftOut, "{}", row.line());
+    assert_eq!(std::fs::read(&claude).unwrap(), b"{}");
+
+    // A record written by the code before #298: absolute path strings.
+    let old_key = home
+        .path()
+        .join(".claude")
+        .join("settings.json")
+        .to_string_lossy()
+        .into_owned();
+    std::fs::write(&marker, serde_json::to_vec_pretty(&[old_key]).unwrap()).expect("old record");
+    for spelling in [home.path().to_path_buf(), home.path().join(".")] {
+        set_home(&spelling);
+        let row = status_of(&install_session_hooks(false), "claude");
+        assert_eq!(
+            row.status,
+            HookStatus::LeftOut,
+            "{spelling:?}: {}",
+            row.line()
+        );
+        assert_eq!(std::fs::read(&claude).unwrap(), b"{}");
+    }
+}
+
+#[test]
+fn dangling_symlink_hook_files_are_left_alone() {
+    // #298 criterion 6.
+    let _env_guard = crate::support::env_lock();
+    let home = tempdir().expect("home");
+    set_home(home.path());
+    let mut links = Vec::new();
+    for (dir, file) in [(".claude", "settings.json"), (".codex", "hooks.json")] {
+        let dir = home.path().join(dir);
+        std::fs::create_dir_all(&dir).expect("mk agent dir");
+        let (link, target) = (dir.join(file), dir.join("missing-target.json"));
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(&target, &link);
+        // Needs Developer Mode or admin on Windows.
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_file(&target, &link);
+        if let Err(e) = made {
+            let _ = writeln!(
+                std::io::stderr(),
+                "dangling_symlink_hook_files_are_left_alone: cannot create a symlink ({e}); SKIPPED"
+            );
+            return;
+        }
+        links.push((link, target));
+    }
+    for dry in [true, false] {
+        let rows = install_session_hooks(dry);
+        assert!(
+            rows.iter().all(|r| r.status == HookStatus::NotInstalled),
+            "dry={dry}: {rows:?}"
+        );
+        for (link, target) in &links {
+            assert!(
+                link.symlink_metadata().unwrap().file_type().is_symlink(),
+                "{link:?} replaced"
+            );
+            assert_eq!(&std::fs::read_link(link).unwrap(), target);
+            assert!(!target.exists(), "{target:?} created");
+            assert_eq!(
+                std::fs::read_dir(link.parent().unwrap()).unwrap().count(),
+                1,
+                "a file was created next to {link:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn agent_paths_missing_or_not_directories_are_skipped() {
+    // #298 criteria 8 + 11.
+    let _env_guard = crate::support::env_lock();
+
+    // Neither ~/.claude nor ~/.codex: both skipped, nothing created.
+    let home = tempdir().expect("home");
+    set_home(home.path());
+    for dry in [true, false] {
+        let rows = install_session_hooks(dry);
+        assert_eq!(
+            status_of(&rows, "claude").detail.as_deref(),
+            Some("no ~/.claude")
+        );
+        assert_eq!(
+            status_of(&rows, "codex").detail.as_deref(),
+            Some("no ~/.codex")
+        );
+        assert!(
+            rows.iter().all(|r| r.status == HookStatus::Skipped),
+            "{rows:?}"
+        );
+        assert!(!home.path().join(".claude").exists() && !home.path().join(".codex").exists());
+    }
+
+    // Only ~/.codex: Claude Code skipped, Codex installed.
+    std::fs::create_dir_all(home.path().join(".codex")).expect("mk .codex");
+    let rows = install_session_hooks(false);
+    assert_eq!(status_of(&rows, "claude").status, HookStatus::Skipped);
+    assert_eq!(status_of(&rows, "codex").status, HookStatus::Added);
+    assert!(!home.path().join(".claude").exists());
+    assert_eq!(
+        memhub_groups(&home.path().join(".codex").join("hooks.json")).len(),
+        1
+    );
+
+    // Both paths exist as regular files: reported, nothing touched.
+    let home = tempdir().expect("home");
+    set_home(home.path());
+    std::fs::write(home.path().join(".claude"), b"not a dir").expect("file .claude");
+    std::fs::write(home.path().join(".codex"), b"not a dir").expect("file .codex");
+    let before = tree(home.path());
+    for dry in [true, false] {
+        let rows = install_session_hooks(dry);
+        assert!(
+            rows.iter().all(|r| r.status == HookStatus::Skipped),
+            "{rows:?}"
+        );
+        assert_eq!(
+            status_of(&rows, "claude").detail.as_deref(),
+            Some("~/.claude is not a directory")
+        );
+        assert_eq!(
+            status_of(&rows, "codex").detail.as_deref(),
+            Some("~/.codex is not a directory")
+        );
+        assert_eq!(tree(home.path()), before, "dry={dry}: nothing may change");
+    }
 }
