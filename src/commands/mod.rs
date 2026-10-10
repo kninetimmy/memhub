@@ -8,6 +8,7 @@ pub mod export;
 pub mod fact;
 pub mod gc;
 pub mod global;
+pub mod hook;
 pub mod import;
 pub mod index;
 pub mod ingest_git;

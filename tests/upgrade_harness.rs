@@ -20,6 +20,8 @@ mod global_memory;
 mod json_contracts;
 #[path = "upgrade/migrations_auto_apply.rs"]
 mod migrations_auto_apply;
+#[path = "upgrade/session_hook.rs"]
+mod session_hook;
 #[path = "upgrade/skill_parity.rs"]
 mod skill_parity;
 #[path = "upgrade/upgrade_audit_nag.rs"]

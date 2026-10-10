@@ -150,6 +150,11 @@ pub enum TopLevelCommand {
         /// The binary + DB migrate still run.
         #[arg(long)]
         no_gc: bool,
+        /// Skip installing the `memhub hook session-start` SessionStart
+        /// entry into `~/.claude/settings.json` and `~/.codex/hooks.json`.
+        /// The binary + DB migrate still run.
+        #[arg(long)]
+        no_hooks: bool,
         /// Internal: set on the re-exec'd freshly installed binary to
         /// run only the migrate + verify pass.
         #[arg(long, hide = true)]
@@ -181,6 +186,13 @@ pub enum TopLevelCommand {
     Sync {
         #[command(subcommand)]
         command: SyncCommand,
+    },
+    /// Internal: entry points run by agent-CLI hooks that `memhub upgrade`
+    /// installs. Hidden from `--help`.
+    #[command(hide = true)]
+    Hook {
+        #[command(subcommand)]
+        command: HookCommand,
     },
     /// Reclaim disk by deleting superseded build artifacts in this
     /// repo's `target/` (Cargo never garbage-collects old hashes).
@@ -484,6 +496,13 @@ pub enum GlobalCommand {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum HookCommand {
+    /// Print this repo's rendered PROJECT.md to stdout; print nothing
+    /// (exit 0) when there is none to print.
+    SessionStart,
 }
 
 /// Cross-machine Drive sync (M10). All subcommands operate on **local

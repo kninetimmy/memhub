@@ -9,9 +9,9 @@ mod output;
 pub use args::MetricsCommand;
 pub use args::{
     AuditCommand, Cli, CodeCommand, CommandCommand, CommandKind, DecisionCommand, DocCommand,
-    EvalCommand, FactCommand, GlobalCommand, IndexCommand, NarrativeCommand, NoteCommand,
-    PendingStatus, RecallModeArg, RecallSourceTypeArg, ReviewCommand, StatsWindowArg, SyncCommand,
-    TaskCommand, TaskStatus, TopLevelCommand, TranscriptAgentArg, TranscriptCommand,
+    EvalCommand, FactCommand, GlobalCommand, HookCommand, IndexCommand, NarrativeCommand,
+    NoteCommand, PendingStatus, RecallModeArg, RecallSourceTypeArg, ReviewCommand, StatsWindowArg,
+    SyncCommand, TaskCommand, TaskStatus, TopLevelCommand, TranscriptAgentArg, TranscriptCommand,
 };
 use output::{
     audit_md_report_to_json, code_status_to_json, doctor_report_to_json, eval_summary_to_json,
@@ -322,6 +322,15 @@ fn print_sync_side_diff_human(label: &str, side: Option<&commands::sync::SideDif
 }
 
 pub fn run(cli: Cli) -> Result<()> {
+    // Before `current_dir()?`: a hook must exit 0 with empty stdout even
+    // when the working directory is gone.
+    if let TopLevelCommand::Hook {
+        command: HookCommand::SessionStart,
+    } = cli.command
+    {
+        commands::hook::session_start();
+        return Ok(());
+    }
     let cwd = std::env::current_dir()?;
 
     match cli.command {
@@ -1648,6 +1657,7 @@ pub fn run(cli: Cli) -> Result<()> {
             yes,
             no_skills,
             no_gc,
+            no_hooks,
             finish,
             staged,
             allow_self_stage,
@@ -1666,10 +1676,13 @@ pub fn run(cli: Cli) -> Result<()> {
                     yes,
                     no_skills,
                     no_gc,
+                    no_hooks,
                     verify_last,
                 },
             )?;
         }
+        // Dispatched before `current_dir()` above.
+        TopLevelCommand::Hook { .. } => {}
         TopLevelCommand::Sync { command } => match command {
             SyncCommand::Snapshot {
                 out_dir,
