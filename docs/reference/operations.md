@@ -371,14 +371,37 @@ or backfill an existing row with `memhub decision set-summary <ID>
 For A/B testing in any repo: `memhub eval retrieval` vs
 `memhub eval retrieval --no-rerank`.
 
+**Judging a change per query (`memhub eval compare`).** `memhub eval
+retrieval --json` reports the rank-1 pass count (`totals.match_passes_at_1`,
+`recall_at_1`) alongside Recall@K, and records the settings the run used
+under `settings`: retrieval `mode`, whether the `reranker` ran, the
+`min_rerank_score` floor, and the `rerank_candidate_pool` size.
+`memhub eval compare <A> <B>` reads two such saved outputs and pairs them by
+query id. For rank-1 and for found@K separately it reports each run's pass
+count over the match queries, the ids that passed only in A and only in B,
+and the exact two-sided McNemar p-value over those discordant pairs
+(`min(1, 2 * P(X <= min(b, c)))` for `X ~ Binomial(b + c, 1/2)`, 1 when there
+are none); it also prints each run's recorded settings and lists every
+`empty` probe whose pass/fail differs, saying which run returned a hit
+(`--json` gives the same as structured output). Because it compares saved
+runs rather than config flags it also covers code changes: save run A with
+the old binary and run B with the new one. It exits non-zero, printing no
+comparison, when the runs' query id sets differ, a shared id has different
+query text, or the runs used different K. Like all of `eval` it is read-only
+(it only reads the two files, decision 51). A golden query may list several
+acceptable answers: besides its own `source_type` / `title_contains` /
+`body_contains`, an `also_accept` array holds further answers with the same
+three fields, and the query passes when any top-K hit satisfies any one of
+them. Queries without `also_accept` score exactly as before.
+
 **Hermetic golden fixture (N28, issue #44).** `tests/retrieval_golden.json`'s
-18 queries target memhub's own real decisions/facts/tasks (e.g. decision 34
+queries target memhub's own real decisions/facts/tasks (e.g. decision 34
 "Agents prefer recall over reading PROJECT_LEDGER.md", decision 48 "recall is
 read-only"), so running `memhub eval retrieval` from this repo's root scores
 against *this machine's* live `.memhub/project.sqlite` — a corpus that drifts
 as new rows land, making the golden-set contract a property of a given DB's
-row population, not just of the code. `tests/retrieval_golden_hermetic.rs` is
-the hermetic CI gate: it seeds a disposable tempdir project — switched to
+row population, not just of the code. `tests/retrieval/retrieval_golden_hermetic.rs`
+(mounted from `tests/retrieval_harness.rs`) is the hermetic CI gate: it seeds a disposable tempdir project — switched to
 hybrid mode *before* seeding so eager-embed (decision 27) actually fires —
 whose rows reproduce the golden set's targets (copied verbatim from the live
 decisions where one is cited, including the real backfilled `summary` text
@@ -389,12 +412,11 @@ shipped `tests/retrieval_golden.json`. That is the same pattern
 seeded fresh per run, independent of live `.memhub` state — applied to the
 retrieval golden.
 
-Baseline recorded 2026-07-06 (issue #44): Recall@3 = 100% (17/17 match
-queries, every one at rank 1), 0 safety failures, over the 18-query set
-(hybrid mode, default rerank floor 2.0). With the issue #225 extension the
-set is 36 queries (31 match, 5 empty); the fixed code scores 31/31 match and
-5/5 empty probes, three of the keyword-bag matches via the low-confidence
-fallback. This is the reference other
+Baseline (hybrid mode, default rerank floor 2.0): the golden set is 36
+queries (31 match, 5 empty) and the code scores Recall@3 = 31/31 match and
+5/5 empty probes (0 safety failures), three of the keyword-bag matches via
+the low-confidence fallback. First recorded 2026-07-06 (issue #44) as 100% on
+the then-smaller set, extended by issue #225. This is the reference other
 Wave 3 lifecycle PRs (L2 staleness, L3 supersession, L6 age decay) compare
 their own hermetic re-run against. There is no persisted fixture DB to
 regenerate — the corpus is defined entirely by the `fact::add` /

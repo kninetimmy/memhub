@@ -953,13 +953,16 @@ Export covers facts, decisions, tasks, commands, pending writes, writes_log, ses
 
 ### Eval harness
 
-`tests/retrieval_golden.json` ships 12 starter queries for testing `Recall@K`:
+`tests/retrieval_golden.json` ships the golden queries for testing `Recall@K`:
 
 ```bash
 memhub eval retrieval                  # markdown summary
 memhub eval retrieval --json           # structured output
 memhub eval retrieval --mode fts       # A/B compare modes
+memhub eval compare a.json b.json      # per-query comparison of two saved --json runs
 ```
+
+The `--json` output records the rank-1 pass count next to `Recall@K` and the settings the run used (mode, whether the re-ranker ran, the rerank score floor and candidate pool). `memhub eval compare <A> <B>` pairs two saved runs by query id and reports, for rank-1 and for found@K, each run's pass count, which queries passed only in A or only in B, and the exact two-sided McNemar p-value, so a change can be judged per query instead of by comparing two totals. It compares saved output rather than config flags, so it also works across code changes (run A from the old binary, run B from the new one), and it refuses runs whose query ids, query text or K differ. A golden query may list several acceptable answers with `also_accept`; it passes when any top-K hit matches any one of them.
 
 ---
 
