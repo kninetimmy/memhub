@@ -14,7 +14,8 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 
 use crate::code_index::locate::{self, LocateHit, LocateOptions, LocateResponse};
-use crate::config::RetrievalMode;
+use crate::config::{ProjectConfig, RetrievalMode};
+use crate::db;
 use crate::retrieval::{self, RecallHit, RecallOptions, RecallResponse};
 use crate::{MemhubError, Result};
 
@@ -41,8 +42,25 @@ pub struct GoldenQuery {
     pub title_contains: Vec<String>,
     #[serde(default)]
     pub body_contains: Vec<String>,
+    /// Further acceptable answers beyond the one described by the fields
+    /// above. A `match` query passes when any hit in the top K satisfies
+    /// any single answer. Omitted = single-answer query.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub also_accept: Vec<GoldenAnswer>,
     #[serde(default)]
     pub notes: String,
+}
+
+/// One extra acceptable answer for a `match` query; same matcher semantics
+/// as the query's own `source_type` / `title_contains` / `body_contains`.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct GoldenAnswer {
+    #[serde(default)]
+    pub source_type: Option<String>,
+    #[serde(default)]
+    pub title_contains: Vec<String>,
+    #[serde(default)]
+    pub body_contains: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
@@ -87,17 +105,34 @@ pub struct QueryOutcome {
     pub failure_reason: Option<String>,
 }
 
+/// The retrieval settings a run actually used (CLI overrides applied over
+/// project config), recorded so `eval compare` can show what differed.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
+pub struct RunSettings {
+    pub mode: RetrievalMode,
+    /// The cross-encoder re-ranker was enabled for the run (hybrid mode
+    /// and `use_reranker`); a trivially short candidate set can still skip
+    /// it per query.
+    pub reranker: bool,
+    pub min_rerank_score: f32,
+    pub rerank_candidate_pool: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct EvalSummary {
     pub golden_path: PathBuf,
     pub mode: RetrievalMode,
+    pub settings: RunSettings,
     pub k: usize,
     pub total_queries: usize,
     pub match_queries: usize,
     pub empty_queries: usize,
     pub match_passes: usize,
+    /// Match queries whose first matching hit was ranked first.
+    pub match_passes_at_1: usize,
     pub empty_passes: usize,
     pub recall_at_k: f64,
+    pub recall_at_1: f64,
     pub safety_failures: usize,
     pub outcomes: Vec<QueryOutcome>,
     pub elapsed_ms: u128,
@@ -179,11 +214,22 @@ pub fn run_retrieval(start: &Path, opts: EvalOptions) -> Result<EvalSummary> {
     }
 
     let mode = resolved_mode.unwrap_or(RetrievalMode::Fts);
+    // Mirrors `ResolvedOptions::from` in retrieval::recall. Read only after
+    // the recall calls above, which create a missing config on open.
+    let cfg = ProjectConfig::load(&db::discover_paths(start)?.config_path)?.retrieval;
+    let settings = RunSettings {
+        mode,
+        reranker: mode == RetrievalMode::Hybrid && opts.use_reranker.unwrap_or(cfg.use_reranker),
+        min_rerank_score: opts
+            .min_rerank_score
+            .unwrap_or(cfg.scoring.min_rerank_score),
+        rerank_candidate_pool: cfg.rerank_candidate_pool.max(opts.k),
+    };
     let warm_latency_p50_ms = median_ms(&latencies_ms);
     let summary = summarize(
         &golden,
         opts.k,
-        mode,
+        settings,
         opts.golden_path.clone(),
         outcomes,
         started,
@@ -251,21 +297,7 @@ fn validate_query(q: &GoldenQuery) -> Result<()> {
             q.id
         )));
     }
-    if let Some(st) = q.source_type.as_deref() {
-        match st {
-            // `doc_chunk` added Wave 4 R10 (issue #74) so the golden set
-            // can pin doc-chunk hits to source type, same as the other
-            // three durable rows.
-            // `arch_section` added with issue #232's default-recall source.
-            "fact" | "decision" | "task" | "doc_chunk" | "arch_section" => {}
-            other => {
-                return Err(MemhubError::InvalidInput(format!(
-                    "golden query `{}` has unknown source_type `{}` (expected fact|decision|task|doc_chunk|arch_section)",
-                    q.id, other
-                )));
-            }
-        }
-    }
+    validate_source_type(&q.id, q.source_type.as_deref())?;
     if q.kind == GoldenKind::Match
         && q.title_contains.is_empty()
         && q.body_contains.is_empty()
@@ -276,7 +308,38 @@ fn validate_query(q: &GoldenQuery) -> Result<()> {
             q.id
         )));
     }
+    if q.kind == GoldenKind::Empty && !q.also_accept.is_empty() {
+        return Err(MemhubError::InvalidInput(format!(
+            "golden query `{}` is kind=empty but lists `also_accept` answers",
+            q.id
+        )));
+    }
+    for alt in &q.also_accept {
+        validate_source_type(&q.id, alt.source_type.as_deref())?;
+        if alt.title_contains.is_empty()
+            && alt.body_contains.is_empty()
+            && alt.source_type.is_none()
+        {
+            return Err(MemhubError::InvalidInput(format!(
+                "golden query `{}` has an `also_accept` entry with no matchers; each needs at least one of source_type / title_contains / body_contains",
+                q.id
+            )));
+        }
+    }
     Ok(())
+}
+
+fn validate_source_type(id: &str, source_type: Option<&str>) -> Result<()> {
+    match source_type {
+        // `doc_chunk` added Wave 4 R10 (issue #74) so the golden set
+        // can pin doc-chunk hits to source type, same as the other
+        // three durable rows.
+        // `arch_section` added with issue #232's default-recall source.
+        None | Some("fact" | "decision" | "task" | "doc_chunk" | "arch_section") => Ok(()),
+        Some(other) => Err(MemhubError::InvalidInput(format!(
+            "golden query `{id}` has unknown source_type `{other}` (expected fact|decision|task|doc_chunk|arch_section)"
+        ))),
+    }
 }
 
 pub fn evaluate_query(query: &GoldenQuery, response: &RecallResponse, k: usize) -> QueryOutcome {
@@ -377,19 +440,40 @@ pub fn evaluate_query(query: &GoldenQuery, response: &RecallResponse, k: usize) 
 }
 
 fn hit_matches(query: &GoldenQuery, hit: &RecallHit) -> bool {
-    if let Some(expected) = query.source_type.as_deref()
+    answer_matches(
+        query.source_type.as_deref(),
+        &query.title_contains,
+        &query.body_contains,
+        hit,
+    ) || query.also_accept.iter().any(|alt| {
+        answer_matches(
+            alt.source_type.as_deref(),
+            &alt.title_contains,
+            &alt.body_contains,
+            hit,
+        )
+    })
+}
+
+fn answer_matches(
+    source_type: Option<&str>,
+    title_contains: &[String],
+    body_contains: &[String],
+    hit: &RecallHit,
+) -> bool {
+    if let Some(expected) = source_type
         && hit.source_type != expected
     {
         return false;
     }
     let title_lower = hit.title.to_lowercase();
-    for needle in &query.title_contains {
+    for needle in title_contains {
         if !title_lower.contains(&needle.to_lowercase()) {
             return false;
         }
     }
     let body_lower = hit.body.to_lowercase();
-    for needle in &query.body_contains {
+    for needle in body_contains {
         if !body_lower.contains(&needle.to_lowercase()) {
             return false;
         }
@@ -410,7 +494,7 @@ fn truncate(s: &str, max: usize) -> String {
 fn summarize(
     golden: &GoldenFile,
     k: usize,
-    mode: RetrievalMode,
+    settings: RunSettings,
     golden_path: PathBuf,
     outcomes: Vec<QueryOutcome>,
     started: Instant,
@@ -420,6 +504,7 @@ fn summarize(
     let mut match_queries = 0usize;
     let mut empty_queries = 0usize;
     let mut match_passes = 0usize;
+    let mut match_passes_at_1 = 0usize;
     let mut empty_passes = 0usize;
     let mut safety_failures = 0usize;
     for outcome in &outcomes {
@@ -428,6 +513,9 @@ fn summarize(
                 match_queries += 1;
                 if outcome.passed {
                     match_passes += 1;
+                }
+                if outcome.matched_rank == Some(1) {
+                    match_passes_at_1 += 1;
                 }
             }
             GoldenKind::Empty => {
@@ -440,21 +528,21 @@ fn summarize(
             }
         }
     }
-    let recall_at_k = if match_queries == 0 {
-        0.0
-    } else {
-        match_passes as f64 / match_queries as f64
-    };
+    let recall_at_k = ratio(match_passes, match_queries);
+    let recall_at_1 = ratio(match_passes_at_1, match_queries);
     EvalSummary {
         golden_path,
-        mode,
+        mode: settings.mode,
+        settings,
         k,
         total_queries,
         match_queries,
         empty_queries,
         match_passes,
+        match_passes_at_1,
         empty_passes,
         recall_at_k,
+        recall_at_1,
         safety_failures,
         outcomes,
         elapsed_ms: started.elapsed().as_millis(),
@@ -851,6 +939,231 @@ fn ratio(passes: usize, total: usize) -> f64 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// `memhub eval compare` — paired per-query comparison of two saved
+// `memhub eval retrieval --json` runs. Works on saved output (not config
+// flags) so it also compares a code change: run A from the old binary, run
+// B from the new one. Pure: reads two files, writes nothing (decision 51).
+// ---------------------------------------------------------------------------
+
+/// The subset of `eval retrieval --json` that `compare` reads. Runs saved
+/// before `settings` existed still load; their settings show as not recorded.
+#[derive(Debug, Deserialize)]
+struct SavedRun {
+    k: usize,
+    mode: RetrievalMode,
+    #[serde(default)]
+    settings: Option<RunSettings>,
+    outcomes: Vec<SavedOutcome>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SavedOutcome {
+    id: String,
+    query: String,
+    kind: GoldenKind,
+    passed: bool,
+    #[serde(default)]
+    matched_rank: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RunInfo {
+    pub path: String,
+    pub mode: RetrievalMode,
+    pub settings: Option<RunSettings>,
+}
+
+/// Paired result over the match queries for one pass criterion.
+#[derive(Debug, Default, Serialize)]
+pub struct PairedResult {
+    pub passes_a: usize,
+    pub passes_b: usize,
+    /// Ids that passed only in run A / only in run B (the discordant pairs).
+    pub only_a: Vec<String>,
+    pub only_b: Vec<String>,
+    /// Exact two-sided McNemar p-value over the discordant pairs.
+    pub p_value: f64,
+}
+
+impl PairedResult {
+    fn tally(&mut self, id: &str, in_a: bool, in_b: bool) {
+        self.passes_a += usize::from(in_a);
+        self.passes_b += usize::from(in_b);
+        match (in_a, in_b) {
+            (true, false) => self.only_a.push(id.to_string()),
+            (false, true) => self.only_b.push(id.to_string()),
+            _ => {}
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct EmptyProbeDiff {
+    pub id: String,
+    /// Which run returned a hit for the probe ("a" or "b"); the other kept
+    /// its bundle empty.
+    pub hit_in: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Comparison {
+    pub k: usize,
+    pub a: RunInfo,
+    pub b: RunInfo,
+    pub match_queries: usize,
+    pub empty_queries: usize,
+    pub rank_1: PairedResult,
+    pub found_at_k: PairedResult,
+    pub empty_probe_diffs: Vec<EmptyProbeDiff>,
+}
+
+fn load_saved_run(path: &Path) -> Result<SavedRun> {
+    let bytes = fs::read(path).map_err(|err| match err.kind() {
+        std::io::ErrorKind::NotFound => {
+            MemhubError::InvalidInput(format!("saved eval run not found at {}", path.display()))
+        }
+        _ => MemhubError::from(err),
+    })?;
+    let run: SavedRun = serde_json::from_slice(&bytes).map_err(|err| {
+        MemhubError::InvalidInput(format!(
+            "{} is not a `memhub eval retrieval --json` output: {err}",
+            path.display()
+        ))
+    })?;
+    let mut seen = std::collections::HashSet::new();
+    for o in &run.outcomes {
+        if !seen.insert(o.id.as_str()) {
+            return Err(MemhubError::InvalidInput(format!(
+                "{} lists query id `{}` more than once",
+                path.display(),
+                o.id
+            )));
+        }
+    }
+    Ok(run)
+}
+
+pub fn compare_runs(path_a: &Path, path_b: &Path) -> Result<Comparison> {
+    let a = load_saved_run(path_a)?;
+    let b = load_saved_run(path_b)?;
+    if a.k != b.k {
+        return Err(MemhubError::InvalidInput(format!(
+            "runs used different K: {} has K={}, {} has K={}",
+            path_a.display(),
+            a.k,
+            path_b.display(),
+            b.k
+        )));
+    }
+    let b_by_id: std::collections::HashMap<&str, &SavedOutcome> =
+        b.outcomes.iter().map(|o| (o.id.as_str(), o)).collect();
+    let a_ids: std::collections::HashSet<&str> = a.outcomes.iter().map(|o| o.id.as_str()).collect();
+    let only_in_a: Vec<&str> = a
+        .outcomes
+        .iter()
+        .map(|o| o.id.as_str())
+        .filter(|id| !b_by_id.contains_key(id))
+        .collect();
+    let only_in_b: Vec<&str> = b
+        .outcomes
+        .iter()
+        .map(|o| o.id.as_str())
+        .filter(|id| !a_ids.contains(id))
+        .collect();
+    if !only_in_a.is_empty() || !only_in_b.is_empty() {
+        return Err(MemhubError::InvalidInput(format!(
+            "runs cover different query ids: only in {}: [{}]; only in {}: [{}]",
+            path_a.display(),
+            only_in_a.join(", "),
+            path_b.display(),
+            only_in_b.join(", ")
+        )));
+    }
+
+    let mut match_queries = 0usize;
+    let mut empty_queries = 0usize;
+    let mut rank_1 = PairedResult::default();
+    let mut found = PairedResult::default();
+    let mut empty_probe_diffs = Vec::new();
+    for oa in &a.outcomes {
+        let ob = b_by_id[oa.id.as_str()];
+        if oa.query != ob.query {
+            return Err(MemhubError::InvalidInput(format!(
+                "query `{}` has different text in the two runs: {:?} vs {:?}",
+                oa.id, oa.query, ob.query
+            )));
+        }
+        if oa.kind != ob.kind {
+            return Err(MemhubError::InvalidInput(format!(
+                "query `{}` has a different kind in the two runs",
+                oa.id
+            )));
+        }
+        match oa.kind {
+            GoldenKind::Match => {
+                match_queries += 1;
+                rank_1.tally(
+                    &oa.id,
+                    oa.matched_rank == Some(1),
+                    ob.matched_rank == Some(1),
+                );
+                found.tally(&oa.id, oa.passed, ob.passed);
+            }
+            GoldenKind::Empty => {
+                empty_queries += 1;
+                if oa.passed != ob.passed {
+                    empty_probe_diffs.push(EmptyProbeDiff {
+                        id: oa.id.clone(),
+                        hit_in: if oa.passed { "b" } else { "a" },
+                    });
+                }
+            }
+        }
+    }
+    rank_1.p_value = mcnemar_exact_p(rank_1.only_a.len(), rank_1.only_b.len());
+    found.p_value = mcnemar_exact_p(found.only_a.len(), found.only_b.len());
+    Ok(Comparison {
+        k: a.k,
+        a: RunInfo {
+            path: path_a.display().to_string(),
+            mode: a.mode,
+            settings: a.settings,
+        },
+        b: RunInfo {
+            path: path_b.display().to_string(),
+            mode: b.mode,
+            settings: b.settings,
+        },
+        match_queries,
+        empty_queries,
+        rank_1,
+        found_at_k: found,
+        empty_probe_diffs,
+    })
+}
+
+/// Exact two-sided McNemar p-value from the discordant counts (`only_a`,
+/// `only_b`): `min(1, 2 * P(X <= min) )` for `X ~ Binomial(n, 1/2)`,
+/// `n = only_a + only_b`; 1 when there are no discordant pairs. Summed in
+/// log space because `2^n` overflows f64 for n > ~1000.
+pub fn mcnemar_exact_p(only_a: usize, only_b: usize) -> f64 {
+    let n = only_a + only_b;
+    if n == 0 {
+        return 1.0;
+    }
+    let k = only_a.min(only_b);
+    // ln(C(n, i) / 2^n), advanced term by term; terms that underflow to 0
+    // are negligible against the tail they sit beside.
+    let mut log_term = -(n as f64) * std::f64::consts::LN_2;
+    let mut tail = 0.0;
+    for i in 0..=k {
+        tail += log_term.exp();
+        log_term += (((n - i) as f64) / ((i + 1) as f64)).ln();
+    }
+    (2.0 * tail).min(1.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -900,6 +1213,7 @@ mod tests {
             source_type: Some("decision".into()),
             title_contains: vec!["recall".into(), "read-only".into()],
             body_contains: vec!["writes_log".into()],
+            also_accept: vec![],
             notes: String::new(),
         };
         let resp = fake_response(
@@ -926,6 +1240,7 @@ mod tests {
             source_type: Some("decision".into()),
             title_contains: vec!["recall".into()],
             body_contains: vec![],
+            also_accept: vec![],
             notes: String::new(),
         };
         let resp = fake_response(
@@ -957,6 +1272,7 @@ mod tests {
             source_type: Some("decision".into()),
             title_contains: vec!["recall".into(), "ledger".into()],
             body_contains: vec![],
+            also_accept: vec![],
             notes: String::new(),
         };
         let resp = fake_response(
@@ -992,6 +1308,7 @@ mod tests {
             source_type: None,
             title_contains: vec![],
             body_contains: vec![],
+            also_accept: vec![],
             notes: String::new(),
         };
         let mut low = hit(1, "fact", 1, "build-command", "cargo build");
@@ -1020,6 +1337,7 @@ mod tests {
             source_type: Some("fact".into()),
             title_contains: vec!["build".into()],
             body_contains: vec![],
+            also_accept: vec![],
             notes: String::new(),
         };
         let mut h = hit(1, "fact", 1, "build-command", "cargo build");
@@ -1043,6 +1361,7 @@ mod tests {
             source_type: None,
             title_contains: vec![],
             body_contains: vec![],
+            also_accept: vec![],
             notes: String::new(),
         };
         let resp = fake_response("zxqv", vec![]);
@@ -1060,6 +1379,7 @@ mod tests {
             source_type: None,
             title_contains: vec![],
             body_contains: vec![],
+            also_accept: vec![],
             notes: String::new(),
         };
         let resp = fake_response(
@@ -1163,6 +1483,7 @@ mod tests {
                     source_type: None,
                     title_contains: vec!["x".into()],
                     body_contains: vec![],
+                    also_accept: vec![],
                     notes: String::new(),
                 },
                 GoldenQuery {
@@ -1172,6 +1493,7 @@ mod tests {
                     source_type: None,
                     title_contains: vec!["x".into()],
                     body_contains: vec![],
+                    also_accept: vec![],
                     notes: String::new(),
                 },
                 GoldenQuery {
@@ -1181,6 +1503,7 @@ mod tests {
                     source_type: None,
                     title_contains: vec![],
                     body_contains: vec![],
+                    also_accept: vec![],
                     notes: String::new(),
                 },
             ],
@@ -1188,7 +1511,12 @@ mod tests {
         let summary = summarize(
             &golden,
             3,
-            RetrievalMode::Fts,
+            RunSettings {
+                mode: RetrievalMode::Fts,
+                reranker: false,
+                min_rerank_score: -1.0,
+                rerank_candidate_pool: 20,
+            },
             PathBuf::from("x.json"),
             outcomes,
             Instant::now(),
@@ -1513,5 +1841,233 @@ mod tests {
         assert_eq!(summary.safety_failures, 1);
         assert!((summary.recall_at_1 - 0.5).abs() < 1e-9);
         assert!((summary.recall_at_k - 1.0).abs() < 1e-9);
+    }
+
+    // --- multi-answer golden queries + `eval compare` (issue #306) ---------
+
+    #[test]
+    fn match_passes_when_any_listed_answer_hits_in_top_k() {
+        let q: GoldenQuery = serde_json::from_str(
+            r#"{ "id": "x", "query": "q", "kind": "match",
+                 "source_type": "decision", "title_contains": ["recall"],
+                 "also_accept": [ { "source_type": "fact", "title_contains": ["build"] } ] }"#,
+        )
+        .expect("parse");
+        let resp = fake_response(
+            "q",
+            vec![
+                hit(1, "task", 1, "unrelated", "x"),
+                hit(2, "fact", 7, "build-command", "cargo build"),
+            ],
+        );
+        let outcome = evaluate_query(&q, &resp, 3);
+        assert!(outcome.passed, "{:?}", outcome.failure_reason);
+        assert_eq!(outcome.matched_rank, Some(2));
+        // Same hits, but the alternate answer sits outside the top K.
+        assert!(!evaluate_query(&q, &resp, 1).passed);
+    }
+
+    #[test]
+    fn also_accept_is_validated() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("golden.json");
+        for (query, needle) in [
+            (
+                r#"{ "id": "x", "query": "q", "kind": "match", "source_type": "fact",
+                     "also_accept": [ {} ] }"#,
+                "no matchers",
+            ),
+            (
+                r#"{ "id": "x", "query": "q", "kind": "match", "source_type": "fact",
+                     "also_accept": [ { "source_type": "bogus" } ] }"#,
+                "unknown source_type",
+            ),
+            (
+                r#"{ "id": "x", "query": "q", "kind": "empty",
+                     "also_accept": [ { "source_type": "fact" } ] }"#,
+                "kind=empty",
+            ),
+        ] {
+            std::fs::write(
+                &path,
+                format!(r#"{{ "version": 1, "queries": [ {query} ] }}"#),
+            )
+            .expect("write");
+            let err = load_golden(&path).expect_err("invalid also_accept");
+            assert!(err.to_string().contains(needle), "{err}");
+        }
+    }
+
+    #[test]
+    fn summarize_counts_rank_1_passes() {
+        let outcome = |id: &str, rank: Option<usize>| QueryOutcome {
+            id: id.into(),
+            query: "q".into(),
+            kind: GoldenKind::Match,
+            passed: rank.is_some(),
+            matched_rank: rank,
+            matched_score: None,
+            matched_low_confidence: false,
+            returned_count: 3,
+            failure_reason: None,
+        };
+        let golden = GoldenFile {
+            version: 1,
+            description: String::new(),
+            queries: vec![],
+        };
+        let summary = summarize(
+            &golden,
+            3,
+            RunSettings {
+                mode: RetrievalMode::Hybrid,
+                reranker: true,
+                min_rerank_score: -2.0,
+                rerank_candidate_pool: 20,
+            },
+            PathBuf::from("x.json"),
+            vec![
+                outcome("a", Some(1)),
+                outcome("b", Some(3)),
+                outcome("c", None),
+            ],
+            Instant::now(),
+            0.0,
+        );
+        assert_eq!(summary.match_passes, 2);
+        assert_eq!(summary.match_passes_at_1, 1);
+        assert!((summary.recall_at_1 - 1.0 / 3.0).abs() < 1e-9);
+        assert_eq!(summary.mode, RetrievalMode::Hybrid);
+    }
+
+    #[test]
+    fn mcnemar_exact_p_matches_reference_values() {
+        for (a, b, expected) in [
+            (0, 0, 1.0),
+            (6, 0, 0.03125),
+            (0, 6, 0.03125),
+            (5, 0, 0.0625),
+            (10, 2, 0.038574),
+            (2, 10, 0.038574),
+            (5, 5, 1.0),
+            (120, 80, 0.005685),
+            (1050, 950, 0.026824),
+        ] {
+            let p = mcnemar_exact_p(a, b);
+            assert!((p - expected).abs() < 1e-6, "({a}, {b}): {p} vs {expected}");
+        }
+    }
+
+    /// One saved-run outcome as `eval retrieval --json` writes it.
+    fn saved(id: &str, query: &str, kind: &str, passed: bool, rank: Option<usize>) -> String {
+        let rank = rank.map_or("null".to_string(), |r| r.to_string());
+        format!(
+            r#"{{ "id": "{id}", "query": "{query}", "kind": "{kind}", "passed": {passed}, "matched_rank": {rank} }}"#
+        )
+    }
+
+    fn write_run(dir: &Path, name: &str, k: usize, outcomes: &[String]) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{ "k": {k}, "mode": "hybrid", "outcomes": [{}] }}"#,
+                outcomes.join(",")
+            ),
+        )
+        .expect("write run");
+        path
+    }
+
+    #[test]
+    fn compare_reports_discordant_queries_and_empty_probe_diffs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let a = write_run(
+            dir.path(),
+            "a.json",
+            3,
+            &[
+                saved("m1", "q1", "match", true, Some(1)),
+                saved("m2", "q2", "match", true, Some(2)),
+                saved("m3", "q3", "match", false, None),
+                saved("m4", "q4", "match", true, Some(1)),
+                saved("e1", "q5", "empty", true, None),
+                saved("e2", "q6", "empty", false, None),
+            ],
+        );
+        let b = write_run(
+            dir.path(),
+            "b.json",
+            3,
+            &[
+                saved("m1", "q1", "match", true, Some(2)),
+                saved("m2", "q2", "match", true, Some(1)),
+                saved("m3", "q3", "match", true, Some(3)),
+                saved("m4", "q4", "match", true, Some(1)),
+                saved("e1", "q5", "empty", false, None),
+                saved("e2", "q6", "empty", false, None),
+            ],
+        );
+        let c = compare_runs(&a, &b).expect("compare");
+        assert_eq!((c.match_queries, c.empty_queries), (4, 2));
+        assert_eq!((c.rank_1.passes_a, c.rank_1.passes_b), (2, 2));
+        assert_eq!(c.rank_1.only_a, vec!["m1"]);
+        assert_eq!(c.rank_1.only_b, vec!["m2"]);
+        assert!((c.rank_1.p_value - 1.0).abs() < 1e-9);
+        assert_eq!((c.found_at_k.passes_a, c.found_at_k.passes_b), (3, 4));
+        assert!(c.found_at_k.only_a.is_empty());
+        assert_eq!(c.found_at_k.only_b, vec!["m3"]);
+        assert!((c.found_at_k.p_value - 1.0).abs() < 1e-9);
+        assert_eq!(c.empty_probe_diffs.len(), 1);
+        assert_eq!(c.empty_probe_diffs[0].id, "e1");
+        assert_eq!(c.empty_probe_diffs[0].hit_in, "b");
+    }
+
+    #[test]
+    fn compare_rejects_mismatched_runs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let base = [saved("m1", "q1", "match", true, Some(1))];
+        let a = write_run(dir.path(), "a.json", 3, &base);
+
+        let other_k = write_run(dir.path(), "k.json", 5, &base);
+        let err = compare_runs(&a, &other_k)
+            .expect_err("different K")
+            .to_string();
+        assert!(err.contains("different K"), "{err}");
+
+        let extra = write_run(
+            dir.path(),
+            "ids.json",
+            3,
+            &[
+                saved("m1", "q1", "match", true, Some(1)),
+                saved("m9", "q9", "match", true, Some(1)),
+            ],
+        );
+        let err = compare_runs(&a, &extra)
+            .expect_err("different ids")
+            .to_string();
+        assert!(
+            err.contains("different query ids") && err.contains("m9"),
+            "{err}"
+        );
+
+        let reworded = write_run(
+            dir.path(),
+            "text.json",
+            3,
+            &[saved("m1", "other text", "match", true, Some(1))],
+        );
+        let err = compare_runs(&a, &reworded)
+            .expect_err("different text")
+            .to_string();
+        assert!(
+            err.contains("m1") && err.contains("different text"),
+            "{err}"
+        );
+
+        let not_a_run = dir.path().join("junk.json");
+        std::fs::write(&not_a_run, "{}").expect("write");
+        assert!(compare_runs(&a, &not_a_run).is_err());
     }
 }

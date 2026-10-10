@@ -410,6 +410,21 @@ pub enum EvalCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Compare two saved `memhub eval retrieval --json` runs query by query:
+    /// per-query wins and losses for rank-1 and found@K with exact two-sided
+    /// McNemar p-values. Compares saved output (not config flags), so it also
+    /// judges code changes: save run A with the old binary, run B with the
+    /// new one, same golden set and K. Read-only.
+    Compare {
+        /// Saved `eval retrieval --json` output for run A (the baseline).
+        #[arg(value_name = "A")]
+        a: PathBuf,
+        /// Saved `eval retrieval --json` output for run B (the candidate).
+        #[arg(value_name = "B")]
+        b: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
     /// Recall@1/@K harness for the M11 code locator over the sibling code
     /// index (task 65, decision 107). A/B the cross-encoder reranker on code
     /// against FTS+vector fusion: run once plain, once with `--rerank`.
