@@ -159,7 +159,7 @@
       "id": "negative-nonsense-tokens",
       "query": "zxqv-pure-nonsense-no-real-token-anywhere-in-this-repo",
       "kind": "empty",
-      "notes": "Safety probe: gibberish must clear no relevance floor; low-confidence rows are allowed (flagged, not vouched for)."
+      "notes": "Safety probe: no returned row may clear the relevance floor for gibberish; low-confidence rows are allowed (flagged, not vouched for)."
     },
     {
       "id": "doc-code-style-error-handling",

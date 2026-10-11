@@ -627,7 +627,8 @@ returned row: `source_type`, `source_id`, `scope`, `title`, `rerank_score`,
 ```
 
 Each line is written with a single append. A failure to create or write the
-file never fails or alters the recall; it prints `memhub: recall query log not written: ...` on stderr only.
+file never fails or alters the recall; it prints
+`memhub: recall query log not written: ...` on stderr only.
 **The log is never rotated or size-capped and grows with every agent recall;**
 delete or truncate it by hand when it gets large.
 
