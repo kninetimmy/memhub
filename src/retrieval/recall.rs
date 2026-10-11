@@ -4140,6 +4140,69 @@ explainscopeprobe second.
     }
 
     #[test]
+    fn row_found_by_several_phrasings_appears_once_in_hybrid_mode() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let (fact_id, _) = fact::add(
+            temp.path(),
+            "hybrid-dedupe-probe",
+            "hybriddedupeprobe shared value",
+            "user",
+            "cli:user",
+        )
+        .expect("fact");
+
+        let response = recall(
+            temp.path(),
+            RecallOptions {
+                min_rerank_score: Some(-100.0),
+                ..variant_opts(
+                    "hybriddedupeprobe",
+                    &["hybriddedupeprobe shared", "shared value hybriddedupeprobe"],
+                    RetrievalMode::Hybrid,
+                )
+            },
+        )
+        .expect("recall");
+        assert!(response.explain.reranker_ran);
+        let ids: Vec<i64> = response.results.iter().map(|h| h.source_id).collect();
+        assert_eq!(ids, vec![fact_id]);
+        assert_eq!(response.candidate_count, 1);
+    }
+
+    #[test]
+    fn equal_score_hits_without_variants_order_by_source_id() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        // Same body, same-length keys: identical blended scores.
+        let ids: Vec<i64> = ["tie-a", "tie-b", "tie-c"]
+            .iter()
+            .map(|key| {
+                fact::add(temp.path(), key, "tiebreakprobe shared value", "user", "cli:user")
+                    .expect("fact")
+                    .0
+            })
+            .collect();
+
+        let response = recall(
+            temp.path(),
+            explain_opts("tiebreakprobe", RetrievalMode::Fts, 10, vec![SourceType::Fact]),
+        )
+        .expect("recall");
+        assert_eq!(response.results.len(), 3);
+        assert!(
+            response
+                .results
+                .windows(2)
+                .all(|w| w[0].score == w[1].score),
+            "the probe needs equal scores: {:?}",
+            response.results.iter().map(|h| h.score).collect::<Vec<_>>()
+        );
+        let got: Vec<i64> = response.results.iter().map(|h| h.source_id).collect();
+        assert_eq!(got, ids);
+    }
+
+    #[test]
     fn variants_keep_the_rerank_pool_cut_counting_distinct_rows() {
         let temp = tempdir().expect("tempdir");
         init::run(temp.path()).expect("init");
