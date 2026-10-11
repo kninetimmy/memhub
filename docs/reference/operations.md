@@ -446,10 +446,10 @@ answers it), and questions answered by an ingested doc chunk (`doc-`) or an
 architecture section (`arch-`). Where several rows genuinely answer a query,
 `also_accept` lists them. Its empty probes (`empty-`, `near-`) ask about
 topics no row covers. Each query's `notes` name the answering row: a doc chunk
-by its document and section heading, plus its matcher phrase when several
-chunks share the heading (chunk ids change on every re-ingest), any other row
-by type and id as of 2026-10-10; the matchers (title and body substrings), not
-the ids, decide pass or fail.
+by its document and section heading, plus its matcher phrase wherever a query
+accepts more than one chunk under the same heading (chunk ids change on every
+re-ingest), any other row by type and id as of 2026-10-10; the matchers (title
+and body substrings), not the ids, decide pass or fail.
 
 First baseline, recorded 2026-10-10 with a debug build of main at 7e17fff
 against this machine's database (live config: hybrid mode, re-ranker on,

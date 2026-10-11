@@ -39,11 +39,20 @@
             " > Retrieval"
           ],
           "body_contains": [
+            "First recorded 2026-07-06"
+          ]
+        },
+        {
+          "source_type": "doc_chunk",
+          "title_contains": [
+            " > Retrieval"
+          ],
+          "body_contains": [
             "Hermetic golden fixture"
           ]
         }
       ],
-      "notes": "answer: decision 51; also: task 16, decision 36, decision 37, docs/reference/operations.md > Retrieval (\"Hermetic golden fixture\"). category: seed"
+      "notes": "answer: decision 51; also: task 16, decision 36, decision 37, docs/reference/operations.md > Retrieval (\"First recorded 2026-07-06\"), docs/reference/operations.md > Retrieval (\"Hermetic golden fixture\"). category: seed"
     },
     {
       "id": "seed-02",
@@ -293,11 +302,20 @@
             " > Retrieval"
           ],
           "body_contains": [
+            "First recorded 2026-07-06"
+          ]
+        },
+        {
+          "source_type": "doc_chunk",
+          "title_contains": [
+            " > Retrieval"
+          ],
+          "body_contains": [
             "First baseline, recorded 2026-10-10"
           ]
         }
       ],
-      "notes": "answer: decision 69; also: decision 36, decision 53, decision 51, fact 56, docs/reference/operations.md > Retrieval (\"First baseline, recorded 2026-10-10\"). category: seed"
+      "notes": "answer: decision 69; also: decision 36, decision 53, decision 51, fact 56, docs/reference/operations.md > Retrieval (\"First recorded 2026-07-06\"), docs/reference/operations.md > Retrieval (\"First baseline, recorded 2026-10-10\"). category: seed"
     },
     {
       "id": "seed-10",
