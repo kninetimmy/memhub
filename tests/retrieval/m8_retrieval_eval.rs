@@ -384,4 +384,13 @@ fn live_golden_file_passes_golden_validation() {
         vm >= 30,
         "live golden set needs >= 30 `vm-` match queries; got {vm}"
     );
+    // Issue #319: every live query carries variants so `eval retrieval` can
+    // be A/B-measured with and without them (`--no-variants`).
+    let bare: Vec<&str> = parsed
+        .queries
+        .iter()
+        .filter(|q| q.variants.is_empty())
+        .map(|q| q.id.as_str())
+        .collect();
+    assert!(bare.is_empty(), "queries without variants: {bare:?}");
 }
