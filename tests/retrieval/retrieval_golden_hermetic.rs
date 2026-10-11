@@ -632,6 +632,7 @@ fn eval_cli_json_records_run_settings_and_recall_at_1() {
 #[test]
 fn eval_cli_rejects_a_duplicated_query_id() {
     let temp = tempdir().expect("tempdir");
+    let home = tempdir().expect("home tempdir");
     let golden = temp.path().join("dup.json");
     std::fs::write(
         &golden,
@@ -642,6 +643,8 @@ fn eval_cli_rejects_a_duplicated_query_id() {
     .expect("write golden");
     let out = Command::new(env!("CARGO_BIN_EXE_memhub"))
         .current_dir(temp.path())
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
         .arg("eval")
         .arg("retrieval")
         .arg("--golden")
