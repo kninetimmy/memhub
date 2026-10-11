@@ -222,7 +222,11 @@ pub struct RecallExplain {
     /// Default-included doc chunks dropped because the re-ranker did not
     /// run to vet them.
     pub docs_dropped_no_rerank: usize,
-    /// Ingested doc chunks this call did not search (`available_docs`).
+    /// Ingested doc chunks (over the stores searched) this call did not
+    /// search: the full chunk total when doc chunks were not among the
+    /// searched source types, 0 when they were (default inclusion or an
+    /// explicit doc scope). Unlike `available_docs`, a chunk that was
+    /// searched but not surfaced does not count.
     pub docs_not_searched: usize,
     /// A machine-global store exists but was not searched because this
     /// repo has not opted in (`[global] enabled`).
@@ -805,7 +809,11 @@ fn finalize(
         elapsed_ms: started.elapsed().as_millis(),
         available_docs,
         explain: RecallExplain {
-            docs_not_searched: available_docs,
+            docs_not_searched: if opts.source_types.contains(&SourceType::DocChunk) {
+                0
+            } else {
+                doc_chunk_total.max(0) as usize
+            },
             ..explain
         },
     })
@@ -3229,8 +3237,10 @@ mod tests {
         .expect("recall");
         assert!(response.results.is_empty());
         assert_eq!(response.explain.docs_dropped_no_rerank, 1);
-        assert_eq!(response.explain.docs_not_searched, response.available_docs);
-        assert!(response.explain.docs_not_searched >= 1);
+        // The chunk was searched (docs join the default bundle), so it is
+        // dropped but not "not searched" even though `available_docs` > 0.
+        assert!(response.available_docs >= 1);
+        assert_eq!(response.explain.docs_not_searched, 0);
         assert!(!response.explain.reranker_ran);
 
         // Doc-scoped: nothing dropped, nothing unsearched.
@@ -3246,6 +3256,66 @@ mod tests {
         .expect("recall");
         assert_eq!(scoped.explain.docs_dropped_no_rerank, 0);
         assert_eq!(scoped.explain.docs_not_searched, 0);
+    }
+
+    #[test]
+    fn explain_counts_doc_chunks_not_searched_when_docs_are_out_of_scope() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        fact::add(
+            temp.path(),
+            "scope-fact",
+            "explainscopeprobe",
+            "user",
+            "cli:user",
+        )
+        .expect("fact");
+        let doc_file = temp.path().join("scope.md");
+        std::fs::write(
+            &doc_file,
+            "# Scope
+
+## One
+
+explainscopeprobe first.
+
+## Two
+
+explainscopeprobe second.
+",
+        )
+        .expect("write doc");
+        doc::add(temp.path(), &doc_file, None, "cli:user").expect("ingest doc");
+        let ingested: i64 = crate::db::open_project(temp.path())
+            .expect("open")
+            .conn
+            .query_row("SELECT COUNT(*) FROM doc_chunks", [], |r| r.get(0))
+            .expect("count chunks");
+        assert!(ingested >= 2);
+
+        // Fact-scoped: every ingested chunk is outside the searched corpora.
+        let response = recall(
+            temp.path(),
+            explain_opts(
+                "explainscopeprobe",
+                RetrievalMode::Fts,
+                10,
+                vec![SourceType::Fact],
+            ),
+        )
+        .expect("recall");
+        assert_eq!(response.explain.docs_not_searched, ingested as usize);
+
+        // Docs excluded from the default bundle: same count.
+        edit_config(temp.path(), |cfg| {
+            cfg.retrieval.include_docs_in_default = false;
+        });
+        let response = recall(
+            temp.path(),
+            explain_opts("explainscopeprobe", RetrievalMode::Fts, 10, vec![]),
+        )
+        .expect("recall");
+        assert_eq!(response.explain.docs_not_searched, ingested as usize);
     }
 
     #[test]

@@ -326,8 +326,11 @@ JSON key:
 - `result_limit_cut`: rows beyond `max_results` cut from the final bundle.
 - `docs_dropped_no_rerank`: default-included doc chunks dropped because the
   re-ranker did not run to vet them.
-- `docs_not_searched`: ingested doc chunks this call did not search (the same
-  number as `available_docs`).
+- `docs_not_searched`: ingested doc chunks this call did not search: the full
+  chunk total (over the stores searched) when doc chunks were outside the
+  searched source types, 0 when they were searched, whether by default
+  inclusion or `--source-type doc`. A chunk that was searched but not surfaced
+  does not count here, unlike in `available_docs`.
 - `global_store_not_searched` (bool): a machine-global store exists but was not
   searched because this repo has not opted in (`[global] enabled`).
 
