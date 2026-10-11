@@ -393,7 +393,8 @@ fn machine_global_memory_end_to_end() {
 
     // --- a row several phrasings find appears once, per store --------
     // repo_a searches both stores: the global alpha fact is found by the
-    // main query and the first variant, the repo delta fact by the second.
+    // main query and the first variant (a different phrasing that matches
+    // the same row through its key), the repo delta fact by the second.
     fact::add(
         repo_a.path(),
         "delta-repokey",
@@ -402,6 +403,20 @@ fn machine_global_memory_end_to_end() {
         "cli:user",
     )
     .expect("delta repo fact");
+    let global_ids = |r: &memhub::retrieval::RecallResponse| -> Vec<i64> {
+        r.results
+            .iter()
+            .filter(|h| h.scope == "global")
+            .map(|h| h.source_id)
+            .collect()
+    };
+    let main_global = global_ids(&fts_recall(repo_a.path(), "alpha-globalvalue"));
+    assert_eq!(main_global.len(), 1, "main query finds one global row");
+    assert_eq!(
+        global_ids(&fts_recall(repo_a.path(), "alpha-globalkey")),
+        main_global,
+        "the variant phrasing alone finds the same global row as the main query"
+    );
     let varied = recall(
         repo_a.path(),
         RecallOptions {
@@ -414,7 +429,7 @@ fn machine_global_memory_end_to_end() {
             use_reranker: None,
             min_rerank_score: None,
             log_metrics: false,
-            variants: vec!["alpha-globalvalue".to_string(), "deltaprobe".to_string()],
+            variants: vec!["alpha-globalkey".to_string(), "deltaprobe".to_string()],
             surface: None,
             explain: false,
         },
@@ -440,11 +455,8 @@ fn machine_global_memory_end_to_end() {
         varied.results
     );
     assert_eq!(
-        varied
-            .results
-            .iter()
-            .filter(|h| h.scope == "global")
-            .count(),
-        1
+        global_ids(&varied),
+        main_global,
+        "the global row found by both phrasings appears once"
     );
 }

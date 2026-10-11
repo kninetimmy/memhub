@@ -34,8 +34,9 @@ memhub global disable       # opt out (non-destructive; store kept)
 memhub global status --json # enabled?, path, schema version, row counts
 ```
 
-When disabled (or the store is absent), recall is byte-identical to a
-pre-M9 build and every global write refuses with a hint.
+When disabled (or the store is absent), recall for a query without
+variants is byte-identical to a pre-M9 build and every global write
+refuses with a hint.
 
 ## What belongs in global (the anti-noise rule)
 

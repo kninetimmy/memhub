@@ -3178,10 +3178,13 @@ mod tests {
         assert_eq!(on["explain"]["reranker_ran"], false);
     }
 
-    /// The published output schema types the explain object's fields.
+    /// The output schema the server publishes for the `recall` tool types the
+    /// explain object's fields.
     #[test]
     fn mcp_recall_output_schema_describes_explain_fields() {
-        let schema = serde_json::to_value(schemars::schema_for!(RecallToolResponse))
+        let server = MemhubServer::new(PathBuf::from("."));
+        let tool = server.tool_router.get("recall").expect("recall tool");
+        let schema = serde_json::to_value(tool.output_schema.as_ref().expect("output schema"))
             .expect("serialize schema");
         let explain = &schema["$defs"]["RecallExplain"]["properties"];
         assert_eq!(explain["reranker_ran"]["type"], "boolean");

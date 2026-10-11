@@ -51,6 +51,9 @@ vs. repo `CLAUDE.md`:
 - The relaxation is **opt-in and off by default** (`[global] enabled
   = false`). A memhub install with global disabled or the file absent
   behaves byte-identically to pre-M9.
+  *Later qualification:* that holds for a query without variants. A
+  query with variants adds variant-only rows from the repo store, so
+  its output can differ from a pre-M9 build.
 - Still local-only, still offline, still per-machine. The global DB is
   **not** synced, exported, or shared. Each machine maintains its own,
   exactly as it maintains its own repo DBs and embeddings.
@@ -135,6 +138,10 @@ M9 extends the M8 recall pipeline. The contract:
   `~/.memhub/global.sqlite` exists.** Disabled or absent → recall
   output is byte-identical to pre-M9. This is the eval regression
   guarantee: `tests/retrieval_golden.json` baselines do not move.
+  *Later qualification:* the byte-identical claim holds for a query
+  without variants. Variants (caller-written phrasings) add rows from
+  the repo store alone, so a query with variants is not byte-identical
+  to a pre-M9 build; the eval guarantee covers the variant-free queries.
 - The global gather inherits the *active repo's* `[retrieval]` config
   (mode, weights, reranker, floors). The global store has **no
   separate retrieval config.** An FTS-mode repo does an FTS-only
