@@ -145,13 +145,13 @@ use_reranker = true
 # superseded and age-decay adjustments of the blended score), so every row
 # in the top half of either ranking is re-ranked whatever its blended
 # score; when one ranking runs out the other fills the remaining slots.
-# Passages are scored in batches of 8 to bound memory.
+# Each passage is scored on its own, so a score does not depend on the pool.
 rerank_candidate_pool = 20
 # Most default-included doc chunks (plain recall with
 # include_docs_in_default, no --source-type) the pool may hold; doc
 # chunks over the cap are not sent to the re-ranker. A recall with explicit
 # source types, including doc, is not capped.
-rerank_doc_cap = 5
+rerank_doc_cap = 3
 # Make ingested doc chunks eligible for the *default* recall bundle
 # (no --source-type needed), gated by scoring.doc_min_rerank_score.
 # Canonical baseline is false (decision 86: docs are opt-in). The

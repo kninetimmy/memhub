@@ -70,7 +70,7 @@ JSON shape (the values below are illustrative, not a recorded baseline):
     "reranker": true,
     "min_rerank_score": 2.0,
     "rerank_candidate_pool": 20,
-    "rerank_doc_cap": 5
+    "rerank_doc_cap": 3
   },
   "recall_at_k": 1.0,
   "recall_at_1": 0.935,

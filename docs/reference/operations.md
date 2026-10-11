@@ -254,14 +254,14 @@ whatever its blended score. Each ranking applies the same stale, superseded
 and age-decay adjustments as the blended score, so a stale or superseded row
 never takes a slot ahead of an otherwise-equal current row. In a default
 recall that includes doc chunks (`include_docs_in_default`, no
-`--source-type`), `[retrieval] rerank_doc_cap` (default 5) limits how many doc
+`--source-type`), `[retrieval] rerank_doc_cap` (default 3) limits how many doc
 chunks may enter the pool; doc chunks over the cap are not eligible, and a
 recall with explicit source types, including `--source-type doc`, is not
-capped. The pool is scored in batches of at most 8 passages, so a larger pool
-does not need gigabytes of memory (one 50-row batch used 4.1 GB). The bundled
-model is int8 dynamic-quantized, so a row's score depends slightly on which
-rows share its batch (measured drift up to about 0.25 logits on long padded
-passages). The code locator (`memhub locate`) chooses its own re-rank
+capped. Each pool passage is scored on its own, so a row's
+`rerank_score` does not depend on which other rows are in the pool (the
+bundled model is int8 dynamic-quantized, so in a shared batch a score shifts by
+up to about 0.25 logits with its neighbours) and a large pool does not need
+gigabytes of memory (one 50-row batch used 4.1 GB). The code locator (`memhub locate`) chooses its own re-rank
 candidates as before.
 
 Toggle per-call with `memhub recall <query> --no-rerank`, or globally

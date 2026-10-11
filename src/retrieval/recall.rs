@@ -301,8 +301,8 @@ pub struct RecallExplain {
 ///
 /// Caller-written `variants` are extra phrasings of the same question: each
 /// is gathered like the main query and its own `rerank_candidate_pool` rows
-/// (see `select_rerank_pool`) join the pool, but the single rerank pass (and the relevance floor)
-/// still scores every candidate against the main query.
+/// (see `select_rerank_pool`) join the pool, but the single rerank pass (and
+/// the relevance floor) still scores every candidate against the main query.
 pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
     let ctx = db::open_project(start)?;
     let resolved = ResolvedOptions::from(&options, &ctx.config.retrieval)?;
@@ -979,10 +979,10 @@ fn finalize(
     // Optional cross-encoder re-rank pass (decision 68). Only runs on
     // hybrid mode and only when the operator hasn't opted out. Takes the
     // `rerank_candidate_pool` rows `merge_phrasings` chose from the vector
-    // and FTS rankings, reorders them by the cross-encoder, drops anything below `min_rerank_score` (D71 — the
-    // nonsense-rejection floor that replaced `min_vector_score`), then
-    // truncates to `max_results`. fts-only callers and an empty candidate
-    // set bypass entirely.
+    // and FTS rankings, reorders them by the cross-encoder, drops anything
+    // below `min_rerank_score` (D71 — the nonsense-rejection floor that
+    // replaced `min_vector_score`), then truncates to `max_results`. fts-only
+    // callers and an empty candidate set bypass entirely.
     let reranked = opts.mode == RetrievalMode::Hybrid && opts.use_reranker && !scored.is_empty();
     explain.reranker_ran = reranked;
     if reranked {
@@ -4331,7 +4331,7 @@ explainscopeprobe second.
         assert!(response.explain.rerank_pool_cut <= response.candidate_count - 2);
     }
 
-    // Issue #330: the re-ranker's pool is filled from the vector and FTS
+    // Issue #337: the re-ranker's pool is filled from the vector and FTS
     // rankings in turn, with default-included doc chunks capped.
     fn pool_opts(pool: usize, doc_cap: usize, docs_via_default: bool) -> ResolvedOptions {
         let mut opts = ResolvedOptions::from(

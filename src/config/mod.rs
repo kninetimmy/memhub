@@ -103,7 +103,7 @@ pub const DEFAULT_FACT_STALE_AFTER_DAYS: i64 = crate::models::FACT_STALE_AFTER_D
 pub const DEFAULT_USE_RERANKER: bool = true;
 pub const DEFAULT_RERANK_CANDIDATE_POOL: usize = 20;
 /// Most default-included doc chunks the re-rank pool may hold.
-pub const DEFAULT_RERANK_DOC_CAP: usize = 5;
+pub const DEFAULT_RERANK_DOC_CAP: usize = 3;
 /// Docs are opt-in to default recall (decision 86). Auto-flipped to
 /// true by the first successful `memhub doc add` in a project so the
 /// user-pointed write that establishes docs also wires up retrieval.
