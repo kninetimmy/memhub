@@ -335,7 +335,10 @@ JSON key:
   behind the `stale_facts_demoted` warning).
 - `rerank_pool_cut`: rows beyond `rerank_candidate_pool` that never reached the
   re-ranker.
-- `result_limit_cut`: rows beyond `max_results` cut from the final bundle.
+- `result_limit_cut`: rows beyond `max_results` cut from the final bundle. It
+  counts only rows that cleared the relevance floor; floor-cut rows that the
+  result limit trimmed from the low-confidence fill are counted only in
+  `dropped_by_floor`.
 - `docs_dropped_no_rerank`: default-included doc chunks dropped because the
   re-ranker did not run to vet them.
 - `docs_not_searched`: ingested doc chunks this call did not search: the full
@@ -379,11 +382,11 @@ union, so a variant can never push out a row the main query would have
 re-ranked. Cost: the union has up to (1 + variants) x `rerank_candidate_pool`
 rows, so re-rank time grows with the variants sent (each pool-sized batch costs
 roughly what a plain recall's re-rank costs, about 275 ms at pool 20), plus,
-per variant, one more embedding, one more set of full-text lookups (one per
-searched source type, and a second set with the partial-token retry when no
-row holds every token) and one more scan of the stored vectors, which runs
-once per searched store (the repo store and, when the repo opted in, the
-machine-global store). When the
+per variant, one more embedding and, in each searched store (the repo store
+and, when the repo opted in, the machine-global store), one more set of
+full-text lookups (one per searched source type, and a second set with the
+partial-token retry when no row holds every token) and one more scan of the
+stored vectors. When the
 re-ranker does not run (FTS-only mode, `--no-rerank`, `use_reranker = false`)
 no pool is cut and variant-only rows have no main-query score, so the merged
 set is ordered by each row's best blended score across phrasings; the filters
@@ -614,17 +617,17 @@ a plain file, not a database table, and `/.memhub/*` is git-ignored, so Drive
 sync snapshots, `memhub export` and the machine-global store never carry it.
 Queries are stored in **plaintext**. A line holds `ts` (UTC, ISO 8601),
 `surface`, `query`, `variants`, `source_types` (as requested; empty means the
-default bundle), `max_results` (the effective value), `results` (per returned
-row: `source_type`, `source_id`, `scope`, `title`, `rerank_score`,
+default bundle), `max_results` (the effective value, so an omitted
+`max_results` and an explicit default are logged the same), `results` (per
+returned row: `source_type`, `source_id`, `scope`, `title`, `rerank_score`,
 `low_confidence`) and `warnings` (the warning kinds):
 
 ```json
 {"ts":"2026-10-11T17:40:02Z","surface":"cli","query":"cargo build","variants":["compile command"],"source_types":["fact"],"max_results":3,"results":[{"source_type":"fact","source_id":1,"scope":"repo","title":"build","rerank_score":null,"low_confidence":false}],"warnings":[]}
 ```
 
-Each line is one append, so concurrent CLI and MCP processes do not
-interleave. A failure to create or write the file never fails or alters the
-recall; it prints `memhub: recall query log not written: ...` on stderr only.
+Each line is written with a single append. A failure to create or write the
+file never fails or alters the recall; it prints `memhub: recall query log not written: ...` on stderr only.
 **The log is never rotated or size-capped and grows with every agent recall;**
 delete or truncate it by hand when it gets large.
 
