@@ -646,7 +646,7 @@ The binary installs once at `~/.cargo/bin/memhub`. To add a project: `cd` in, `m
 
 Some knowledge isn't about *this* repo — it's about this machine, or how you work everywhere: toolchain versions, install commands, a standing rule like "always integration-test against a real database." That's the machine-global store: a second SQLite at `~/.memhub/global.sqlite`, shared by every repo on this machine. The global-vs-repo `CLAUDE.md` idea — made retrievable instead of always-loaded.
 
-**Off by default, per-repo opt-in.** When disabled, recall is byte-for-byte identical to a build without the feature.
+**Off by default, per-repo opt-in.** When disabled, recall for a query without variants is byte-for-byte identical to a build without the feature.
 
 ```bash
 memhub global enable     # opt this repo in; create the store if absent
