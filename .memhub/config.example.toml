@@ -256,9 +256,10 @@ calibration_factor = 1.0
 # machine. When enabled, recall in this repo merges hits from the
 # global store (tagged scope: "global"), and `--global` writes /
 # accepted global proposals are permitted. Disabled or store-absent
-# → recall is byte-identical to a pre-M9 build. The global store is
-# machine-wide and per-machine (never exported, never synced);
-# `enabled` is the per-repo consumption + write gate.
+# → recall for a query without variants is byte-identical to a pre-M9
+# build. The global store is machine-wide and per-machine (never
+# exported, never synced); `enabled` is the per-repo consumption +
+# write gate.
 # include_docs_in_default mirrors retrieval.include_docs_in_default
 # for the global corpus: canonical baseline false here, auto-flips to
 # true in the LOCAL config.toml on the first `doc add --global` — do

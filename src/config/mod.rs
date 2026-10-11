@@ -501,7 +501,8 @@ impl Default for MetricsConfig {
 /// When `enabled`, recall in this repo merges hits from
 /// `~/.memhub/global.sqlite` (tagged `scope: "global"`) and
 /// `--global` writes / accepted global proposals are permitted.
-/// Disabled or store-absent → recall is byte-identical to pre-M9.
+/// Disabled or store-absent → recall for a query without variants is
+/// byte-identical to pre-M9.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalConfig {
     #[serde(default = "default_global_enabled")]
