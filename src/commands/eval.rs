@@ -2125,6 +2125,7 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
         load_golden(&root.join("retrieval_golden.json")).expect("base golden");
         load_golden(&root.join("retrieval_golden_live.json")).expect("live golden");
+        load_golden(&root.join("retrieval_golden_holdout.json")).expect("held-out golden");
     }
 
     #[test]
