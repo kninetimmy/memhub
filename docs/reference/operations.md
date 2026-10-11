@@ -430,10 +430,10 @@ calibration signal, not the enforced gate.
 
 **Live golden set (task 174).** `tests/retrieval_golden_live.json` is a
 second, larger golden set that is scored against the repository's own
-memhub project database rather than a
-seeded fixture. The hermetic set seeds about 19 rows, each one a query's
-answer, so it cannot tell close retrieval variants apart; the live database
-has about 1,000 candidate rows with real distractors. Any change to
+memhub project database rather than a seeded fixture. The hermetic set
+seeds about 19 rows, each one a query's answer, so it cannot tell close
+retrieval variants apart; the live database has about 1,000 candidate
+rows with real distractors. Any change to
 retrieval (tasks 160, 175 and 98, or an embedder swap) is measured on this
 set before it lands. It is **not run in CI**, because CI has no such
 database: `cargo test` only checks that the file is valid JSON and passes

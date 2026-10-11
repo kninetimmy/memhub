@@ -1933,7 +1933,7 @@
           ]
         }
       ],
-      "notes": "answer: decision 100; also: fact 11, docs/reference/operations.md > Machine-global memory. category: paraphrase"
+      "notes": "answer: decision 100; also: fact 11, docs/reference/operations.md > Machine-wide upgrade. category: paraphrase"
     },
     {
       "id": "semantic-eval-audit-trace",
@@ -2103,7 +2103,7 @@
           "body_contains": []
         }
       ],
-      "notes": "answer: docs/reference/operations.md > Code Index; also: decision 96. category: paraphrase"
+      "notes": "answer: docs/reference/operations.md > Machine-wide upgrade; also: decision 96. category: paraphrase"
     },
     {
       "id": "two-wal-and-synchronous",
@@ -2215,7 +2215,7 @@
           ]
         }
       ],
-      "notes": "answer: decision 97; also: decision 100, docs/reference/operations.md > Machine-global memory. category: two-part"
+      "notes": "answer: decision 97; also: decision 100, docs/reference/operations.md > Machine-wide upgrade. category: two-part"
     },
     {
       "id": "two-mcp-direct-and-accept",
@@ -2741,7 +2741,7 @@
           ]
         }
       ],
-      "notes": "answer: decision 100; also: docs/reference/operations.md > Machine-global memory. category: vocabulary mismatch"
+      "notes": "answer: decision 100; also: docs/reference/operations.md > Machine-wide upgrade. category: vocabulary mismatch"
     },
     {
       "id": "vm-noun-bundles-vs-questions",
@@ -2838,7 +2838,7 @@
           ]
         }
       ],
-      "notes": "answer: decision 96; also: docs/reference/operations.md > Code Index. category: vocabulary mismatch"
+      "notes": "answer: decision 96; also: docs/reference/operations.md > Machine-wide upgrade. category: vocabulary mismatch"
     },
     {
       "id": "vm-shared-server-box-down",
@@ -3239,7 +3239,7 @@
       "body_contains": [
         "Cache churn"
       ],
-      "notes": "answer: docs/reference/operations.md > Retrieval. category: doc chunk"
+      "notes": "answer: docs/reference/operations.md > Token Accounting. category: doc chunk"
     },
     {
       "id": "doc-exclude-docs-from-export",
@@ -3252,7 +3252,7 @@
       "body_contains": [
         "excluded from `memhub export`"
       ],
-      "notes": "answer: docs/reference/operations.md > Token Accounting. category: doc chunk"
+      "notes": "answer: docs/reference/operations.md > Doc Ingestion. category: doc chunk"
     },
     {
       "id": "doc-locate-no-refresh",
@@ -3274,7 +3274,7 @@
           "body_contains": []
         }
       ],
-      "notes": "answer: docs/reference/operations.md > Token Accounting; also: decision 109. category: doc chunk"
+      "notes": "answer: docs/reference/operations.md > Code Index; also: decision 109. category: doc chunk"
     },
     {
       "id": "doc-locate-scoring-config",
@@ -3287,7 +3287,7 @@
       "body_contains": [
         "Scoring config is independent of recall"
       ],
-      "notes": "answer: docs/reference/operations.md > Doc Ingestion. category: doc chunk"
+      "notes": "answer: docs/reference/operations.md > Code Index. category: doc chunk"
     },
     {
       "id": "doc-registry-vs-global-optin",
@@ -3309,7 +3309,7 @@
           "body_contains": []
         }
       ],
-      "notes": "answer: docs/reference/operations.md > Code Index; also: decision 96. category: doc chunk"
+      "notes": "answer: docs/reference/operations.md > Machine-wide upgrade; also: decision 96. category: doc chunk"
     },
     {
       "id": "doc-audit-adopt-coordination",

@@ -138,10 +138,10 @@ no difference. Read-only: it only reads the two files.
 `tests/retrieval_golden_live.json` is a second, larger golden set that
 is scored against the repository's own memhub database instead of a
 seeded fixture, so it has real distractors among roughly 1,000
-candidate rows. It is not run in CI. Use it to measure any retrieval change (tasks 160, 175, 98, an
-embedder swap) before it lands. The hermetic `tests/retrieval_golden.json`
-cannot tell close variants apart, and numbers from the two sets are not
-comparable.
+candidate rows. It is not run in CI. Use it to measure any retrieval
+change (tasks 160, 175, 98, an embedder swap) before it lands. The
+hermetic `tests/retrieval_golden.json` cannot tell close variants apart,
+and numbers from the two sets are not comparable.
 
 To A/B a code change, run both binaries against the same database,
 back to back, with nothing writing memhub state in between (no `add`,
