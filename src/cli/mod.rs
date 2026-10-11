@@ -20,8 +20,8 @@ use output::{
     pending_write_record_to_json, print_audit_md_report_human, print_code_status,
     print_doctor_report_human, print_eval_comparison, print_eval_summary, print_index_status,
     print_init_result, print_locate, print_locate_eval_summary, print_not_carried_checklist,
-    print_overwritten_writes_log_warning, print_recall_human, print_retained_docs_hint,
-    print_review_stale_report_human, print_stats_human, print_stats_json,
+    print_overwritten_writes_log_warning, print_recall_explain, print_recall_human,
+    print_retained_docs_hint, print_review_stale_report_human, print_stats_human, print_stats_json,
     print_status_checks_human, print_wrapup_policy_human, recall_response_to_json,
     review_stale_report_to_json, status_checks_to_json, status_summary_to_json,
     wrapup_policy_report_to_json,
@@ -1994,6 +1994,7 @@ pub fn run(cli: Cli) -> Result<()> {
             accepted_only,
             no_rerank,
             min_rerank_score,
+            explain,
             json: as_json,
         } => {
             let opts = RecallOptions {
@@ -2013,9 +2014,16 @@ pub fn run(cli: Cli) -> Result<()> {
             };
             let response = retrieval::recall(&cwd, opts)?;
             if as_json {
-                println!("{}", recall_response_to_json(&response));
+                let mut value = recall_response_to_json(&response);
+                if explain {
+                    value["explain"] = serde_json::to_value(&response.explain)?;
+                }
+                println!("{value}");
             } else {
                 print_recall_human(&response);
+                if explain {
+                    print_recall_explain(&response.explain);
+                }
             }
         }
         TopLevelCommand::Eval { command } => match command {

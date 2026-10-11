@@ -194,3 +194,64 @@ fn cargo_toml_declares_a_rust_version() {
          off in the lint lane"
     );
 }
+
+/// Issue #318: `memhub recall --explain` adds the breakdown (JSON `explain`
+/// object / human "Explain:" block) and changes nothing else; without the
+/// flag neither appears.
+#[test]
+fn recall_explain_flag_adds_the_breakdown_and_nothing_else() {
+    let temp = tempdir().expect("tempdir");
+    let home = tempdir().expect("home tempdir");
+    init::run(temp.path()).expect("init");
+    for key in ["explain-a", "explain-b"] {
+        fact::add(temp.path(), key, "explaincliprobe", "user", "cli:user").expect("fact");
+    }
+    let run = |extra: &[&str]| {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_memhub"))
+            .args([
+                "recall",
+                "explaincliprobe",
+                "--mode",
+                "fts",
+                "--max-results",
+                "1",
+            ])
+            .args(extra)
+            .current_dir(temp.path())
+            .env("MEMHUB_LOG", "off")
+            .env("HOME", home.path())
+            .env("USERPROFILE", home.path())
+            .output()
+            .expect("spawn memhub binary");
+        assert!(out.status.success(), "recall failed: {out:?}");
+        String::from_utf8(out.stdout).expect("utf8 stdout")
+    };
+
+    let mut plain: serde_json::Value = serde_json::from_str(&run(&["--json"])).expect("plain json");
+    let mut explained: serde_json::Value =
+        serde_json::from_str(&run(&["--json", "--explain"])).expect("explain json");
+    assert!(plain.get("explain").is_none());
+    let explain = explained
+        .as_object_mut()
+        .and_then(|o| o.remove("explain"))
+        .expect("--explain must add an `explain` object");
+    assert_eq!(explain["result_limit_cut"], 1);
+    assert_eq!(explain["reranker_ran"], false);
+    assert_eq!(explain["global_store_not_searched"], false);
+    // Everything else -- rows, order, scores -- is identical.
+    for v in [&mut plain, &mut explained] {
+        v["provenance"]["elapsed_ms"] = serde_json::Value::Null;
+    }
+    assert_eq!(plain, explained);
+
+    let human_plain = run(&[]);
+    let human_explained = run(&["--explain"]);
+    assert!(!human_plain.contains("Explain:"));
+    let (body, block) = human_explained
+        .split_once("\nExplain:\n")
+        .expect("--explain must print an Explain block");
+    assert!(block.contains("cut by result limit: 1"));
+    // Same output apart from the elapsed-time header.
+    let tail = |s: &str| s.split_once('\n').map(|(_, t)| t.to_string());
+    assert_eq!(tail(body.trim_end()), tail(human_plain.trim_end()));
+}

@@ -232,6 +232,10 @@ pub enum TopLevelCommand {
         /// nonsense rejection.
         #[arg(long, value_name = "F", allow_negative_numbers = true)]
         min_rerank_score: Option<f32>,
+        /// Report how many candidate rows were dropped, demoted or cut,
+        /// per reason, to diagnose an empty or thin result.
+        #[arg(long)]
+        explain: bool,
         #[arg(long)]
         json: bool,
     },

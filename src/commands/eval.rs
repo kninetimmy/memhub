@@ -1214,6 +1214,7 @@ mod tests {
             matcher: "recall:fts".to_string(),
             elapsed_ms: 0,
             available_docs: 0,
+            explain: Default::default(),
         }
     }
 

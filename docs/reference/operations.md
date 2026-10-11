@@ -293,6 +293,44 @@ the floor (low-confidence hits allowed), and each match outcome reports
 `matched_low_confidence`. The golden set carries `kw-` keyword-bag variants
 and `near-` related-but-no-answer probes for this.
 
+**Explaining an empty or thin result (issue #318).** `memhub recall <query>
+--explain` (and `explain: true` on the MCP `recall` tool, an optional boolean)
+reports how many candidate rows each stage dropped, demoted or cut, so a recall
+that returns nothing, or less than expected, can be diagnosed. With `--json`
+the CLI adds an `explain` object; without `--json` it prints an `Explain:`
+block after the results; the MCP response gains an `explain` field. Without the
+flag nothing is added and the output is unchanged. The counters are bookkeeping
+only: the rows returned, their order and their scores are identical with and
+without it. Counts are summed over every store the call searched (the repo
+store, plus the machine-global store when this repo opted in). The reasons, by
+JSON key:
+
+- `reranker_ran` (bool): whether the cross-encoder re-ranker ran (hybrid mode,
+  `use_reranker` on, more than one candidate). No relevance floor applies when
+  it did not.
+- `dropped_by_floor`: rows whose rerank score was under `min_rerank_score`
+  (every row except default-included doc chunks). Low-confidence fallback hits
+  are among these rows, since the floor dropped them before the fallback
+  returned them.
+- `dropped_by_doc_floor`: default-included doc chunks under
+  `doc_min_rerank_score`.
+- `stale_excluded`: stale rows excluded because stale rows were excluded
+  (`include_stale` off).
+- `accepted_only_excluded`: rows excluded by accepted-only.
+- `superseded_demoted`: superseded rows kept but demoted by
+  `superseded_penalty`.
+- `stale_demoted`: stale rows kept but demoted by `stale_penalty` (the count
+  behind the `stale_facts_demoted` warning).
+- `rerank_pool_cut`: rows beyond `rerank_candidate_pool` that never reached the
+  re-ranker.
+- `result_limit_cut`: rows beyond `max_results` cut from the final bundle.
+- `docs_dropped_no_rerank`: default-included doc chunks dropped because the
+  re-ranker did not run to vet them.
+- `docs_not_searched`: ingested doc chunks this call did not search (the same
+  number as `available_docs`).
+- `global_store_not_searched` (bool): a machine-global store exists but was not
+  searched because this repo has not opted in (`[global] enabled`).
+
 **Architecture sections (issue #232).** The latest architecture narrative
 (`memhub arch set`) is split by markdown heading, with the same chunker
 `memhub doc add` uses, into a derived `arch_sections` table (migration 0025),

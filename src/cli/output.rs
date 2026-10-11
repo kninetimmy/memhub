@@ -410,6 +410,31 @@ pub(crate) fn print_recall_human(response: &RecallResponse) {
     }
 }
 
+/// The `--explain` block of `memhub recall` (human output only).
+pub(crate) fn print_recall_explain(e: &crate::retrieval::RecallExplain) {
+    let yes_no = |b: bool| if b { "yes" } else { "no" };
+    println!();
+    println!("Explain:");
+    println!("  re-ranker ran: {}", yes_no(e.reranker_ran));
+    println!("  dropped by relevance floor: {}", e.dropped_by_floor);
+    println!("  dropped by doc floor: {}", e.dropped_by_doc_floor);
+    println!("  stale rows excluded: {}", e.stale_excluded);
+    println!("  excluded by accepted-only: {}", e.accepted_only_excluded);
+    println!("  superseded rows demoted: {}", e.superseded_demoted);
+    println!("  stale rows demoted: {}", e.stale_demoted);
+    println!("  cut by rerank candidate pool: {}", e.rerank_pool_cut);
+    println!("  cut by result limit: {}", e.result_limit_cut);
+    println!(
+        "  doc chunks dropped (re-ranker did not run): {}",
+        e.docs_dropped_no_rerank
+    );
+    println!("  doc chunks not searched: {}", e.docs_not_searched);
+    println!(
+        "  global store not searched (repo not opted in): {}",
+        yes_no(e.global_store_not_searched)
+    );
+}
+
 pub(crate) fn eval_summary_to_json(summary: &commands::eval::EvalSummary) -> serde_json::Value {
     let outcomes = summary
         .outcomes
@@ -1571,6 +1596,7 @@ mod tests {
             matcher: "recall:fts".to_string(),
             elapsed_ms: 0,
             available_docs: 0,
+            explain: Default::default(),
         }
     }
 

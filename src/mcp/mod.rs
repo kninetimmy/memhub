@@ -486,7 +486,17 @@ impl MemhubServer {
             },
         )
         .map_err(map_tool_error)?;
-        Ok(Json(RecallToolResponse::from(response)))
+        let explain = if params.explain == Some(true) {
+            Some(
+                serde_json::to_value(&response.explain)
+                    .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+            )
+        } else {
+            None
+        };
+        let mut out = RecallToolResponse::from(response);
+        out.explain = explain;
+        Ok(Json(out))
     }
 
     async fn locate_impl(
@@ -1487,6 +1497,14 @@ struct RecallParams {
     /// source, so they are never returned when this is true.
     accepted_only: Option<bool>,
     include_stale: Option<bool>,
+    /// When true, the response also carries an `explain` object counting
+    /// the candidate rows this call dropped, demoted or cut, per reason
+    /// (relevance floor, doc floor, stale/accepted-only exclusion,
+    /// superseded/stale demotion, rerank pool and result-limit cuts, doc
+    /// chunks dropped without the re-ranker or not searched), plus whether
+    /// the re-ranker ran and whether an unsearched global store exists.
+    /// Use it to diagnose an empty or thin result. Omit for the normal response.
+    explain: Option<bool>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -1504,6 +1522,10 @@ struct RecallToolResponse {
     available_docs: i64,
     warnings: Vec<RecallToolWarning>,
     provenance: RecallToolProvenance,
+    /// Per-reason counts of dropped, demoted and cut candidate rows. Present
+    /// only when the call passed `explain: true`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    explain: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -1611,6 +1633,7 @@ impl From<RecallResponse> for RecallToolResponse {
                 matcher: value.matcher,
                 elapsed_ms: u128_to_i64(value.elapsed_ms),
             },
+            explain: None,
         }
     }
 }
@@ -3101,6 +3124,7 @@ mod tests {
                 source_types: None,
                 accepted_only: None,
                 include_stale: None,
+                explain: None,
             })))
             .expect("recall");
 
@@ -3108,6 +3132,44 @@ mod tests {
         assert!(!response.0.results.is_empty());
         assert_eq!(response.0.results[0].source_type, "decision");
         assert!(response.0.provenance.matcher.starts_with("recall:"));
+    }
+
+    /// Issue #318: `explain: true` adds the per-reason breakdown to the
+    /// recall response; omitted or false leaves the field out entirely.
+    #[test]
+    fn mcp_recall_explain_is_opt_in() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        for key in ["explain-a", "explain-b"] {
+            crate::commands::fact::add(temp.path(), key, "mcpexplainprobe", "user", "cli:user")
+                .expect("fact");
+        }
+        let server = MemhubServer::new(temp.path().to_path_buf());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let call = |explain: Option<bool>| {
+            let response = runtime
+                .block_on(server.recall_impl(Parameters(RecallParams {
+                    query: "mcpexplainprobe".to_string(),
+                    mode: Some("fts".to_string()),
+                    max_results: Some(1),
+                    source_types: None,
+                    accepted_only: None,
+                    include_stale: None,
+                    explain,
+                })))
+                .expect("recall");
+            serde_json::to_value(&response.0).expect("serialize")
+        };
+
+        for off in [None, Some(false)] {
+            assert!(call(off).get("explain").is_none());
+        }
+        let on = call(Some(true));
+        assert_eq!(on["explain"]["result_limit_cut"], 1);
+        assert_eq!(on["explain"]["reranker_ran"], false);
     }
 
     /// Issue #70 / Wave 4 gate Q17: the MCP `recall` tool is one of the
@@ -3139,6 +3201,7 @@ mod tests {
                 source_types: None,
                 accepted_only: None,
                 include_stale: None,
+                explain: None,
             })))
             .expect("recall");
 
@@ -3166,6 +3229,7 @@ mod tests {
             source_types: None,
             accepted_only: None,
             include_stale: None,
+            explain: None,
         })));
         let err = match result {
             Ok(_) => panic!("invalid mode should error"),
@@ -3210,6 +3274,7 @@ mod tests {
                 source_types: Some(source_types.into_iter().map(String::from).collect()),
                 accepted_only: None,
                 include_stale: None,
+                explain: None,
             })
         };
 

@@ -139,6 +139,30 @@ fn tools_list_exposes_full_tool_surface() {
         );
     }
 
+    // Issue #318: `recall` advertises an optional boolean `explain`
+    // parameter with a description of what it reports.
+    let recall = tools
+        .iter()
+        .find(|t| t["name"] == json!("recall"))
+        .expect("recall tool");
+    let explain = &recall["inputSchema"]["properties"]["explain"];
+    assert!(
+        explain.to_string().contains("boolean"),
+        "recall.explain must be a boolean: {explain}"
+    );
+    assert!(
+        explain["description"]
+            .as_str()
+            .is_some_and(|d| d.contains("dropped")),
+        "recall.explain must describe what it reports: {explain}"
+    );
+    assert!(
+        !recall["inputSchema"]["required"]
+            .to_string()
+            .contains("explain"),
+        "recall.explain must be optional"
+    );
+
     if cfg!(feature = "metrics") {
         assert!(
             names.contains("metrics"),
