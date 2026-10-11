@@ -12,11 +12,13 @@
 //! to other tools, so the install is a conservative merge: an agent whose
 //! directory (`~/.claude`, `~/.codex`) does not exist is skipped and
 //! nothing is created for it, a file that is not valid JSON (or not the
-//! expected shape), not writable, or a symlink whose target does not
-//! exist is left byte-for-byte unchanged, an existing memhub entry is never
-//! duplicated, the write is atomic, and an entry the user deleted after
-//! memhub added or found it is not re-added (remembered in
-//! `~/.memhub/installed-hooks.json`). The Codex handler also carries
+//! expected shape), not writable, or a symlink that cannot be followed
+//! (a missing target, a link loop, an unreadable target) is left
+//! byte-for-byte unchanged, a `~/.claude` or `~/.codex` that is such a
+//! symlink is skipped, an install record that is one is left unwritten, an
+//! existing memhub entry is never duplicated, the write is atomic, and an
+//! entry the user deleted after memhub added or found it is not re-added
+//! (remembered in `~/.memhub/installed-hooks.json`). The Codex handler also carries
 //! `additionalContextLimit` so Codex shows the whole frame instead of its
 //! default ~2,500-token head-and-tail preview; an existing memhub Codex
 //! handler without the field gets it added.
@@ -209,13 +211,11 @@ pub fn install_session_hooks(dry: bool) -> Vec<HookInstall> {
                     HookStatus::Skipped,
                     Some(format!("~/{} is not a directory", rel[0])),
                 ),
-                // metadata follows links, so a dangling link also lands here.
+                // metadata follows links, so a link that cannot be followed
+                // (dangling, looping, unreadable target) also lands here.
                 Err(_) if dir.symlink_metadata().is_ok() => (
                     HookStatus::Skipped,
-                    Some(format!(
-                        "~/{} is a symlink whose target does not exist",
-                        rel[0]
-                    )),
+                    Some(format!("~/{} is a symlink that cannot be followed", rel[0])),
                 ),
                 Err(_) => (HookStatus::Skipped, Some(format!("no ~/{}", rel[0]))),
             };
@@ -247,13 +247,13 @@ pub fn install_session_hooks(dry: bool) -> Vec<HookInstall> {
         && let Err(e) = serde_json::to_vec_pretty(&installed)
             .map_err(std::io::Error::from)
             .and_then(|bytes| {
-                // A dangling link would be replaced by a regular file.
+                // A link that cannot be followed would be replaced by a regular file.
                 if marker.exists() || marker.symlink_metadata().is_err() {
                     std::fs::create_dir_all(home.join(db::GLOBAL_MEMHUB_DIRNAME))?;
                     write_atomic(&marker, &bytes)
                 } else {
                     Err(std::io::Error::other(
-                        "record is a symlink whose target does not exist",
+                        "record is a symlink that cannot be followed",
                     ))
                 }
             })

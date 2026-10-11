@@ -715,11 +715,11 @@ fn dangling_symlink_agent_dirs_are_named_in_the_skip_detail() {
         );
         assert_eq!(
             status_of(&rows, "claude").detail.as_deref(),
-            Some("~/.claude is a symlink whose target does not exist")
+            Some("~/.claude is a symlink that cannot be followed")
         );
         assert_eq!(
             status_of(&rows, "codex").detail.as_deref(),
-            Some("~/.codex is a symlink whose target does not exist")
+            Some("~/.codex is a symlink that cannot be followed")
         );
     }
 }
