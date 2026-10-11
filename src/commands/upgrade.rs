@@ -1251,6 +1251,7 @@ fn smoke(root: &Path) -> Result<()> {
             log_metrics: false,
             variants: Vec::new(),
             surface: None,
+            explain: false,
         },
     )?;
     Ok(())

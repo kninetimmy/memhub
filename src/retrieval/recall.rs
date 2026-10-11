@@ -13,6 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Instant;
 
+use rmcp::schemars;
 use rusqlite::{Connection, Row, params};
 
 use crate::config::{RetrievalMode, RetrievalScoringConfig};
@@ -144,6 +145,10 @@ pub struct RecallOptions {
     /// `log_metrics` is true; `None` there is accurate, not a gap, since
     /// those callers never write to `recall_metrics` at all.
     pub surface: Option<RecallSurface>,
+    /// The caller will show `response.explain`. Gates the one diagnostic
+    /// that costs a filesystem check (`global_store_not_searched`); every
+    /// other explain counter is always computed.
+    pub explain: bool,
 }
 
 /// Corpus a recall hit came from. Repo-local always; `"global"` only
@@ -237,7 +242,8 @@ pub struct RecallResponse {
 /// Why a recall came back empty or thin: how many candidate rows each
 /// stage dropped, demoted or cut, summed over every store the call
 /// searched. Pure bookkeeping -- nothing here feeds ranking.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+// `JsonSchema` so the MCP recall tool publishes the field names and types.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
 pub struct RecallExplain {
     /// Whether the cross-encoder re-ranker ran (hybrid mode, enabled, and
     /// at least one candidate). Without it no relevance floor applies.
@@ -249,9 +255,11 @@ pub struct RecallExplain {
     /// Default-included doc chunks under `doc_min_rerank_score`.
     pub dropped_by_doc_floor: usize,
     /// Stale rows excluded because stale rows were excluded
-    /// (`include_stale` off).
+    /// (`include_stale` off). A row that is both stale and not accepted
+    /// counts here once, not also under `accepted_only_excluded`.
     pub stale_excluded: usize,
-    /// Rows excluded by accepted-only.
+    /// Non-stale rows excluded by accepted-only (a stale row already
+    /// excluded by `include_stale` off is counted under `stale_excluded`).
     pub accepted_only_excluded: usize,
     /// Superseded rows kept but demoted by `superseded_penalty`.
     pub superseded_demoted: usize,
@@ -268,10 +276,13 @@ pub struct RecallExplain {
     /// search: the full chunk total when doc chunks were not among the
     /// searched source types, 0 when they were (default inclusion or an
     /// explicit doc scope). Unlike `available_docs`, a chunk that was
-    /// searched but not surfaced does not count.
+    /// searched but not surfaced does not count. The machine-global store's
+    /// chunks are not counted when this repo has not opted in to it;
+    /// `global_store_not_searched` reports that case.
     pub docs_not_searched: usize,
     /// A machine-global store exists but was not searched because this
-    /// repo has not opted in (`[global] enabled`).
+    /// repo has not opted in (`[global] enabled`). Only checked when the
+    /// caller requested explain (`RecallOptions::explain`); false otherwise.
     pub global_store_not_searched: bool,
 }
 
@@ -367,7 +378,7 @@ pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
         explain.stale_excluded += g.explain.stale_excluded;
         explain.accepted_only_excluded += g.explain.accepted_only_excluded;
         explain.superseded_demoted += g.explain.superseded_demoted;
-    } else {
+    } else if options.explain {
         // Diagnostic only: an unresolvable home dir must not fail a recall
         // that never needed the global store.
         explain.global_store_not_searched = matches!(db::global_store_exists(), Ok(true));
@@ -578,8 +589,9 @@ struct GatherResult {
     /// orchestrator to surface the `stale_facts_demoted` warning. Always 0
     /// when `include_stale` is off, since stale rows are filtered out then.
     demoted_stale_count: usize,
-    /// `COUNT(*)` of `doc_chunks` in this corpus, summed across
-    /// corpora by the orchestrator for the `available_docs` cue.
+    /// `COUNT(*)` of `doc_chunks` in this corpus, summed across corpora by
+    /// the orchestrator. It feeds both `available_docs` and
+    /// `RecallExplain::docs_not_searched`.
     doc_chunk_total: i64,
     /// Only the per-store counters (`stale_excluded`,
     /// `accepted_only_excluded`, `superseded_demoted`) are filled here.
@@ -1999,6 +2011,7 @@ mod tests {
                 log_metrics: false,
                 variants: Vec::new(),
                 surface: None,
+                explain: false,
             },
         )
         .expect("recall");
@@ -2032,6 +2045,7 @@ mod tests {
                 log_metrics: false,
                 variants: Vec::new(),
                 surface: None,
+                explain: false,
             },
         )
         .expect("recall");
@@ -2058,6 +2072,7 @@ mod tests {
                 log_metrics: false,
                 variants: Vec::new(),
                 surface: None,
+                explain: false,
             },
         )
         .expect("recall");
@@ -2096,6 +2111,7 @@ mod tests {
                 log_metrics: false,
                 variants: Vec::new(),
                 surface: None,
+                explain: false,
             },
         )
         .expect_err("empty query");
@@ -2121,6 +2137,7 @@ mod tests {
                 log_metrics: false,
                 variants: Vec::new(),
                 surface: None,
+                explain: false,
             },
         )
         .expect("recall");
@@ -2161,6 +2178,7 @@ mod tests {
                 log_metrics: false,
                 variants: Vec::new(),
                 surface: None,
+                explain: false,
             },
         )
         .expect("recall");
@@ -2220,6 +2238,7 @@ mod tests {
                 log_metrics: false,
                 variants: Vec::new(),
                 surface: None,
+                explain: false,
             },
         )
         .expect("recall");
@@ -2265,6 +2284,7 @@ mod tests {
                 log_metrics: false,
                 variants: Vec::new(),
                 surface: None,
+                explain: false,
             },
         )
         .expect("recall");
@@ -2322,6 +2342,7 @@ mod tests {
                 log_metrics: false,
                 variants: Vec::new(),
                 surface: None,
+                explain: false,
             },
         )
         .expect("recall");
@@ -2372,6 +2393,7 @@ mod tests {
                 log_metrics: false,
                 variants: Vec::new(),
                 surface: None,
+                explain: false,
             },
         )
         .expect("recall");
@@ -2429,6 +2451,7 @@ mod tests {
                 log_metrics: false,
                 variants: Vec::new(),
                 surface: None,
+                explain: false,
             },
         )
         .expect("recall");
@@ -2477,6 +2500,7 @@ mod tests {
             log_metrics: false,
             variants: Vec::new(),
             surface: None,
+            explain: false,
         };
 
         let before = recall(temp.path(), opts(None)).expect("recall default horizon");
@@ -2558,6 +2582,7 @@ mod tests {
                 log_metrics: false,
                 variants: Vec::new(),
                 surface: None,
+                explain: false,
             },
         )
         .expect("recall");
@@ -2800,6 +2825,7 @@ mod tests {
                 log_metrics: false,
                 variants: Vec::new(),
                 surface: None,
+                explain: false,
             },
         )
         .expect("recall");
@@ -2871,6 +2897,7 @@ mod tests {
                 log_metrics: false,
                 variants: Vec::new(),
                 surface: None,
+                explain: false,
             },
         )
         .expect("recall");
@@ -2936,6 +2963,7 @@ mod tests {
                 log_metrics: false,
                 variants: Vec::new(),
                 surface: None,
+                explain: false,
             },
         )
         .expect("recall");
@@ -3033,6 +3061,7 @@ mod tests {
                 log_metrics: false,
                 variants: Vec::new(),
                 surface: None,
+                explain: false,
             },
         )
         .expect("recall");
@@ -3097,6 +3126,7 @@ mod tests {
                 log_metrics: false,
                 variants: Vec::new(),
                 surface: None,
+                explain: false,
             },
         )
         .expect("recall");
@@ -3145,6 +3175,7 @@ mod tests {
                 log_metrics: false,
                 variants: Vec::new(),
                 surface: None,
+                explain: false,
             },
         )
         .expect("recall");
@@ -3201,6 +3232,7 @@ mod tests {
                 log_metrics: false,
                 variants: Vec::new(),
                 surface: None,
+                explain: false,
             },
         )
         .expect("recall");
@@ -3265,6 +3297,7 @@ mod tests {
                 log_metrics: false,
                 variants: Vec::new(),
                 surface: None,
+                explain: false,
             },
         )
         .expect("recall");
@@ -3571,6 +3604,7 @@ mod tests {
                 log_metrics: false,
                 variants: Vec::new(),
                 surface: None,
+                explain: false,
             },
         )
         .expect("default recall");
@@ -3599,6 +3633,7 @@ mod tests {
                 log_metrics: false,
                 variants: Vec::new(),
                 surface: None,
+                explain: false,
             },
         )
         .expect("doc-scoped recall");
@@ -3632,6 +3667,7 @@ mod tests {
             log_metrics: false,
             variants: Vec::new(),
             surface: None,
+            explain: false,
         }
     }
 
@@ -4104,6 +4140,80 @@ explainscopeprobe second.
     }
 
     #[test]
+    fn row_found_by_several_phrasings_appears_once_in_hybrid_mode() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let (fact_id, _) = fact::add(
+            temp.path(),
+            "hybrid-dedupe-probe",
+            "hybriddedupeprobe shared value",
+            "user",
+            "cli:user",
+        )
+        .expect("fact");
+
+        let response = recall(
+            temp.path(),
+            RecallOptions {
+                min_rerank_score: Some(-100.0),
+                ..variant_opts(
+                    "hybriddedupeprobe",
+                    &["hybriddedupeprobe shared", "shared value hybriddedupeprobe"],
+                    RetrievalMode::Hybrid,
+                )
+            },
+        )
+        .expect("recall");
+        assert!(response.explain.reranker_ran);
+        let ids: Vec<i64> = response.results.iter().map(|h| h.source_id).collect();
+        assert_eq!(ids, vec![fact_id]);
+        assert_eq!(response.candidate_count, 1);
+    }
+
+    #[test]
+    fn equal_score_hits_without_variants_order_by_source_id() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        // Same body, same-length keys: identical blended scores.
+        let ids: Vec<i64> = ["tie-a", "tie-b", "tie-c"]
+            .iter()
+            .map(|key| {
+                fact::add(
+                    temp.path(),
+                    key,
+                    "tiebreakprobe shared value",
+                    "user",
+                    "cli:user",
+                )
+                .expect("fact")
+                .0
+            })
+            .collect();
+
+        let response = recall(
+            temp.path(),
+            explain_opts(
+                "tiebreakprobe",
+                RetrievalMode::Fts,
+                10,
+                vec![SourceType::Fact],
+            ),
+        )
+        .expect("recall");
+        assert_eq!(response.results.len(), 3);
+        assert!(
+            response
+                .results
+                .windows(2)
+                .all(|w| w[0].score == w[1].score),
+            "the probe needs equal scores: {:?}",
+            response.results.iter().map(|h| h.score).collect::<Vec<_>>()
+        );
+        let got: Vec<i64> = response.results.iter().map(|h| h.source_id).collect();
+        assert_eq!(got, ids);
+    }
+
+    #[test]
     fn variants_keep_the_rerank_pool_cut_counting_distinct_rows() {
         let temp = tempdir().expect("tempdir");
         init::run(temp.path()).expect("init");
@@ -4204,6 +4314,7 @@ explainscopeprobe second.
                 log_metrics: false,
                 variants: Vec::new(),
                 surface: None,
+                explain: false,
             },
         )
         .expect("default recall");
@@ -4245,6 +4356,7 @@ explainscopeprobe second.
                 log_metrics: false,
                 variants: Vec::new(),
                 surface: None,
+                explain: false,
             },
         )
         .expect("note-scoped recall");
@@ -4316,6 +4428,7 @@ explainscopeprobe second.
                 log_metrics: false,
                 variants: Vec::new(),
                 surface: None,
+                explain: false,
             },
         )
         .expect("default hybrid recall");
@@ -4357,6 +4470,7 @@ explainscopeprobe second.
                 log_metrics: false,
                 variants: Vec::new(),
                 surface: None,
+                explain: false,
             },
         )
         .expect("recall")
@@ -4658,6 +4772,7 @@ explainscopeprobe second.
                 log_metrics: false,
                 variants: Vec::new(),
                 surface: None,
+                explain: false,
             },
         )
         .expect("code-flavored recall");
@@ -4701,6 +4816,7 @@ explainscopeprobe second.
                 log_metrics: false,
                 variants: Vec::new(),
                 surface: None,
+                explain: false,
             },
         )
         .expect("ui-flavored recall");
@@ -4739,6 +4855,7 @@ explainscopeprobe second.
                 log_metrics: false,
                 variants: Vec::new(),
                 surface: None,
+                explain: false,
             },
         )
         .expect("flag-off recall");
@@ -4837,6 +4954,7 @@ explainscopeprobe second.
                 log_metrics: true,
                 variants: Vec::new(),
                 surface: Some(RecallSurface::Cli),
+                explain: false,
             },
         )
         .expect("recall");
@@ -4872,6 +4990,7 @@ explainscopeprobe second.
                 log_metrics: true,
                 variants: Vec::new(),
                 surface: Some(RecallSurface::Cli),
+                explain: false,
             },
         )
         .expect("recall");
@@ -4952,6 +5071,7 @@ explainscopeprobe second.
                 log_metrics: false,
                 variants: Vec::new(),
                 surface: None,
+                explain: false,
             },
         )
         .expect("recall");

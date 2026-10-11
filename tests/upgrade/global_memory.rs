@@ -12,6 +12,14 @@ use memhub::retrieval::{RecallOptions, recall};
 use tempfile::tempdir;
 
 fn fts_recall(path: &std::path::Path, query: &str) -> memhub::retrieval::RecallResponse {
+    fts_recall_explain(path, query, true)
+}
+
+fn fts_recall_explain(
+    path: &std::path::Path,
+    query: &str,
+    explain: bool,
+) -> memhub::retrieval::RecallResponse {
     recall(
         path,
         RecallOptions {
@@ -26,6 +34,7 @@ fn fts_recall(path: &std::path::Path, query: &str) -> memhub::retrieval::RecallR
             log_metrics: false,
             variants: Vec::new(),
             surface: None,
+            explain,
         },
     )
     .expect("recall")
@@ -338,6 +347,12 @@ fn machine_global_memory_end_to_end() {
             .explain
             .global_store_not_searched
     );
+    // Without explain requested the store is not even probed.
+    assert!(
+        !fts_recall_explain(repo_c.path(), "alpha-globalvalue", false)
+            .explain
+            .global_store_not_searched
+    );
     // Counters sum over both stores: one agent-sourced fact in each is
     // excluded by accepted-only.
     fact::add(
@@ -370,8 +385,66 @@ fn machine_global_memory_end_to_end() {
             log_metrics: false,
             variants: Vec::new(),
             surface: None,
+            explain: false,
         },
     )
     .expect("accepted-only recall");
     assert_eq!(summed.explain.accepted_only_excluded, 2);
+
+    // --- a row several phrasings find appears once, per store --------
+    // repo_a searches both stores: the global alpha fact is found by the
+    // main query and the first variant, the repo delta fact by the second.
+    fact::add(
+        repo_a.path(),
+        "delta-repokey",
+        "deltaprobe repo value",
+        "user",
+        "cli:user",
+    )
+    .expect("delta repo fact");
+    let varied = recall(
+        repo_a.path(),
+        RecallOptions {
+            query: "alpha-globalvalue".to_string(),
+            mode: Some(RetrievalMode::Fts),
+            max_results: 10,
+            source_types: vec![],
+            include_stale: None,
+            accepted_only: None,
+            use_reranker: None,
+            min_rerank_score: None,
+            log_metrics: false,
+            variants: vec!["alpha-globalvalue".to_string(), "deltaprobe".to_string()],
+            surface: None,
+            explain: false,
+        },
+    )
+    .expect("variant recall across both stores");
+    let mut keys: Vec<(String, String, i64)> = varied
+        .results
+        .iter()
+        .map(|h| (h.scope.clone(), h.source_type.clone(), h.source_id))
+        .collect();
+    let found = keys.len();
+    keys.sort();
+    keys.dedup();
+    assert_eq!(
+        keys.len(),
+        found,
+        "a row appears once: {:?}",
+        varied.results
+    );
+    assert!(
+        has_scope(&varied, "global") && has_scope(&varied, "repo"),
+        "{:?}",
+        varied.results
+    );
+    assert_eq!(
+        varied
+            .results
+            .iter()
+            .filter(|h| h.scope == "global")
+            .count(),
+        1
+    );
 }

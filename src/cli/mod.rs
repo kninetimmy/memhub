@@ -2013,6 +2013,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 log_metrics: true,
                 variants: variant,
                 surface: Some(RecallSurface::Cli),
+                explain,
             };
             let response = retrieval::recall(&cwd, opts)?;
             if as_json {

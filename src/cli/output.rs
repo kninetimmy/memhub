@@ -322,6 +322,25 @@ pub(crate) fn recall_response_to_json(response: &RecallResponse) -> serde_json::
     })
 }
 
+/// The "ingested doc chunks" note. `explain.docs_not_searched` is the true
+/// not-searched count; a non-zero `available_docs` with none unsearched means
+/// the chunks were searched (default inclusion) but did not make the bundle.
+fn doc_chunks_note(response: &RecallResponse) -> Option<String> {
+    if response.explain.docs_not_searched > 0 {
+        Some(format!(
+            "Note: {} ingested doc chunk(s) not searched — re-run with --source-type doc to include them.",
+            response.explain.docs_not_searched,
+        ))
+    } else if response.available_docs > 0 {
+        Some(format!(
+            "Note: {} ingested doc chunk(s) searched but not surfaced — re-run with --source-type doc to see more.",
+            response.available_docs,
+        ))
+    } else {
+        None
+    }
+}
+
 pub(crate) fn print_recall_human(response: &RecallResponse) {
     println!(
         "Query: {}  (mode: {}, matcher: {}, elapsed: {} ms)",
@@ -334,11 +353,8 @@ pub(crate) fn print_recall_human(response: &RecallResponse) {
         "Candidates: {} | Returned: {}",
         response.candidate_count, response.returned_count,
     );
-    if response.available_docs > 0 {
-        println!(
-            "Note: {} ingested doc chunk(s) not searched — re-run with --source-type doc to include them.",
-            response.available_docs,
-        );
+    if let Some(note) = doc_chunks_note(response) {
+        println!("{note}");
     }
     if response.results.is_empty() {
         println!("No matches.");
@@ -1604,6 +1620,28 @@ mod tests {
             available_docs: 0,
             explain: Default::default(),
         }
+    }
+
+    #[test]
+    fn doc_chunks_note_distinguishes_not_searched_from_not_surfaced() {
+        let mut response = response_with(untagged_hit());
+        assert_eq!(doc_chunks_note(&response), None);
+
+        // Docs out of scope: nothing was searched.
+        response.available_docs = 3;
+        response.explain.docs_not_searched = 3;
+        let note = doc_chunks_note(&response).expect("note");
+        assert!(
+            note.contains("3 ingested doc chunk(s) not searched"),
+            "{note}"
+        );
+        assert!(note.contains("--source-type doc"), "{note}");
+
+        // Docs in the default bundle: searched, just not surfaced.
+        response.explain.docs_not_searched = 0;
+        let note = doc_chunks_note(&response).expect("note");
+        assert!(!note.contains("not searched"), "{note}");
+        assert!(note.contains("searched but not surfaced"), "{note}");
     }
 
     // Issue #97 byte-identical guarantee, snapshot-style (in the spirit of

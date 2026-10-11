@@ -36,6 +36,7 @@ fn fts_recall(path: &std::path::Path, query: &str) -> RecallResponse {
             log_metrics: false,
             variants: Vec::new(),
             surface: None,
+            explain: false,
         },
     )
     .expect("recall")

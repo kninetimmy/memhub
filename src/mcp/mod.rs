@@ -484,17 +484,11 @@ impl MemhubServer {
                 log_metrics: true,
                 variants: params.variants.unwrap_or_default(),
                 surface: Some(RecallSurface::Mcp),
+                explain: params.explain == Some(true),
             },
         )
         .map_err(map_tool_error)?;
-        let explain = if params.explain == Some(true) {
-            Some(
-                serde_json::to_value(&response.explain)
-                    .map_err(|e| McpError::internal_error(e.to_string(), None))?,
-            )
-        } else {
-            None
-        };
+        let explain = (params.explain == Some(true)).then(|| response.explain.clone());
         let mut out = RecallToolResponse::from(response);
         out.explain = explain;
         Ok(Json(out))
@@ -1534,7 +1528,7 @@ struct RecallToolResponse {
     /// Per-reason counts of dropped, demoted and cut candidate rows. Present
     /// only when the call passed `explain: true`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    explain: Option<serde_json::Value>,
+    explain: Option<crate::retrieval::recall::RecallExplain>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -3182,6 +3176,17 @@ mod tests {
         let on = call(Some(true));
         assert_eq!(on["explain"]["result_limit_cut"], 1);
         assert_eq!(on["explain"]["reranker_ran"], false);
+    }
+
+    /// The published output schema types the explain object's fields.
+    #[test]
+    fn mcp_recall_output_schema_describes_explain_fields() {
+        let schema = serde_json::to_value(schemars::schema_for!(RecallToolResponse))
+            .expect("serialize schema");
+        let explain = &schema["$defs"]["RecallExplain"]["properties"];
+        assert_eq!(explain["reranker_ran"]["type"], "boolean");
+        assert_eq!(explain["result_limit_cut"]["type"], "integer");
+        assert_eq!(explain["global_store_not_searched"]["type"], "boolean");
     }
 
     /// Issue #319: `variants` widen the pool; a blank or a fifth variant is
