@@ -164,7 +164,15 @@ or PowerShell 7 and later). Windows PowerShell 5.1's `>` writes UTF-16,
 which `eval compare` rejects. For a settings-only change, one binary
 with a flag such as `--no-rerank` or `--min-rerank-score` works for
 run B. Report both commits, the settings and the counts, and say the
-numbers come from this machine's database. The first baseline and the
+numbers come from this machine's database.
+
+`tests/retrieval_golden_holdout.json` is the held-out slice of that set
+(about one query in six of each id prefix, every 6th query sorted by id
+starting at the 4th, in the same format). While tuning (pool sizes,
+weights, floors, model swaps), compare and inspect per-query results on
+`tests/retrieval_golden_live.json` only. Score the held-out file once at
+the end, with the same two commands, and report its totals; never tune
+against its per-query outcomes. The first baseline and the
 full step-by-step procedure are in `docs/reference/operations.md`
 (Retrieval section).
 
