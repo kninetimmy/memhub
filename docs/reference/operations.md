@@ -276,8 +276,8 @@ still requires every token. `min_rerank_score`, `doc_min_rerank_score` and
 `rerank_candidate_pool` defaults are unchanged, and superseded or stale rows
 are still demoted rather than excluded (decision 145).
 
-**Low-confidence fill (issues #225, #323).** Candidates under the relevance
-floor are not discarded outright. Recall returns every candidate that cleared
+**Low-confidence fallback (issue #225).** Since issue #323 this is a fill:
+candidates under the relevance floor are not discarded outright. Recall returns every candidate that cleared
 its floor first, in rerank order, and then fills the remaining result slots,
 up to `max_results`, with the highest-reranked floor-cut candidates, each marked
 `low_confidence` (`"low_confidence": true` in `memhub recall --json` and the MCP
@@ -870,8 +870,8 @@ Off by default and **per-repo**: a repo opts in with
 `memhub global enable` (mirrors `memhub metrics enable|disable`).
 `enabled` lives in `.memhub/config.toml` `[global]`; the tracked
 `.memhub/config.example.toml` baseline ships `false`. When disabled or
-the store is absent, recall is byte-identical to a pre-M9 build (the
-eval-regression guarantee).
+the store is absent, only the repo store is searched, as before M9 (the
+eval-regression guarantee for a query without variants).
 
 When enabled, `recall` merges global hits with repo hits; every hit
 carries `scope: "repo" | "global"`. **Precedence is
