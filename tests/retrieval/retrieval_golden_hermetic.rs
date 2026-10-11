@@ -18,7 +18,7 @@
 //! drives the real compiled `memhub eval retrieval --json` binary against
 //! it with `--golden` pointed at the actual shipped
 //! `tests/retrieval_golden.json` (not a private copy). That is the same
-//! hermetic pattern `tests/locate_polyglot.rs` already established for
+//! hermetic pattern `tests/retrieval/locate_polyglot.rs` already established for
 //! `eval locate` — a fixture DB seeded fresh per run, independent of the
 //! developer's live `.memhub` state — applied to the retrieval golden.
 //!
@@ -73,6 +73,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use memhub::commands::eval::RunSettings;
 use memhub::commands::{decision, doc, fact, init, task};
 use memhub::config::{ProjectConfig, RetrievalMode};
 use memhub::retrieval::{RecallOptions, recall};
@@ -532,6 +533,10 @@ struct EvalCliOutcome {
 struct EvalCliResult {
     totals: EvalCliTotals,
     recall_at_k: f64,
+    /// Required (no default) so a missing `recall_at_1` or `settings` in the
+    /// real `--json` output fails deserialization in every CLI test here.
+    recall_at_1: f64,
+    settings: RunSettings,
     /// Report-only warm-latency metric (Wave 4 R10, issue #74). Not
     /// asserted against any threshold anywhere in this file — deserialized
     /// so `hermetic_retrieval_recall_at_3_matches_baseline` can prove the
@@ -549,6 +554,11 @@ struct EvalCliResult {
 /// invoke, not just the library function it wraps. The env override is
 /// scoped to this one child process — see this file's top doc comment.
 fn run_cli_eval(root: &Path, home: &Path) -> EvalCliResult {
+    run_cli_eval_with(root, home, &["--mode", "hybrid"])
+}
+
+/// [`run_cli_eval`] with the retrieval flags under test given explicitly.
+fn run_cli_eval_with(root: &Path, home: &Path, flags: &[&str]) -> EvalCliResult {
     let out = Command::new(env!("CARGO_BIN_EXE_memhub"))
         .current_dir(root)
         .env("HOME", home)
@@ -557,8 +567,7 @@ fn run_cli_eval(root: &Path, home: &Path) -> EvalCliResult {
         .arg("retrieval")
         .arg("--golden")
         .arg(golden_path())
-        .arg("--mode")
-        .arg("hybrid")
+        .args(flags)
         .arg("--json")
         .output()
         .expect("spawn memhub eval retrieval");
@@ -576,6 +585,46 @@ fn run_cli_eval(root: &Path, home: &Path) -> EvalCliResult {
 }
 
 // --- Tests -------------------------------------------------------------
+
+/// The `--mode`, `--no-rerank` and `--min-rerank-score` flags must be what
+/// the real `--json` output records under `settings`, and `recall_at_1`
+/// must reach that output (the struct requires both, so absence fails).
+#[test]
+fn eval_cli_json_records_run_settings_and_recall_at_1() {
+    let temp = tempdir().expect("tempdir");
+    let home = tempdir().expect("home tempdir");
+    seed_hermetic_corpus(temp.path());
+    seed_global_store(home.path());
+    set_global_enabled(temp.path(), true);
+
+    let hybrid = run_cli_eval_with(
+        temp.path(),
+        home.path(),
+        &[
+            "--mode",
+            "hybrid",
+            "--no-rerank",
+            "--min-rerank-score",
+            "0.25",
+        ],
+    );
+    assert_eq!(hybrid.settings.mode, RetrievalMode::Hybrid);
+    assert!(!hybrid.settings.reranker, "--no-rerank must record off");
+    assert_eq!(hybrid.settings.min_rerank_score, 0.25);
+    assert!((0.0..=1.0).contains(&hybrid.recall_at_1));
+
+    // fts never runs the re-ranker regardless of config; the floor override
+    // is still recorded verbatim.
+    let fts = run_cli_eval_with(
+        temp.path(),
+        home.path(),
+        &["--mode", "fts", "--min-rerank-score", "0.75"],
+    );
+    assert_eq!(fts.settings.mode, RetrievalMode::Fts);
+    assert!(!fts.settings.reranker);
+    assert_eq!(fts.settings.min_rerank_score, 0.75);
+    assert!((0.0..=1.0).contains(&fts.recall_at_1));
+}
 
 /// The headline hermetic contract: `memhub eval retrieval` run against the
 /// fixture (never the live repo DB) reproduces a fixed Recall@3 over the

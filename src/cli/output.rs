@@ -538,13 +538,15 @@ fn format_run_settings(
     settings: Option<&commands::eval::RunSettings>,
 ) -> String {
     match settings {
-        Some(s) => format!(
-            "mode {}, reranker {}, rerank floor {}, rerank pool {}",
+        // Floor and pool only take effect when the re-ranker runs, so omit
+        // them for reranker-off runs (the --json output still records them).
+        Some(s) if s.reranker => format!(
+            "mode {}, reranker on, rerank floor {}, rerank pool {}",
             recall_mode_label(s.mode),
-            if s.reranker { "on" } else { "off" },
             s.min_rerank_score,
             s.rerank_candidate_pool,
         ),
+        Some(s) => format!("mode {}, reranker off", recall_mode_label(s.mode)),
         None => format!(
             "mode {} (other settings not recorded)",
             recall_mode_label(mode)
@@ -556,11 +558,20 @@ pub(crate) fn eval_comparison_to_json(c: &commands::eval::Comparison) -> serde_j
     serde_json::to_value(c).expect("Comparison serializes to JSON")
 }
 
+fn comparison_header(c: &commands::eval::Comparison) -> String {
+    let plural = |n: usize, one: &'static str, many: &'static str| if n == 1 { one } else { many };
+    format!(
+        "memhub eval compare — K {}, {} match {}, {} empty {}",
+        c.k,
+        c.match_queries,
+        plural(c.match_queries, "query", "queries"),
+        c.empty_queries,
+        plural(c.empty_queries, "probe", "probes"),
+    )
+}
+
 pub(crate) fn print_eval_comparison(c: &commands::eval::Comparison) {
-    println!(
-        "memhub eval compare — K {}, {} match queries, {} empty probes",
-        c.k, c.match_queries, c.empty_queries,
-    );
+    println!("{}", comparison_header(c));
     for (label, run) in [("A", &c.a), ("B", &c.b)] {
         println!("Run {label}: {}", run.path);
         println!("  {}", format_run_settings(run.mode, run.settings.as_ref()));
@@ -1450,6 +1461,55 @@ pub(crate) fn print_wrapup_policy_human(r: &WrapupPolicyReport) {
 mod tests {
     use super::*;
     use crate::retrieval::RecallHit;
+
+    fn settings(mode: RetrievalMode, reranker: bool) -> commands::eval::RunSettings {
+        commands::eval::RunSettings {
+            mode,
+            reranker,
+            min_rerank_score: 0.5,
+            rerank_candidate_pool: 20,
+        }
+    }
+
+    #[test]
+    fn run_settings_line_shows_floor_and_pool_only_when_reranker_on() {
+        let on = format_run_settings(
+            RetrievalMode::Hybrid,
+            Some(&settings(RetrievalMode::Hybrid, true)),
+        );
+        assert!(on.contains("reranker on"), "{on}");
+        assert!(on.contains("rerank floor 0.5"), "{on}");
+        assert!(on.contains("rerank pool 20"), "{on}");
+        for mode in [RetrievalMode::Hybrid, RetrievalMode::Fts] {
+            let off = format_run_settings(mode, Some(&settings(mode, false)));
+            assert!(off.contains("reranker off"), "{off}");
+            assert!(!off.contains("floor") && !off.contains("pool"), "{off}");
+        }
+    }
+
+    #[test]
+    fn comparison_header_singularizes_counts_of_one() {
+        let run = || commands::eval::RunInfo {
+            path: "x.json".to_string(),
+            mode: RetrievalMode::Fts,
+            settings: None,
+        };
+        let header = |m, e| {
+            comparison_header(&commands::eval::Comparison {
+                k: 3,
+                a: run(),
+                b: run(),
+                match_queries: m,
+                empty_queries: e,
+                rank_1: Default::default(),
+                found_at_k: Default::default(),
+                empty_probe_diffs: vec![],
+            })
+        };
+        assert!(header(1, 1).ends_with("1 match query, 1 empty probe"));
+        assert!(header(0, 2).ends_with("0 match queries, 2 empty probes"));
+        assert!(header(5, 11).ends_with("5 match queries, 11 empty probes"));
+    }
 
     /// Issue #237: session notes' counts appear in `index status --json`
     /// alongside the other source types.
