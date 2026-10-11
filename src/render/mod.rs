@@ -1219,10 +1219,26 @@ _1 fact(s), 0 stale._
     }
 
     // Full pointer sentences, spelled out so any change to the wording breaks a test.
-    const ARCH_POINTER_WITH_INDEX: &str = "These sections are recall-searchable (`memhub recall --source-type arch \"<question>\"`); `memhub arch show` prints the full text.";
-    const ARCH_POINTER_NO_INDEX: &str = "Architecture sections are recall-searchable (`memhub recall --source-type arch \"<question>\"`); `memhub arch show` prints the full text.";
-    const NOTES_POINTER_WITH_STUBS: &str = "Notes are shortened here; the full text is available through `memhub note list` and recall scoped to notes (`memhub recall --source-type note \"<question>\"`).";
-    const NOTES_POINTER_NO_STUBS: &str = "The full text of session notes is available through `memhub note list` and recall scoped to notes (`memhub recall --source-type note \"<question>\"`).";
+    const ARCH_POINTER_WITH_INDEX: &str = concat!(
+        "These sections are recall-searchable ",
+        "(`memhub recall --source-type arch \"<question>\"`); ",
+        "`memhub arch show` prints the full text.",
+    );
+    const ARCH_POINTER_NO_INDEX: &str = concat!(
+        "Architecture sections are recall-searchable ",
+        "(`memhub recall --source-type arch \"<question>\"`); ",
+        "`memhub arch show` prints the full text.",
+    );
+    const NOTES_POINTER_WITH_STUBS: &str = concat!(
+        "Notes are shortened here; the full text is available through ",
+        "`memhub note list` and recall scoped to notes ",
+        "(`memhub recall --source-type note \"<question>\"`).",
+    );
+    const NOTES_POINTER_NO_STUBS: &str = concat!(
+        "The full text of session notes is available through ",
+        "`memhub note list` and recall scoped to notes ",
+        "(`memhub recall --source-type note \"<question>\"`).",
+    );
 
     /// Every render ends with a size line stating the file's exact byte length.
     fn assert_size_line(md: &str) {
