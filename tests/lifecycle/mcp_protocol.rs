@@ -163,6 +163,32 @@ fn tools_list_exposes_full_tool_surface() {
         "recall.explain must be optional"
     );
 
+    // Issue #319: `recall` advertises an optional `variants` string list and
+    // tells the agent when to send it.
+    let variants = &recall["inputSchema"]["properties"]["variants"];
+    assert!(
+        variants.to_string().contains("array") && variants.to_string().contains("string"),
+        "recall.variants must be a list of strings: {variants}"
+    );
+    assert!(
+        variants["description"]
+            .as_str()
+            .is_some_and(|d| d.contains("extra phrasings") && d.contains("keyword")),
+        "recall.variants must say what to send: {variants}"
+    );
+    assert!(
+        recall["description"]
+            .as_str()
+            .is_some_and(|d| d.contains("`variants`") && d.contains("empty or thin")),
+        "recall tool description must say when to send variants"
+    );
+    assert!(
+        !recall["inputSchema"]["required"]
+            .to_string()
+            .contains("variants"),
+        "recall.variants must be optional"
+    );
+
     if cfg!(feature = "metrics") {
         assert!(
             names.contains("metrics"),

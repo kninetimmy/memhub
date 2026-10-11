@@ -17,6 +17,7 @@ pub use persist::{
     eager_embed_batch_in_tx, eager_embed_in_tx, fact_embed_text, note_embed_text, task_embed_text,
 };
 pub use recall::{
-    RecallExplain, RecallHit, RecallOptions, RecallResponse, RecallSurface, RecallWarning, recall,
+    MAX_QUERY_VARIANTS, RecallExplain, RecallHit, RecallOptions, RecallResponse, RecallSurface,
+    RecallWarning, recall, validate_variants,
 };
 pub use rerank::RERANKER_MODEL_NAME;

@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use memhub::commands::eval::{DEFAULT_GOLDEN_PATH, EvalOptions, GoldenKind, run_retrieval};
 use memhub::commands::{decision, fact, init, task};
+use memhub::config::RetrievalMode;
 use tempfile::tempdir;
 
 fn seed_demo_project(root: &std::path::Path) {
@@ -102,6 +103,7 @@ fn run_retrieval_returns_full_recall_on_seeded_db() {
             mode: None,
             use_reranker: None,
             min_rerank_score: None,
+            no_variants: false,
         },
     )
     .expect("eval");
@@ -117,6 +119,50 @@ fn run_retrieval_returns_full_recall_on_seeded_db() {
         "expected perfect recall, got {}",
         summary.recall_at_k,
     );
+}
+
+#[test]
+fn golden_variants_are_sent_and_no_variants_turns_them_off() {
+    let temp = tempdir().expect("tempdir");
+    seed_demo_project(temp.path());
+    // The main query shares no token with the target row; only the variant does.
+    let golden = write_golden(
+        temp.path(),
+        r#"{
+            "version": 1,
+            "queries": [
+                {
+                    "id": "d-readonly",
+                    "query": "zxqv unrelated wording",
+                    "variants": ["recall read-only writes_log"],
+                    "kind": "match",
+                    "source_type": "decision",
+                    "title_contains": ["recall", "read-only"]
+                }
+            ]
+        }"#,
+    );
+    let run = |no_variants| {
+        run_retrieval(
+            temp.path(),
+            EvalOptions {
+                golden_path: golden.clone(),
+                k: 3,
+                mode: Some(RetrievalMode::Fts),
+                use_reranker: None,
+                min_rerank_score: None,
+                no_variants,
+            },
+        )
+        .expect("eval")
+    };
+
+    let with = run(false);
+    assert_eq!(with.match_passes, 1);
+    assert!(with.settings.variants);
+    let without = run(true);
+    assert_eq!(without.match_passes, 0);
+    assert!(!without.settings.variants);
 }
 
 #[test]
@@ -148,6 +194,7 @@ fn empty_query_with_matching_results_is_safety_failure() {
             mode: None,
             use_reranker: None,
             min_rerank_score: None,
+            no_variants: false,
         },
     )
     .expect("eval");
@@ -198,6 +245,7 @@ fn unmatched_query_drives_recall_below_one() {
             mode: None,
             use_reranker: None,
             min_rerank_score: None,
+            no_variants: false,
         },
     )
     .expect("eval");
@@ -228,6 +276,7 @@ fn missing_golden_path_returns_invalid_input_error() {
             mode: None,
             use_reranker: None,
             min_rerank_score: None,
+            no_variants: false,
         },
     )
     .expect_err("missing golden");
@@ -247,6 +296,7 @@ fn k_must_be_positive() {
             mode: None,
             use_reranker: None,
             min_rerank_score: None,
+            no_variants: false,
         },
     )
     .expect_err("k=0");
@@ -334,4 +384,13 @@ fn live_golden_file_passes_golden_validation() {
         vm >= 30,
         "live golden set needs >= 30 `vm-` match queries; got {vm}"
     );
+    // Issue #319: every live query carries variants so `eval retrieval` can
+    // be A/B-measured with and without them (`--no-variants`).
+    let bare: Vec<&str> = parsed
+        .queries
+        .iter()
+        .filter(|q| q.variants.is_empty())
+        .map(|q| q.id.as_str())
+        .collect();
+    assert!(bare.is_empty(), "queries without variants: {bare:?}");
 }

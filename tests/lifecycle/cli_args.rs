@@ -15,7 +15,7 @@ use clap::Parser;
 #[cfg(feature = "metrics")]
 use memhub::cli::MetricsCommand;
 use memhub::cli::{
-    AuditCommand, Cli, CommandCommand, DecisionCommand, DocCommand, FactCommand,
+    AuditCommand, Cli, CommandCommand, DecisionCommand, DocCommand, EvalCommand, FactCommand,
     RecallSourceTypeArg, TopLevelCommand,
 };
 use memhub::code_index::locate::DEFAULT_LOCATE_LIMIT;
@@ -421,6 +421,28 @@ fn recall_source_type_accepts_arch_and_lists_it_on_error() {
     let message = err.to_string();
     assert!(message.contains("blueprint"), "unexpected error: {message}");
     assert!(message.contains("arch"), "error must list arch: {message}");
+}
+
+/// Issue #319: `recall --variant` is repeatable and empty by default;
+/// `eval retrieval --no-variants` parses and defaults off.
+#[test]
+fn recall_variant_flag_repeats_and_eval_no_variants_parses() {
+    match parse(&["recall", "q", "--variant", "a b", "--variant", "c"]) {
+        TopLevelCommand::Recall { variant, .. } => assert_eq!(variant, ["a b", "c"]),
+        other => panic!("expected Recall, got {other:?}"),
+    }
+    match parse(&["recall", "q"]) {
+        TopLevelCommand::Recall { variant, .. } => assert!(variant.is_empty()),
+        other => panic!("expected Recall, got {other:?}"),
+    }
+    let no_variants = |args: &[&str]| match parse(args) {
+        TopLevelCommand::Eval {
+            command: EvalCommand::Retrieval { no_variants, .. },
+        } => no_variants,
+        other => panic!("expected eval retrieval, got {other:?}"),
+    };
+    assert!(no_variants(&["eval", "retrieval", "--no-variants"]));
+    assert!(!no_variants(&["eval", "retrieval"]));
 }
 
 /// Issue #318: `recall --explain` parses, and is off by default.

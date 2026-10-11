@@ -49,6 +49,10 @@ pub struct GoldenQuery {
     pub also_accept: Vec<GoldenAnswer>,
     #[serde(default)]
     pub notes: String,
+    /// Caller-written alternative phrasings sent with the query, the way an
+    /// agent would via `recall --variant`. Omitted = the query runs alone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variants: Vec<String>,
 }
 
 /// One extra acceptable answer for a `match` query; same matcher semantics
@@ -84,6 +88,9 @@ pub struct EvalOptions {
     /// the re-ranker is disabled. Used for cross-encoder floor
     /// calibration sweeps (decisions 70, 71).
     pub min_rerank_score: Option<f32>,
+    /// Ignore each golden query's `variants` and run its main query alone,
+    /// so one golden file can be A/B-measured with and without variants.
+    pub no_variants: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -116,6 +123,10 @@ pub struct RunSettings {
     pub reranker: bool,
     pub min_rerank_score: f32,
     pub rerank_candidate_pool: usize,
+    /// At least one query was sent with its golden-set `variants`. Absent
+    /// from runs saved before variants existed, which read as `false`.
+    #[serde(default)]
+    pub variants: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -179,6 +190,7 @@ pub fn run_retrieval(start: &Path, opts: EvalOptions) -> Result<EvalSummary> {
                 use_reranker: opts.use_reranker,
                 min_rerank_score: opts.min_rerank_score,
                 log_metrics: false,
+                variants: Vec::new(),
                 surface: None,
             },
         );
@@ -203,6 +215,11 @@ pub fn run_retrieval(start: &Path, opts: EvalOptions) -> Result<EvalSummary> {
             // of recall_metrics so the metrics numbers reflect
             // actual agent + user activity.
             log_metrics: false,
+            variants: if opts.no_variants {
+                Vec::new()
+            } else {
+                query.variants.clone()
+            },
             surface: None,
         };
         let response = retrieval::recall(start, recall_opts)?;
@@ -224,6 +241,7 @@ pub fn run_retrieval(start: &Path, opts: EvalOptions) -> Result<EvalSummary> {
             .min_rerank_score
             .unwrap_or(cfg.scoring.min_rerank_score),
         rerank_candidate_pool: cfg.rerank_candidate_pool.max(opts.k),
+        variants: !opts.no_variants && golden.queries.iter().any(|q| !q.variants.is_empty()),
     };
     let warm_latency_p50_ms = median_ms(&latencies_ms);
     let summary = summarize(
@@ -333,6 +351,8 @@ fn validate_query(q: &GoldenQuery) -> Result<()> {
             q.id
         )));
     }
+    retrieval::validate_variants(&q.variants)
+        .map_err(|err| MemhubError::InvalidInput(format!("golden query `{}`: {err}", q.id)))?;
     validate_source_type(&q.id, q.source_type.as_deref())?;
     if q.kind == GoldenKind::Match
         && q.title_contains.is_empty()
@@ -1250,6 +1270,7 @@ mod tests {
             body_contains: vec!["writes_log".into()],
             also_accept: vec![],
             notes: String::new(),
+            variants: vec![],
         };
         let resp = fake_response(
             "test",
@@ -1277,6 +1298,7 @@ mod tests {
             body_contains: vec![],
             also_accept: vec![],
             notes: String::new(),
+            variants: vec![],
         };
         let resp = fake_response(
             "test",
@@ -1309,6 +1331,7 @@ mod tests {
             body_contains: vec![],
             also_accept: vec![],
             notes: String::new(),
+            variants: vec![],
         };
         let resp = fake_response(
             "test",
@@ -1345,6 +1368,7 @@ mod tests {
             body_contains: vec![],
             also_accept: vec![],
             notes: String::new(),
+            variants: vec![],
         };
         let mut low = hit(1, "fact", 1, "build-command", "cargo build");
         low.low_confidence = true;
@@ -1374,6 +1398,7 @@ mod tests {
             body_contains: vec![],
             also_accept: vec![],
             notes: String::new(),
+            variants: vec![],
         };
         let mut h = hit(1, "fact", 1, "build-command", "cargo build");
         h.low_confidence = true;
@@ -1398,6 +1423,7 @@ mod tests {
             body_contains: vec![],
             also_accept: vec![],
             notes: String::new(),
+            variants: vec![],
         };
         let resp = fake_response("zxqv", vec![]);
         let outcome = evaluate_query(&q, &resp, 3);
@@ -1416,6 +1442,7 @@ mod tests {
             body_contains: vec![],
             also_accept: vec![],
             notes: String::new(),
+            variants: vec![],
         };
         let resp = fake_response(
             "zxqv",
@@ -1520,6 +1547,7 @@ mod tests {
                     body_contains: vec![],
                     also_accept: vec![],
                     notes: String::new(),
+                    variants: vec![],
                 },
                 GoldenQuery {
                     id: "b".into(),
@@ -1530,6 +1558,7 @@ mod tests {
                     body_contains: vec![],
                     also_accept: vec![],
                     notes: String::new(),
+                    variants: vec![],
                 },
                 GoldenQuery {
                     id: "n".into(),
@@ -1540,6 +1569,7 @@ mod tests {
                     body_contains: vec![],
                     also_accept: vec![],
                     notes: String::new(),
+                    variants: vec![],
                 },
             ],
         };
@@ -1551,6 +1581,7 @@ mod tests {
                 reranker: false,
                 min_rerank_score: -1.0,
                 rerank_candidate_pool: 20,
+                variants: false,
             },
             PathBuf::from("x.json"),
             outcomes,
@@ -1959,6 +1990,7 @@ mod tests {
                 reranker: true,
                 min_rerank_score: -2.0,
                 rerank_candidate_pool: 20,
+                variants: false,
             },
             PathBuf::from("x.json"),
             vec![
@@ -2035,6 +2067,57 @@ mod tests {
         let msg = load_golden(&path).expect_err("duplicate id").to_string();
         assert!(msg.contains("`dup`"), "{msg}");
         assert!(msg.contains("golden.json"), "{msg}");
+    }
+
+    #[test]
+    fn load_golden_validates_variants_like_recall() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("golden.json");
+        let load = |variants: &str| {
+            std::fs::write(
+                &path,
+                format!(
+                    r#"{{ "version": 1, "queries": [
+                        {{ "id": "v", "query": "one", "kind": "empty", "variants": {variants} }} ] }}"#
+                ),
+            )
+            .expect("write");
+            load_golden(&path)
+        };
+        let ok = load(r#"["a", "b", "c", "d"]"#).expect("4 variants load");
+        assert_eq!(ok.queries[0].variants, ["a", "b", "c", "d"]);
+        let blank = load(r#"["a", "  "]"#).expect_err("blank").to_string();
+        assert!(
+            blank.contains("`v`") && blank.contains("variant 2 is blank"),
+            "{blank}"
+        );
+        let many = load(r#"["a", "b", "c", "d", "e"]"#)
+            .expect_err("too many")
+            .to_string();
+        assert!(many.contains("`v`") && many.contains("at most 4"), "{many}");
+        // The field is optional.
+        let none = load("[]").expect("empty list loads");
+        assert!(none.queries[0].variants.is_empty());
+        let plain: GoldenFile = serde_json::from_str(GOLDEN_JSON).expect("old shape");
+        assert!(plain.queries[0].variants.is_empty());
+    }
+
+    #[test]
+    fn compare_loads_saved_runs_from_before_the_variants_setting() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let settings = r#""settings": { "mode": "hybrid", "reranker": true, "min_rerank_score": -1.0, "rerank_candidate_pool": 20 }"#;
+        let old = dir.path().join("old.json");
+        std::fs::write(
+            &old,
+            format!(
+                r#"{{ "k": 3, "mode": "hybrid", {settings}, "outcomes": [{}] }}"#,
+                saved("m1", "q1", "match", true, Some(1))
+            ),
+        )
+        .expect("write");
+        let c = compare_runs(&old, &old).expect("compare");
+        let s = c.a.settings.expect("settings recorded");
+        assert!(!s.variants, "a pre-variants run reads as variants off");
     }
 
     #[test]

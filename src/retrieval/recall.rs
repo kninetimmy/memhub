@@ -17,7 +17,9 @@ use rusqlite::{Connection, Row, params};
 
 use crate::config::{RetrievalMode, RetrievalScoringConfig};
 use crate::db;
-use crate::retrieval::embeddings::{EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME, embed_one};
+use crate::retrieval::embeddings::{
+    EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME, embed_batch, embed_one,
+};
 use crate::retrieval::persist::{
     SourceType, arch_section_embed_text, decision_embed_text, doc_chunk_embed_text,
     fact_embed_text, note_embed_text, task_embed_text,
@@ -30,6 +32,41 @@ use crate::retrieval::util::{
 use crate::{MemhubError, Result};
 
 const PER_SOURCE_FTS_LIMIT: i64 = 50;
+
+/// Most extra phrasings one recall call may carry. Each variant costs an
+/// embedding, a full gather and (via the merged pool) up to
+/// `rerank_candidate_pool` more cross-encoder inputs, so the cap bounds the
+/// per-call cost.
+pub const MAX_QUERY_VARIANTS: usize = 4;
+
+/// Shared check for caller-written query variants (recall CLI, MCP tool and
+/// the golden-set loader): at most [`MAX_QUERY_VARIANTS`], none blank.
+/// Returns the variants trimmed.
+pub fn validate_variants(variants: &[String]) -> Result<Vec<String>> {
+    if variants.len() > MAX_QUERY_VARIANTS {
+        return Err(MemhubError::InvalidInput(format!(
+            "recall accepts at most {MAX_QUERY_VARIANTS} query variants per call, got {}; \
+             each variant adds an embedding and more re-rank work",
+            variants.len()
+        )));
+    }
+    variants
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            let v = v.trim();
+            if v.is_empty() {
+                Err(MemhubError::InvalidInput(format!(
+                    "recall query variant {} is blank; send a non-empty alternative \
+                     phrasing or omit it",
+                    i + 1
+                )))
+            } else {
+                Ok(v.to_string())
+            }
+        })
+        .collect()
+}
 
 /// Strength multiplier on the normalized FTS score when it comes from the
 /// partial-token (`OR`) fallback. bm25 is min-max normalized over the hits,
@@ -82,6 +119,12 @@ pub struct RecallOptions {
     /// Override of `[retrieval] use_reranker`. None = use project config.
     /// Ignored when mode resolves to fts (re-ranker only runs on hybrid).
     pub use_reranker: Option<bool>,
+    /// Extra caller-written phrasings of `query` (at most
+    /// [`MAX_QUERY_VARIANTS`], none blank). They only widen the candidate
+    /// pool: the re-ranker and the relevance floor still score every
+    /// candidate against `query` alone. Empty = the plain single-phrasing
+    /// path.
+    pub variants: Vec<String>,
     /// Override of `[retrieval.scoring] min_rerank_score`. None = use
     /// project config. Ignored when mode resolves to fts or when the
     /// re-ranker is disabled (the floor only applies to rerank scores).
@@ -241,33 +284,66 @@ pub struct RecallExplain {
 /// The global corpus is consulted only when `[global] enabled` AND
 /// `~/.memhub/global.sqlite` exists; otherwise this is byte-identical
 /// to the pre-M9 single-corpus path (the eval-regression guarantee).
+///
+/// Caller-written `variants` are extra phrasings of the same question: each
+/// is gathered like the main query and its top `rerank_candidate_pool` rows
+/// join the pool, but the single rerank pass (and the relevance floor)
+/// still scores every candidate against the main query.
 pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
     let ctx = db::open_project(start)?;
     let resolved = ResolvedOptions::from(&options, &ctx.config.retrieval)?;
     let scoring = &ctx.config.retrieval.scoring;
     let started = Instant::now();
 
-    // Embed the query once and reuse it for every corpus gather so the
-    // cross-corpus blended scores are computed on the same basis.
-    let query_vec: Option<Vec<f32>> = if resolved.mode == RetrievalMode::Hybrid {
-        let v = embed_one(&resolved.query)?;
-        if v.len() != EMBEDDING_DIMENSION {
+    // Embed each phrasing once (main query first) and reuse it for every
+    // corpus gather so the cross-corpus blended scores are computed on the
+    // same basis. A call without variants takes the plain single-query
+    // embed.
+    let texts: Vec<&str> = std::iter::once(resolved.query.as_str())
+        .chain(resolved.variants.iter().map(String::as_str))
+        .collect();
+    let query_vecs: Option<Vec<Vec<f32>>> = if resolved.mode == RetrievalMode::Hybrid {
+        let vecs = if texts.len() == 1 {
+            vec![embed_one(&resolved.query)?]
+        } else {
+            embed_batch(&texts)?
+        };
+        if vecs.len() != texts.len() {
             return Err(MemhubError::Embedding(format!(
-                "query embedding produced {}-dim vector, expected {EMBEDDING_DIMENSION}",
-                v.len()
+                "embedded {} phrasings but got {} vectors",
+                texts.len(),
+                vecs.len()
             )));
         }
-        Some(v)
+        for v in &vecs {
+            if v.len() != EMBEDDING_DIMENSION {
+                return Err(MemhubError::Embedding(format!(
+                    "query embedding produced {}-dim vector, expected {EMBEDDING_DIMENSION}",
+                    v.len()
+                )));
+            }
+        }
+        Some(vecs)
     } else {
         None
     };
+    let phrasings: Vec<Phrasing> = texts
+        .iter()
+        .enumerate()
+        .map(|(i, text)| Phrasing {
+            text,
+            vec: query_vecs.as_ref().map(|v| v[i].as_slice()),
+        })
+        .collect();
 
-    let mut repo = gather_scored(&ctx.conn, &resolved, scoring, query_vec.as_deref())?;
-    for h in &mut repo.scored {
-        h.scope = SCOPE_REPO.to_string();
+    let mut repo = gather_scored(&ctx.conn, &resolved, scoring, &phrasings)?;
+    for list in &mut repo.per_phrasing {
+        for h in list {
+            h.scope = SCOPE_REPO.to_string();
+        }
     }
 
-    let mut merged = repo.scored;
+    let mut per_phrasing = repo.per_phrasing;
     let mut candidate_count = repo.candidate_count;
     let mut warnings = repo.warnings;
     let mut doc_chunk_total = repo.doc_chunk_total;
@@ -277,11 +353,13 @@ pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
     if ctx.config.global.enabled
         && let Some(gctx) = db::open_global_if_exists()?
     {
-        let mut g = gather_scored(&gctx.conn, &resolved, scoring, query_vec.as_deref())?;
-        for h in &mut g.scored {
-            h.scope = SCOPE_GLOBAL.to_string();
+        let g = gather_scored(&gctx.conn, &resolved, scoring, &phrasings)?;
+        for (merged, mut list) in per_phrasing.iter_mut().zip(g.per_phrasing) {
+            for h in &mut list {
+                h.scope = SCOPE_GLOBAL.to_string();
+            }
+            merged.extend(list);
         }
-        merged.extend(g.scored);
         candidate_count += g.candidate_count;
         warnings.extend(g.warnings);
         doc_chunk_total += g.doc_chunk_total;
@@ -317,17 +395,13 @@ pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
         });
     }
 
-    // Re-sort the unified pool by blended score before the rerank
-    // truncation so the top `rerank_candidate_pool` is drawn from both
-    // corpora, not just whichever gathered first.
-    merged.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.source_type.as_str().cmp(b.source_type.as_str()))
-            .then_with(|| a.scope.cmp(&b.scope))
-            .then_with(|| a.source_id.cmp(&b.source_id))
-    });
+    // Re-sort each phrasing's unified pool by blended score before the
+    // rerank truncation so the top `rerank_candidate_pool` is drawn from
+    // both corpora, not just whichever gathered first.
+    for list in &mut per_phrasing {
+        list.sort_by(cmp_merged);
+    }
+    let merged = merge_phrasings(&resolved, per_phrasing);
 
     let response = finalize(
         &resolved,
@@ -357,6 +431,8 @@ pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
 #[derive(Debug)]
 struct ResolvedOptions {
     query: String,
+    /// Validated, trimmed extra phrasings (see `validate_variants`).
+    variants: Vec<String>,
     mode: RetrievalMode,
     max_results: usize,
     source_types: Vec<SourceType>,
@@ -400,6 +476,7 @@ impl ResolvedOptions {
                 "recall query cannot be empty".to_string(),
             ));
         }
+        let variants = validate_variants(&opts.variants)?;
         let max_results = if opts.max_results == 0 {
             cfg.default_max_results
         } else {
@@ -440,6 +517,7 @@ impl ResolvedOptions {
         };
         Ok(Self {
             query: query.to_string(),
+            variants,
             mode: opts.mode.unwrap_or(cfg.mode),
             max_results,
             source_types,
@@ -457,11 +535,21 @@ impl ResolvedOptions {
     }
 }
 
+/// One phrasing of the question: the main query, or a caller variant.
+struct Phrasing<'a> {
+    text: &'a str,
+    /// Query embedding (hybrid mode only).
+    vec: Option<&'a [f32]>,
+}
+
 struct GatherResult {
     /// Blended-scored, sorted candidates for this single corpus
-    /// (pre-rerank). `scope` is left empty here; the orchestrator
-    /// tags it before the merged rerank pass.
-    scored: Vec<ScoredHit>,
+    /// (pre-rerank), one list per phrasing in `gather_scored`'s input
+    /// order (main query first). `scope` is left empty here; the
+    /// orchestrator tags it before the merged rerank pass.
+    per_phrasing: Vec<Vec<ScoredHit>>,
+    /// Distinct rows that survived the filters, whichever phrasing found
+    /// them.
     candidate_count: usize,
     warnings: Vec<RecallWarning>,
     /// Stale facts that survived the filter (i.e. were kept and demoted
@@ -486,58 +574,37 @@ fn gather_scored(
     conn: &Connection,
     opts: &ResolvedOptions,
     scoring: &RetrievalScoringConfig,
-    query_vec: Option<&[f32]>,
+    phrasings: &[Phrasing],
 ) -> Result<GatherResult> {
-    let mut candidates: HashMap<(SourceType, i64), CandidateRow> = HashMap::new();
-
-    let fts_all = |match_expr: &str| -> Result<Vec<(SourceType, i64, f64)>> {
-        let mut acc = Vec::new();
-        for st in &opts.source_types {
-            let hits = fts_lookup(conn, *st, match_expr)?;
-            acc.extend(hits.into_iter().map(|(id, score)| (*st, id, score)));
+    // Per-phrasing candidates (their own FTS/vector signals); the corrupt
+    // vector keys are the same for every phrasing, so they are unioned.
+    let mut per: Vec<HashMap<(SourceType, i64), CandidateRow>> =
+        Vec::with_capacity(phrasings.len());
+    let mut corrupt_vectors: HashSet<(SourceType, i64)> = HashSet::new();
+    for phrasing in phrasings {
+        let (cands, corrupt) = phrasing_candidates(conn, opts, phrasing)?;
+        corrupt_vectors.extend(corrupt);
+        per.push(cands);
+    }
+    // One phrasing: its candidate map is the whole pool. Several: the union
+    // of keys, so hydration, stale detection and filtering (and their
+    // explain counters) see each distinct row once.
+    let mut candidates: HashMap<(SourceType, i64), CandidateRow> = if per.len() == 1 {
+        std::mem::take(&mut per[0])
+    } else {
+        let mut union = HashMap::new();
+        for cands in &per {
+            for &(st, id) in cands.keys() {
+                union
+                    .entry((st, id))
+                    .or_insert_with(|| CandidateRow::empty(st, id));
+            }
         }
-        Ok(acc)
+        union
     };
-    let mut fts_results = match build_fts_match(&opts.query) {
-        Some(expr) => fts_all(&expr)?,
-        None => Vec::new(),
-    };
-    // No row holds every query token (typical of a keyword bag or a natural
-    // question): let rows matching some of the content tokens contribute
-    // FTS signal instead of leaving the pool to cosine alone (issue #225).
-    let fts_partial = fts_results.is_empty();
-    if fts_partial && let Some(expr) = build_fts_match_any(&opts.query) {
-        fts_results = fts_all(&expr)?;
-    }
 
-    // Hydrate source rows for every FTS hit so we can apply filters and
-    // assemble the response.
-    for (st, id, fts_raw) in &fts_results {
-        let entry = candidates
-            .entry((*st, *id))
-            .or_insert_with(|| CandidateRow::empty(*st, *id));
-        entry.fts_raw = Some(*fts_raw);
-        entry.fts_partial = fts_partial;
-    }
-
-    // Vector path (hybrid only). The query embedding is supplied by the
-    // orchestrator (computed once, reused across corpora).
     let mut warnings: Vec<RecallWarning> = Vec::new();
     if opts.mode == RetrievalMode::Hybrid {
-        let query_vec = query_vec.ok_or_else(|| {
-            MemhubError::Embedding("hybrid gather requires a precomputed query embedding".into())
-        })?;
-        // No vector-path floor — D70/D71 retired `min_vector_score` after
-        // the MiniLM bundle landed. Nonsense rejection now lives in the
-        // rerank-score filter applied below.
-        let (vector_hits, corrupt_vectors) = vector_lookup(conn, &opts.source_types, query_vec)?;
-        for hit in &vector_hits {
-            let entry = candidates
-                .entry((hit.source_type, hit.source_id))
-                .or_insert_with(|| CandidateRow::empty(hit.source_type, hit.source_id));
-            entry.vector_score = Some(hit.cosine);
-        }
-
         // Stale-embedding detection: across the candidate set, count rows
         // that are missing an embedding, whose content_hash doesn't match
         // the current body, or whose stored vector blob is the wrong
@@ -593,14 +660,46 @@ fn gather_scored(
     // kept them). Reported to the caller as `stale_facts_demoted`.
     let demoted_stale_count = surviving.iter().filter(|c| c.is_stale).count();
 
-    let mut scored: Vec<ScoredHit> = score(&surviving, scoring);
-    scored.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.source_type.as_str().cmp(b.source_type.as_str()))
-            .then_with(|| a.source_id.cmp(&b.source_id))
-    });
+    // Each phrasing is scored over the surviving rows it found, with its own
+    // FTS/vector signals (the bm25 min-max is per phrasing).
+    let rows_per_phrasing: Vec<Vec<CandidateRow>> = if per.len() == 1 {
+        vec![surviving]
+    } else {
+        let by_key: HashMap<(SourceType, i64), &CandidateRow> = surviving
+            .iter()
+            .map(|c| ((c.source_type, c.source_id), c))
+            .collect();
+        per.iter()
+            .map(|cands| {
+                cands
+                    .iter()
+                    .filter_map(|(key, found)| {
+                        by_key.get(key).map(|hydrated| {
+                            let mut row = (*hydrated).clone();
+                            row.fts_raw = found.fts_raw;
+                            row.fts_partial = found.fts_partial;
+                            row.vector_score = found.vector_score;
+                            row
+                        })
+                    })
+                    .collect()
+            })
+            .collect()
+    };
+    let per_phrasing: Vec<Vec<ScoredHit>> = rows_per_phrasing
+        .iter()
+        .map(|rows| {
+            let mut scored = score(rows, scoring);
+            scored.sort_by(|a, b| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.source_type.as_str().cmp(b.source_type.as_str()))
+                    .then_with(|| a.source_id.cmp(&b.source_id))
+            });
+            scored
+        })
+        .collect();
 
     let doc_chunk_total = conn
         .query_row(
@@ -613,7 +712,7 @@ fn gather_scored(
         .max(0);
 
     Ok(GatherResult {
-        scored,
+        per_phrasing,
         candidate_count,
         warnings,
         demoted_stale_count,
@@ -622,18 +721,160 @@ fn gather_scored(
     })
 }
 
+/// `(candidates keyed by row, source keys whose stored vector was corrupt)`.
+type PhrasingCandidates = (
+    HashMap<(SourceType, i64), CandidateRow>,
+    HashSet<(SourceType, i64)>,
+);
+
+/// FTS + (hybrid) vector candidates for one phrasing from one corpus.
+fn phrasing_candidates(
+    conn: &Connection,
+    opts: &ResolvedOptions,
+    phrasing: &Phrasing,
+) -> Result<PhrasingCandidates> {
+    let mut candidates: HashMap<(SourceType, i64), CandidateRow> = HashMap::new();
+    let mut corrupt_vectors = HashSet::new();
+
+    let fts_all = |match_expr: &str| -> Result<Vec<(SourceType, i64, f64)>> {
+        let mut acc = Vec::new();
+        for st in &opts.source_types {
+            let hits = fts_lookup(conn, *st, match_expr)?;
+            acc.extend(hits.into_iter().map(|(id, score)| (*st, id, score)));
+        }
+        Ok(acc)
+    };
+    let mut fts_results = match build_fts_match(phrasing.text) {
+        Some(expr) => fts_all(&expr)?,
+        None => Vec::new(),
+    };
+    // No row holds every query token (typical of a keyword bag or a natural
+    // question): let rows matching some of the content tokens contribute
+    // FTS signal instead of leaving the pool to cosine alone (issue #225).
+    let fts_partial = fts_results.is_empty();
+    if fts_partial && let Some(expr) = build_fts_match_any(phrasing.text) {
+        fts_results = fts_all(&expr)?;
+    }
+
+    // Hydrate source rows for every FTS hit so we can apply filters and
+    // assemble the response.
+    for (st, id, fts_raw) in &fts_results {
+        let entry = candidates
+            .entry((*st, *id))
+            .or_insert_with(|| CandidateRow::empty(*st, *id));
+        entry.fts_raw = Some(*fts_raw);
+        entry.fts_partial = fts_partial;
+    }
+
+    // Vector path (hybrid only). The query embedding is supplied by the
+    // orchestrator (computed once per phrasing, reused across corpora).
+    if opts.mode == RetrievalMode::Hybrid {
+        let query_vec = phrasing.vec.ok_or_else(|| {
+            MemhubError::Embedding("hybrid gather requires a precomputed query embedding".into())
+        })?;
+        // No vector-path floor — D70/D71 retired `min_vector_score` after
+        // the MiniLM bundle landed. Nonsense rejection now lives in the
+        // rerank-score filter applied by `finalize`.
+        let (vector_hits, corrupt) = vector_lookup(conn, &opts.source_types, query_vec)?;
+        corrupt_vectors = corrupt;
+        for hit in &vector_hits {
+            let entry = candidates
+                .entry((hit.source_type, hit.source_id))
+                .or_insert_with(|| CandidateRow::empty(hit.source_type, hit.source_id));
+            entry.vector_score = Some(hit.cosine);
+        }
+    }
+    Ok((candidates, corrupt_vectors))
+}
+
+/// Order of the merged pool: blended score first, then a deterministic
+/// source-type / scope / id tie-break.
+fn cmp_merged(a: &ScoredHit, b: &ScoredHit) -> std::cmp::Ordering {
+    b.score
+        .partial_cmp(&a.score)
+        .unwrap_or(std::cmp::Ordering::Equal)
+        .then_with(|| a.source_type.as_str().cmp(b.source_type.as_str()))
+        .then_with(|| a.scope.cmp(&b.scope))
+        .then_with(|| a.source_id.cmp(&b.source_id))
+}
+
+/// The merged candidate pool `finalize` re-ranks.
+struct MergedPool {
+    /// Sorted by `cmp_merged`.
+    hits: Vec<ScoredHit>,
+    /// `Some` when `merge_phrasings` already cut the pool per phrasing
+    /// (variants present): `hits` is then re-ranked whole and this is the
+    /// `rerank_pool_cut` count. `None`: `finalize` truncates to the pool.
+    rerank_pool_cut: Option<usize>,
+}
+
+/// Union the per-phrasing pools (each already sorted by `cmp_merged`) into
+/// the one list `finalize` re-ranks.
+///
+/// A single phrasing passes through untouched (`None`: `finalize` truncates
+/// to the rerank pool itself). With variants, and when the re-ranker will
+/// run, each phrasing contributes its own top `rerank_candidate_pool` rows;
+/// the union is deduplicated by row identity (scope, source type, id), so
+/// the main query's pool is always a subset and a variant never pushes out
+/// a row the main query would have re-ranked. A row found by several
+/// phrasings keeps its best blended hit. The second value is how many
+/// distinct rows fell outside every phrasing's pool (`rerank_pool_cut`).
+/// Without the re-ranker nothing is truncated here and the merged list is
+/// ordered by each row's best blended score across phrasings.
+fn merge_phrasings(opts: &ResolvedOptions, per_phrasing: Vec<Vec<ScoredHit>>) -> MergedPool {
+    if per_phrasing.len() == 1 {
+        return MergedPool {
+            hits: per_phrasing.into_iter().flatten().collect(),
+            rerank_pool_cut: None,
+        };
+    }
+    let will_rerank = opts.mode == RetrievalMode::Hybrid && opts.use_reranker;
+    let row_key = |h: &ScoredHit| (h.source_type, h.scope.clone(), h.source_id);
+    let mut seen = HashSet::new();
+    let mut best: HashMap<_, ScoredHit> = HashMap::new();
+    for mut list in per_phrasing {
+        if will_rerank {
+            seen.extend(list.iter().map(row_key));
+            list.truncate(opts.rerank_candidate_pool);
+        }
+        for hit in list {
+            match best.entry(row_key(&hit)) {
+                std::collections::hash_map::Entry::Occupied(mut e) => {
+                    if hit.score > e.get().score {
+                        e.insert(hit);
+                    }
+                }
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(hit);
+                }
+            }
+        }
+    }
+    let pool_cut = seen.len().saturating_sub(best.len());
+    let mut hits: Vec<ScoredHit> = best.into_values().collect();
+    hits.sort_by(cmp_merged);
+    MergedPool {
+        hits,
+        rerank_pool_cut: Some(pool_cut),
+    }
+}
+
 /// Merged-pool finalize: one cross-encoder rerank pass over the unified
 /// (repo + global) candidate set, the doc-safety rule, truncation, and
 /// `RecallResponse` assembly with `scope` provenance carried through.
 fn finalize(
     opts: &ResolvedOptions,
-    mut scored: Vec<ScoredHit>,
+    merged: MergedPool,
     candidate_count: usize,
     mut warnings: Vec<RecallWarning>,
     doc_chunk_total: i64,
     mut explain: RecallExplain,
     started: Instant,
 ) -> Result<RecallResponse> {
+    let MergedPool {
+        hits: mut scored,
+        rerank_pool_cut,
+    } = merged;
     // Optional cross-encoder re-rank pass (decision 68). Only runs on
     // hybrid mode and only when the operator hasn't opted out. Takes the
     // top `rerank_candidate_pool` by blended score, reorders them by the
@@ -644,8 +885,13 @@ fn finalize(
     let reranked = opts.mode == RetrievalMode::Hybrid && opts.use_reranker && scored.len() > 1;
     explain.reranker_ran = reranked;
     if reranked {
-        explain.rerank_pool_cut = scored.len().saturating_sub(opts.rerank_candidate_pool);
-        scored.truncate(opts.rerank_candidate_pool);
+        match rerank_pool_cut {
+            Some(cut) => explain.rerank_pool_cut = cut,
+            None => {
+                explain.rerank_pool_cut = scored.len().saturating_sub(opts.rerank_candidate_pool);
+                scored.truncate(opts.rerank_candidate_pool);
+            }
+        }
         // Cross-encoder input mirrors the bi-encoder's embed text shape:
         // prepend the row's natural-language summary when present so the
         // re-ranker can score paraphrase matches, not just title+body
@@ -873,7 +1119,7 @@ fn rerank_floor_warning(
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct CandidateRow {
     source_type: SourceType,
     source_id: i64,
@@ -1727,6 +1973,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                variants: Vec::new(),
                 surface: None,
             },
         )
@@ -1759,6 +2006,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                variants: Vec::new(),
                 surface: None,
             },
         )
@@ -1784,6 +2032,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                variants: Vec::new(),
                 surface: None,
             },
         )
@@ -1821,6 +2070,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                variants: Vec::new(),
                 surface: None,
             },
         )
@@ -1845,6 +2095,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                variants: Vec::new(),
                 surface: None,
             },
         )
@@ -1884,6 +2135,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                variants: Vec::new(),
                 surface: None,
             },
         )
@@ -1942,6 +2194,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                variants: Vec::new(),
                 surface: None,
             },
         )
@@ -1986,6 +2239,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                variants: Vec::new(),
                 surface: None,
             },
         )
@@ -2042,6 +2296,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                variants: Vec::new(),
                 surface: None,
             },
         )
@@ -2091,6 +2346,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                variants: Vec::new(),
                 surface: None,
             },
         )
@@ -2147,6 +2403,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                variants: Vec::new(),
                 surface: None,
             },
         )
@@ -2194,6 +2451,7 @@ mod tests {
             use_reranker: None,
             min_rerank_score: None,
             log_metrics: false,
+            variants: Vec::new(),
             surface: None,
         };
 
@@ -2274,6 +2532,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                variants: Vec::new(),
                 surface: None,
             },
         )
@@ -2515,6 +2774,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                variants: Vec::new(),
                 surface: None,
             },
         )
@@ -2585,6 +2845,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                variants: Vec::new(),
                 surface: None,
             },
         )
@@ -2649,6 +2910,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                variants: Vec::new(),
                 surface: None,
             },
         )
@@ -2744,6 +3006,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                variants: Vec::new(),
                 surface: None,
             },
         )
@@ -2797,6 +3060,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                variants: Vec::new(),
                 surface: None,
             },
         )
@@ -2844,6 +3108,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                variants: Vec::new(),
                 surface: None,
             },
         )
@@ -2900,6 +3165,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                variants: Vec::new(),
                 surface: None,
             },
         )
@@ -2963,6 +3229,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: Some(-1000.0),
                 log_metrics: false,
+                variants: Vec::new(),
                 surface: None,
             },
         )
@@ -3032,6 +3299,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                variants: Vec::new(),
                 surface: None,
             },
         )
@@ -3059,6 +3327,7 @@ mod tests {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                variants: Vec::new(),
                 surface: None,
             },
         )
@@ -3091,6 +3360,7 @@ mod tests {
             use_reranker: None,
             min_rerank_score: None,
             log_metrics: false,
+            variants: Vec::new(),
             surface: None,
         }
     }
@@ -3399,6 +3669,226 @@ explainscopeprobe second.
         );
     }
 
+    // Issue #319: caller-written query variants widen the candidate pool;
+    // the re-ranker and the relevance floor still score the main query.
+    fn variant_opts(query: &str, variants: &[&str], mode: RetrievalMode) -> RecallOptions {
+        RecallOptions {
+            variants: variants.iter().map(|v| v.to_string()).collect(),
+            ..explain_opts(query, mode, 10, vec![SourceType::Fact])
+        }
+    }
+
+    #[test]
+    fn variant_surfaces_a_row_the_main_query_misses() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        fact::add(
+            temp.path(),
+            "quokka-habitat",
+            "quokkavariantprobe lives on the island",
+            "user",
+            "cli:user",
+        )
+        .expect("fact");
+        fact::add(
+            temp.path(),
+            "wombat-habitat",
+            "wombatvariantprobe digs burrows",
+            "user",
+            "cli:user",
+        )
+        .expect("fact");
+        let main = "which marsupial dwells offshore";
+
+        let plain =
+            recall(temp.path(), variant_opts(main, &[], RetrievalMode::Fts)).expect("recall");
+        assert!(plain.results.is_empty(), "main query alone must miss");
+
+        let with = recall(
+            temp.path(),
+            variant_opts(
+                main,
+                &["quokkavariantprobe", "wombatvariantprobe burrows"],
+                RetrievalMode::Fts,
+            ),
+        )
+        .expect("recall");
+        let keys: Vec<&str> = with.results.iter().map(|h| h.title.as_str()).collect();
+        assert_eq!(with.results.len(), 2, "{keys:?}");
+        assert!(
+            keys.iter().any(|t| t.contains("quokka-habitat")),
+            "{keys:?}"
+        );
+        assert!(
+            keys.iter().any(|t| t.contains("wombat-habitat")),
+            "{keys:?}"
+        );
+        assert_eq!(
+            with.query, main,
+            "the response still reports the main query"
+        );
+        // Without the re-ranker the merged set is ordered by blended score.
+        assert!(with.results[0].score >= with.results[1].score);
+    }
+
+    #[test]
+    fn row_found_by_several_phrasings_appears_once() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let (fact_id, _) = fact::add(
+            temp.path(),
+            "dedupe-probe",
+            "variantdedupeprobe shared value",
+            "user",
+            "cli:user",
+        )
+        .expect("fact");
+        age_fact(temp.path(), fact_id, 200);
+
+        let response = recall(
+            temp.path(),
+            RecallOptions {
+                include_stale: Some(false),
+                ..variant_opts(
+                    "variantdedupeprobe",
+                    &[
+                        "variantdedupeprobe shared",
+                        "shared value variantdedupeprobe",
+                    ],
+                    RetrievalMode::Fts,
+                )
+            },
+        )
+        .expect("recall");
+        // Excluded as stale by all three phrasings' gathers, counted once.
+        assert!(response.results.is_empty());
+        assert_eq!(response.explain.stale_excluded, 1);
+
+        let kept = recall(
+            temp.path(),
+            variant_opts(
+                "variantdedupeprobe",
+                &[
+                    "variantdedupeprobe shared",
+                    "shared value variantdedupeprobe",
+                ],
+                RetrievalMode::Fts,
+            ),
+        )
+        .expect("recall");
+        assert_eq!(kept.results.len(), 1);
+        assert_eq!(kept.candidate_count, 1);
+        assert_eq!(kept.explain.stale_demoted, 1);
+        assert_eq!(kept.results[0].source_id, fact_id);
+    }
+
+    #[test]
+    fn rerank_score_is_against_the_main_query_whatever_the_variants() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        edit_config(temp.path(), |cfg| {
+            cfg.retrieval.mode = RetrievalMode::Hybrid;
+        });
+        seed(temp.path()); // after the mode switch so the rows get embeddings
+        let main = "build and lint";
+        let response = recall(
+            temp.path(),
+            RecallOptions {
+                min_rerank_score: Some(-100.0),
+                variants: vec![
+                    "Ship recall surface rolls out".to_string(),
+                    "agents propose facts, durable rows need human review".to_string(),
+                ],
+                ..explain_opts(main, RetrievalMode::Hybrid, 10, vec![])
+            },
+        )
+        .expect("recall");
+        assert!(response.explain.reranker_ran);
+        // Every row is in the pool, so scoring all of them against the main
+        // query in one batch reproduces the scores recall must have used.
+        let docs: Vec<String> = response
+            .results
+            .iter()
+            .map(|h| {
+                format!(
+                    "{}
+
+{}",
+                    h.title, h.body
+                )
+            })
+            .collect();
+        assert!(docs.len() > 1);
+        let mut expected = vec![0.0_f32; docs.len()];
+        for (idx, score) in rerank::rerank(main, &docs).expect("rerank") {
+            expected[idx] = score;
+        }
+        for (hit, want) in response.results.iter().zip(expected) {
+            let got = hit.rerank_score.expect("reranked hit carries its score");
+            assert!(
+                (got - want).abs() < 1e-3,
+                "{}: rerank_score {got} is not the main-query score {want}",
+                hit.title
+            );
+        }
+    }
+
+    #[test]
+    fn variants_keep_the_rerank_pool_cut_counting_distinct_rows() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        edit_config(temp.path(), |cfg| {
+            cfg.retrieval.mode = RetrievalMode::Hybrid;
+            cfg.retrieval.rerank_candidate_pool = 2;
+        });
+        seed(temp.path());
+        let response = recall(
+            temp.path(),
+            RecallOptions {
+                min_rerank_score: Some(-100.0),
+                variants: vec!["Ship recall surface".to_string()],
+                ..explain_opts("build and lint", RetrievalMode::Hybrid, 1, vec![])
+            },
+        )
+        .expect("recall");
+        assert!(response.explain.reranker_ran);
+        // Nothing falls to a floor, so every candidate is either cut from
+        // the pool, cut by the result limit, or the one returned row.
+        assert_eq!(response.explain.dropped_by_floor, 0);
+        assert_eq!(
+            response.explain.rerank_pool_cut + response.explain.result_limit_cut + 1,
+            response.candidate_count
+        );
+        // The union of two 2-row pools reranks at least 2 rows.
+        assert!(response.explain.result_limit_cut >= 1);
+        assert!(response.explain.rerank_pool_cut <= response.candidate_count - 2);
+    }
+
+    #[test]
+    fn blank_or_too_many_variants_are_rejected_with_a_reason() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        for blank in ["", "   "] {
+            let err = recall(
+                temp.path(),
+                variant_opts("anything", &["ok phrasing", blank], RetrievalMode::Fts),
+            )
+            .expect_err("blank variant must be rejected");
+            assert!(matches!(err, MemhubError::InvalidInput(_)), "{err}");
+            assert!(err.to_string().contains("variant 2 is blank"), "{err}");
+        }
+        let err = recall(
+            temp.path(),
+            variant_opts("anything", &["a", "b", "c", "d", "e"], RetrievalMode::Fts),
+        )
+        .expect_err("5 variants must be rejected");
+        assert!(matches!(err, MemhubError::InvalidInput(_)), "{err}");
+        assert!(err.to_string().contains("at most 4"), "{err}");
+
+        let four: Vec<String> = ["a", "b", "c", "d"].map(String::from).to_vec();
+        assert_eq!(validate_variants(&four).expect("4 are fine"), four);
+    }
+
     // Q9 / issue #98: session notes are write-only scratch by default —
     // never in the plain recall bundle, mirroring the pre-decision-90 docs
     // default-exclusion pattern (migration 0014) but with NO opt-in flip
@@ -3442,6 +3932,7 @@ explainscopeprobe second.
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                variants: Vec::new(),
                 surface: None,
             },
         )
@@ -3482,6 +3973,7 @@ explainscopeprobe second.
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                variants: Vec::new(),
                 surface: None,
             },
         )
@@ -3552,6 +4044,7 @@ explainscopeprobe second.
                 use_reranker: Some(false),
                 min_rerank_score: None,
                 log_metrics: false,
+                variants: Vec::new(),
                 surface: None,
             },
         )
@@ -3592,6 +4085,7 @@ explainscopeprobe second.
                 use_reranker: None,
                 min_rerank_score,
                 log_metrics: false,
+                variants: Vec::new(),
                 surface: None,
             },
         )
@@ -3892,6 +4386,7 @@ explainscopeprobe second.
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                variants: Vec::new(),
                 surface: None,
             },
         )
@@ -3934,6 +4429,7 @@ explainscopeprobe second.
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                variants: Vec::new(),
                 surface: None,
             },
         )
@@ -3971,6 +4467,7 @@ explainscopeprobe second.
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                variants: Vec::new(),
                 surface: None,
             },
         )
@@ -4068,6 +4565,7 @@ explainscopeprobe second.
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: true,
+                variants: Vec::new(),
                 surface: Some(RecallSurface::Cli),
             },
         )
@@ -4102,6 +4600,7 @@ explainscopeprobe second.
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: true,
+                variants: Vec::new(),
                 surface: Some(RecallSurface::Cli),
             },
         )
@@ -4181,6 +4680,7 @@ explainscopeprobe second.
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: false,
+                variants: Vec::new(),
                 surface: None,
             },
         )
