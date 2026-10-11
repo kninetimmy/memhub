@@ -490,6 +490,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 value,
                 source,
                 kind,
+                summary,
                 global,
                 json: as_json,
                 actor,
@@ -501,6 +502,7 @@ pub fn run(cli: Cli) -> Result<()> {
                         &key,
                         &value,
                         kind.as_deref(),
+                        summary.as_deref(),
                         &source,
                         &actor,
                     )?;
@@ -513,6 +515,7 @@ pub fn run(cli: Cli) -> Result<()> {
                                 "value": value,
                                 "source": source,
                                 "kind": kind,
+                                "summary": summary,
                                 "created": r.created,
                                 "scope": "global",
                                 "store_created": r.store_created,
@@ -534,6 +537,7 @@ pub fn run(cli: Cli) -> Result<()> {
                         &key,
                         &value,
                         kind.as_deref(),
+                        summary.as_deref(),
                         &source,
                         &actor,
                     )?;
@@ -544,6 +548,7 @@ pub fn run(cli: Cli) -> Result<()> {
                             "value": value,
                             "source": source,
                             "kind": kind,
+                            "summary": summary,
                             "created": created,
                         });
                         println!("{payload}");
@@ -553,6 +558,31 @@ pub fn run(cli: Cli) -> Result<()> {
                             if created { "Created" } else { "Updated" }
                         );
                     }
+                }
+            }
+            FactCommand::SetSummary {
+                id,
+                summary,
+                json: as_json,
+                actor,
+            } => {
+                let actor = resolve_actor(actor.as_deref())?;
+                let summary_opt = if summary.trim().is_empty() {
+                    None
+                } else {
+                    Some(summary.as_str())
+                };
+                commands::fact::set_summary(&cwd, id, summary_opt, &actor)?;
+                if as_json {
+                    let payload = json!({
+                        "id": id,
+                        "summary": summary_opt,
+                    });
+                    println!("{payload}");
+                } else if summary_opt.is_some() {
+                    println!("Set summary on fact {id}");
+                } else {
+                    println!("Cleared summary on fact {id}");
                 }
             }
             FactCommand::Promote {
@@ -881,11 +911,19 @@ pub fn run(cli: Cli) -> Result<()> {
             TaskCommand::Add {
                 title,
                 notes,
+                summary,
                 json: as_json,
                 actor,
             } => {
                 let actor = resolve_actor(actor.as_deref())?;
-                let id = commands::task::add(&cwd, &title, notes.as_deref(), &actor)?;
+                let id = commands::task::add_with_status(
+                    &cwd,
+                    &title,
+                    notes.as_deref(),
+                    summary.as_deref(),
+                    "open",
+                    &actor,
+                )?;
                 if as_json {
                     let payload = json!({
                         "id": id,
@@ -894,6 +932,31 @@ pub fn run(cli: Cli) -> Result<()> {
                     println!("{payload}");
                 } else {
                     println!("Created task {id}: {}", flatten_title(&title));
+                }
+            }
+            TaskCommand::SetSummary {
+                id,
+                summary,
+                json: as_json,
+                actor,
+            } => {
+                let actor = resolve_actor(actor.as_deref())?;
+                let summary_opt = if summary.trim().is_empty() {
+                    None
+                } else {
+                    Some(summary.as_str())
+                };
+                commands::task::set_summary(&cwd, id, summary_opt, &actor)?;
+                if as_json {
+                    let payload = json!({
+                        "id": id,
+                        "summary": summary_opt,
+                    });
+                    println!("{payload}");
+                } else if summary_opt.is_some() {
+                    println!("Set summary on task {id}");
+                } else {
+                    println!("Cleared summary on task {id}");
                 }
             }
             TaskCommand::Show { id, json: as_json } => {

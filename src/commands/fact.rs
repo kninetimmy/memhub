@@ -7,7 +7,7 @@ use crate::db;
 use crate::models::{FACT_STALE_AFTER_DAYS, Fact};
 
 pub fn add(start: &Path, key: &str, value: &str, source: &str, actor: &str) -> Result<(i64, bool)> {
-    add_with_kind(start, key, value, None, source, actor)
+    add_with_kind(start, key, value, None, None, source, actor)
 }
 
 /// As [`add`], but also sets the optional `kind` tag (Wave 6 W4, issue
@@ -18,40 +18,37 @@ pub fn add(start: &Path, key: &str, value: &str, source: &str, actor: &str) -> R
 /// follows the same last-writer-wins rule Wave 3 L5 already documented for
 /// `value`/`source`, so re-adding an existing key without `--kind` clears
 /// a previously-set tag rather than silently preserving it.
+///
+/// `summary` (issue #349) is the optional "what this answers" paraphrase
+/// decisions already carry. Unlike `kind` it is NOT cleared by an
+/// overwrite that omits it: `None` keeps the row's current summary,
+/// `Some(text)` replaces it (blank text clears it).
 pub fn add_with_kind(
     start: &Path,
     key: &str,
     value: &str,
     kind: Option<&str>,
+    summary: Option<&str>,
     source: &str,
     actor: &str,
 ) -> Result<(i64, bool)> {
     let mut ctx = db::open_project(start)?;
     let mode = ctx.config.retrieval.mode;
     let tx = ctx.conn.transaction()?;
-    let outcome = add_with_kind_in_tx(&tx, key, value, kind, source, actor, mode)?;
+    let outcome = add_with_kind_in_tx(&tx, key, value, kind, summary, source, actor, mode)?;
     tx.commit()?;
     Ok(outcome)
 }
 
-pub fn add_in_tx(
-    tx: &Transaction<'_>,
-    key: &str,
-    value: &str,
-    source: &str,
-    actor: &str,
-    mode: crate::config::RetrievalMode,
-) -> Result<(i64, bool)> {
-    add_with_kind_in_tx(tx, key, value, None, source, actor, mode)
-}
-
-/// As [`add_in_tx`], but also sets the optional `kind` tag. See
-/// [`add_with_kind`] for the overwrite semantics.
+/// Transaction-scoped fact upsert. Sets the optional `kind` tag and
+/// `summary`; see [`add_with_kind`] for the overwrite semantics of each.
+#[allow(clippy::too_many_arguments)]
 pub fn add_with_kind_in_tx(
     tx: &Transaction<'_>,
     key: &str,
     value: &str,
     kind: Option<&str>,
+    summary: Option<&str>,
     source: &str,
     actor: &str,
     mode: crate::config::RetrievalMode,
@@ -63,27 +60,34 @@ pub fn add_with_kind_in_tx(
     // what it replaced (Wave 3 L5, issue #48). `fact add` on an existing key
     // is silent last-writer-wins; without this the old value is captured
     // nowhere and the overwrite is unrecoverable.
-    let existing: Option<(i64, String)> = tx
+    let existing: Option<(i64, String, Option<String>)> = tx
         .query_row(
-            "SELECT id, value FROM facts WHERE project_id = 1 AND key = ?1",
+            "SELECT id, value, summary FROM facts WHERE project_id = 1 AND key = ?1",
             [key],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?;
 
-    let (row_id, created, prior_value) = if let Some((id, prior)) = existing {
+    // An omitted summary keeps the one the row already has (issue #349).
+    let summary_value = match summary {
+        Some(_) => crate::commands::decision::normalize_summary(summary),
+        None => existing.as_ref().and_then(|(_, _, s)| s.clone()),
+    };
+
+    let (row_id, created, prior_value) = if let Some((id, prior, _)) = existing {
         tx.execute(
             "UPDATE facts
-             SET value = ?1, source = ?2, confidence = 1.0, verified_at = CURRENT_TIMESTAMP, kind = ?3
-             WHERE id = ?4",
-            params![value, source, kind_value, id],
+             SET value = ?1, source = ?2, confidence = 1.0, verified_at = CURRENT_TIMESTAMP, kind = ?3,
+                 summary = ?4
+             WHERE id = ?5",
+            params![value, source, kind_value, summary_value, id],
         )?;
         (id, false, Some(prior))
     } else {
         tx.execute(
-            "INSERT INTO facts(project_id, key, value, confidence, source, verified_at, kind)
-             VALUES (1, ?1, ?2, 1.0, ?3, CURRENT_TIMESTAMP, ?4)",
-            params![key, value, source, kind_value],
+            "INSERT INTO facts(project_id, key, value, confidence, source, verified_at, kind, summary)
+             VALUES (1, ?1, ?2, 1.0, ?3, CURRENT_TIMESTAMP, ?4, ?5)",
+            params![key, value, source, kind_value, summary_value],
         )?;
         (tx.last_insert_rowid(), true, None)
     };
@@ -105,7 +109,7 @@ pub fn add_with_kind_in_tx(
         &reason,
     )?;
 
-    let embed_text = crate::retrieval::fact_embed_text(key, value);
+    let embed_text = crate::retrieval::fact_embed_text(key, value, summary_value.as_deref());
     crate::retrieval::eager_embed_in_tx(
         tx,
         mode,
@@ -115,6 +119,48 @@ pub fn add_with_kind_in_tx(
     )?;
 
     Ok((row_id, created))
+}
+
+/// Set or clear an existing fact's summary, then re-embed (issue #349).
+/// Mirrors `decision::set_summary`: empty or whitespace-only input clears
+/// it back to NULL, so the embed text falls back to `key: value`.
+pub fn set_summary(start: &Path, id: i64, summary: Option<&str>, actor: &str) -> Result<()> {
+    let mut ctx = db::open_project(start)?;
+    let mode = ctx.config.retrieval.mode;
+    let tx = ctx.conn.transaction()?;
+
+    let (key, value): (String, String) = tx
+        .query_row(
+            "SELECT key, value FROM facts WHERE id = ?1",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|err| match err {
+            rusqlite::Error::QueryReturnedNoRows => {
+                crate::MemhubError::InvalidInput(format!("no fact with id {id}"))
+            }
+            other => crate::MemhubError::from(other),
+        })?;
+
+    let summary_value = crate::commands::decision::normalize_summary(summary);
+    tx.execute(
+        "UPDATE facts SET summary = ?1 WHERE id = ?2",
+        params![summary_value, id],
+    )?;
+
+    db::log_write(&tx, actor, "facts", Some(id), "update", "fact set-summary")?;
+
+    let embed_text = crate::retrieval::fact_embed_text(&key, &value, summary_value.as_deref());
+    crate::retrieval::eager_embed_in_tx(
+        &tx,
+        mode,
+        crate::retrieval::SourceType::Fact,
+        id,
+        &embed_text,
+    )?;
+
+    tx.commit()?;
+    Ok(())
 }
 
 /// Normalize a `--kind` value: whitespace-only collapses to `None`
@@ -147,21 +193,24 @@ pub fn add_global(
     source: &str,
     actor: &str,
 ) -> Result<GlobalFactOutcome> {
-    add_global_with_kind(start, key, value, None, source, actor)
+    add_global_with_kind(start, key, value, None, None, source, actor)
 }
 
-/// As [`add_global`], but also sets the optional `kind` tag (issue #97).
+/// As [`add_global`], but also sets the optional `kind` tag (issue #97)
+/// and `summary` (issue #349), with [`add_with_kind`]'s semantics.
 pub fn add_global_with_kind(
     start: &Path,
     key: &str,
     value: &str,
     kind: Option<&str>,
+    summary: Option<&str>,
     source: &str,
     actor: &str,
 ) -> Result<GlobalFactOutcome> {
     let mut gw = crate::commands::global::begin_write(start)?;
     let tx = gw.ctx.conn.transaction()?;
-    let (id, created) = add_with_kind_in_tx(&tx, key, value, kind, source, actor, gw.mode)?;
+    let (id, created) =
+        add_with_kind_in_tx(&tx, key, value, kind, summary, source, actor, gw.mode)?;
     tx.commit()?;
     Ok(GlobalFactOutcome {
         id,
@@ -173,17 +222,20 @@ pub fn add_global_with_kind(
 /// Copy an existing repo fact into the machine-global store (copy,
 /// not move — the repo row stays and still wins locally). Fact keys
 /// are UNIQUE per DB, so re-promoting a key updates the global fact.
+/// The summary is copied too (issue #349), as `decision promote` copies
+/// a decision's: the global row ends up with the repo row's summary,
+/// none included.
 pub fn promote(start: &Path, id: i64, actor: &str) -> Result<GlobalFactOutcome> {
     let repo = db::open_project(start)?;
     crate::commands::global::ensure_enabled(&repo.config)?;
     let mode = repo.config.retrieval.mode;
 
-    let (key, value, source): (String, String, String) = repo
+    let (key, value, source, summary): (String, String, String, Option<String>) = repo
         .conn
         .query_row(
-            "SELECT key, value, source FROM facts WHERE id = ?1 AND project_id = 1",
+            "SELECT key, value, source, summary FROM facts WHERE id = ?1 AND project_id = 1",
             params![id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .map_err(|err| match err {
             rusqlite::Error::QueryReturnedNoRows => {
@@ -197,7 +249,18 @@ pub fn promote(start: &Path, id: i64, actor: &str) -> Result<GlobalFactOutcome> 
 
     let mut g = db::open_global()?;
     let tx = g.conn.transaction()?;
-    let (gid, created) = add_in_tx(&tx, &key, &value, &source, actor, mode)?;
+    // `Some("")` rather than `None`, so a summary-less repo fact clears a
+    // stale summary on an existing global key instead of keeping it.
+    let (gid, created) = add_with_kind_in_tx(
+        &tx,
+        &key,
+        &value,
+        None,
+        Some(summary.as_deref().unwrap_or_default()),
+        &source,
+        actor,
+        mode,
+    )?;
     db::log_write(
         &tx,
         actor,
@@ -586,6 +649,7 @@ mod tests {
             "deploy-cmd",
             "kubectl apply",
             Some("command"),
+            None,
             "user",
             "cli:user",
         )
@@ -607,6 +671,7 @@ mod tests {
             "k",
             "v",
             Some("not-in-the-suggested-vocab"),
+            None,
             "user",
             "cli:user",
         )
@@ -622,7 +687,7 @@ mod tests {
     fn add_with_kind_normalizes_whitespace_only_to_none() {
         let temp = tempdir().expect("tempdir");
         init::run(temp.path()).expect("init");
-        add_with_kind(temp.path(), "k", "v", Some("   "), "user", "cli:user").expect("fact");
+        add_with_kind(temp.path(), "k", "v", Some("   "), None, "user", "cli:user").expect("fact");
 
         let fact = list(temp.path()).expect("list").into_iter().next().unwrap();
         assert_eq!(fact.kind, None);
@@ -642,6 +707,7 @@ mod tests {
             "deploy-cmd",
             "kubectl apply v1",
             Some("command"),
+            None,
             "user",
             "cli:user",
         )
@@ -651,6 +717,7 @@ mod tests {
             "deploy-cmd",
             "kubectl apply v2",
             Some("gotcha"),
+            None,
             "user",
             "cli:user",
         )

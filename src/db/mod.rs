@@ -1,6 +1,9 @@
 mod migrations;
 pub mod registry;
 
+#[cfg(test)]
+pub(crate) use migrations::{apply_all, seeded_pre_0026_db};
+
 use std::fs;
 use std::path::{Path, PathBuf};
 

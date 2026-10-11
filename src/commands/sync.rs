@@ -126,6 +126,7 @@ const CONTENT_TABLES: &[(&str, &[&str])] = &[
             "created_at",
             "kind",
             "superseded_by",
+            "summary",
         ],
     ),
     (
@@ -143,7 +144,15 @@ const CONTENT_TABLES: &[(&str, &[&str])] = &[
     ),
     (
         "tasks",
-        &["id", "title", "status", "notes", "created_at", "updated_at"],
+        &[
+            "id",
+            "title",
+            "status",
+            "notes",
+            "created_at",
+            "updated_at",
+            "summary",
+        ],
     ),
     (
         "commands",

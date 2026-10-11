@@ -5,13 +5,16 @@ use crate::models::Task;
 use crate::{MemhubError, Result};
 
 pub fn add(start: &Path, title: &str, notes: Option<&str>, actor: &str) -> Result<i64> {
-    add_with_status(start, title, notes, "open", actor)
+    add_with_status(start, title, notes, None, "open", actor)
 }
 
+/// Insert a task. `summary` is the optional "what this answers"
+/// paraphrase (issue #349); blank text stores none.
 pub fn add_with_status(
     start: &Path,
     title: &str,
     notes: Option<&str>,
+    summary: Option<&str>,
     status: &str,
     actor: &str,
 ) -> Result<i64> {
@@ -25,16 +28,17 @@ pub fn add_with_status(
     let mode = ctx.config.retrieval.mode;
     let tx = ctx.conn.transaction()?;
 
+    let summary_value = crate::commands::decision::normalize_summary(summary);
     tx.execute(
-        "INSERT INTO tasks(project_id, title, status, notes)
-         VALUES (1, ?1, ?2, ?3)",
-        rusqlite::params![title, status, notes],
+        "INSERT INTO tasks(project_id, title, status, notes, summary)
+         VALUES (1, ?1, ?2, ?3, ?4)",
+        rusqlite::params![title, status, notes, summary_value],
     )?;
     let row_id = tx.last_insert_rowid();
 
     db::log_write(&tx, actor, "tasks", Some(row_id), "insert", "task add")?;
 
-    let embed_text = crate::retrieval::task_embed_text(title, notes);
+    let embed_text = crate::retrieval::task_embed_text(title, notes, summary_value.as_deref());
     crate::retrieval::eager_embed_in_tx(
         &tx,
         mode,
@@ -45,6 +49,50 @@ pub fn add_with_status(
 
     tx.commit()?;
     Ok(row_id)
+}
+
+/// Set or clear an existing task's summary, then re-embed (issue #349).
+/// Mirrors `decision::set_summary`: empty or whitespace-only input clears
+/// it back to NULL. Leaves `updated_at` alone, as the summary changes how
+/// the task is found, not the task.
+pub fn set_summary(start: &Path, id: i64, summary: Option<&str>, actor: &str) -> Result<()> {
+    let mut ctx = db::open_project(start)?;
+    let mode = ctx.config.retrieval.mode;
+    let tx = ctx.conn.transaction()?;
+
+    let (title, notes): (String, Option<String>) = tx
+        .query_row(
+            "SELECT title, notes FROM tasks WHERE id = ?1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|err| match err {
+            rusqlite::Error::QueryReturnedNoRows => {
+                MemhubError::InvalidInput(format!("task {id} does not exist"))
+            }
+            other => other.into(),
+        })?;
+
+    let summary_value = crate::commands::decision::normalize_summary(summary);
+    tx.execute(
+        "UPDATE tasks SET summary = ?1 WHERE id = ?2",
+        rusqlite::params![summary_value, id],
+    )?;
+
+    db::log_write(&tx, actor, "tasks", Some(id), "update", "task set-summary")?;
+
+    let embed_text =
+        crate::retrieval::task_embed_text(&title, notes.as_deref(), summary_value.as_deref());
+    crate::retrieval::eager_embed_in_tx(
+        &tx,
+        mode,
+        crate::retrieval::SourceType::Task,
+        id,
+        &embed_text,
+    )?;
+
+    tx.commit()?;
+    Ok(())
 }
 
 pub fn list(start: &Path, status_filter: Option<&str>) -> Result<Vec<Task>> {

@@ -106,7 +106,8 @@ fn read_project_meta(conn: &Connection) -> Result<(String, String, String)> {
 
 fn read_facts(conn: &Connection) -> Result<Vec<v1::Fact>> {
     let mut stmt = conn.prepare(
-        "SELECT id, key, value, confidence, source, verified_at, created_at, superseded_by, kind
+        "SELECT id, key, value, confidence, source, verified_at, created_at, superseded_by, kind,
+                summary
          FROM facts
          WHERE project_id = 1
          ORDER BY id",
@@ -122,6 +123,7 @@ fn read_facts(conn: &Connection) -> Result<Vec<v1::Fact>> {
             created_at: row.get(6)?,
             superseded_by: row.get(7)?,
             kind: row.get(8)?,
+            summary: row.get(9)?,
         })
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -153,7 +155,7 @@ fn read_decisions(conn: &Connection) -> Result<Vec<v1::Decision>> {
 
 fn read_tasks(conn: &Connection) -> Result<Vec<v1::Task>> {
     let mut stmt = conn.prepare(
-        "SELECT id, title, status, notes, created_at, updated_at
+        "SELECT id, title, status, notes, created_at, updated_at, summary
          FROM tasks
          WHERE project_id = 1
          ORDER BY id",
@@ -166,6 +168,7 @@ fn read_tasks(conn: &Connection) -> Result<Vec<v1::Task>> {
             notes: row.get(3)?,
             created_at: row.get(4)?,
             updated_at: row.get(5)?,
+            summary: row.get(6)?,
         })
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()

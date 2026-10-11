@@ -22,3 +22,5 @@ mod m8_retrieval_eval;
 mod m8_retrieval_schema;
 #[path = "retrieval/retrieval_golden_hermetic.rs"]
 mod retrieval_golden_hermetic;
+#[path = "retrieval/summaries_stemming.rs"]
+mod summaries_stemming;

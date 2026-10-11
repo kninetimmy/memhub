@@ -1441,8 +1441,9 @@ struct CandidateRow {
     body: String,
     /// Optional augmenting paraphrase. When `Some`, the cross-encoder
     /// rerank input is built as `summary\n\ntitle\n\nbody`; otherwise
-    /// the existing `title\n\nbody` shape is preserved. Today only
-    /// populated for decisions (migration 0011 / decision 72).
+    /// the existing `title\n\nbody` shape is preserved. Populated for
+    /// decisions (migration 0011 / decision 72) and, since migration 0026
+    /// (issue #349), for facts and tasks; before 0026 it was decisions only.
     summary: Option<String>,
     source: String,
     is_stale: bool,
@@ -1770,13 +1771,14 @@ fn current_embed_text(
 ) -> Result<Option<String>> {
     match source_type {
         SourceType::Fact => {
-            let row: std::result::Result<(String, String), rusqlite::Error> = conn.query_row(
-                "SELECT key, value FROM facts WHERE id = ?1",
-                params![source_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            );
+            let row: std::result::Result<(String, String, Option<String>), rusqlite::Error> = conn
+                .query_row(
+                    "SELECT key, value, summary FROM facts WHERE id = ?1",
+                    params![source_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                );
             match row.optional_row()? {
-                Some((k, v)) => Ok(Some(fact_embed_text(&k, &v))),
+                Some((k, v, s)) => Ok(Some(fact_embed_text(&k, &v, s.as_deref()))),
                 None => Ok(None),
             }
         }
@@ -1793,14 +1795,16 @@ fn current_embed_text(
             }
         }
         SourceType::Task => {
-            let row: std::result::Result<(String, Option<String>), rusqlite::Error> = conn
-                .query_row(
-                    "SELECT title, notes FROM tasks WHERE id = ?1",
-                    params![source_id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                );
+            let row: std::result::Result<
+                (String, Option<String>, Option<String>),
+                rusqlite::Error,
+            > = conn.query_row(
+                "SELECT title, notes, summary FROM tasks WHERE id = ?1",
+                params![source_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            );
             match row.optional_row()? {
-                Some((t, n)) => Ok(Some(task_embed_text(&t, n.as_deref()))),
+                Some((t, n, s)) => Ok(Some(task_embed_text(&t, n.as_deref(), s.as_deref()))),
                 None => Ok(None),
             }
         }
@@ -1875,7 +1879,9 @@ fn hydrate_sources(
 struct HydratedSource {
     title: String,
     body: String,
-    /// Only populated for decisions (migration 0011 / decision 72).
+    /// Populated for decisions (migration 0011 / decision 72) and, since
+    /// migration 0026 (issue #349), facts and tasks; before 0026 it was
+    /// decisions only.
     summary: Option<String>,
     source: String,
     is_stale: bool,
@@ -1910,7 +1916,8 @@ fn load_source_row(
                     END AS is_stale, \
                     superseded_by, \
                     julianday('now') - julianday(verified_at) AS age_days, \
-                    kind \
+                    kind, \
+                    summary \
                 FROM facts WHERE id = ?1",
             )?;
             let row: std::result::Result<HydratedSource, rusqlite::Error> =
@@ -1925,10 +1932,11 @@ fn load_source_row(
                     // `None` => no decay (already flagged stale + demoted).
                     let age_days: Option<f64> = r.get(7)?;
                     let kind: Option<String> = r.get(8)?;
+                    let summary: Option<String> = r.get(9)?;
                     Ok(HydratedSource {
                         title: key,
                         body: value,
-                        summary: None,
+                        summary,
                         source,
                         is_stale: stale_int != 0,
                         superseded_by,
@@ -1978,7 +1986,8 @@ fn load_source_row(
                 "SELECT title, notes, created_at, \
                     CASE WHEN status = 'done' \
                          THEN julianday('now') - julianday(updated_at) \
-                         ELSE NULL END AS age_days \
+                         ELSE NULL END AS age_days, \
+                    summary \
                  FROM tasks WHERE id = ?1",
             )?;
             let row: std::result::Result<HydratedSource, rusqlite::Error> =
@@ -1987,10 +1996,11 @@ fn load_source_row(
                     let notes: Option<String> = r.get(1)?;
                     let created_at: String = r.get(2)?;
                     let age_days: Option<f64> = r.get(3)?;
+                    let summary: Option<String> = r.get(4)?;
                     Ok(HydratedSource {
                         title,
                         body: notes.unwrap_or_default(),
-                        summary: None,
+                        summary,
                         source: String::new(),
                         is_stale: false,
                         superseded_by: None,
@@ -2707,6 +2717,7 @@ mod tests {
             "deploy-command",
             "kubectl apply kindprobe",
             Some("command"),
+            None,
             "user",
             "cli:user",
         )
@@ -2752,6 +2763,52 @@ mod tests {
             .find(|h| h.source_id == untagged_id)
             .expect("untagged fact must surface");
         assert_eq!(untagged_hit.kind, None);
+    }
+
+    /// Issue #349: a fact's and a task's summary is loaded into the
+    /// candidate the re-ranker scores (`summary\n\ntitle\n\nbody`), as a
+    /// decision's is; a row without one still loads `None`.
+    #[test]
+    fn fact_and_task_summaries_reach_the_rerank_input() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let (fact_id, _) = fact::add_with_kind(
+            temp.path(),
+            "k",
+            "v",
+            None,
+            Some("fact paraphrase"),
+            "user",
+            "cli:user",
+        )
+        .expect("fact");
+        let (plain_fact_id, _) =
+            fact::add(temp.path(), "k2", "v2", "user", "cli:user").expect("plain fact");
+        let task_id = task::add_with_status(
+            temp.path(),
+            "t",
+            None,
+            Some("task paraphrase"),
+            "open",
+            "cli:user",
+        )
+        .expect("task");
+        let ctx = crate::db::open_project(temp.path()).expect("open");
+        let summary_of = |st, id| {
+            load_source_row(&ctx.conn, st, id, 90)
+                .expect("load")
+                .expect("row")
+                .summary
+        };
+        assert_eq!(
+            summary_of(SourceType::Fact, fact_id).as_deref(),
+            Some("fact paraphrase")
+        );
+        assert_eq!(summary_of(SourceType::Fact, plain_fact_id), None);
+        assert_eq!(
+            summary_of(SourceType::Task, task_id).as_deref(),
+            Some("task paraphrase")
+        );
     }
 
     // The horizon is config-driven: `[retrieval] fact_stale_after_days`
@@ -5717,10 +5774,12 @@ explainscopeprobe second.
             ),
         )
         .expect("recall");
+        // Plurals never route, and porter stemming (migration 0026) gives
+        // them the same full-text terms as the singular words.
         let plain = recall(
             temp.path(),
             explain_opts(
-                "xdecision 99 xtask 77 cargo build",
+                "decisions 99 tasks 77 cargo build",
                 RetrievalMode::Fts,
                 5,
                 vec![],

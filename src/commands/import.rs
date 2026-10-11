@@ -204,8 +204,8 @@ fn insert_facts(tx: &Transaction<'_>, rows: &[v1::Fact]) -> Result<()> {
     // that points at a not-yet-inserted newer fact resolves at commit
     // (same handling decisions already rely on).
     let mut stmt = tx.prepare(
-        "INSERT INTO facts(id, project_id, key, value, confidence, source, verified_at, created_at, superseded_by, kind)
-         VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO facts(id, project_id, key, value, confidence, source, verified_at, created_at, superseded_by, kind, summary)
+         VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
     )?;
     for fact in rows {
         stmt.execute(params![
@@ -218,6 +218,7 @@ fn insert_facts(tx: &Transaction<'_>, rows: &[v1::Fact]) -> Result<()> {
             fact.created_at,
             fact.superseded_by,
             fact.kind,
+            fact.summary,
         ])?;
     }
     Ok(())
@@ -245,8 +246,8 @@ fn insert_decisions(tx: &Transaction<'_>, rows: &[v1::Decision]) -> Result<()> {
 
 fn insert_tasks(tx: &Transaction<'_>, rows: &[v1::Task]) -> Result<()> {
     let mut stmt = tx.prepare(
-        "INSERT INTO tasks(id, project_id, title, status, notes, created_at, updated_at)
-         VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO tasks(id, project_id, title, status, notes, created_at, updated_at, summary)
+         VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7)",
     )?;
     for task in rows {
         stmt.execute(params![
@@ -256,6 +257,7 @@ fn insert_tasks(tx: &Transaction<'_>, rows: &[v1::Task]) -> Result<()> {
             task.notes,
             task.created_at,
             task.updated_at,
+            task.summary,
         ])?;
     }
     Ok(())

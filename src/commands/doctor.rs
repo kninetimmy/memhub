@@ -755,7 +755,8 @@ fn lookup_toml_path<'a>(value: &'a toml::Value, dotted: &str) -> Option<&'a toml
 /// (source table, FTS5 shadow table) pairs. Mirrors every
 /// content-external FTS5 table in `project.sqlite` across the
 /// migrations (0002 legacy git-search chunks, 0009 facts/decisions/
-/// tasks, 0014 doc_chunks, 0022 session_notes, 0025 arch_sections). The
+/// tasks, 0014 doc_chunks, 0022 session_notes, 0025 arch_sections; 0026
+/// recreated all but chunk_fts with porter stemming). The
 /// sibling code-index DB is out of scope (disposable/rebuildable, per
 /// the PRD addendum).
 const FTS_TABLES: &[(&str, &str)] = &[
@@ -1666,6 +1667,19 @@ mod tests {
                 .unwrap_or("")
                 .contains("arch_sections")
         );
+    }
+
+    /// Issue #349: a DB upgraded through migration 0026 (which drops and
+    /// recreates six FTS tables) passes both FTS checks.
+    #[test]
+    fn fts_checks_pass_on_a_db_upgraded_through_0026() {
+        let mut conn = crate::db::seeded_pre_0026_db();
+        crate::db::apply_all(&mut conn).expect("upgrade");
+        let checks = check_integrity(&conn);
+        for id in ["fts_integrity", "fts_rowcounts"] {
+            let check = find(&checks, id);
+            assert_eq!(check.status, Status::Ok, "{check:#?}");
+        }
     }
 
     // -- Config group ------------------------------------------------------

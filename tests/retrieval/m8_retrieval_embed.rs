@@ -469,6 +469,42 @@ fn decision_add_with_summary_embeds_augmented_text() {
 }
 
 #[test]
+fn fact_and_task_set_summary_re_embed_and_clearing_restores_the_plain_vector() {
+    // Issue #349: setting a fact's or task's summary re-embeds the row in
+    // hybrid mode, as `decision set-summary` does; clearing it returns the
+    // embedding to the summary-less text, so the hash matches the original.
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+    switch_to_hybrid(temp.path());
+
+    let (fact_id, _) = fact::add(
+        temp.path(),
+        "deploy-host",
+        "prod-edge-42",
+        "user",
+        "cli:user",
+    )
+    .expect("fact");
+    let task_id =
+        task::add(temp.path(), "Backport hotfix", Some("notes"), "cli:user").expect("task");
+    let hash = |source_type: &str, id: i64| {
+        let ctx = db::open_project(temp.path()).expect("open project");
+        embedding_metadata(&ctx.conn, source_type, id).1
+    };
+    let (fact_plain, task_plain) = (hash("fact", fact_id), hash("task", task_id));
+
+    fact::set_summary(temp.path(), fact_id, Some("where we ship"), "cli:user").expect("fact");
+    task::set_summary(temp.path(), task_id, Some("release patch"), "cli:user").expect("task");
+    assert_ne!(hash("fact", fact_id), fact_plain);
+    assert_ne!(hash("task", task_id), task_plain);
+
+    fact::set_summary(temp.path(), fact_id, None, "cli:user").expect("clear fact");
+    task::set_summary(temp.path(), task_id, None, "cli:user").expect("clear task");
+    assert_eq!(hash("fact", fact_id), fact_plain);
+    assert_eq!(hash("task", task_id), task_plain);
+}
+
+#[test]
 fn decision_set_summary_re_embeds_existing_row() {
     // Backfill path: decision::set_summary updates the row's summary and
     // re-embeds inside the same transaction. Content_hash before and

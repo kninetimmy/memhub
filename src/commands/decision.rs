@@ -237,7 +237,7 @@ pub fn promote(start: &Path, id: i64, actor: &str) -> Result<GlobalDecisionOutco
     })
 }
 
-fn normalize_summary(summary: Option<&str>) -> Option<String> {
+pub(crate) fn normalize_summary(summary: Option<&str>) -> Option<String> {
     match summary {
         Some(s) if !s.trim().is_empty() => Some(s.to_string()),
         _ => None,

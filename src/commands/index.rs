@@ -142,10 +142,11 @@ pub fn rebuild(start: &Path, actor: &str) -> Result<RebuildSummary> {
         let texts: Vec<String> = rows
             .facts
             .iter()
-            .map(|(_, k, v)| fact_embed_text(k, v))
+            .map(|(_, k, v, s)| fact_embed_text(k, v, s.as_deref()))
             .collect();
         let vectors = embed_batch(&texts)?;
-        for ((id, _, _), (text, vector)) in rows.facts.iter().zip(texts.into_iter().zip(vectors)) {
+        for ((id, _, _, _), (text, vector)) in rows.facts.iter().zip(texts.into_iter().zip(vectors))
+        {
             facts_vectors.push((*id, vector, text));
         }
     }
@@ -166,10 +167,11 @@ pub fn rebuild(start: &Path, actor: &str) -> Result<RebuildSummary> {
         let texts: Vec<String> = rows
             .tasks
             .iter()
-            .map(|(_, t, n)| task_embed_text(t, n.as_deref()))
+            .map(|(_, t, n, s)| task_embed_text(t, n.as_deref(), s.as_deref()))
             .collect();
         let vectors = embed_batch(&texts)?;
-        for ((id, _, _), (text, vector)) in rows.tasks.iter().zip(texts.into_iter().zip(vectors)) {
+        for ((id, _, _, _), (text, vector)) in rows.tasks.iter().zip(texts.into_iter().zip(vectors))
+        {
             tasks_vectors.push((*id, vector, text));
         }
     }
@@ -258,9 +260,9 @@ pub fn rebuild(start: &Path, actor: &str) -> Result<RebuildSummary> {
 }
 
 struct CollectedRows {
-    facts: Vec<(i64, String, String)>,
+    facts: Vec<(i64, String, String, Option<String>)>,
     decisions: Vec<(i64, String, String, Option<String>)>,
-    tasks: Vec<(i64, String, Option<String>)>,
+    tasks: Vec<(i64, String, Option<String>, Option<String>)>,
     doc_chunks: Vec<(i64, String, String)>,
     notes: Vec<(i64, String)>,
     arch_sections: Vec<(i64, String, String)>,
@@ -268,12 +270,13 @@ struct CollectedRows {
 
 fn collect_source_rows(conn: &Connection) -> Result<CollectedRows> {
     let mut facts = Vec::new();
-    let mut stmt = conn.prepare("SELECT id, key, value FROM facts ORDER BY id")?;
+    let mut stmt = conn.prepare("SELECT id, key, value, summary FROM facts ORDER BY id")?;
     let rows = stmt.query_map([], |row| {
         Ok((
             row.get::<_, i64>(0)?,
             row.get::<_, String>(1)?,
             row.get::<_, String>(2)?,
+            row.get::<_, Option<String>>(3)?,
         ))
     })?;
     for row in rows {
@@ -296,12 +299,13 @@ fn collect_source_rows(conn: &Connection) -> Result<CollectedRows> {
     }
 
     let mut tasks = Vec::new();
-    let mut stmt = conn.prepare("SELECT id, title, notes FROM tasks ORDER BY id")?;
+    let mut stmt = conn.prepare("SELECT id, title, notes, summary FROM tasks ORDER BY id")?;
     let rows = stmt.query_map([], |row| {
         Ok((
             row.get::<_, i64>(0)?,
             row.get::<_, String>(1)?,
             row.get::<_, Option<String>>(2)?,
+            row.get::<_, Option<String>>(3)?,
         ))
     })?;
     for row in rows {
@@ -440,10 +444,13 @@ fn delete_orphan_embeddings(tx: &rusqlite::Transaction<'_>) -> Result<usize> {
     Ok(deleted)
 }
 
-fn count_current_fact_embeddings(conn: &Connection, rows: &[(i64, String, String)]) -> Result<i64> {
+fn count_current_fact_embeddings(
+    conn: &Connection,
+    rows: &[(i64, String, String, Option<String>)],
+) -> Result<i64> {
     let mut count = 0;
-    for (id, key, value) in rows {
-        let text = fact_embed_text(key, value);
+    for (id, key, value, summary) in rows {
+        let text = fact_embed_text(key, value, summary.as_deref());
         if embedding_matches(conn, SourceType::Fact, *id, &text)? {
             count += 1;
         }
@@ -467,11 +474,11 @@ fn count_current_decision_embeddings(
 
 fn count_current_task_embeddings(
     conn: &Connection,
-    rows: &[(i64, String, Option<String>)],
+    rows: &[(i64, String, Option<String>, Option<String>)],
 ) -> Result<i64> {
     let mut count = 0;
-    for (id, title, notes) in rows {
-        let text = task_embed_text(title, notes.as_deref());
+    for (id, title, notes, summary) in rows {
+        let text = task_embed_text(title, notes.as_deref(), summary.as_deref());
         if embedding_matches(conn, SourceType::Task, *id, &text)? {
             count += 1;
         }
@@ -552,12 +559,13 @@ fn current_source_hash(
     let text = match source_type {
         SourceType::Fact => tx
             .query_row(
-                "SELECT key, value FROM facts WHERE id = ?1",
+                "SELECT key, value, summary FROM facts WHERE id = ?1",
                 params![source_id],
                 |row| {
                     let key: String = row.get(0)?;
                     let value: String = row.get(1)?;
-                    Ok(fact_embed_text(&key, &value))
+                    let summary: Option<String> = row.get(2)?;
+                    Ok(fact_embed_text(&key, &value, summary.as_deref()))
                 },
             )
             .optional()?,
@@ -575,12 +583,17 @@ fn current_source_hash(
             .optional()?,
         SourceType::Task => tx
             .query_row(
-                "SELECT title, notes FROM tasks WHERE id = ?1",
+                "SELECT title, notes, summary FROM tasks WHERE id = ?1",
                 params![source_id],
                 |row| {
                     let title: String = row.get(0)?;
                     let notes: Option<String> = row.get(1)?;
-                    Ok(task_embed_text(&title, notes.as_deref()))
+                    let summary: Option<String> = row.get(2)?;
+                    Ok(task_embed_text(
+                        &title,
+                        notes.as_deref(),
+                        summary.as_deref(),
+                    ))
                 },
             )
             .optional()?,
@@ -930,14 +943,14 @@ mod tests {
         let texts: Vec<String> = snapshot_rows
             .facts
             .iter()
-            .map(|(_, key, value)| fact_embed_text(key, value))
+            .map(|(_, key, value, summary)| fact_embed_text(key, value, summary.as_deref()))
             .collect();
         let vectors = embed_batch(&texts).expect("embed snapshot");
         let stale_vectors: Vec<(i64, Vec<f32>, String)> = snapshot_rows
             .facts
             .iter()
             .zip(texts.into_iter().zip(vectors))
-            .map(|((id, _, _), (text, vector))| (*id, vector, text))
+            .map(|((id, _, _, _), (text, vector))| (*id, vector, text))
             .collect();
 
         fact::add(temp.path(), "k", "value-two", "user", "cli:user").expect("update");

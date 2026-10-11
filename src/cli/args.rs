@@ -840,10 +840,27 @@ pub enum FactCommand {
         /// env, preference, command, constraint.
         #[arg(long)]
         kind: Option<String>,
+        /// Optional natural-language "what this answers" paraphrase,
+        /// prepended to the embed text and re-rank input and indexed for
+        /// full-text search (as on decisions). Re-adding an existing key
+        /// without it keeps the fact's current summary.
+        #[arg(long)]
+        summary: Option<String>,
         /// Write to the machine-global store instead of this repo's
         /// DB. Requires `memhub global enable` in this repo (M9).
         #[arg(long)]
         global: bool,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// Backfill (or overwrite) the natural-language summary on an
+    /// existing fact. Empty string clears the summary back to NULL.
+    /// Re-embeds the row inside the same transaction.
+    SetSummary {
+        id: i64,
+        summary: String,
         #[arg(long)]
         json: bool,
         #[arg(long)]
@@ -1046,6 +1063,22 @@ pub enum TaskCommand {
         title: String,
         #[arg(long)]
         notes: Option<String>,
+        /// Optional natural-language "what this answers" paraphrase,
+        /// prepended to the embed text and re-rank input and indexed for
+        /// full-text search (as on decisions).
+        #[arg(long)]
+        summary: Option<String>,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// Backfill (or overwrite) the natural-language summary on an
+    /// existing task. Empty string clears the summary back to NULL.
+    /// Re-embeds the row inside the same transaction.
+    SetSummary {
+        id: i64,
+        summary: String,
         #[arg(long)]
         json: bool,
         #[arg(long)]

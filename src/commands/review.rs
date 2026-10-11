@@ -132,7 +132,7 @@ pub struct AcceptOutcome {
 // yields ONE refusal naming the row, and the operator re-runs `review
 // accept` with `--supersede <id>` (retire the old row, reusing L3's
 // demote-with-link) or `--force` (proceed anyway; for facts the prior
-// value is logged by `fact::add_in_tx`). Reuses the existing cross-encoder
+// value is logged by `fact::add_with_kind_in_tx`). Reuses the existing cross-encoder
 // reranker seam rather than a new model.
 // ---------------------------------------------------------------------
 
@@ -267,7 +267,7 @@ fn gather_probe_candidates(
     match kind {
         "fact" => {
             let mut stmt = tx.prepare(
-                "SELECT id, key, value FROM facts
+                "SELECT id, key, value, summary FROM facts
                  WHERE project_id = 1 AND superseded_by IS NULL
                  ORDER BY id DESC LIMIT ?1",
             )?;
@@ -276,16 +276,17 @@ fn gather_probe_candidates(
                     r.get::<_, i64>(0)?,
                     r.get::<_, String>(1)?,
                     r.get::<_, String>(2)?,
+                    r.get::<_, Option<String>>(3)?,
                 ))
             })?;
             for row in rows {
-                let (row_id, key, value) = row?;
+                let (row_id, key, value, summary) = row?;
                 if exclude_fact_key == Some(key.as_str()) {
                     continue;
                 }
                 out.push(ProbeCandidate {
                     source_id: row_id,
-                    text: crate::retrieval::fact_embed_text(&key, &value),
+                    text: crate::retrieval::fact_embed_text(&key, &value, summary.as_deref()),
                     label: format!("fact '{key}' (#{row_id})"),
                 });
             }
@@ -424,15 +425,23 @@ pub fn accept(
                     && let Some(conflict) = probe_contradiction(
                         &tx,
                         "fact",
-                        &crate::retrieval::fact_embed_text(key, value),
+                        &crate::retrieval::fact_embed_text(key, value, None),
                         Some((key, value)),
                         config.retrieval.use_reranker,
                     )?
                 {
                     return Err(MemhubError::InvalidInput(conflict.advisory(id)));
                 }
-                let (fact_id, _) =
-                    fact::add_with_kind_in_tx(&tx, key, value, kind, &derived_source, actor, mode)?;
+                let (fact_id, _) = fact::add_with_kind_in_tx(
+                    &tx,
+                    key,
+                    value,
+                    kind,
+                    None,
+                    &derived_source,
+                    actor,
+                    mode,
+                )?;
                 // Honor --supersede whenever supplied: retire the named row in
                 // favor of the fact just written (L3 demote-with-link). A
                 // same-key overwrite yields the same row id, which
@@ -1100,6 +1109,7 @@ fn write_durable_global(
                 key,
                 value,
                 fact_kind,
+                None,
                 derived_source,
                 actor,
                 mode,

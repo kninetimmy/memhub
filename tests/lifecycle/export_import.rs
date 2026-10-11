@@ -347,6 +347,7 @@ fn export_import_round_trips_fact_kind() {
         "deploy-script",
         "./deploy.sh --prod",
         Some("gotcha"),
+        None,
         "user",
         "cli:user",
     )
@@ -456,6 +457,110 @@ fn import_accepts_v1_export_missing_fact_kind_field() {
         facts[0].kind, None,
         "kind should default to None for a pre-0021 backup"
     );
+}
+
+fn stored_summary(path: &std::path::Path, table: &str, id: i64) -> Option<String> {
+    let ctx = db::open_project(path).expect("open project");
+    ctx.conn
+        .query_row(
+            &format!("SELECT summary FROM {table} WHERE id = ?1"),
+            [id],
+            |r| r.get(0),
+        )
+        .expect("read summary")
+}
+
+#[test]
+fn export_import_round_trips_fact_and_task_summaries() {
+    // Issue #349: facts.summary and tasks.summary (migration 0026) ride
+    // the v1 export like decisions.summary does.
+    let source = tempdir().expect("source tempdir");
+    init::run(source.path()).expect("source init");
+    let (fact_id, _) = fact::add_with_kind(
+        source.path(),
+        "k",
+        "v",
+        None,
+        Some("fact paraphrase"),
+        "user",
+        "cli:user",
+    )
+    .expect("fact");
+    let (plain_fact_id, _) =
+        fact::add(source.path(), "k2", "v2", "user", "cli:user").expect("plain fact");
+    let task_id = task::add_with_status(
+        source.path(),
+        "t",
+        None,
+        Some("task paraphrase"),
+        "open",
+        "cli:user",
+    )
+    .expect("task");
+
+    let export_path = source.path().join("export.json");
+    export::run(source.path(), &export_path).expect("export succeeds");
+    let target = tempdir().expect("target tempdir");
+    init::run(target.path()).expect("target init");
+    import::run(target.path(), &export_path, false).expect("import succeeds");
+
+    assert_eq!(
+        stored_summary(target.path(), "facts", fact_id).as_deref(),
+        Some("fact paraphrase")
+    );
+    assert_eq!(stored_summary(target.path(), "facts", plain_fact_id), None);
+    assert_eq!(
+        stored_summary(target.path(), "tasks", task_id).as_deref(),
+        Some("task paraphrase")
+    );
+}
+
+#[test]
+fn import_accepts_v1_export_missing_fact_and_task_summary_fields() {
+    // Exports written before migration 0026 omit `summary` on facts and
+    // tasks; they still import, with the summaries left empty.
+    let target = tempdir().expect("target tempdir");
+    init::run(target.path()).expect("target init");
+
+    let legacy_export = serde_json::json!({
+        "memhub_export_version": 1,
+        "exported_at": "2025-01-01T00:00:00Z",
+        "exported_by": "memhub legacy",
+        "source_schema_version": "0025_arch_sections",
+        "project": {
+            "root_path_at_export": target.path().to_string_lossy(),
+            "created_at": "2025-01-01T00:00:00Z",
+        },
+        "facts": [{
+            "id": 1,
+            "key": "legacy-fact",
+            "value": "predates fact summaries",
+            "confidence": 1.0,
+            "source": "user",
+            "verified_at": null,
+            "created_at": "2025-01-01T00:00:00Z",
+        }],
+        "decisions": [],
+        "tasks": [{
+            "id": 1,
+            "title": "legacy task",
+            "status": "open",
+            "notes": null,
+            "created_at": "2025-01-01T00:00:00Z",
+            "updated_at": "2025-01-01T00:00:00Z",
+        }],
+        "commands": [],
+        "pending_writes": [],
+        "writes_log": []
+    });
+    let legacy_path = target.path().join("legacy.json");
+    fs::write(&legacy_path, legacy_export.to_string()).expect("write legacy export");
+
+    let summary =
+        import::run(target.path(), &legacy_path, true).expect("legacy import should succeed");
+    assert_eq!((summary.facts, summary.tasks), (1, 1));
+    assert_eq!(stored_summary(target.path(), "facts", 1), None);
+    assert_eq!(stored_summary(target.path(), "tasks", 1), None);
 }
 
 #[test]

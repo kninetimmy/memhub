@@ -667,7 +667,10 @@ mod tests {
                     |r| r.get(0),
                 )
                 .expect("fts query");
-            assert_eq!(hits, 1, "{fts} must find its pre-0026 row by a stemmed word");
+            assert_eq!(
+                hits, 1,
+                "{fts} must find its pre-0026 row by a stemmed word"
+            );
         }
         for table in ["facts", "tasks"] {
             let summary: Option<String> = conn

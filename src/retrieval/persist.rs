@@ -49,9 +49,15 @@ impl SourceType {
 }
 
 /// Build the embed text for a fact. Embeds key + value so the model sees
-/// the label and the body in one short sentence-like string.
-pub fn fact_embed_text(key: &str, value: &str) -> String {
-    format!("{key}: {value}")
+/// the label and the body in one short sentence-like string. A present,
+/// non-blank `summary` is prepended the way [`decision_embed_text`] does
+/// it; without one the text is exactly the pre-summary `key: value`, so
+/// adding the column (migration 0026) staled no existing embedding.
+pub fn fact_embed_text(key: &str, value: &str, summary: Option<&str>) -> String {
+    match summary {
+        Some(s) if !s.trim().is_empty() => format!("{s}\n\n{key}: {value}"),
+        _ => format!("{key}: {value}"),
+    }
 }
 
 /// Build the embed text for a decision. When `summary` is present and
@@ -67,11 +73,17 @@ pub fn decision_embed_text(title: &str, rationale: &str, summary: Option<&str>) 
 }
 
 /// Build the embed text for a task. Notes are optional; when present they
-/// follow the title separated by a blank line.
-pub fn task_embed_text(title: &str, notes: Option<&str>) -> String {
-    match notes {
+/// follow the title separated by a blank line. A present, non-blank
+/// `summary` is prepended as for facts and decisions; without one the
+/// text is exactly the pre-summary shape (migration 0026).
+pub fn task_embed_text(title: &str, notes: Option<&str>, summary: Option<&str>) -> String {
+    let base = match notes {
         Some(n) if !n.is_empty() => format!("{title}\n\n{n}"),
         _ => title.to_string(),
+    };
+    match summary {
+        Some(s) if !s.trim().is_empty() => format!("{s}\n\n{base}"),
+        _ => base,
     }
 }
 
@@ -275,6 +287,21 @@ mod tests {
         // force a spurious re-embed across every machine.
         assert_eq!(decision_embed_text("T", "R", Some("")), "T\n\nR");
         assert_eq!(decision_embed_text("T", "R", Some("   \n  ")), "T\n\nR");
+    }
+
+    /// Issue #349: without a summary a fact's and a task's embed text is
+    /// byte-identical to the pre-summary format, so upgrading stales no
+    /// embedding; a blank summary counts as none; a real one is prepended.
+    #[test]
+    fn fact_and_task_embed_text_without_summary_match_legacy_format() {
+        assert_eq!(fact_embed_text("k", "v", None), "k: v");
+        assert_eq!(fact_embed_text("k", "v", Some("  ")), "k: v");
+        assert_eq!(fact_embed_text("k", "v", Some("S")), "S\n\nk: v");
+        assert_eq!(task_embed_text("T", Some("N"), None), "T\n\nN");
+        assert_eq!(task_embed_text("T", None, None), "T");
+        assert_eq!(task_embed_text("T", Some(""), Some("")), "T");
+        assert_eq!(task_embed_text("T", Some("N"), Some("S")), "S\n\nT\n\nN");
+        assert_eq!(task_embed_text("T", None, Some("S")), "S\n\nT");
     }
 
     // eager_embed_batch_in_tx has no real FK on embeddings.source_id (see

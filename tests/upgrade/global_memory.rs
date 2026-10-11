@@ -459,4 +459,48 @@ fn machine_global_memory_end_to_end() {
         main_global,
         "the global row found by both phrasings appears once"
     );
+
+    // --- fact summaries reach the global store (issue #349) ----------
+    fact::add_global_with_kind(
+        repo_a.path(),
+        "epsilon-key",
+        "epsilon-value",
+        None,
+        Some("wombatsummary born global"),
+        "user",
+        "cli:user",
+    )
+    .expect("global fact with summary");
+    let (zeta_id, _) =
+        fact::add(repo_a.path(), "zeta-key", "zeta-value", "user", "cli:user").expect("zeta");
+    fact::set_summary(
+        repo_a.path(),
+        zeta_id,
+        Some("numbatsummary promoted"),
+        "cli:user",
+    )
+    .expect("zeta summary");
+    fact::promote(repo_a.path(), zeta_id, "cli:user").expect("promote zeta");
+    let global_db = rusqlite::Connection::open(memhub::db::global_db_path().expect("global path"))
+        .expect("open global db");
+    let summary_of = |key: &str| -> Option<String> {
+        global_db
+            .query_row("SELECT summary FROM facts WHERE key = ?1", [key], |r| {
+                r.get(0)
+            })
+            .expect("global summary")
+    };
+    assert_eq!(
+        summary_of("epsilon-key").as_deref(),
+        Some("wombatsummary born global")
+    );
+    assert_eq!(
+        summary_of("zeta-key").as_deref(),
+        Some("numbatsummary promoted"),
+        "promote keeps the fact's summary"
+    );
+    assert!(
+        has_scope(&fts_recall(repo_a.path(), "wombatsummary"), "global"),
+        "a global fact's summary is full-text searchable"
+    );
 }

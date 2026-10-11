@@ -57,6 +57,11 @@ pub struct Fact {
     /// same treatment as `superseded_by` above.
     #[serde(default)]
     pub kind: Option<String>,
+    /// Optional natural-language paraphrase, added in migration 0026
+    /// (issue #349). `#[serde(default)]` keeps exports written before
+    /// this column existed importable cleanly as `None`.
+    #[serde(default)]
+    pub summary: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -88,6 +93,11 @@ pub struct Task {
     pub notes: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// Optional natural-language paraphrase, added in migration 0026
+    /// (issue #349). `#[serde(default)]` keeps older exports importable
+    /// cleanly as `None`.
+    #[serde(default)]
+    pub summary: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
