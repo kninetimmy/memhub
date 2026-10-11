@@ -16,5 +16,7 @@ pub use persist::{
     SourceType, arch_section_embed_text, decision_embed_text, doc_chunk_embed_text,
     eager_embed_batch_in_tx, eager_embed_in_tx, fact_embed_text, note_embed_text, task_embed_text,
 };
-pub use recall::{RecallHit, RecallOptions, RecallResponse, RecallSurface, RecallWarning, recall};
+pub use recall::{
+    RecallExplain, RecallHit, RecallOptions, RecallResponse, RecallSurface, RecallWarning, recall,
+};
 pub use rerank::RERANKER_MODEL_NAME;

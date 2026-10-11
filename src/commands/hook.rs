@@ -18,9 +18,9 @@
 //! symlink is skipped, an install record that is one is left unwritten, an
 //! existing memhub entry is never duplicated, the write is atomic, and an
 //! entry the user deleted after memhub added or found it is not re-added
-//! (remembered in `~/.memhub/installed-hooks.json`). The Codex handler also carries
-//! `additionalContextLimit` so Codex shows the whole frame instead of its
-//! default ~2,500-token head-and-tail preview; an existing memhub Codex
+//! (remembered in `~/.memhub/installed-hooks.json`). The Codex handler also
+//! carries `additionalContextLimit` so Codex shows the whole frame instead of
+//! its default ~2,500-token head-and-tail preview; an existing memhub Codex
 //! handler without the field gets it added.
 
 use std::collections::BTreeSet;

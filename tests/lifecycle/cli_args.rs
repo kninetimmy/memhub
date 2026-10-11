@@ -422,3 +422,16 @@ fn recall_source_type_accepts_arch_and_lists_it_on_error() {
     assert!(message.contains("blueprint"), "unexpected error: {message}");
     assert!(message.contains("arch"), "error must list arch: {message}");
 }
+
+/// Issue #318: `recall --explain` parses, and is off by default.
+#[test]
+fn recall_explain_flag_parses_and_defaults_off() {
+    match parse(&["recall", "q", "--explain"]) {
+        TopLevelCommand::Recall { explain, .. } => assert!(explain),
+        other => panic!("expected Recall, got {other:?}"),
+    }
+    match parse(&["recall", "q"]) {
+        TopLevelCommand::Recall { explain, .. } => assert!(!explain),
+        other => panic!("expected Recall, got {other:?}"),
+    }
+}

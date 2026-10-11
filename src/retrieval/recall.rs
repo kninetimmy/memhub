@@ -186,6 +186,51 @@ pub struct RecallResponse {
     /// most ingested chunks still don't surface and this count stays
     /// meaningfully non-zero.
     pub available_docs: usize,
+    /// Per-reason accounting of rows this call dropped, demoted or cut.
+    /// Always computed (a handful of counters); the CLI and MCP surfaces
+    /// print it only when the caller passes `explain`.
+    pub explain: RecallExplain,
+}
+
+/// Why a recall came back empty or thin: how many candidate rows each
+/// stage dropped, demoted or cut, summed over every store the call
+/// searched. Pure bookkeeping -- nothing here feeds ranking.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct RecallExplain {
+    /// Whether the cross-encoder re-ranker ran (hybrid mode, enabled, and
+    /// more than one candidate). Without it no relevance floor applies.
+    pub reranker_ran: bool,
+    /// Rows under `min_rerank_score` (every row except default-included
+    /// doc chunks). Includes rows later returned as `low_confidence`
+    /// fallback hits.
+    pub dropped_by_floor: usize,
+    /// Default-included doc chunks under `doc_min_rerank_score`.
+    pub dropped_by_doc_floor: usize,
+    /// Stale rows excluded because stale rows were excluded
+    /// (`include_stale` off).
+    pub stale_excluded: usize,
+    /// Rows excluded by accepted-only.
+    pub accepted_only_excluded: usize,
+    /// Superseded rows kept but demoted by `superseded_penalty`.
+    pub superseded_demoted: usize,
+    /// Stale rows kept but demoted by `stale_penalty`.
+    pub stale_demoted: usize,
+    /// Rows beyond `rerank_candidate_pool` never sent to the re-ranker.
+    pub rerank_pool_cut: usize,
+    /// Rows beyond `max_results` cut from the final bundle.
+    pub result_limit_cut: usize,
+    /// Default-included doc chunks dropped because the re-ranker did not
+    /// run to vet them.
+    pub docs_dropped_no_rerank: usize,
+    /// Ingested doc chunks (over the stores searched) this call did not
+    /// search: the full chunk total when doc chunks were not among the
+    /// searched source types, 0 when they were (default inclusion or an
+    /// explicit doc scope). Unlike `available_docs`, a chunk that was
+    /// searched but not surfaced does not count.
+    pub docs_not_searched: usize,
+    /// A machine-global store exists but was not searched because this
+    /// repo has not opted in (`[global] enabled`).
+    pub global_store_not_searched: bool,
 }
 
 /// Top-level entry: resolves config, gathers scored candidates from
@@ -227,6 +272,7 @@ pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
     let mut warnings = repo.warnings;
     let mut doc_chunk_total = repo.doc_chunk_total;
     let mut demoted_stale_count = repo.demoted_stale_count;
+    let mut explain = repo.explain;
 
     if ctx.config.global.enabled
         && let Some(gctx) = db::open_global_if_exists()?
@@ -240,7 +286,15 @@ pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
         warnings.extend(g.warnings);
         doc_chunk_total += g.doc_chunk_total;
         demoted_stale_count += g.demoted_stale_count;
+        explain.stale_excluded += g.explain.stale_excluded;
+        explain.accepted_only_excluded += g.explain.accepted_only_excluded;
+        explain.superseded_demoted += g.explain.superseded_demoted;
+    } else {
+        // Diagnostic only: an unresolvable home dir must not fail a recall
+        // that never needed the global store.
+        explain.global_store_not_searched = matches!(db::global_store_exists(), Ok(true));
     }
+    explain.stale_demoted = demoted_stale_count;
 
     // Un-silence staleness (Q1 / decision 145): when stale facts were kept
     // and demoted rather than excluded, tell the caller how many. This is
@@ -281,6 +335,7 @@ pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
         candidate_count,
         warnings,
         doc_chunk_total,
+        explain,
         started,
     )?;
 
@@ -417,6 +472,9 @@ struct GatherResult {
     /// `COUNT(*)` of `doc_chunks` in this corpus, summed across
     /// corpora by the orchestrator for the `available_docs` cue.
     doc_chunk_total: i64,
+    /// Only the per-store counters (`stale_excluded`,
+    /// `accepted_only_excluded`, `superseded_demoted`) are filled here.
+    explain: RecallExplain,
 }
 
 /// Connection-scoped candidate gather: FTS + (hybrid) vector + stale
@@ -509,24 +567,26 @@ fn gather_scored(
     // (`include_stale`) keep aged facts and let `score()` demote them
     // (`stale_penalty`) with `stale: true`, rather than silently dropping
     // them. `include_stale = false` restores the old hard exclusion.
+    let mut explain = RecallExplain::default();
     let surviving: Vec<CandidateRow> = candidates
         .into_values()
         .filter(|c| c.has_source_row())
         .filter(|c| {
-            if opts.include_stale {
-                true
-            } else {
-                !c.is_stale
-            }
-        })
-        .filter(|c| {
-            if opts.accepted_only {
-                is_accepted_source(&c.source)
+            if !opts.include_stale && c.is_stale {
+                explain.stale_excluded += 1;
+                false
+            } else if opts.accepted_only && !is_accepted_source(&c.source) {
+                explain.accepted_only_excluded += 1;
+                false
             } else {
                 true
             }
         })
         .collect();
+    explain.superseded_demoted = surviving
+        .iter()
+        .filter(|c| c.superseded_by.is_some())
+        .count();
 
     let candidate_count = surviving.len();
     // Stale survivors are the demoted rows (only nonzero when include_stale
@@ -558,6 +618,7 @@ fn gather_scored(
         warnings,
         demoted_stale_count,
         doc_chunk_total,
+        explain,
     })
 }
 
@@ -570,6 +631,7 @@ fn finalize(
     candidate_count: usize,
     mut warnings: Vec<RecallWarning>,
     doc_chunk_total: i64,
+    mut explain: RecallExplain,
     started: Instant,
 ) -> Result<RecallResponse> {
     // Optional cross-encoder re-rank pass (decision 68). Only runs on
@@ -580,7 +642,9 @@ fn finalize(
     // truncates to `max_results`. fts-only callers and trivially short
     // candidate sets bypass entirely.
     let reranked = opts.mode == RetrievalMode::Hybrid && opts.use_reranker && scored.len() > 1;
+    explain.reranker_ran = reranked;
     if reranked {
+        explain.rerank_pool_cut = scored.len().saturating_sub(opts.rerank_candidate_pool);
         scored.truncate(opts.rerank_candidate_pool);
         // Cross-encoder input mirrors the bi-encoder's embed text shape:
         // prepend the row's natural-language summary when present so the
@@ -619,6 +683,11 @@ fn finalize(
                     opts.min_rerank_score
                 };
                 if score < floor {
+                    if doc_floor {
+                        explain.dropped_by_doc_floor += 1;
+                    } else {
+                        explain.dropped_by_floor += 1;
+                    }
                     if highest_dropped.is_none_or(|highest| score > highest) {
                         highest_dropped = Some(score);
                     }
@@ -659,8 +728,11 @@ fn finalize(
     // letting unscored chunks displace project memory. Explicit
     // `--source-type doc` (docs_via_default = false) is unaffected.
     if opts.docs_via_default && !reranked {
+        let before = scored.len();
         scored.retain(|h| h.source_type != SourceType::DocChunk);
+        explain.docs_dropped_no_rerank = before - scored.len();
     }
+    explain.result_limit_cut = scored.len().saturating_sub(opts.max_results);
     scored.truncate(opts.max_results);
 
     let mut results = Vec::with_capacity(scored.len());
@@ -736,6 +808,14 @@ fn finalize(
         matcher,
         elapsed_ms: started.elapsed().as_millis(),
         available_docs,
+        explain: RecallExplain {
+            docs_not_searched: if opts.source_types.contains(&SourceType::DocChunk) {
+                0
+            } else {
+                doc_chunk_total.max(0) as usize
+            },
+            ..explain
+        },
     })
 }
 
@@ -2990,6 +3070,332 @@ mod tests {
         assert_eq!(
             scoped.available_docs, 0,
             "available_docs is 0 when the caller already scoped to docs"
+        );
+    }
+
+    // Issue #318: `RecallExplain` accounts for every row a call dropped,
+    // demoted or cut, per reason.
+    fn explain_opts(
+        query: &str,
+        mode: RetrievalMode,
+        max_results: usize,
+        source_types: Vec<SourceType>,
+    ) -> RecallOptions {
+        RecallOptions {
+            query: query.to_string(),
+            mode: Some(mode),
+            max_results,
+            source_types,
+            include_stale: None,
+            accepted_only: None,
+            use_reranker: None,
+            min_rerank_score: None,
+            log_metrics: false,
+            surface: None,
+        }
+    }
+
+    fn edit_config(temp: &std::path::Path, edit: impl FnOnce(&mut ProjectConfig)) {
+        let cfg_path = temp.join(".memhub/config.toml");
+        let mut cfg = ProjectConfig::load(&cfg_path).expect("load config");
+        edit(&mut cfg);
+        cfg.save(&cfg_path).expect("save config");
+    }
+
+    #[test]
+    fn explain_counts_stale_rows_excluded_and_demoted() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let (fact_id, _) = fact::add(
+            temp.path(),
+            "deploy-command",
+            "kubectl apply explainstaleprobe",
+            "user",
+            "cli:user",
+        )
+        .expect("fact");
+        age_fact(temp.path(), fact_id, 200);
+        let query = "explainstaleprobe";
+
+        let kept = recall(
+            temp.path(),
+            explain_opts(query, RetrievalMode::Fts, 5, vec![SourceType::Fact]),
+        )
+        .expect("recall");
+        assert_eq!(kept.explain.stale_demoted, 1);
+        assert_eq!(kept.explain.stale_excluded, 0);
+
+        let excluded = recall(
+            temp.path(),
+            RecallOptions {
+                include_stale: Some(false),
+                ..explain_opts(query, RetrievalMode::Fts, 5, vec![SourceType::Fact])
+            },
+        )
+        .expect("recall");
+        assert_eq!(excluded.explain.stale_excluded, 1);
+        assert_eq!(excluded.explain.stale_demoted, 0);
+    }
+
+    #[test]
+    fn explain_counts_rows_excluded_by_accepted_only() {
+        let temp = tempdir().expect("tempdir");
+        seed(temp.path()); // `lint-command` is agent-sourced
+        let response = recall(
+            temp.path(),
+            RecallOptions {
+                accepted_only: Some(true),
+                ..explain_opts("command", RetrievalMode::Fts, 10, vec![SourceType::Fact])
+            },
+        )
+        .expect("recall");
+        assert_eq!(response.explain.accepted_only_excluded, 1);
+        assert_eq!(response.explain.stale_excluded, 0);
+    }
+
+    #[test]
+    fn explain_counts_superseded_rows_demoted() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let (old_id, _) = fact::add(
+            temp.path(),
+            "deploy-alpha",
+            "kubectl apply explainsupersedeprobe",
+            "user",
+            "cli:user",
+        )
+        .expect("old");
+        let (new_id, _) = fact::add(
+            temp.path(),
+            "deploy-bravo",
+            "kubectl apply explainsupersedeprobe",
+            "user",
+            "cli:user",
+        )
+        .expect("new");
+        fact::supersede(
+            temp.path(),
+            &old_id.to_string(),
+            &new_id.to_string(),
+            "cli:user",
+        )
+        .expect("supersede");
+        let response = recall(
+            temp.path(),
+            explain_opts(
+                "explainsupersedeprobe",
+                RetrievalMode::Fts,
+                5,
+                vec![SourceType::Fact],
+            ),
+        )
+        .expect("recall");
+        assert_eq!(response.results.len(), 2);
+        assert_eq!(response.explain.superseded_demoted, 1);
+    }
+
+    #[test]
+    fn explain_counts_rows_cut_by_the_result_limit() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        for key in ["limit-a", "limit-b", "limit-c"] {
+            fact::add(temp.path(), key, "explainlimitprobe", "user", "cli:user").expect("fact");
+        }
+        let response = recall(
+            temp.path(),
+            explain_opts(
+                "explainlimitprobe",
+                RetrievalMode::Fts,
+                1,
+                vec![SourceType::Fact],
+            ),
+        )
+        .expect("recall");
+        assert_eq!(response.returned_count, 1);
+        assert_eq!(response.explain.result_limit_cut, 2);
+        assert!(!response.explain.reranker_ran);
+    }
+
+    #[test]
+    fn explain_counts_default_docs_dropped_when_the_reranker_did_not_run() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let doc_file = temp.path().join("spec.md");
+        std::fs::write(
+            &doc_file,
+            "# Design Spec\n\n## Shapes\n\nButtons use a 4px explaindocprobe corner radius.\n",
+        )
+        .expect("write doc");
+        doc::add(temp.path(), &doc_file, None, "cli:user").expect("ingest doc");
+
+        // Default scope + FTS: the matching chunk is pooled, then dropped
+        // unvetted because the re-ranker never runs in FTS mode.
+        let response = recall(
+            temp.path(),
+            explain_opts("explaindocprobe", RetrievalMode::Fts, 10, vec![]),
+        )
+        .expect("recall");
+        assert!(response.results.is_empty());
+        assert_eq!(response.explain.docs_dropped_no_rerank, 1);
+        // The chunk was searched (docs join the default bundle), so it is
+        // dropped but not "not searched" even though `available_docs` > 0.
+        assert!(response.available_docs >= 1);
+        assert_eq!(response.explain.docs_not_searched, 0);
+        assert!(!response.explain.reranker_ran);
+
+        // Doc-scoped: nothing dropped, nothing unsearched.
+        let scoped = recall(
+            temp.path(),
+            explain_opts(
+                "explaindocprobe",
+                RetrievalMode::Fts,
+                10,
+                vec![SourceType::DocChunk],
+            ),
+        )
+        .expect("recall");
+        assert_eq!(scoped.explain.docs_dropped_no_rerank, 0);
+        assert_eq!(scoped.explain.docs_not_searched, 0);
+    }
+
+    #[test]
+    fn explain_counts_doc_chunks_not_searched_when_docs_are_out_of_scope() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        fact::add(
+            temp.path(),
+            "scope-fact",
+            "explainscopeprobe",
+            "user",
+            "cli:user",
+        )
+        .expect("fact");
+        let doc_file = temp.path().join("scope.md");
+        std::fs::write(
+            &doc_file,
+            "# Scope
+
+## One
+
+explainscopeprobe first.
+
+## Two
+
+explainscopeprobe second.
+",
+        )
+        .expect("write doc");
+        doc::add(temp.path(), &doc_file, None, "cli:user").expect("ingest doc");
+        let ingested: i64 = crate::db::open_project(temp.path())
+            .expect("open")
+            .conn
+            .query_row("SELECT COUNT(*) FROM doc_chunks", [], |r| r.get(0))
+            .expect("count chunks");
+        assert!(ingested >= 2);
+
+        // Fact-scoped: every ingested chunk is outside the searched corpora.
+        let response = recall(
+            temp.path(),
+            explain_opts(
+                "explainscopeprobe",
+                RetrievalMode::Fts,
+                10,
+                vec![SourceType::Fact],
+            ),
+        )
+        .expect("recall");
+        assert_eq!(response.explain.docs_not_searched, ingested as usize);
+
+        // Docs excluded from the default bundle: same count.
+        edit_config(temp.path(), |cfg| {
+            cfg.retrieval.include_docs_in_default = false;
+        });
+        let response = recall(
+            temp.path(),
+            explain_opts("explainscopeprobe", RetrievalMode::Fts, 10, vec![]),
+        )
+        .expect("recall");
+        assert_eq!(response.explain.docs_not_searched, ingested as usize);
+    }
+
+    #[test]
+    fn explain_counts_rows_dropped_by_the_relevance_floor() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        edit_config(temp.path(), |cfg| {
+            cfg.retrieval.mode = RetrievalMode::Hybrid
+        });
+        seed(temp.path()); // after the mode switch so the rows get embeddings
+        let response = recall(
+            temp.path(),
+            RecallOptions {
+                min_rerank_score: Some(1000.0),
+                ..explain_opts("build and lint", RetrievalMode::Hybrid, 10, vec![])
+            },
+        )
+        .expect("recall");
+        assert!(response.explain.reranker_ran);
+        assert!(response.candidate_count > 1);
+        assert_eq!(response.explain.dropped_by_floor, response.candidate_count);
+        assert_eq!(response.explain.dropped_by_doc_floor, 0);
+        // The fallback hits are among the floor-dropped rows.
+        assert!(response.results.iter().all(|h| h.low_confidence));
+    }
+
+    #[test]
+    fn explain_counts_default_docs_dropped_by_the_doc_floor() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        fact::add(
+            temp.path(),
+            "docfloorprobe",
+            "ordinary candidate for the doc floor count",
+            "user",
+            "cli:user",
+        )
+        .expect("fact");
+        let doc_file = temp.path().join("doc-floor.md");
+        std::fs::write(
+            &doc_file,
+            "# docfloorprobe\n\nDefault doc candidate for the doc floor count.\n",
+        )
+        .expect("write doc");
+        doc::add(temp.path(), &doc_file, None, "cli:user").expect("ingest doc");
+        edit_config(temp.path(), |cfg| {
+            cfg.retrieval.mode = RetrievalMode::Hybrid;
+            cfg.retrieval.scoring.min_rerank_score = -1000.0; // keep the fact
+            cfg.retrieval.scoring.doc_min_rerank_score = 1000.0; // drop the doc
+        });
+        let response = recall(
+            temp.path(),
+            explain_opts("docfloorprobe", RetrievalMode::Hybrid, 10, vec![]),
+        )
+        .expect("recall");
+        assert!(response.explain.reranker_ran);
+        assert_eq!(response.explain.dropped_by_doc_floor, 1);
+        assert_eq!(response.explain.dropped_by_floor, 0);
+        assert!(response.results.iter().all(|h| h.source_type == "fact"));
+    }
+
+    #[test]
+    fn explain_counts_rows_cut_by_the_rerank_candidate_pool() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        edit_config(temp.path(), |cfg| {
+            cfg.retrieval.mode = RetrievalMode::Hybrid;
+            cfg.retrieval.rerank_candidate_pool = 2;
+        });
+        seed(temp.path()); // after the mode switch so the rows get embeddings
+        let response = recall(
+            temp.path(),
+            explain_opts("build and lint", RetrievalMode::Hybrid, 1, vec![]),
+        )
+        .expect("recall");
+        assert!(response.explain.reranker_ran);
+        assert!(response.candidate_count > 2);
+        assert_eq!(
+            response.explain.rerank_pool_cut,
+            response.candidate_count - 2
         );
     }
 

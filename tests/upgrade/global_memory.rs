@@ -324,4 +324,52 @@ fn machine_global_memory_end_to_end() {
         !e_added2.enabled_default_recall,
         "a second global doc add for a repo already enabled must be a no-op"
     );
+
+    // --- recall --explain: unsearched global store + summed counters ---
+    // repo_c exists but never opted in, so the global store is not searched.
+    assert!(
+        fts_recall(repo_c.path(), "alpha-globalvalue")
+            .explain
+            .global_store_not_searched
+    );
+    assert!(
+        !fts_recall(repo_a.path(), "alpha-globalvalue")
+            .explain
+            .global_store_not_searched
+    );
+    // Counters sum over both stores: one agent-sourced fact in each is
+    // excluded by accepted-only.
+    fact::add(
+        repo_a.path(),
+        "sumprobe-repo",
+        "sumprobe",
+        "agent:codex",
+        "cli:user",
+    )
+    .expect("agent repo fact");
+    fact::add_global(
+        repo_a.path(),
+        "sumprobe-global",
+        "sumprobe",
+        "agent:codex",
+        "cli:user",
+    )
+    .expect("agent global fact");
+    let summed = recall(
+        repo_a.path(),
+        RecallOptions {
+            query: "sumprobe".to_string(),
+            mode: Some(RetrievalMode::Fts),
+            max_results: 10,
+            source_types: vec![],
+            include_stale: None,
+            accepted_only: Some(true),
+            use_reranker: None,
+            min_rerank_score: None,
+            log_metrics: false,
+            surface: None,
+        },
+    )
+    .expect("accepted-only recall");
+    assert_eq!(summed.explain.accepted_only_excluded, 2);
 }
