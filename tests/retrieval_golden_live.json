@@ -39,7 +39,7 @@
             " > Retrieval"
           ],
           "body_contains": [
-            "Baseline recorded 2026-07-06"
+            "First recorded 2026-07-06"
           ]
         },
         {
@@ -52,7 +52,7 @@
           ]
         }
       ],
-      "notes": "answer: decision 51; also: task 16, decision 36, decision 37, docs/reference/operations.md > Retrieval. category: seed"
+      "notes": "answer: decision 51; also: task 16, decision 36, decision 37, docs/reference/operations.md > Retrieval (\"First recorded 2026-07-06\"), docs/reference/operations.md > Retrieval (\"Hermetic golden fixture\"). category: seed"
     },
     {
       "id": "seed-02",
@@ -103,7 +103,7 @@
           ]
         }
       ],
-      "notes": "answer: decision 194; also: docs/reference/operations.md > Retrieval. category: seed"
+      "notes": "answer: decision 194; also: docs/reference/operations.md > Retrieval (\"consecutive repeats of a split section collapsed\"), docs/reference/operations.md > Retrieval (\"A lone wrapper heading is\"). category: seed"
     },
     {
       "id": "seed-04",
@@ -252,11 +252,11 @@
             " > Retrieval"
           ],
           "body_contains": [
-            "remain reachable only through an explicit"
+            "session notes remain reachable only through an"
           ]
         }
       ],
-      "notes": "answer: decision 190; also: arch_section 6, docs/reference/operations.md > Retrieval. category: seed"
+      "notes": "answer: decision 190; also: arch_section 6, docs/reference/operations.md > Retrieval (\"session notes remain reachable only through an\"). category: seed"
     },
     {
       "id": "seed-09",
@@ -302,11 +302,20 @@
             " > Retrieval"
           ],
           "body_contains": [
-            "Baseline recorded 2026-07-06"
+            "First recorded 2026-07-06"
+          ]
+        },
+        {
+          "source_type": "doc_chunk",
+          "title_contains": [
+            " > Retrieval"
+          ],
+          "body_contains": [
+            "First baseline, recorded 2026-10-10"
           ]
         }
       ],
-      "notes": "answer: decision 69; also: decision 36, decision 53, decision 51, fact 56, docs/reference/operations.md > Retrieval. category: seed"
+      "notes": "answer: decision 69; also: decision 36, decision 53, decision 51, fact 56, docs/reference/operations.md > Retrieval (\"First recorded 2026-07-06\"), docs/reference/operations.md > Retrieval (\"First baseline, recorded 2026-10-10\"). category: seed"
     },
     {
       "id": "seed-10",
@@ -2354,7 +2363,7 @@
           ]
         }
       ],
-      "notes": "answer: decision 188; also: decision 186, docs/reference/operations.md > Retrieval. category: two-part"
+      "notes": "answer: decision 188; also: decision 186, docs/reference/operations.md > Retrieval (\"Partial-token FTS (issue #225)\"), docs/reference/operations.md > Retrieval (\"Low-confidence fallback (issue #225)\"). category: two-part"
     },
     {
       "id": "two-nonrust-golden-and-locate-recall",

@@ -626,6 +626,36 @@ fn eval_cli_json_records_run_settings_and_recall_at_1() {
     assert!((0.0..=1.0).contains(&fts.recall_at_1));
 }
 
+/// A golden file repeating a query id is rejected by the real binary with a
+/// non-zero exit and an error naming the id (load runs before any recall, so
+/// no seeded corpus is needed).
+#[test]
+fn eval_cli_rejects_a_duplicated_query_id() {
+    let temp = tempdir().expect("tempdir");
+    let home = tempdir().expect("home tempdir");
+    let golden = temp.path().join("dup.json");
+    std::fs::write(
+        &golden,
+        r#"{ "version": 1, "queries": [
+            { "id": "dup-id", "query": "one", "kind": "empty" },
+            { "id": "dup-id", "query": "two", "kind": "empty" } ] }"#,
+    )
+    .expect("write golden");
+    let out = Command::new(env!("CARGO_BIN_EXE_memhub"))
+        .current_dir(temp.path())
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .arg("eval")
+        .arg("retrieval")
+        .arg("--golden")
+        .arg(&golden)
+        .output()
+        .expect("spawn memhub eval retrieval");
+    assert!(!out.status.success(), "duplicate id must exit non-zero");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("dup-id"), "{stderr}");
+}
+
 /// The headline hermetic contract: `memhub eval retrieval` run against the
 /// fixture (never the live repo DB) reproduces a fixed Recall@3 over the
 /// real shipped golden set. This is the reference baseline L2/L3/L6 compare
@@ -639,6 +669,10 @@ fn hermetic_retrieval_recall_at_3_matches_baseline() {
     set_global_enabled(temp.path(), true);
 
     let result = run_cli_eval(temp.path(), home.path());
+
+    // Default config runs the re-ranker in hybrid mode; the JSON must say so.
+    assert_eq!(result.settings.mode, RetrievalMode::Hybrid);
+    assert!(result.settings.reranker, "re-ranker run must record on");
 
     // Drift guard: catches the golden file changing shape out from under
     // this fixture (mirrors `shipped_golden_file_parses_cleanly` in
