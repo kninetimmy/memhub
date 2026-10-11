@@ -418,11 +418,12 @@ rankings in turn, as under "Re-rank pool" above) are unioned,
 deduplicated by row (scope, source type, id), and one re-rank pass then runs
 over that union. A row found by several phrasings keeps the hit from its
 best-scoring phrasing, so its blended `score`, `fts_score` and `vector_score`
-come from that phrasing, while `rerank_score` is always scored against the
-main query. The re-ranker and the `min_rerank_score` / `doc_min_rerank_score`
-floors score every candidate against the **main query only**, never a variant,
-so each returned hit's `rerank_score` is its score against the main query and
-the floor keeps its meaning (a gibberish main query clears no floor
+come from that phrasing, while `rerank_score` is never scored against a
+variant. The re-ranker and the `min_rerank_score` / `doc_min_rerank_score`
+floors score every candidate against the **main query** (and, for a
+two-question query, each of its parts, taking the highest: see below), never a
+variant, so each returned hit's `rerank_score` is its score against the main
+query (or its best part) and the floor keeps its meaning (a gibberish main query clears no floor
 whatever the variants say, so its rows come back only flagged
 `low_confidence`). The main query's own pool is always a subset of the
 union, so a variant can never push out a row the main query would have
@@ -443,6 +444,27 @@ each distinct row is counted once however many phrasings found it, and
 the cap included). With `[global]`
 disabled only the repo store is searched, as before M9; variants add rows
 from that store alone.
+
+**Two-question queries (issue #341).** A main query that asks two things
+(`what does X measure, and where is Y set?`) is split when the re-ranker will
+run (hybrid mode, re-ranker on). A split point is ` and `, with or without a
+comma before it, immediately followed by one of `what`, `which`, `how`, `why`,
+`where`, `when`, `who`, `do`, `does`, `did`, `is`, `are`, `can` or `should`
+(any letter case, a whole word); the query is cut at each such point into
+parts, each trimmed and without its trailing comma, the question word kept
+with its part. `build and lint` and `and whatever` (not a whole question word) are not split. Each part
+is gathered like a caller variant (embedded in the same batch, its own
+`rerank_candidate_pool` rows joined into the union), so a row only one half
+matches can reach the re-ranker; parts do not count toward the 4-variant limit
+and are not crossed with variants. The re-ranker then scores every pooled row
+(a row named by number included) against the whole query and against each
+part and keeps the highest, and that score is the row's `rerank_score`, used
+by the floors, the `low_confidence` flag and the order. A caller variant is
+still never scored against. Cost: one more re-ranker pass over the union per
+part, plus per part the extra embedding and gather a variant costs. A query
+with no split point, and any recall in FTS-only mode or with the re-ranker
+off, runs exactly as before. The query log and `memhub eval` record the query
+as given; parts are not logged.
 
 **Architecture sections (issue #232).** The latest architecture narrative
 (`memhub arch set`) is split by markdown heading, with the same chunker
