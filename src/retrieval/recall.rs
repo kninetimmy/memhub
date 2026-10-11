@@ -411,13 +411,24 @@ pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
         });
     }
 
+    // A decision, task or fact the query names by number goes first and out
+    // of the ranked pool (see `named_rows`).
+    let named = take_named_rows(
+        &ctx.conn,
+        &resolved,
+        scoring,
+        &mut per_phrasing,
+        &mut candidate_count,
+    )?;
+
     // Re-sort each phrasing's unified pool by blended score. Without the
     // re-ranker this is the final order; with it, `select_rerank_pool` uses
     // this order to break ties within its vector and FTS rankings.
     for list in &mut per_phrasing {
         list.sort_by(cmp_merged);
     }
-    let merged = merge_phrasings(&resolved, per_phrasing);
+    let mut merged = merge_phrasings(&resolved, per_phrasing);
+    merged.named = named;
 
     let response = finalize(
         &resolved,
@@ -848,6 +859,9 @@ struct MergedPool {
     /// Distinct rows not sent to the re-ranker (`rerank_pool_cut`); 0 when
     /// the re-ranker will not run.
     rerank_pool_cut: usize,
+    /// Rows the query names by number (`take_named_rows`), in query order;
+    /// set by `recall`, empty out of `merge_phrasings`. Not part of `hits`.
+    named: Vec<ScoredHit>,
 }
 
 /// Choose the rows sent to the re-ranker from one phrasing's merged list.
@@ -930,6 +944,7 @@ fn merge_phrasings(opts: &ResolvedOptions, per_phrasing: Vec<Vec<ScoredHit>>) ->
         return MergedPool {
             hits: per_phrasing.into_iter().flatten().collect(),
             rerank_pool_cut: 0,
+            named: Vec::new(),
         };
     }
     let row_key = |h: &ScoredHit| (h.source_type, h.scope.clone(), h.source_id);
@@ -959,7 +974,114 @@ fn merge_phrasings(opts: &ResolvedOptions, per_phrasing: Vec<Vec<ScoredHit>>) ->
     MergedPool {
         hits,
         rerank_pool_cut: pool_cut,
+        named: Vec::new(),
     }
+}
+
+/// Repo rows a query names by number: the words `decision`, `task` or `fact`
+/// (any letter case, a whole word) followed by whitespace and/or `#` and a
+/// number, e.g. `decision 201`, `Task #99`. Deduplicated, in the order the
+/// query names them. Plurals (`decisions 12`), shorthand (`D17`), any other
+/// word before the number, and a number glued to letters or a decimal point
+/// (`task 5b`, `fact 3.5`) do not match.
+fn named_rows(query: &str) -> Vec<(SourceType, i64)> {
+    let lower = query.to_ascii_lowercase();
+    let b = lower.as_bytes();
+    let in_word = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'-';
+    let mut found: Vec<(usize, SourceType, i64)> = Vec::new();
+    for (word, st) in [
+        ("decision", SourceType::Decision),
+        ("task", SourceType::Task),
+        ("fact", SourceType::Fact),
+    ] {
+        for (start, _) in lower.match_indices(word) {
+            if start > 0 && in_word(b[start - 1]) {
+                continue;
+            }
+            let mut i = start + word.len();
+            let sep = i;
+            while b.get(i).is_some_and(u8::is_ascii_whitespace) {
+                i += 1;
+            }
+            if b.get(i) == Some(&b'#') {
+                i += 1;
+            }
+            let digits = i;
+            while b.get(i).is_some_and(u8::is_ascii_digit) {
+                i += 1;
+            }
+            let glued = b
+                .get(i)
+                .is_some_and(|&c| c.is_ascii_alphanumeric() || c == b'_')
+                || (b.get(i) == Some(&b'.') && b.get(i + 1).is_some_and(u8::is_ascii_digit));
+            if digits == sep || i == digits || glued {
+                continue;
+            }
+            if let Ok(id) = lower[digits..i].parse::<i64>() {
+                found.push((start, st, id));
+            }
+        }
+    }
+    found.sort_by_key(|&(start, ..)| start);
+    let mut seen = HashSet::new();
+    found
+        .into_iter()
+        .filter_map(|(_, st, id)| seen.insert((st, id)).then_some((st, id)))
+        .collect()
+}
+
+/// Pull the repo-store rows the query names by number (`named_rows`) out of
+/// the per-phrasing pools and return them in query order, at most
+/// `max_results`. A named row is skipped when its source type is outside the
+/// search scope, it does not exist, or the stale / accepted-only filters
+/// exclude it; global-store rows are never touched (their ids are their own).
+/// A row the retrievers already found keeps its blended hit; any other is
+/// loaded and counted in `candidate_count`. The filter counters in `explain`
+/// stay as the ranked gather left them.
+fn take_named_rows(
+    conn: &Connection,
+    opts: &ResolvedOptions,
+    scoring: &RetrievalScoringConfig,
+    per_phrasing: &mut [Vec<ScoredHit>],
+    candidate_count: &mut usize,
+) -> Result<Vec<ScoredHit>> {
+    let mut named = Vec::new();
+    for (st, id) in named_rows(&opts.query) {
+        if !opts.source_types.contains(&st) {
+            continue;
+        }
+        let mut found: Option<ScoredHit> = None;
+        for list in per_phrasing.iter_mut() {
+            if let Some(pos) = list
+                .iter()
+                .position(|h| h.source_type == st && h.source_id == id && h.scope == SCOPE_REPO)
+            {
+                let hit = list.remove(pos);
+                found.get_or_insert(hit);
+            }
+        }
+        let hit = match found {
+            Some(hit) => hit,
+            None => {
+                let mut one = HashMap::from([((st, id), CandidateRow::empty(st, id))]);
+                hydrate_sources(conn, &mut one, opts.fact_stale_after_days)?;
+                let row = one.remove(&(st, id)).expect("inserted above");
+                if !row.has_source_row()
+                    || (!opts.include_stale && row.is_stale)
+                    || (opts.accepted_only && !is_accepted_source(&row.source))
+                {
+                    continue;
+                }
+                *candidate_count += 1;
+                let mut hit = score(&[row], scoring).remove(0);
+                hit.scope = SCOPE_REPO.to_string();
+                hit
+            }
+        };
+        named.push(hit);
+    }
+    named.truncate(opts.max_results);
+    Ok(named)
 }
 
 /// Merged-pool finalize: one cross-encoder rerank pass over the unified
@@ -977,7 +1099,13 @@ fn finalize(
     let MergedPool {
         hits: mut scored,
         rerank_pool_cut,
+        mut named,
     } = merged;
+    // Rows the query named by number are returned first and are not subject
+    // to the floor or the fill; they take `named.len()` of the
+    // `max_results` slots, and the ranked rows below fill the rest.
+    let named_count = named.len();
+    let slots = opts.max_results - named_count;
     // Optional cross-encoder re-rank pass (decision 68). Only runs on
     // hybrid mode and only when the operator hasn't opted out. Takes the
     // `rerank_candidate_pool` rows `merge_phrasings` chose from the vector
@@ -985,7 +1113,9 @@ fn finalize(
     // below `min_rerank_score` (D71 — the nonsense-rejection floor that
     // replaced `min_vector_score`), then truncates to `max_results`. fts-only
     // callers and an empty candidate set bypass entirely.
-    let reranked = opts.mode == RetrievalMode::Hybrid && opts.use_reranker && !scored.is_empty();
+    let reranked = opts.mode == RetrievalMode::Hybrid
+        && opts.use_reranker
+        && !(scored.is_empty() && named.is_empty());
     explain.reranker_ran = reranked;
     if reranked {
         explain.rerank_pool_cut = rerank_pool_cut;
@@ -993,8 +1123,11 @@ fn finalize(
         // prepend the row's natural-language summary when present so the
         // re-ranker can score paraphrase matches, not just title+body
         // surface tokens (decision 72 / task #23).
-        let docs: Vec<String> = scored
+        // Named rows go first so their indices are `0..named_count`; each
+        // passage is re-ranked on its own, so this does not move any score.
+        let docs: Vec<String> = named
             .iter()
+            .chain(scored.iter())
             .map(|h| match h.summary.as_deref() {
                 Some(s) if !s.trim().is_empty() => {
                     format!("{}\n\n{}\n\n{}", s, h.title, h.body)
@@ -1013,7 +1146,11 @@ fn finalize(
         let mut normal_floor_applied = false;
         let mut doc_floor_applied = false;
         for (idx, score) in scored_order {
-            if let Some(hit) = scored.get(idx) {
+            if idx < named_count {
+                named[idx].rerank_score = Some(score);
+                continue;
+            }
+            if let Some(hit) = scored.get(idx - named_count) {
                 // Doc chunks that joined via the default-inclusion
                 // path must clear the stricter doc floor; everything
                 // else (and explicitly doc-scoped recall) uses the
@@ -1052,7 +1189,7 @@ fn finalize(
         // non-doc floor-cut candidates, best first. Fill only the slots the
         // floor-clearers leave open, so a flagged row is never cut by the
         // limit and `result_limit_cut` keeps counting floor-clearers only.
-        fallback.truncate(opts.max_results.saturating_sub(reshuffled.len()));
+        fallback.truncate(slots.saturating_sub(reshuffled.len()));
         if reshuffled.is_empty()
             && let Some(highest_score) = highest_dropped
         {
@@ -1078,8 +1215,10 @@ fn finalize(
         scored.retain(|h| h.source_type != SourceType::DocChunk);
         explain.docs_dropped_no_rerank = before - scored.len();
     }
-    explain.result_limit_cut = scored.len().saturating_sub(opts.max_results);
-    scored.truncate(opts.max_results);
+    explain.result_limit_cut = scored.len().saturating_sub(slots);
+    scored.truncate(slots);
+    named.extend(scored);
+    let scored = named;
 
     let mut results = Vec::with_capacity(scored.len());
     for (idx, hit) in scored.into_iter().enumerate() {
@@ -5353,5 +5492,230 @@ explainscopeprobe second.
         .expect("recall");
 
         assert_eq!(count_recall_metrics(temp.path()), 0);
+    }
+
+    // Issue #340: a decision, task or fact named by number is returned first.
+    #[test]
+    fn named_rows_parses_only_the_word_then_number_forms() {
+        use SourceType::{Decision, Fact, Task};
+        assert_eq!(
+            named_rows("Task #99 then DECISION 201, (fact 7?) and task 99"),
+            vec![(Task, 99), (Decision, 201), (Fact, 7)]
+        );
+        assert_eq!(
+            named_rows("decision#12 task	5."),
+            vec![(Decision, 12), (Task, 5)]
+        );
+        for q in [
+            "issue 290",
+            "PR #328",
+            "run 2",
+            "D17 and T164",
+            "decisions 12",
+            "decision12",
+            "task 5b",
+            "fact 3.5",
+            "subtask 5",
+            "sub-task 5",
+            "decision # 5",
+            "decision",
+            "decision 99999999999999999999",
+        ] {
+            assert!(named_rows(q).is_empty(), "{q:?} must not name a row");
+        }
+    }
+
+    fn result_ids(response: &RecallResponse) -> Vec<(String, i64)> {
+        response
+            .results
+            .iter()
+            .map(|h| (h.source_type.clone(), h.source_id))
+            .collect()
+    }
+
+    #[test]
+    fn named_decision_task_and_fact_lead_in_query_order_once() {
+        let temp = tempdir().expect("tempdir");
+        seed(temp.path());
+
+        let response = recall(
+            temp.path(),
+            explain_opts(
+                "zxqv task 1 and cargo build then decision #1 and Fact 2",
+                RetrievalMode::Fts,
+                5,
+                vec![],
+            ),
+        )
+        .expect("recall");
+
+        let got = result_ids(&response);
+        assert_eq!(
+            got[..4],
+            [
+                ("task".to_string(), 1),
+                ("decision".to_string(), 1),
+                ("fact".to_string(), 2),
+                ("fact".to_string(), 1),
+            ],
+            "{got:?}"
+        );
+        assert_eq!(got.len(), got.iter().collect::<HashSet<_>>().len());
+        assert!(response.results.iter().all(|h| !h.low_confidence));
+        assert_eq!(response.returned_count, response.results.len());
+    }
+
+    #[test]
+    fn named_row_alone_is_returned_even_when_nothing_else_matches() {
+        let temp = tempdir().expect("tempdir");
+        seed(temp.path());
+
+        let response = recall(
+            temp.path(),
+            explain_opts("zxqv decision 1", RetrievalMode::Fts, 5, vec![]),
+        )
+        .expect("recall");
+
+        assert_eq!(result_ids(&response), vec![("decision".to_string(), 1)]);
+        assert_eq!(response.results[0].rank, 1);
+        assert!(response.candidate_count >= 1);
+    }
+
+    #[test]
+    fn named_rows_count_toward_max_results() {
+        let temp = tempdir().expect("tempdir");
+        seed(temp.path());
+
+        let two = recall(
+            temp.path(),
+            explain_opts("task 1 decision 1 cargo", RetrievalMode::Fts, 2, vec![]),
+        )
+        .expect("recall");
+        assert_eq!(
+            result_ids(&two),
+            vec![("task".to_string(), 1), ("decision".to_string(), 1)]
+        );
+
+        let one = recall(
+            temp.path(),
+            explain_opts("task 1 decision 1 cargo", RetrievalMode::Fts, 1, vec![]),
+        )
+        .expect("recall");
+        assert_eq!(result_ids(&one), vec![("task".to_string(), 1)]);
+
+        let three = recall(
+            temp.path(),
+            explain_opts("task 1 cargo", RetrievalMode::Fts, 2, vec![]),
+        )
+        .expect("recall");
+        assert_eq!(three.results.len(), 2);
+        assert_eq!(three.results[0].source_type, "task");
+        assert_eq!(three.results[1].source_type, "fact");
+    }
+
+    #[test]
+    fn named_row_outside_filters_or_missing_is_not_routed() {
+        let temp = tempdir().expect("tempdir");
+        seed(temp.path());
+
+        // Source-type filter excludes decisions.
+        let scoped = recall(
+            temp.path(),
+            explain_opts(
+                "decision 1 cargo build",
+                RetrievalMode::Fts,
+                5,
+                vec![SourceType::Fact],
+            ),
+        )
+        .expect("recall");
+        assert!(scoped.results.iter().all(|h| h.source_type == "fact"));
+
+        // Accepted-only excludes the task (tasks carry no source).
+        let mut opts = explain_opts("zxqv task 1", RetrievalMode::Fts, 5, vec![]);
+        opts.accepted_only = Some(true);
+        let accepted = recall(temp.path(), opts).expect("recall");
+        assert!(accepted.results.is_empty(), "{:?}", result_ids(&accepted));
+
+        // No such row: nothing is invented and the ranked path is unchanged.
+        let missing = recall(
+            temp.path(),
+            explain_opts(
+                "decision 99 task 77 cargo build",
+                RetrievalMode::Fts,
+                5,
+                vec![],
+            ),
+        )
+        .expect("recall");
+        let plain = recall(
+            temp.path(),
+            explain_opts(
+                "xdecision 99 xtask 77 cargo build",
+                RetrievalMode::Fts,
+                5,
+                vec![],
+            ),
+        )
+        .expect("recall");
+        assert_eq!(result_ids(&missing), result_ids(&plain));
+    }
+
+    #[test]
+    fn non_triggering_forms_do_not_route() {
+        let temp = tempdir().expect("tempdir");
+        seed(temp.path());
+
+        for q in ["issue 1 zxqv", "PR #1 zxqv", "run 1 zxqv", "D1 T1 zxqv"] {
+            let response = recall(temp.path(), explain_opts(q, RetrievalMode::Fts, 5, vec![]))
+                .expect("recall");
+            assert!(
+                response.results.is_empty(),
+                "{q:?}: {:?}",
+                result_ids(&response)
+            );
+        }
+    }
+
+    #[test]
+    fn named_row_carries_rerank_score_in_hybrid_with_and_without_variants() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        edit_config(temp.path(), |cfg| {
+            cfg.retrieval.mode = RetrievalMode::Hybrid
+        });
+        seed(temp.path());
+
+        for variants in [Vec::new(), vec!["build command".to_string()]] {
+            let mut opts =
+                explain_opts("zxqv-nonsense decision 1", RetrievalMode::Hybrid, 5, vec![]);
+            opts.variants = variants;
+            let response = recall(temp.path(), opts).expect("recall");
+
+            assert!(
+                response.matcher.ends_with("+rerank"),
+                "{}",
+                response.matcher
+            );
+            let top = &response.results[0];
+            assert_eq!((top.source_type.as_str(), top.source_id), ("decision", 1));
+            assert!(top.rerank_score.is_some());
+            assert!(!top.low_confidence);
+            let got = result_ids(&response);
+            assert_eq!(
+                got.len(),
+                got.iter().collect::<HashSet<_>>().len(),
+                "{got:?}"
+            );
+            assert!(response.results[1..].iter().all(|h| h.low_confidence));
+        }
+
+        // Re-ranker off: still routed, no rerank score.
+        let mut opts = explain_opts("zxqv-nonsense decision 1", RetrievalMode::Hybrid, 5, vec![]);
+        opts.use_reranker = Some(false);
+        let response = recall(temp.path(), opts).expect("recall");
+        let top = &response.results[0];
+        assert_eq!((top.source_type.as_str(), top.source_id), ("decision", 1));
+        assert!(top.rerank_score.is_none());
     }
 }
