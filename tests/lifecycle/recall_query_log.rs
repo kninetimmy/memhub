@@ -84,7 +84,7 @@ fn assert_line_fields(line: &Value, surface: &str) {
     let ts = line["ts"].as_str().expect("ts string");
     assert!(ts.ends_with('Z') && ts.contains('T'), "UTC ts: {ts}");
     let results = line["results"].as_array().expect("results array");
-    assert!(!results.is_empty(), "seeded fact must be returned: {line}");
+    assert_eq!(results.len(), 1, "exactly the seeded fact: {line}");
     // FTS mode runs no re-ranker, so the score is null and nothing is flagged.
     assert_eq!(
         results[0],
@@ -170,6 +170,12 @@ fn mcp_recall_appends_one_line_per_call() {
 #[test]
 fn hybrid_recall_logs_a_numeric_rerank_score_and_the_effective_max_results() {
     let temp = seeded_repo_in_mode(true, RetrievalMode::Hybrid);
+    // A floor no logit can fall below keeps `low_confidence` deterministic
+    // (false) whatever score the model gives the seeded fact.
+    let cfg_path = temp.path().join(".memhub/config.toml");
+    let mut cfg = ProjectConfig::load(&cfg_path).expect("load cfg");
+    cfg.retrieval.scoring.min_rerank_score = -1000.0;
+    cfg.save(&cfg_path).expect("save cfg");
     // No --max-results: the log holds the resolved config default.
     let out = run_cli(
         temp.path(),
@@ -185,6 +191,8 @@ fn hybrid_recall_logs_a_numeric_rerank_score_and_the_effective_max_results() {
     assert_eq!(lines[0]["max_results"], default);
     let row = &lines[0]["results"][0];
     assert_eq!(row["source_id"], FACT_ID);
+    assert_eq!(row["title"], "build");
+    assert_eq!(row["low_confidence"], false, "{}", lines[0]);
     assert!(row["rerank_score"].is_number(), "{}", lines[0]);
 }
 
