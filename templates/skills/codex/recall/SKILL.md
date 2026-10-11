@@ -128,14 +128,16 @@ need day to day (issue #72) — no `rank`/`score`/`fts_score`/
   separate `rank` field on this path. `null` when the re-ranker didn't
   run for this call (fts mode, or hybrid with the re-ranker off);
   positive means relevant, and nonsense candidates are dropped by the
-  `min_rerank_score` floor — unless every candidate was dropped, in
-  which case the top ones are returned flagged `low_confidence` (below).
+  `min_rerank_score` floor — but the best dropped ones come back after
+  the floor-clearing hits, flagged `low_confidence` (below).
 - `low_confidence: true` (CLI text: `[low-confidence]`) marks a hit
-  that did NOT clear the floor. It is returned only when the floor
-  dropped every candidate (alongside a `rerank_floor_dropped_all`
-  warning), as a weak lead: verify it against the source before
-  relying on it, and say it is low-confidence when you cite it. If any
-  hit cleared the floor, none are flagged.
+  that did NOT clear the floor. It fills the result slots left after
+  every floor-clearing hit, up to `max_results` (with a
+  `rerank_floor_dropped_all` warning when nothing cleared the floor),
+  as a weak lead: verify it against the source before relying on it,
+  and say it is low-confidence when you cite it. Flagged hits always
+  come after the unflagged ones, and a hit that cleared the floor is
+  never flagged.
 - `stale = true` means a fact past the verification window or a
   decision marked superseded/draft or a task marked done. Surface
   staleness when it matters; don't quote a stale fact as current.
@@ -169,8 +171,8 @@ title; cite the document and section.
 ## Empty results
 
 When `results` is empty (nothing matched at all, or the only
-candidates were doc chunks that missed their own floor — docs are never
-returned as low-confidence leads):
+candidates were default-included doc chunks that missed their own floor —
+those are never returned as low-confidence leads):
 
 1. State that recall returned nothing for the query and quote the
    exact query you ran.

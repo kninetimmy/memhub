@@ -250,8 +250,8 @@ entirely.
 Candidates whose cross-encoder logit falls below
 `[retrieval.scoring] min_rerank_score` (default 2.0) are dropped
 after re-ranking, primarily to keep gibberish queries from surfacing
-as answers (see the low-confidence fallback below for what a recall
-returns when the floor drops everything). This replaces the legacy `min_vector_score` cosine floor
+as answers (see the low-confidence fill below for what a recall
+returns in place of the dropped candidates). This replaces the legacy `min_vector_score` cosine floor
 (decisions 70, 71) — the cosine band of nonsense overlapped borderline
 semantic queries, so a vector-path floor had no safe sweet spot.
 The rerank-score band is similarly noisy on memhub's own corpus, so
@@ -276,22 +276,31 @@ still requires every token. `min_rerank_score`, `doc_min_rerank_score` and
 `rerank_candidate_pool` defaults are unchanged, and superseded or stale rows
 are still demoted rather than excluded (decision 145).
 
-**Low-confidence fallback (issue #225).** When the relevance floor drops every
-reranked candidate, recall returns the top 3 reranked candidates (never more
-than `max_results`) instead of an empty bundle, each marked `low_confidence`
-(`"low_confidence": true` in `memhub recall --json` and the MCP recall hit,
-omitted otherwise; a `[low-confidence]` tag in the CLI text), and still emits
-the `rerank_floor_dropped_all` warning. Treat them as leads, not answers. A
-recall in which at least one candidate clears its floor contains no
-low-confidence hits, and a hit that clears its floor is never marked. Doc
-chunks that joined the default bundle and missed `doc_min_rerank_score` are
-never returned as fallback hits (decisions 90/91). Previously, a recall whose
-candidates were all dropped by the floor returned an empty bundle (decision
-33); this fallback supersedes that rule by user decision of 2026-10-08. In the
-eval harness an `empty` probe now passes when it returns no hit that cleared
-the floor (low-confidence hits allowed), and each match outcome reports
-`matched_low_confidence`. The golden set carries `kw-` keyword-bag variants
-and `near-` related-but-no-answer probes for this.
+**Low-confidence fill (issues #225, #323).** Candidates under the relevance
+floor are not discarded outright. Recall returns every candidate that cleared
+its floor first, in rerank order, and then fills the remaining result slots,
+up to `max_results`, with the highest-reranked floor-cut candidates, each marked
+`low_confidence` (`"low_confidence": true` in `memhub recall --json` and the MCP
+recall hit, omitted otherwise; a `[low-confidence]` tag in the CLI text) and
+carrying its `rerank_score`. Treat them as leads, not answers. A hit that clears
+its floor is never marked, and marked hits always come after unmarked ones. When
+no candidate clears the floor, recall returns up to `max_results` marked rows
+and emits the `rerank_floor_dropped_all` warning, whose text states how many
+marked rows were returned; a recall in which any candidate clears the floor
+carries no such warning. Doc chunks that joined the default bundle and missed
+`doc_min_rerank_score` are never returned, marked or not (decisions 90/91, 189);
+doc chunks in a recall scoped to doc chunks (`--source-type doc`) are not
+default-included, so they take the normal floor and fill like every other row.
+A candidate pool of a single row is re-ranked too, so the floor applies to it
+(with or without variants) and a lone row under the floor is returned marked.
+History: a recall whose candidates were all dropped by the floor first returned
+an empty bundle (decision 33); issue #225 (decision 186) changed that to the top
+3 marked candidates, and only when the floor dropped every candidate; issue #323
+fills the bundle after the floor-clearing hits up to `max_results` instead. In
+the eval harness an `empty` probe passes when it returns no hit that cleared the
+floor (low-confidence hits allowed), and each match outcome reports
+`matched_low_confidence`. The golden set carries `kw-` keyword-bag variants and
+`near-` related-but-no-answer probes for this.
 
 **Explaining an empty or thin result (issue #318).** `memhub recall <query>
 --explain` (and `explain: true` on the MCP `recall` tool, an optional boolean)
@@ -306,11 +315,11 @@ store, plus the machine-global store when this repo opted in). The reasons, by
 JSON key:
 
 - `reranker_ran` (bool): whether the cross-encoder re-ranker ran (hybrid mode,
-  `use_reranker` on, more than one candidate). No relevance floor applies when
+  `use_reranker` on, at least one candidate). No relevance floor applies when
   it did not.
 - `dropped_by_floor`: rows whose rerank score was under `min_rerank_score`
-  (every row except default-included doc chunks). Low-confidence fallback hits
-  are among these rows, since the floor dropped them before the fallback
+  (every row except default-included doc chunks). Low-confidence fill hits
+  are among these rows, since the floor dropped them before the fill
   returned them.
 - `dropped_by_doc_floor`: default-included doc chunks under
   `doc_min_rerank_score`.
@@ -343,8 +352,7 @@ than the question; useful phrasings are a keyword form of the question and a
 sentence worded the way the answer would be. At most 4 variants per call, none
 blank: a blank variant, or a fifth one, is rejected with an error saying why
 (CLI error exit; MCP invalid-params). A call without variants takes the
-unchanged single-query path and returns the same rows, order and scores as
-before.
+single-query path, unchanged by the variants feature.
 
 Variants widen the candidate pool only. Each phrasing is embedded (the main
 query and the variants in one batch) and gathered like the main query, in the
@@ -354,8 +362,9 @@ deduplicated by row (scope, source type, id), and one re-rank pass then runs
 over that union. The re-ranker and the `min_rerank_score` / `doc_min_rerank_score`
 floors score every candidate against the **main query only**, never a variant,
 so each returned hit's `rerank_score` is its score against the main query and
-the floor keeps its meaning (a gibberish main query still returns nothing,
-whatever the variants say). The main query's own pool is always a subset of the
+the floor keeps its meaning (a gibberish main query clears no floor
+whatever the variants say, so its rows come back only flagged
+`low_confidence`). The main query's own pool is always a subset of the
 union, so a variant can never push out a row the main query would have
 re-ranked. Cost: the union has up to (1 + variants) x `rerank_candidate_pool`
 rows, so re-rank time grows with the variants sent (each pool-sized batch costs
@@ -367,8 +376,8 @@ set is ordered by each row's best blended score across phrasings; the filters
 and the doc-chunk rule still apply as they do without variants. With `--explain`
 each distinct row is counted once however many phrasings found it, and
 `rerank_pool_cut` counts the rows outside every phrasing's pool. With `[global]`
-disabled the output is byte-identical to a pre-M9 recall, with or without
-variants.
+disabled only the repo store is searched, as before M9; variants add rows
+from that store alone.
 
 **Architecture sections (issue #232).** The latest architecture narrative
 (`memhub arch set`) is split by markdown heading, with the same chunker
@@ -376,7 +385,7 @@ variants.
 and each section is a recall hit of source type `arch_section`, titled
 `Architecture — <heading path>`. Sections are part of the default recall
 bundle alongside facts, decisions, and tasks, with the same `min_rerank_score`
-floor and the same low-confidence fallback eligibility; no config flag gates
+floor and the same low-confidence fill eligibility; no config flag gates
 them, unlike docs. Scope a recall to them alone with `memhub recall <query>
 --source-type arch` (CLI) or `memhub.recall(query=..., source_types=["arch"])`
 (MCP). Before this change the architecture narrative never entered recall; it
@@ -501,7 +510,7 @@ retrieval golden.
 Baseline (hybrid mode, default rerank floor 2.0): the golden set is 36
 queries (31 match, 5 empty) and the code scores Recall@3 = 31/31 match and
 5/5 empty probes (0 safety failures), three of the keyword-bag matches via
-the low-confidence fallback. First recorded 2026-07-06 (issue #44) as 100% on
+the low-confidence fill. First recorded 2026-07-06 (issue #44) as 100% on
 the then-smaller set, extended by issue #225. This is the reference other
 Wave 3 lifecycle PRs (L2 staleness, L3 supersession, L6 age decay) compare
 their own hermetic re-run against. There is no persisted fixture DB to
