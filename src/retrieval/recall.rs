@@ -119,8 +119,8 @@ pub struct RecallOptions {
     /// Extra caller-written phrasings of `query` (at most
     /// [`MAX_QUERY_VARIANTS`], none blank). They only widen the candidate
     /// pool: the re-ranker and the relevance floor still score every
-    /// candidate against `query` alone. Empty = the plain single-phrasing
-    /// path.
+    /// candidate against `query` or, for a two-question query, its best
+    /// part, never a variant. Empty = no caller variants.
     pub variants: Vec<String>,
     /// Override of `[retrieval.scoring] min_rerank_score`. None = use
     /// project config. Ignored when mode resolves to fts or when the
