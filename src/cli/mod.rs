@@ -515,7 +515,6 @@ pub fn run(cli: Cli) -> Result<()> {
                                 "value": value,
                                 "source": source,
                                 "kind": kind,
-                                "summary": summary,
                                 "created": r.created,
                                 "scope": "global",
                                 "store_created": r.store_created,
@@ -548,7 +547,6 @@ pub fn run(cli: Cli) -> Result<()> {
                             "value": value,
                             "source": source,
                             "kind": kind,
-                            "summary": summary,
                             "created": created,
                         });
                         println!("{payload}");
