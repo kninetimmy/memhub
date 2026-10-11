@@ -394,6 +394,19 @@ Decision 186 changed the all-dropped case:
   such hits (decision 189), so a recall whose only candidates were such
   docs still returns an empty array plus the warning.
 
+Issue #323 changed the rule again (the decision 186 text above is kept as
+recorded):
+
+- Before: the flagged fallback appeared only when the floor dropped every
+  candidate, and held at most 3 hits.
+- After: floor-cut candidates fill the bundle up to `max_results`, flagged
+  `low_confidence`, after every hit that cleared the floor. When nothing
+  clears the floor, up to `max_results` flagged hits come back with the
+  `rerank_floor_dropped_all` warning; when any hit clears it there is no
+  warning. Default-included doc chunks under `doc_min_rerank_score` are still
+  never returned (decision 189), and a single-row candidate pool is now
+  re-ranked so the floor applies to it.
+
 MCP write tools are unchanged in M8. Agent-originated facts and
 decisions continue to stage through `pending_writes` and require
 review (PRD §11.3); `recall` is read-only.

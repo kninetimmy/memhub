@@ -109,7 +109,7 @@ Headline numbers to report:
   floor — recall is surfacing false-positives that the golden set
   treats as forbidden. An `empty` probe passes when no returned hit
   clears the floor; low-confidence hits (`low_confidence: true`,
-  returned only when the floor dropped every candidate) do not fail it.
+  floor-cut rows returned to fill the bundle) do not fail it.
 - **Failing queries**. List by `id` with `failure_reason`. Don't
   paraphrase; quote the reason string so the user can map it to
   the matchers in the golden file.

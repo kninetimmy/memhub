@@ -285,9 +285,9 @@ pub(crate) fn recall_response_to_json(response: &RecallResponse) -> serde_json::
             if let Some(kind) = &hit.kind {
                 hit_json["kind"] = json!(kind);
             }
-            // Issue #225: present (true) only on floor-dropped fallback
+            // Issues #225, #323: present (true) only on floor-cut fill
             // hits, omitted otherwise, same as `kind` above -- a recall
-            // with no fallback keeps its pre-#225 JSON shape.
+            // with none keeps its pre-#225 JSON shape.
             if hit.low_confidence {
                 hit_json["low_confidence"] = json!(true);
             }
@@ -366,7 +366,7 @@ pub(crate) fn print_recall_human(response: &RecallResponse) {
                 Some(k) => format!(" [kind:{k}]"),
                 None => String::new(),
             };
-            // Issue #225: a floor-dropped fallback hit, shown but not vouched for.
+            // Issues #225, #323: a floor-cut fill hit, shown but not vouched for.
             let low_confidence_tag = if hit.low_confidence {
                 " [low-confidence]"
             } else {
