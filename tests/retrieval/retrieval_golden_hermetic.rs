@@ -703,7 +703,7 @@ fn hermetic_retrieval_recall_at_3_matches_baseline() {
         result.recall_at_k,
     );
     // These keyword bags rerank below the 2.0 floor, so they pass only via
-    // the low-confidence fallback; every other match clears its floor.
+    // the low-confidence fill; every other match clears its floor.
     let mut low_confidence_matches: Vec<&str> = result
         .outcomes
         .iter()

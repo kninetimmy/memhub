@@ -103,8 +103,9 @@ pub struct QueryOutcome {
     pub matched_rank: Option<usize>,
     /// Score of the matched hit, if any.
     pub matched_score: Option<f64>,
-    /// The matched hit was a low-confidence fallback (every candidate fell
-    /// below the relevance floor), not a hit that cleared its floor.
+    /// The matched hit was a low-confidence fill (it fell below the
+    /// relevance floor and was returned to fill the bundle), not a hit that
+    /// cleared its floor.
     pub matched_low_confidence: bool,
     /// Total returned by recall for this query.
     pub returned_count: usize,
@@ -402,7 +403,7 @@ pub fn evaluate_query(query: &GoldenQuery, response: &RecallResponse, k: usize) 
     let returned_count = response.results.len();
     match query.kind {
         GoldenKind::Empty => {
-            // Low-confidence fallback hits (issue #225) are allowed: they
+            // Low-confidence fill hits (issues #225, #323) are allowed: they
             // are flagged, not vouched for. Only a hit that cleared its
             // relevance floor leaks.
             let vouched = response.results.iter().filter(|hit| !hit.low_confidence);

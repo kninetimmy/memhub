@@ -75,10 +75,6 @@ pub fn validate_variants(variants: &[String]) -> Result<Vec<String>> {
 /// the rerank pool.
 const PARTIAL_FTS_FACTOR: f64 = 0.5;
 
-/// How many reranked candidates are returned, flagged low-confidence, when
-/// the relevance floor drops every candidate.
-const LOW_CONFIDENCE_FALLBACK_HITS: usize = 3;
-
 /// Which agent-facing surface issued a recall — the CLI process or the
 /// MCP server's `recall` tool (issue #70, Wave 4 gate Q17 / decision
 /// 148). Threaded into `RecallOptions` purely so `recall_proxy::log_recall`
@@ -182,11 +178,12 @@ pub struct RecallHit {
     /// dropped by `[retrieval.scoring] min_rerank_score` before this
     /// hit ever surfaces (decisions 70, 71).
     pub rerank_score: Option<f32>,
-    /// True only for a fallback hit: every candidate fell below its
-    /// relevance floor, so the top reranked ones are returned anyway
-    /// (alongside the `rerank_floor_dropped_all` warning) rather than an
-    /// empty bundle. A hit that cleared its floor is never low-confidence,
-    /// and a recall with any floor-clearing hit has none.
+    /// True only for a fill hit: a candidate under the relevance floor that
+    /// is returned anyway, after every floor-clearing hit, to fill the bundle
+    /// up to `max_results` (when no candidate clears the floor, alongside the
+    /// `rerank_floor_dropped_all` warning). A hit that cleared its floor is
+    /// never low-confidence. Default-included doc chunks under the doc floor
+    /// are never fill hits.
     pub low_confidence: bool,
     /// Optional, unenforced classifier tag (Wave 6 W4, migration 0021).
     /// Fact-only -- always `None` for decisions, tasks, and doc chunks.
@@ -241,11 +238,11 @@ pub struct RecallResponse {
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct RecallExplain {
     /// Whether the cross-encoder re-ranker ran (hybrid mode, enabled, and
-    /// more than one candidate). Without it no relevance floor applies.
+    /// at least one candidate). Without it no relevance floor applies.
     pub reranker_ran: bool,
     /// Rows under `min_rerank_score` (every row except default-included
     /// doc chunks). Includes rows later returned as `low_confidence`
-    /// fallback hits.
+    /// fill hits.
     pub dropped_by_floor: usize,
     /// Default-included doc chunks under `doc_min_rerank_score`.
     pub dropped_by_doc_floor: usize,
@@ -282,8 +279,9 @@ pub struct RecallExplain {
 /// provenance, then runs one rerank pass over the unified pool.
 ///
 /// The global corpus is consulted only when `[global] enabled` AND
-/// `~/.memhub/global.sqlite` exists; otherwise this is byte-identical
-/// to the pre-M9 single-corpus path (the eval-regression guarantee).
+/// `~/.memhub/global.sqlite` exists; otherwise the repo store alone is
+/// searched, as in the pre-M9 single-corpus path (the eval-regression
+/// guarantee for a query without variants).
 ///
 /// Caller-written `variants` are extra phrasings of the same question: each
 /// is gathered like the main query and its top `rerank_candidate_pool` rows
@@ -494,7 +492,7 @@ impl ResolvedOptions {
         let docs_via_default = opts.source_types.is_empty() && cfg.include_docs_in_default;
         let source_types = if opts.source_types.is_empty() {
             // Architecture sections are always in the default bundle and
-            // take the normal floor and fallback, unlike docs (issue #232).
+            // take the normal floor and fill, unlike docs (issue #232).
             // Notes never are (gate Q9).
             let mut base = vec![
                 SourceType::Fact,
@@ -880,9 +878,9 @@ fn finalize(
     // top `rerank_candidate_pool` by blended score, reorders them by the
     // cross-encoder, drops anything below `min_rerank_score` (D71 — the
     // nonsense-rejection floor that replaced `min_vector_score`), then
-    // truncates to `max_results`. fts-only callers and trivially short
-    // candidate sets bypass entirely.
-    let reranked = opts.mode == RetrievalMode::Hybrid && opts.use_reranker && scored.len() > 1;
+    // truncates to `max_results`. fts-only callers and an empty candidate
+    // set bypass entirely.
+    let reranked = opts.mode == RetrievalMode::Hybrid && opts.use_reranker && !scored.is_empty();
     explain.reranker_ran = reranked;
     if reranked {
         match rerank_pool_cut {
@@ -908,9 +906,10 @@ fn finalize(
         let scored_order = rerank::rerank(&opts.query, &docs)?;
         let mut reshuffled: Vec<ScoredHit> = Vec::with_capacity(scored.len());
         let mut highest_dropped = None;
-        // Floor-dropped candidates eligible for the low-confidence fallback,
-        // in rerank order. Default-bundle docs are excluded: a doc may enter
-        // the default bundle only by clearing its floor (decisions 90/91).
+        // Floor-dropped candidates eligible to fill the bundle after every
+        // floor-clearer, in rerank order. Default-bundle docs are excluded: a
+        // doc may enter the default bundle only by clearing its floor
+        // (decisions 90/91, 189).
         let mut fallback: Vec<ScoredHit> = Vec::new();
         let mut normal_floor_applied = false;
         let mut doc_floor_applied = false;
@@ -937,7 +936,7 @@ fn finalize(
                     if highest_dropped.is_none_or(|highest| score > highest) {
                         highest_dropped = Some(score);
                     }
-                    if !doc_floor && fallback.len() < LOW_CONFIDENCE_FALLBACK_HITS {
+                    if !doc_floor {
                         let mut hit = hit.clone();
                         hit.rerank_score = Some(score);
                         hit.low_confidence = true;
@@ -950,12 +949,14 @@ fn finalize(
                 reshuffled.push(hit);
             }
         }
+        // `rerank::rerank` yields best-first, so `fallback` is the reranked
+        // non-doc floor-cut candidates, best first. Fill only the slots the
+        // floor-clearers leave open, so a flagged row is never cut by the
+        // limit and `result_limit_cut` keeps counting floor-clearers only.
+        fallback.truncate(opts.max_results.saturating_sub(reshuffled.len()));
         if reshuffled.is_empty()
             && let Some(highest_score) = highest_dropped
         {
-            // `rerank::rerank` yields best-first, so `fallback` is the top
-            // reranked non-doc candidates.
-            fallback.truncate(opts.max_results);
             warnings.push(rerank_floor_warning(
                 highest_score,
                 normal_floor_applied.then_some(opts.min_rerank_score),
@@ -963,14 +964,14 @@ fn finalize(
                 scored.len(),
                 fallback.len(),
             ));
-            reshuffled = fallback;
         }
+        reshuffled.extend(fallback);
         scored = reshuffled;
     }
     // Safety invariant: a doc may enter the *default* bundle only when
     // the cross-encoder actually vetted it. If the re-rank pass did
-    // not run (fts mode, use_reranker = false, or a trivially short
-    // candidate set), drop default-included docs entirely rather than
+    // not run (fts mode, use_reranker = false, or an empty candidate
+    // set), drop default-included docs entirely rather than
     // letting unscored chunks displace project memory. Explicit
     // `--source-type doc` (docs_via_default = false) is unaffected.
     if opts.docs_via_default && !reranked {
@@ -1207,11 +1208,11 @@ struct ScoredHit {
     source: String,
     created_at: String,
     /// Cross-encoder relevance score, populated only when the re-ranker
-    /// ran (hybrid mode + use_reranker + non-trivial candidate set).
+    /// ran (hybrid mode + use_reranker + a non-empty candidate set).
     /// Used both as the final ordering key and as the nonsense-rejection
     /// floor (`min_rerank_score`). See decisions 68, 70, 71.
     rerank_score: Option<f32>,
-    /// Set by `finalize` on floor-dropped fallback hits only.
+    /// Set by `finalize` on floor-cut fill hits only.
     low_confidence: bool,
     /// Carried from the candidate row so the returned hit can be tagged
     /// with its fact `kind` (Wave 6 W4, migration 0021). `score()` never
@@ -2982,9 +2983,10 @@ mod tests {
         // With hybrid + use_reranker on (project defaults) and the
         // min_rerank_score floor at its default 2.0, MiniLM's negative
         // logits on a pure-nonsense query drop every candidate. Issue
-        // #225 (superseding decision 33's empty-bundle rule): the top 3
-        // reranked candidates come back flagged low-confidence, next to
-        // the rerank_floor_dropped_all warning, instead of an empty bundle.
+        // #225 (superseding decision 33's empty-bundle rule) and #323: the
+        // top reranked candidates, up to max_results, come back flagged
+        // low-confidence next to the rerank_floor_dropped_all warning,
+        // instead of an empty bundle.
         let temp = tempdir().expect("tempdir");
         init::run(temp.path()).expect("init");
         let cfg_path = temp.path().join(".memhub/config.toml");
@@ -3012,29 +3014,32 @@ mod tests {
         )
         .expect("recall");
 
+        // No longer capped at 3: the seeded corpus has 4 candidates and
+        // max_results is 5, so every candidate comes back flagged.
         assert_eq!(
             response.results.len(),
-            3,
-            "all-dropped nonsense query must return the top 3 reranked hits; got {:?}",
+            response.candidate_count.min(5),
+            "all-dropped nonsense query must fill up to max_results; got {:?}",
             response
                 .results
                 .iter()
                 .map(|h| (h.source_type.clone(), h.rerank_score))
                 .collect::<Vec<_>>(),
         );
+        assert!(response.results.len() > 3);
         assert!(
             response
                 .results
                 .iter()
                 .all(|h| h.low_confidence && h.rerank_score.is_some_and(|s| s < 2.0)),
-            "every fallback hit must be flagged low-confidence and sit below the floor"
+            "every fill hit must be flagged low-confidence and sit below the floor"
         );
         assert!(
             response
                 .results
                 .windows(2)
                 .all(|w| w[0].rerank_score >= w[1].rerank_score),
-            "fallback hits stay in rerank order"
+            "fill hits stay in rerank order"
         );
         assert_eq!(response.matcher, "recall:hybrid+rerank");
         let warning = response
@@ -3046,8 +3051,15 @@ mod tests {
         assert!(warning.reason.contains("2.000"));
         assert!(warning.reason.contains("highest rerank score"));
         assert!(warning.reason.contains("low_confidence"));
+        assert!(
+            warning
+                .reason
+                .contains(&format!("{} top reranked", response.results.len())),
+            "the warning states how many flagged rows were returned: {}",
+            warning.reason
+        );
 
-        // The fallback never exceeds the requested max_results.
+        // The fill never exceeds the requested max_results.
         let capped = recall(
             temp.path(),
             RecallOptions {
@@ -3136,7 +3148,6 @@ mod tests {
     fn hybrid_all_dropped_only_default_docs_returns_no_fallback_hits() {
         let temp = tempdir().expect("tempdir");
         init::run(temp.path()).expect("init");
-        // Two docs: the rerank pass needs at least two candidates.
         for name in ["floor-docs-a.md", "floor-docs-b.md"] {
             let doc_file = temp.path().join(name);
             std::fs::write(
@@ -3250,6 +3261,242 @@ mod tests {
             response.results.iter().all(|h| !h.low_confidence),
             "hits that clear the (disabled) floor are never low-confidence"
         );
+    }
+
+    /// Rerank scores (best first) of every candidate for `query`, read with
+    /// the floors pinned below any logit so the tests can place a floor
+    /// between two real scores whatever the model emits.
+    fn probe_rerank_scores(
+        temp: &std::path::Path,
+        query: &str,
+        source_types: Vec<SourceType>,
+    ) -> Vec<f32> {
+        let response = recall(
+            temp,
+            RecallOptions {
+                min_rerank_score: Some(-1000.0),
+                ..explain_opts(query, RetrievalMode::Hybrid, 20, source_types)
+            },
+        )
+        .expect("probe recall");
+        response
+            .results
+            .iter()
+            .map(|h| h.rerank_score.expect("reranked"))
+            .collect()
+    }
+
+    #[test]
+    fn partial_floor_clear_fills_the_bundle_with_flagged_rows() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        edit_config(temp.path(), |cfg| {
+            cfg.retrieval.mode = RetrievalMode::Hybrid
+        });
+        seed(temp.path());
+        let query = "how do I build the project with cargo";
+        let facts = vec![SourceType::Fact];
+        let scores = probe_rerank_scores(temp.path(), query, facts.clone());
+        assert!(scores.len() >= 2 && scores[0] > scores[1]);
+        // A floor between the best and the second-best score: exactly one
+        // candidate clears it.
+        let floor = (scores[0] + scores[1]) / 2.0;
+
+        let response = recall(
+            temp.path(),
+            RecallOptions {
+                min_rerank_score: Some(floor),
+                ..explain_opts(query, RetrievalMode::Hybrid, 20, facts.clone())
+            },
+        )
+        .expect("recall");
+
+        assert_eq!(response.results.len(), scores.len(), "floor-cut rows fill");
+        assert!(!response.results[0].low_confidence);
+        assert!(response.results[1..].iter().all(|h| h.low_confidence));
+        assert!(
+            response
+                .results
+                .iter()
+                .map(|h| h.rerank_score.expect("score"))
+                .eq(scores.iter().copied()),
+            "cleared hit first, then the flagged rows, all in rerank order"
+        );
+        assert!(
+            response
+                .warnings
+                .iter()
+                .all(|w| w.kind != "rerank_floor_dropped_all"),
+            "a recall in which a candidate clears the floor carries no all-dropped warning"
+        );
+
+        // max_results caps the fill after the floor-clearing hit.
+        let capped = recall(
+            temp.path(),
+            RecallOptions {
+                min_rerank_score: Some(floor),
+                ..explain_opts(query, RetrievalMode::Hybrid, 2, facts)
+            },
+        )
+        .expect("recall");
+        assert_eq!(capped.results.len(), 2);
+        assert!(!capped.results[0].low_confidence && capped.results[1].low_confidence);
+        assert_eq!(capped.explain.result_limit_cut, 0);
+    }
+
+    #[test]
+    fn partial_fill_still_excludes_default_docs_under_their_floor() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        fact::add(
+            temp.path(),
+            "fillprobe-good",
+            "fillprobe answer: the build uses cargo build",
+            "user",
+            "cli:user",
+        )
+        .expect("fact 1");
+        fact::add(
+            temp.path(),
+            "fillprobe-other",
+            "unrelated gardening note about tomatoes",
+            "user",
+            "cli:user",
+        )
+        .expect("fact 2");
+        let doc_file = temp.path().join("fill-probe.md");
+        std::fs::write(
+            &doc_file,
+            "# fillprobe\n\nfillprobe doc: how the build uses cargo.\n",
+        )
+        .expect("write doc");
+        doc::add(temp.path(), &doc_file, None, "cli:user").expect("ingest doc");
+        edit_config(temp.path(), |cfg| {
+            cfg.retrieval.mode = RetrievalMode::Hybrid;
+            cfg.retrieval.scoring.doc_min_rerank_score = 1000.0; // doc never clears
+        });
+        let query = "what does the fillprobe build use";
+        let scores = probe_rerank_scores(temp.path(), query, vec![SourceType::Fact]);
+        assert_eq!(scores.len(), 2, "both facts reach the probe");
+        assert!(scores[0] > scores[1]);
+        let floor = (scores[0] + scores[1]) / 2.0;
+
+        let response = recall(
+            temp.path(),
+            RecallOptions {
+                min_rerank_score: Some(floor),
+                ..explain_opts(query, RetrievalMode::Hybrid, 10, vec![])
+            },
+        )
+        .expect("recall");
+
+        assert_eq!(response.explain.dropped_by_doc_floor, 1);
+        assert!(
+            response
+                .results
+                .iter()
+                .all(|h| h.source_type != "doc_chunk"),
+            "a default-included doc under its floor is never returned, not even flagged"
+        );
+        assert_eq!(response.results.len(), 2);
+        assert!(!response.results[0].low_confidence && response.results[1].low_confidence);
+        assert!(
+            response
+                .warnings
+                .iter()
+                .all(|w| w.kind != "rerank_floor_dropped_all")
+        );
+    }
+
+    #[test]
+    fn doc_scoped_recall_fills_with_flagged_doc_chunks() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        for (name, body) in [
+            (
+                "scoped-a.md",
+                "# scopedfill\n\nscopedfill: the build uses cargo.\n",
+            ),
+            (
+                "scoped-b.md",
+                "# scopedfill\n\nunrelated gardening note about tomatoes.\n",
+            ),
+        ] {
+            let doc_file = temp.path().join(name);
+            std::fs::write(&doc_file, body).expect("write doc");
+            doc::add(temp.path(), &doc_file, None, "cli:user").expect("ingest doc");
+        }
+        edit_config(temp.path(), |cfg| {
+            cfg.retrieval.mode = RetrievalMode::Hybrid;
+            // Docs scoped by source type are not default-included: this
+            // floor must not apply.
+            cfg.retrieval.scoring.doc_min_rerank_score = 1000.0;
+        });
+        let query = "what does the scopedfill build use";
+        let docs = vec![SourceType::DocChunk];
+        let scores = probe_rerank_scores(temp.path(), query, docs.clone());
+        assert!(scores.len() >= 2 && scores[0] > scores[1]);
+        let response = recall(
+            temp.path(),
+            RecallOptions {
+                min_rerank_score: Some((scores[0] + scores[1]) / 2.0),
+                ..explain_opts(query, RetrievalMode::Hybrid, 10, docs)
+            },
+        )
+        .expect("recall");
+        assert_eq!(response.results.len(), scores.len());
+        assert!(!response.results[0].low_confidence);
+        assert!(response.results[1..].iter().all(|h| h.low_confidence));
+        assert_eq!(response.explain.dropped_by_doc_floor, 0);
+    }
+
+    #[test]
+    fn single_row_pool_is_reranked_and_floored_with_and_without_variants() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        edit_config(temp.path(), |cfg| {
+            cfg.retrieval.mode = RetrievalMode::Hybrid
+        });
+        fact::add(temp.path(), "lone-fact", "cargo build", "user", "cli:user").expect("fact");
+        let nonsense = "zxqv-pure-nonsense-no-real-token-anywhere-in-this-repo";
+
+        for variants in [
+            Vec::new(),
+            vec!["zxqv another nonsense phrasing".to_string()],
+        ] {
+            let response = recall(
+                temp.path(),
+                RecallOptions {
+                    variants: variants.clone(),
+                    ..explain_opts(nonsense, RetrievalMode::Hybrid, 5, vec![])
+                },
+            )
+            .expect("recall");
+            assert!(response.explain.reranker_ran, "variants {variants:?}");
+            assert_eq!(response.results.len(), 1);
+            assert!(response.results[0].low_confidence, "variants {variants:?}");
+            assert!(response.results[0].rerank_score.is_some_and(|s| s < 2.0));
+            assert!(
+                response
+                    .warnings
+                    .iter()
+                    .any(|w| w.kind == "rerank_floor_dropped_all"),
+                "variants {variants:?}"
+            );
+
+            // A floor the lone row clears: returned unflagged.
+            let cleared = recall(
+                temp.path(),
+                RecallOptions {
+                    variants,
+                    min_rerank_score: Some(-1000.0),
+                    ..explain_opts(nonsense, RetrievalMode::Hybrid, 5, vec![])
+                },
+            )
+            .expect("recall");
+            assert_eq!(cleared.results.len(), 1);
+            assert!(!cleared.results[0].low_confidence);
+        }
     }
 
     fn count_recall_metrics(temp_path: &std::path::Path) -> i64 {
