@@ -1097,6 +1097,7 @@ fn export_omits_arch_sections_and_import_rederives_them() {
             log_metrics: false,
             variants: Vec::new(),
             surface: None,
+            explain: false,
         },
     )
     .expect("recall");

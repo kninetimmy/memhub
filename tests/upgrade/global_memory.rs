@@ -12,6 +12,14 @@ use memhub::retrieval::{RecallOptions, recall};
 use tempfile::tempdir;
 
 fn fts_recall(path: &std::path::Path, query: &str) -> memhub::retrieval::RecallResponse {
+    fts_recall_explain(path, query, true)
+}
+
+fn fts_recall_explain(
+    path: &std::path::Path,
+    query: &str,
+    explain: bool,
+) -> memhub::retrieval::RecallResponse {
     recall(
         path,
         RecallOptions {
@@ -26,6 +34,7 @@ fn fts_recall(path: &std::path::Path, query: &str) -> memhub::retrieval::RecallR
             log_metrics: false,
             variants: Vec::new(),
             surface: None,
+            explain,
         },
     )
     .expect("recall")
@@ -338,6 +347,12 @@ fn machine_global_memory_end_to_end() {
             .explain
             .global_store_not_searched
     );
+    // Without explain requested the store is not even probed.
+    assert!(
+        !fts_recall_explain(repo_c.path(), "alpha-globalvalue", false)
+            .explain
+            .global_store_not_searched
+    );
     // Counters sum over both stores: one agent-sourced fact in each is
     // excluded by accepted-only.
     fact::add(
@@ -370,6 +385,7 @@ fn machine_global_memory_end_to_end() {
             log_metrics: false,
             variants: Vec::new(),
             surface: None,
+            explain: false,
         },
     )
     .expect("accepted-only recall");

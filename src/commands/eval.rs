@@ -193,6 +193,7 @@ pub fn run_retrieval(start: &Path, opts: EvalOptions) -> Result<EvalSummary> {
                 log_metrics: false,
                 variants: Vec::new(),
                 surface: None,
+                explain: false,
             },
         );
     }
@@ -222,6 +223,7 @@ pub fn run_retrieval(start: &Path, opts: EvalOptions) -> Result<EvalSummary> {
                 query.variants.clone()
             },
             surface: None,
+            explain: false,
         };
         let response = retrieval::recall(start, recall_opts)?;
         if resolved_mode.is_none() {
