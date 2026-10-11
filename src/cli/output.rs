@@ -585,10 +585,14 @@ fn format_run_settings(
         // Floor and pool only take effect when the re-ranker runs, so omit
         // them for reranker-off runs (the --json output still records them).
         Some(s) if s.reranker => format!(
-            "mode {}, reranker on, rerank floor {}, rerank pool {}, variants {}",
+            "mode {}, reranker on, rerank floor {}, rerank pool {}{}, variants {}",
             recall_mode_label(s.mode),
             s.min_rerank_score,
             s.rerank_candidate_pool,
+            // Absent from runs saved before the cap was recorded.
+            s.rerank_doc_cap
+                .map(|cap| format!(", rerank doc cap {cap}"))
+                .unwrap_or_default(),
             if s.variants { "on" } else { "off" },
         ),
         Some(s) => format!(
@@ -1531,6 +1535,7 @@ mod tests {
         assert!(on.contains("reranker on"), "{on}");
         assert!(on.contains("rerank floor 0.5"), "{on}");
         assert!(on.contains("rerank pool 20"), "{on}");
+        assert!(on.contains("rerank doc cap 5"), "{on}");
         for mode in [RetrievalMode::Hybrid, RetrievalMode::Fts] {
             let off = format_run_settings(mode, Some(&settings(mode, false)));
             assert!(off.contains("reranker off"), "{off}");
