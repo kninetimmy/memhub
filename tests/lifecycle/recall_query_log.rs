@@ -8,25 +8,34 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use memhub::commands::{fact, init};
-use memhub::config::ProjectConfig;
+use memhub::config::{ProjectConfig, RetrievalMode};
 use serde_json::{Value, json};
 use tempfile::tempdir;
 
 const LOG_FILE: &str = ".memhub/recall_queries.jsonl";
+/// The seeded fact is the first row inserted into a fresh database.
+const FACT_ID: i64 = 1;
 
 fn memhub_bin() -> &'static str {
     env!("CARGO_BIN_EXE_memhub")
 }
 
 fn seeded_repo(log_queries: bool) -> tempfile::TempDir {
+    seeded_repo_in_mode(log_queries, RetrievalMode::Fts)
+}
+
+/// Sets the mode before the fact is written so a hybrid repo embeds it.
+fn seeded_repo_in_mode(log_queries: bool, mode: RetrievalMode) -> tempfile::TempDir {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
-    fact::add(temp.path(), "build", "cargo build", "user", "cli:user").expect("fact");
     let cfg_path = temp.path().join(".memhub/config.toml");
     let mut cfg = ProjectConfig::load(&cfg_path).expect("load cfg");
     assert!(!cfg.retrieval.log_queries, "log_queries must default off");
     cfg.retrieval.log_queries = log_queries;
+    cfg.retrieval.mode = mode;
     cfg.save(&cfg_path).expect("save cfg");
+    let (id, _) = fact::add(temp.path(), "build", "cargo build", "user", "cli:user").expect("fact");
+    assert_eq!(id, FACT_ID);
     temp
 }
 
@@ -76,20 +85,20 @@ fn assert_line_fields(line: &Value, surface: &str) {
     assert!(ts.ends_with('Z') && ts.contains('T'), "UTC ts: {ts}");
     let results = line["results"].as_array().expect("results array");
     assert!(!results.is_empty(), "seeded fact must be returned: {line}");
-    let row = results[0].as_object().expect("row object");
-    for key in [
-        "source_type",
-        "source_id",
-        "scope",
-        "title",
-        "rerank_score",
-        "low_confidence",
-    ] {
-        assert!(row.contains_key(key), "row missing `{key}`: {line}");
-    }
-    assert_eq!(row["source_type"], "fact");
-    assert_eq!(row["scope"], "repo");
-    assert!(line["warnings"].is_array());
+    // FTS mode runs no re-ranker, so the score is null and nothing is flagged.
+    assert_eq!(
+        results[0],
+        json!({
+            "source_type": "fact",
+            "source_id": FACT_ID,
+            "scope": "repo",
+            "title": "build",
+            "rerank_score": null,
+            "low_confidence": false,
+        }),
+        "{line}"
+    );
+    assert_eq!(line["warnings"], json!([]));
 }
 
 #[test]
@@ -156,6 +165,44 @@ fn mcp_recall_appends_one_line_per_call() {
     let lines = log_lines(temp.path());
     assert_eq!(lines.len(), 1);
     assert_line_fields(&lines[0], "mcp");
+}
+
+#[test]
+fn hybrid_recall_logs_a_numeric_rerank_score_and_the_effective_max_results() {
+    let temp = seeded_repo_in_mode(true, RetrievalMode::Hybrid);
+    // No --max-results: the log holds the resolved config default.
+    let out = run_cli(
+        temp.path(),
+        &["recall", "cargo build", "--source-type", "fact", "--json"],
+    );
+    assert!(out.status.success(), "{out:?}");
+    let lines = log_lines(temp.path());
+    assert_eq!(lines.len(), 1);
+    let default = ProjectConfig::load(&temp.path().join(".memhub/config.toml"))
+        .expect("load cfg")
+        .retrieval
+        .default_max_results;
+    assert_eq!(lines[0]["max_results"], default);
+    let row = &lines[0]["results"][0];
+    assert_eq!(row["source_id"], FACT_ID);
+    assert!(row["rerank_score"].is_number(), "{}", lines[0]);
+}
+
+#[test]
+fn warning_kinds_are_logged() {
+    let temp = seeded_repo(true);
+    let ctx = memhub::db::open_project(temp.path()).expect("open project");
+    ctx.conn
+        .execute(
+            "UPDATE facts SET verified_at = datetime('now', '-400 days') WHERE id = ?1",
+            [FACT_ID],
+        )
+        .expect("backdate fact");
+    drop(ctx);
+    let out = cli_recall(temp.path());
+    assert!(out.status.success(), "{out:?}");
+    let lines = log_lines(temp.path());
+    assert_eq!(lines[0]["warnings"], json!(["stale_facts_demoted"]));
 }
 
 #[test]
