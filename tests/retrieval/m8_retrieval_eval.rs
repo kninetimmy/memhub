@@ -394,3 +394,34 @@ fn live_golden_file_passes_golden_validation() {
         .collect();
     assert!(bare.is_empty(), "queries without variants: {bare:?}");
 }
+
+#[test]
+fn holdout_golden_file_passes_golden_validation() {
+    // The held-out slice of the live set (issue #322): same validation and
+    // variants rule as the main file, no size floors, and no query id shared
+    // with the main file (a shared id would leak held-out queries into tuning).
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let path = root.join("retrieval_golden_holdout.json");
+    let parsed = memhub::commands::eval::load_golden(&path)
+        .unwrap_or_else(|e| panic!("{} failed golden-file validation: {e}", path.display()));
+    assert!(!parsed.queries.is_empty(), "held-out golden set is empty");
+    let bare: Vec<&str> = parsed
+        .queries
+        .iter()
+        .filter(|q| q.variants.is_empty())
+        .map(|q| q.id.as_str())
+        .collect();
+    assert!(bare.is_empty(), "queries without variants: {bare:?}");
+    let live = memhub::commands::eval::load_golden(&root.join("retrieval_golden_live.json"))
+        .expect("live golden");
+    let shared: Vec<&str> = parsed
+        .queries
+        .iter()
+        .filter(|q| live.queries.iter().any(|l| l.id == q.id))
+        .map(|q| q.id.as_str())
+        .collect();
+    assert!(
+        shared.is_empty(),
+        "held-out ids also in the main file: {shared:?}"
+    );
+}

@@ -460,8 +460,12 @@ checked when the file loads); `eval retrieval` sends it with the query exactly a
 an agent would (`recall --variant`), and `memhub eval retrieval --no-variants`
 runs the same golden file on the main queries alone, so one file can be A/B
 measured with `memhub eval compare`. Golden files without the field score as
-before. Every query in `tests/retrieval_golden_live.json` carries two variants,
-written without sight of the answers.
+before. Every query in `tests/retrieval_golden_live.json` and
+`tests/retrieval_golden_holdout.json` carries two variants, all rewritten on
+2026-10-11 (task 197) by writers who saw only the query text, with no
+repository access and no answers: a keyword form (a question form for queries
+that are already keyword bags) plus a sentence worded like the start of an
+answer that leaves the unknown part generic.
 `memhub eval compare <A> <B>` reads two such saved outputs and pairs them by
 query id. For rank-1 and for found@K separately it reports each run's pass
 count over the match queries, the ids that passed only in A and only in B,
@@ -521,9 +525,12 @@ apart; the live database has about 1,000 candidate rows with real distractors.
 Any change to retrieval (tasks 160, 175 and 98, or an embedder swap) is
 measured on this set before it lands. It is **not run in CI**, because CI has
 no such database: `cargo test` only checks that the file is valid JSON and
-passes golden-file validation (`live_golden_file_passes_golden_validation`).
+passes golden-file validation (`live_golden_file_passes_golden_validation`,
+and `holdout_golden_file_passes_golden_validation` for the held-out file
+below).
 Its queries are the real agent recall queries from this repo's session history
-(`seed-` ids), plus keyword bags (`kw-`), natural-language paraphrases
+(`seed-` ids: MCP recall calls, and since 2026-10-11 CLI `memhub recall` calls
+and later sessions), plus keyword bags (`kw-`), natural-language paraphrases
 (`semantic-`), two-part questions (`two-`), a vocabulary-mismatch group
 (`vm-`: phrased the way an agent asks without knowing the stored wording,
 sharing no whole word of four or more letters with the title of the row that
@@ -535,6 +542,20 @@ by its document and section heading, plus its matcher phrase wherever a query
 accepts more than one chunk under the same heading (chunk ids change on every
 re-ingest), any other row by type and id as of 2026-10-10; the matchers (title
 and body substrings), not the ids, decide pass or fail.
+
+**Held-out file (task 197).** `tests/retrieval_golden_holdout.json` holds
+about one query in six of each id prefix of the combined set, taken by sorting
+the ids within a prefix and moving every 6th query starting at the 4th out of
+the main file on 2026-10-11 (38 queries, 35 match and 3 empty; the main file
+keeps 194). It has the same format, matching rules and id prefixes as the
+main file. It exists to check that a setting tuned on the main file holds on
+queries the tuning never looked at. Use rule: while tuning (pool sizes,
+weights, floors, model swaps), compare and inspect per-query results on the
+main file only; score the held-out file once at the end, with the same
+`eval retrieval` and `eval compare` procedure below, and report its totals.
+Never tune against its per-query outcomes, and do not score it repeatedly
+between changes: a held-out set stops being held out once its per-query
+results steer the tuning.
 
 First baseline, recorded 2026-10-10 with a debug build of main at 7e17fff
 against this machine's database (live config: hybrid mode, re-ranker on,
