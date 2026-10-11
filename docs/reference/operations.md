@@ -324,8 +324,11 @@ JSON key:
 - `dropped_by_doc_floor`: default-included doc chunks under
   `doc_min_rerank_score`.
 - `stale_excluded`: stale rows excluded because stale rows were excluded
-  (`include_stale` off).
-- `accepted_only_excluded`: rows excluded by accepted-only.
+  (`include_stale` off). A row that is both stale and excluded by
+  accepted-only is counted once, here, and not under
+  `accepted_only_excluded`.
+- `accepted_only_excluded`: rows excluded by accepted-only, other than those
+  already counted under `stale_excluded`.
 - `superseded_demoted`: superseded rows kept but demoted by
   `superseded_penalty`.
 - `stale_demoted`: stale rows kept but demoted by `stale_penalty` (the count
@@ -339,9 +342,13 @@ JSON key:
   chunk total (over the stores searched) when doc chunks were outside the
   searched source types, 0 when they were searched, whether by default
   inclusion or `--source-type doc`. A chunk that was searched but not surfaced
-  does not count here, unlike in `available_docs`.
+  does not count here, unlike in `available_docs`. The machine-global store's
+  doc chunks are not counted when the repo has not opted in to the global
+  store; `global_store_not_searched` reports that case.
 - `global_store_not_searched` (bool): a machine-global store exists but was not
-  searched because this repo has not opted in (`[global] enabled`).
+  searched because this repo has not opted in (`[global] enabled`). The call
+  looks for the store only when `--explain` (or `explain: true`) was
+  requested, so a plain recall does no filesystem check for it.
 
 **Query variants (issue #319).** The calling agent can send extra phrasings of
 one question so rows the main wording misses can still enter the candidate
@@ -359,7 +366,10 @@ query and the variants in one batch) and gathered like the main query, in the
 repo store and, when the repo opted in, the machine-global store. Each
 phrasing's own top `rerank_candidate_pool` rows (by blended score) are unioned,
 deduplicated by row (scope, source type, id), and one re-rank pass then runs
-over that union. The re-ranker and the `min_rerank_score` / `doc_min_rerank_score`
+over that union. A row found by several phrasings keeps the hit from its
+best-scoring phrasing, so its blended `score`, `fts_score` and `vector_score`
+come from that phrasing, while `rerank_score` is always scored against the
+main query. The re-ranker and the `min_rerank_score` / `doc_min_rerank_score`
 floors score every candidate against the **main query only**, never a variant,
 so each returned hit's `rerank_score` is its score against the main query and
 the floor keeps its meaning (a gibberish main query clears no floor
@@ -368,8 +378,12 @@ whatever the variants say, so its rows come back only flagged
 union, so a variant can never push out a row the main query would have
 re-ranked. Cost: the union has up to (1 + variants) x `rerank_candidate_pool`
 rows, so re-rank time grows with the variants sent (each pool-sized batch costs
-roughly what a plain recall's re-rank costs, about 275 ms at pool 20), plus one
-more embedding and one more scan of the stored vectors per variant. When the
+roughly what a plain recall's re-rank costs, about 275 ms at pool 20), plus,
+per variant, one more embedding, one more set of full-text lookups (one per
+searched source type, and a second set with the partial-token retry when no
+row holds every token) and one more scan of the stored vectors, which runs
+once per searched store (the repo store and, when the repo opted in, the
+machine-global store). When the
 re-ranker does not run (FTS-only mode, `--no-rerank`, `use_reranker = false`)
 no pool is cut and variant-only rows have no main-query score, so the merged
 set is ordered by each row's best blended score across phrasings; the filters
