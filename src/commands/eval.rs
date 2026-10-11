@@ -258,8 +258,8 @@ fn median_ms(values: &[u128]) -> f64 {
 }
 
 /// Read an eval input JSON file, tolerating a UTF-8 byte-order mark and
-/// naming UTF-16 (what Windows PowerShell 5.1's `>` writes) and UTF-32 instead of
-/// letting serde report a bare "expected value at line 1 column 1".
+/// naming UTF-16 (what Windows PowerShell 5.1's `>` writes) and UTF-32 instead
+/// of letting serde report a bare "expected value at line 1 column 1".
 fn read_input_json(path: &Path, not_found: String) -> Result<Vec<u8>> {
     let mut bytes = fs::read(path).map_err(|err| match err.kind() {
         std::io::ErrorKind::NotFound => MemhubError::InvalidInput(not_found),
