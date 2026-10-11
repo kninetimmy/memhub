@@ -304,7 +304,10 @@ pub struct RecallExplain {
 /// Caller-written `variants` are extra phrasings of the same question: each
 /// is gathered like the main query and its own `rerank_candidate_pool` rows
 /// (see `select_rerank_pool`) join the pool, but the single rerank pass (and
-/// the relevance floor) still scores every candidate against the main query.
+/// the relevance floor) never scores a candidate against a variant. When the
+/// re-ranker will run and the main query asks two things (`split_query`), each
+/// part gathers like a variant and a row's rerank score is its best against
+/// the whole query or any part.
 pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
     let ctx = db::open_project(start)?;
     let resolved = ResolvedOptions::from(&options, &ctx.config.retrieval)?;
@@ -317,6 +320,7 @@ pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
     // embed.
     let texts: Vec<&str> = std::iter::once(resolved.query.as_str())
         .chain(resolved.variants.iter().map(String::as_str))
+        .chain(resolved.parts.iter().map(String::as_str))
         .collect();
     let query_vecs: Option<Vec<Vec<f32>>> = if resolved.mode == RetrievalMode::Hybrid {
         let vecs = if texts.len() == 1 {
@@ -481,6 +485,10 @@ struct ResolvedOptions {
     query: String,
     /// Validated, trimmed extra phrasings (see `validate_variants`).
     variants: Vec<String>,
+    /// The parts of a two-question main query (`split_query`); empty unless
+    /// the re-ranker will run. Internal: gathered like variants, and scored
+    /// against by the re-ranker, but never logged or reported.
+    parts: Vec<String>,
     mode: RetrievalMode,
     max_results: usize,
     source_types: Vec<SourceType>,
@@ -566,16 +574,24 @@ impl ResolvedOptions {
             }
             deduped
         };
+        let mode = opts.mode.unwrap_or(cfg.mode);
+        let use_reranker = opts.use_reranker.unwrap_or(cfg.use_reranker);
+        let parts = if mode == RetrievalMode::Hybrid && use_reranker {
+            split_query(query)
+        } else {
+            Vec::new()
+        };
         Ok(Self {
             query: query.to_string(),
             variants,
-            mode: opts.mode.unwrap_or(cfg.mode),
+            parts,
+            mode,
             max_results,
             source_types,
             include_stale: opts.include_stale.unwrap_or(cfg.include_stale_by_default),
             fact_stale_after_days: cfg.fact_stale_after_days,
             accepted_only: opts.accepted_only.unwrap_or(cfg.accepted_only_by_default),
-            use_reranker: opts.use_reranker.unwrap_or(cfg.use_reranker),
+            use_reranker,
             rerank_candidate_pool: cfg.rerank_candidate_pool.max(max_results),
             rerank_doc_cap: cfg.rerank_doc_cap,
             min_rerank_score: opts
@@ -587,7 +603,44 @@ impl ResolvedOptions {
     }
 }
 
-/// One phrasing of the question: the main query, or a caller variant.
+/// Words that open a question; ` and ` followed by one marks a split point.
+const QUESTION_WORDS: [&str; 14] = [
+    "what", "which", "how", "why", "where", "when", "who", "do", "does", "did", "is", "are", "can",
+    "should",
+];
+
+/// Split a query that asks two things (`what does X measure, and where is Y
+/// set?`) at each ` and ` (a comma before it is allowed) immediately followed
+/// by a whole question word, any letter case. Parts are trimmed of
+/// surrounding whitespace and a trailing comma; the question word stays with
+/// its part. Returns no parts (empty) when there is no split point.
+fn split_query(query: &str) -> Vec<String> {
+    let lower = query.to_ascii_lowercase(); // same byte offsets as `query`
+    let mut parts = Vec::new();
+    let mut start = 0;
+    for (at, _) in lower.match_indices(" and ") {
+        let rest = &lower[at + 5..];
+        let word_len = rest
+            .find(|c: char| !c.is_ascii_alphabetic())
+            .unwrap_or(rest.len());
+        if !QUESTION_WORDS.contains(&&rest[..word_len]) {
+            continue;
+        }
+        parts.push(&query[start..at]);
+        start = at + 5;
+    }
+    if parts.is_empty() {
+        return Vec::new();
+    }
+    parts.push(&query[start..]);
+    parts
+        .into_iter()
+        .map(|p| p.trim().trim_end_matches(',').trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect()
+}
+
+/// One phrasing of the question: the main query, a caller variant, or a part.
 struct Phrasing<'a> {
     text: &'a str,
     /// Query embedding (hybrid mode only).
@@ -1135,7 +1188,22 @@ fn finalize(
                 _ => format!("{}\n\n{}", h.title, h.body),
             })
             .collect();
-        let scored_order = rerank::rerank(&opts.query, &docs)?;
+        let mut scored_order = rerank::rerank(&opts.query, &docs)?;
+        if !opts.parts.is_empty() {
+            // A row's score is its best against the whole query or any part
+            // (named rows too: they ride the same pass). Back to best-first
+            // for the floor loop and the fill.
+            for part in &opts.parts {
+                for (idx, score) in rerank::rerank(part, &docs)? {
+                    if let Some(entry) = scored_order.iter_mut().find(|(i, _)| *i == idx)
+                        && score > entry.1
+                    {
+                        entry.1 = score;
+                    }
+                }
+            }
+            scored_order.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        }
         let mut reshuffled: Vec<ScoredHit> = Vec::with_capacity(scored.len());
         let mut highest_dropped = None;
         // Floor-dropped candidates eligible to fill the bundle after every
@@ -5717,5 +5785,178 @@ explainscopeprobe second.
         let top = &response.results[0];
         assert_eq!((top.source_type.as_str(), top.source_id), ("decision", 1));
         assert!(top.rerank_score.is_none());
+    }
+
+    // Issue #341: a two-question main query is split so each half can rank.
+    #[test]
+    fn split_query_splits_at_and_plus_a_question_word_only() {
+        assert_eq!(
+            split_query("What does X measure, and where is Y set?"),
+            ["What does X measure", "where is Y set?"]
+        );
+        assert_eq!(
+            split_query("how is a built AND Why is b slow and can c run"),
+            ["how is a built", "Why is b slow", "can c run"]
+        );
+        for q in [
+            "build and lint",
+            "build and whatever",
+            "build and isolate the cache",
+            "build and  where",
+            "tests and what",
+            "what and",
+            "Q and A about docs",
+            "rock-and-roll who",
+        ] {
+            let parts = split_query(q);
+            assert_eq!(parts.is_empty(), q != "tests and what", "{q:?}: {parts:?}");
+        }
+        for word in QUESTION_WORDS {
+            assert_eq!(split_query(&format!("a and {word} b")).len(), 2, "{word}");
+        }
+    }
+
+    #[test]
+    fn parts_exist_only_when_the_reranker_will_run() {
+        let cfg = crate::config::RetrievalConfig::default();
+        let q = "what does X measure, and where is Y set?";
+        let parts = |mode, rerank: Option<bool>| {
+            let opts = RecallOptions {
+                mode: Some(mode),
+                use_reranker: rerank,
+                ..explain_opts(q, mode, 5, vec![])
+            };
+            ResolvedOptions::from(&opts, &cfg).expect("opts").parts
+        };
+        assert_eq!(parts(RetrievalMode::Hybrid, Some(true)).len(), 2);
+        assert!(parts(RetrievalMode::Hybrid, Some(false)).is_empty());
+        assert!(parts(RetrievalMode::Fts, Some(true)).is_empty());
+    }
+
+    #[test]
+    fn two_question_query_lifts_the_row_one_half_answers() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        edit_config(temp.path(), |cfg| {
+            cfg.retrieval.mode = RetrievalMode::Hybrid;
+        });
+        for (key, value) in [
+            (
+                "latency-metric",
+                "The latency metric measures end-to-end request time in milliseconds",
+            ),
+            (
+                "timeout-setting",
+                "The gadget timeout is set in the GADGET_TIMEOUT environment variable",
+            ),
+            ("cache-note", "The cache is cleared every night at midnight"),
+        ] {
+            fact::add(temp.path(), key, value, "user", "cli:user").expect("fact");
+        }
+        let main = "what does the latency metric measure, and where is the gadget timeout set?";
+        let parts = split_query(main);
+        assert_eq!(parts.len(), 2);
+
+        let run = |variants: Vec<String>| {
+            recall(
+                temp.path(),
+                RecallOptions {
+                    min_rerank_score: Some(-1000.0),
+                    variants,
+                    ..explain_opts(main, RetrievalMode::Hybrid, 10, vec![SourceType::Fact])
+                },
+            )
+            .expect("recall")
+        };
+        let plain = run(Vec::new());
+        // A variant that states one answer must not be scored against.
+        let with_variant = run(vec!["cache is cleared at midnight".to_string()]);
+        assert!(plain.explain.reranker_ran);
+        assert_eq!(plain.query, main, "the response reports the query as given");
+        assert_eq!(with_variant.query, main);
+
+        let doc_of = |h: &RecallHit| {
+            format!(
+                "{}
+
+{}",
+                h.title, h.body
+            )
+        };
+        let docs: Vec<String> = plain.results.iter().map(doc_of).collect();
+        let mut expected = vec![f32::MIN; docs.len()];
+        let mut whole = vec![0.0_f32; docs.len()];
+        for (i, q) in std::iter::once(main)
+            .chain(parts.iter().map(String::as_str))
+            .enumerate()
+        {
+            for (idx, score) in rerank::rerank(q, &docs).expect("rerank") {
+                expected[idx] = expected[idx].max(score);
+                if i == 0 {
+                    whole[idx] = score;
+                }
+            }
+        }
+        for resp in [&plain, &with_variant] {
+            assert_eq!(resp.results.len(), 3);
+            for hit in &resp.results {
+                let at = plain
+                    .results
+                    .iter()
+                    .position(|p| p.source_id == hit.source_id)
+                    .expect("same rows");
+                let got = hit.rerank_score.expect("score");
+                assert!(
+                    (got - expected[at]).abs() < 1e-3,
+                    "{}: {got} is not the best-of-parts score {}",
+                    hit.title,
+                    expected[at]
+                );
+            }
+        }
+        // Order follows the best-of-parts score, best first.
+        assert!(
+            plain
+                .results
+                .windows(2)
+                .all(|w| { w[0].rerank_score >= w[1].rerank_score })
+        );
+        // Each half's answer is lifted over its whole-query score.
+        for key in ["latency-metric", "timeout-setting"] {
+            let at = plain
+                .results
+                .iter()
+                .position(|h| h.title.contains(key))
+                .expect(key);
+            assert!(
+                expected[at] > whole[at] + 0.5,
+                "{key}: best {} vs whole {}",
+                expected[at],
+                whole[at]
+            );
+        }
+        // Both answers lead the bundle; the unrelated row trails.
+        assert!(plain.results[2].title.contains("cache-note"));
+        // A floor between a row's whole-query score and its best part score:
+        // the row clears it only because of the part.
+        let at = plain
+            .results
+            .iter()
+            .position(|h| h.title.contains("timeout-setting"))
+            .unwrap();
+        let floored = recall(
+            temp.path(),
+            RecallOptions {
+                min_rerank_score: Some((whole[at] + expected[at]) / 2.0),
+                ..explain_opts(main, RetrievalMode::Hybrid, 10, vec![SourceType::Fact])
+            },
+        )
+        .expect("recall");
+        let hit = floored
+            .results
+            .iter()
+            .find(|h| h.title.contains("timeout-setting"))
+            .expect("timeout row returned");
+        assert!(!hit.low_confidence, "lifted over the floor by its part");
     }
 }
