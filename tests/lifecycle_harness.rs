@@ -32,6 +32,8 @@ mod metrics_tokenizer;
 mod milestone2;
 #[path = "lifecycle/narrative.rs"]
 mod narrative;
+#[path = "lifecycle/recall_query_log.rs"]
+mod recall_query_log;
 #[path = "lifecycle/render.rs"]
 mod render;
 #[path = "lifecycle/review.rs"]

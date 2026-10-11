@@ -363,6 +363,11 @@ pub struct RetrievalConfig {
     /// `--source-type doc` recall is unaffected by this flag.
     #[serde(default = "default_include_docs_in_default")]
     pub include_docs_in_default: bool,
+    /// Opt-in: append one JSON line per agent-facing recall (CLI and MCP) to
+    /// `.memhub/recall_queries.jsonl`, in plaintext, to mine real queries for
+    /// golden probes. Off by default; the file is never synced or rotated.
+    #[serde(default)]
+    pub log_queries: bool,
     #[serde(default)]
     pub scoring: RetrievalScoringConfig,
 }
@@ -378,6 +383,7 @@ impl Default for RetrievalConfig {
             use_reranker: DEFAULT_USE_RERANKER,
             rerank_candidate_pool: DEFAULT_RERANK_CANDIDATE_POOL,
             include_docs_in_default: DEFAULT_INCLUDE_DOCS_IN_DEFAULT,
+            log_queries: false,
             scoring: RetrievalScoringConfig::default(),
         }
     }

@@ -367,6 +367,7 @@ const KNOWN_LEAVES: &[&str] = &[
     "retrieval.use_reranker",
     "retrieval.rerank_candidate_pool",
     "retrieval.include_docs_in_default",
+    "retrieval.log_queries",
     "retrieval.scoring.fts_weight",
     "retrieval.scoring.vector_weight",
     "retrieval.scoring.stale_penalty",

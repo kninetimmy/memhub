@@ -138,6 +138,8 @@ pub struct RecallOptions {
     /// "real usage" the metrics panel reports on. The `metrics.enabled`
     /// master switch gates the actual insert separately, so setting
     /// this `true` on a non-opted-in install is still a no-op.
+    /// Doubles as the "agent-facing recall" marker for the opt-in
+    /// `[retrieval] log_queries` JSONL log (see `query_log`).
     pub log_metrics: bool,
     /// Which surface issued this call — `Some(Cli)` / `Some(Mcp)` at the
     /// two agent-facing entry points, `None` everywhere else (eval
@@ -423,6 +425,27 @@ pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
             &resolved.query,
             &response,
             options.surface,
+        );
+    }
+
+    // Opt-in plaintext query log (`[retrieval] log_queries`). Same
+    // agent-facing gate as metrics (CLI/MCP only, never eval/hooks), but not
+    // behind the hibernated `metrics` feature.
+    if options.log_metrics
+        && ctx.config.retrieval.log_queries
+        && let Some(surface) = options.surface
+    {
+        let source_types: Vec<&str> = options.source_types.iter().map(|s| s.as_str()).collect();
+        super::query_log::log_recall(
+            &ctx.conn,
+            &ctx.paths.memhub_dir,
+            &super::query_log::LoggedRequest {
+                surface,
+                variants: &resolved.variants,
+                source_types: &source_types,
+                max_results: resolved.max_results,
+            },
+            &response,
         );
     }
     Ok(response)

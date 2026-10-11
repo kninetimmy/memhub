@@ -149,6 +149,16 @@ rerank_candidate_pool = 20
 # is not committed back here. Explicit `--source-type doc` recall is
 # unaffected by this flag either way.
 include_docs_in_default = false
+# Opt-in query log, OFF by default. When true, every agent-facing recall
+# (CLI `memhub recall` and the MCP recall tool) appends one JSON line --
+# timestamp, surface, query, variants, requested source types/max_results,
+# each returned row's type/id/scope/title/rerank score/low_confidence flag,
+# and warning kinds -- to .memhub/recall_queries.jsonl. Queries are stored
+# in PLAINTEXT. It is a plain file beside the database (git-ignored), never
+# part of the DB, so Drive sync and export never carry it. It is never
+# rotated: it grows until you delete it. `memhub eval retrieval` and
+# memhub's own internal recalls never write it.
+log_queries = false
 
 [retrieval.scoring]
 fts_weight = 0.5

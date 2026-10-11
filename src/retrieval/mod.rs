@@ -7,6 +7,7 @@
 
 pub mod embeddings;
 pub mod persist;
+pub mod query_log;
 pub mod recall;
 pub mod rerank;
 pub mod util;
