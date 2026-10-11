@@ -231,6 +231,19 @@ baseline the normal way — a `snapshot` into the canonical remote dir
 `commit` against the current remote — and subsequent checks read
 correctly again. No data is lost; only the stale marker is replaced.
 
+**Digest change in migration 0026 (issue #349).** The digest now also covers
+`facts.summary` and `tasks.summary`, so every DB's digest changes once on
+upgrade even when every summary is empty. A machine that upgrades while
+Drive still holds a snapshot written before the upgrade reads `local-ahead`
+on its next `check` (nothing changed locally; the digest did); `snapshot`
+pushes the upgraded DB and the baseline is current again. Adopting a
+snapshot written before 0026 does the same: the adopted DB migrates on open,
+so the next `check` reads `local-ahead` until the next `snapshot`. Once one machine
+has pushed, another machine that upgrades with the same content reads
+`up-to-date`, because equal digests are in step whatever the baseline says.
+A `diverged` verdict after the upgrade means real local and Drive changes,
+as before.
+
 ## Retrieval
 
 Hybrid recall (the default) combines FTS5 BM25 and BGE-small embeddings,
@@ -299,6 +312,19 @@ and crowd the pool; partial-token FTS scores are therefore multiplied by 0.5
 still requires every token. `min_rerank_score`, `doc_min_rerank_score` and
 `rerank_candidate_pool` defaults are unchanged, and superseded or stale rows
 are still demoted rather than excluded (decision 145).
+
+**Stemmed full-text search (issue #349, migration 0026).** Before: the six
+full-text tables recall reads (facts, decisions, tasks, doc chunks,
+architecture sections, session notes) used SQLite's default `unicode61`
+tokenizer, so a query word matched only the identical stored word
+(`migrating` did not find a row that says `migration`), and no summary was
+indexed. After: those six tables use `porter unicode61`, so a query word
+matches other inflections of the same stem, and the fact, decision and task
+tables also index the row's `summary`, so a query whose words appear only in a
+summary finds that row. Migration 0026 drops and recreates the six tables and
+rebuilds them from the source rows once, on the first open after upgrading;
+no stored memory changes. The code index (`memhub locate`) and the legacy
+git-search table (`memhub search`) keep `unicode61`.
 
 **Low-confidence fallback (issue #225).** Since issue #323 this is a fill:
 candidates under the relevance floor are not discarded outright. Recall returns every candidate that cleared
@@ -540,6 +566,19 @@ lifted Recall@3 from 76.5% to 100% with the safety probe still
 passing. Set at write time with `memhub decision add --summary "..."`
 or backfill an existing row with `memhub decision set-summary <ID>
 "..."` (empty string clears it back to NULL).
+
+Facts and tasks carry the same optional `summary` since migration 0026
+(issue #349). Before: only decisions had one. After: `memhub fact add
+--summary "..."` (also with `--global`), `memhub task add --summary "..."`,
+`memhub fact set-summary <ID> "..."` and `memhub task set-summary <ID> "..."`
+set it, an empty string clears it, and it is prepended to the embed text and
+the rerank input exactly as for decisions. A row without a summary embeds
+the same text as before, so upgrading marks no embedding stale. Re-adding a
+fact under an existing key without `--summary` keeps the summary it had
+(unlike `--kind`, which an omitted flag clears); `fact promote` copies it.
+Export and import carry it, and an export written before 0026 imports with
+the summaries empty. Since 0026 summaries are also in the full-text index
+(see "Stemmed full-text search" above).
 
 For A/B testing in any repo: `memhub eval retrieval` vs
 `memhub eval retrieval --no-rerank`.

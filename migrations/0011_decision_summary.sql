@@ -16,5 +16,10 @@
 -- the keyword case well and rebuilding decisions_fts adds churn for no
 -- proven win. A follow-up migration can index summary if FTS-side
 -- paraphrase matching turns out to matter.
+--
+-- Before/after (issue #349): that follow-up is migration 0026. Before it,
+-- decisions_fts indexed only (title, rationale); since 0026 it indexes
+-- (title, rationale, summary), facts and tasks gained the same optional
+-- summary, and the recall FTS tables use porter stemming.
 
 ALTER TABLE decisions ADD COLUMN summary TEXT;
