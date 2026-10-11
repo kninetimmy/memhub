@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Live-database retrieval golden set (task 174). Unlike tests/retrieval_golden.json, which scores a seeded hermetic fixture in CI, this file is scored against the memhub project database of the repository it is run in (this repo's own `.memhub/project.sqlite`, about 1,000 candidate rows including facts, decisions, tasks, ingested doc chunks and architecture sections). It is NOT run in CI: an A/B comparison is two back-to-back local runs of `memhub eval retrieval --golden tests/retrieval_golden_live.json --k 5 --json` on the same database, one on the old binary or settings and one on the new, then `memhub eval compare old.json new.json`. Matchers are case-insensitive substring checks against the hit's title and body. A `match` query passes when any top-K hit satisfies the primary answer or an `also_accept` entry; every match query's `notes` name the row (type and id) that answers it, led by the primary answer. A `kind: empty` probe asks about a topic no row covers and passes when no hit clears the relevance floor (low-confidence fallback hits are tolerated). Id prefixes: `seed-NN` real agent recall queries taken verbatim from this repo's session history (NN is the position in the original list; seed 13 is omitted because no row stores an Orch plan); `kw-` keyword bags; `semantic-` natural-language paraphrases; `two-` two-part questions (every row answering either part is accepted); `vm-` vocabulary-mismatch queries written the way an agent would ask without knowing the stored wording, sharing no whole word of four or more letters with the title of any row named in their notes; `doc-` queries answered by an ingested doc chunk (pinned with a body needle unique to that chunk); `arch-` queries answered by a section of the architecture narrative; `empty-` and `near-` empty probes (`near-` ones are adjacent to topics memhub does cover). Row ids in `notes` refer to this repo's own database as of 2026-10-10 (`doc_chunk` ids are repo-scope chunk ids; the machine-global store holds other docs whose chunk ids can reuse the same numbers); the matchers, not the ids, decide pass or fail, so the set survives id shifts but a row edit or removal can invalidate a query. Numbers from this set are not comparable to the hermetic baseline (memhub fact retrieval.live-eval-not-comparable) and many queries are expected to fail under current settings: that headroom is the point.",
+  "description": "Live-database retrieval golden set (task 174). Unlike tests/retrieval_golden.json, which scores a seeded hermetic fixture in CI, this file is scored against the memhub project database of the repository it is run in (this repo's own `.memhub/project.sqlite`, about 1,000 candidate rows including facts, decisions, tasks, ingested doc chunks and architecture sections). It is NOT run in CI: an A/B comparison is two back-to-back local runs of `memhub eval retrieval --golden tests/retrieval_golden_live.json --k 5 --json` on the same database, one on the old binary or settings and one on the new, then `memhub eval compare old.json new.json`. Matchers are case-insensitive substring checks against the hit's title and body. A `match` query passes when any top-K hit satisfies the primary answer or an `also_accept` entry; every match query's `notes` name the row that answers it, led by the primary answer: a doc chunk by its document (repo-relative path, or the document's title when the document is not in this repository) and section heading, any other row by type and id. A `kind: empty` probe asks about a topic no row covers and passes when no hit clears the relevance floor (low-confidence fallback hits are tolerated). Id prefixes: `seed-NN` real agent recall queries taken verbatim from this repo's session history (NN is the position in the original list; seed 13 is omitted because no row stores an Orch plan); `kw-` keyword bags; `semantic-` natural-language paraphrases; `two-` two-part questions (every row answering either part is accepted); `vm-` vocabulary-mismatch queries written the way an agent would ask without knowing the stored wording, sharing no whole word of four or more letters with the title of any row named in their notes; `doc-` queries answered by an ingested doc chunk (pinned with a body needle unique to that chunk); `arch-` queries answered by a section of the architecture narrative; `empty-` and `near-` empty probes (`near-` ones are adjacent to topics memhub does cover). Fact, decision, task and architecture-section ids in `notes` refer to this repo's own database as of 2026-10-10 (doc chunks are named by document and heading because chunk ids change on every re-ingest); the matchers, not the ids, decide pass or fail, so the set survives id shifts but a row edit or removal can invalidate a query. Numbers from this set are not comparable to the hermetic baseline (memhub fact retrieval.live-eval-not-comparable) and many queries are expected to fail under current settings: that headroom is the point.",
   "queries": [
     {
       "id": "seed-01",
@@ -52,7 +52,7 @@
           ]
         }
       ],
-      "notes": "answer: decision 51; also: task 16, decision 36, decision 37, doc_chunk 466, doc_chunk 465. category: seed"
+      "notes": "answer: decision 51; also: task 16, decision 36, decision 37, docs/reference/operations.md > Retrieval. category: seed"
     },
     {
       "id": "seed-02",
@@ -103,7 +103,7 @@
           ]
         }
       ],
-      "notes": "answer: decision 194; also: doc_chunk 464, doc_chunk 463. category: seed"
+      "notes": "answer: decision 194; also: docs/reference/operations.md > Retrieval. category: seed"
     },
     {
       "id": "seed-04",
@@ -256,7 +256,7 @@
           ]
         }
       ],
-      "notes": "answer: decision 190; also: arch_section 6, doc_chunk 463. category: seed"
+      "notes": "answer: decision 190; also: arch_section 6, docs/reference/operations.md > Retrieval. category: seed"
     },
     {
       "id": "seed-09",
@@ -306,7 +306,7 @@
           ]
         }
       ],
-      "notes": "answer: decision 69; also: decision 36, decision 53, decision 51, fact 56, doc_chunk 466. category: seed"
+      "notes": "answer: decision 69; also: decision 36, decision 53, decision 51, fact 56, docs/reference/operations.md > Retrieval. category: seed"
     },
     {
       "id": "seed-10",
@@ -335,7 +335,7 @@
           ]
         }
       ],
-      "notes": "answer: decision 186; also: decision 189, doc_chunk 462. category: seed, two-part"
+      "notes": "answer: decision 186; also: decision 189, docs/reference/operations.md > Retrieval. category: seed, two-part"
     },
     {
       "id": "seed-11",
@@ -423,13 +423,6 @@
         {
           "source_type": "fact",
           "title_contains": [
-            "clippy.local-version-drift"
-          ],
-          "body_contains": []
-        },
-        {
-          "source_type": "fact",
-          "title_contains": [
             "clippy.local-clean"
           ],
           "body_contains": []
@@ -442,7 +435,7 @@
           "body_contains": []
         }
       ],
-      "notes": "answer: task 125; also: fact 33, fact 60, fact 31. category: seed"
+      "notes": "answer: task 125; also: fact 60, fact 31. category: seed"
     },
     {
       "id": "seed-18",
@@ -688,13 +681,6 @@
         {
           "source_type": "fact",
           "title_contains": [
-            "clippy.local-version-drift"
-          ],
-          "body_contains": []
-        },
-        {
-          "source_type": "fact",
-          "title_contains": [
             "clippy.local-clean"
           ],
           "body_contains": []
@@ -707,7 +693,7 @@
           "body_contains": []
         }
       ],
-      "notes": "answer: task 125; also: fact 33, fact 60, fact 31. category: seed"
+      "notes": "answer: task 125; also: fact 60, fact 31. category: seed"
     },
     {
       "id": "seed-26",
@@ -832,13 +818,6 @@
         {
           "source_type": "fact",
           "title_contains": [
-            "clippy.local-version-drift"
-          ],
-          "body_contains": []
-        },
-        {
-          "source_type": "fact",
-          "title_contains": [
             "ci-lint-unix-only-surface"
           ],
           "body_contains": []
@@ -851,7 +830,7 @@
           "body_contains": []
         }
       ],
-      "notes": "answer: task 137; also: decision 173, task 125, fact 33, fact 31, fact 60. category: seed, two-part"
+      "notes": "answer: task 137; also: decision 173, task 125, fact 31, fact 60. category: seed, two-part"
     },
     {
       "id": "seed-32",
@@ -887,7 +866,7 @@
           "body_contains": []
         }
       ],
-      "notes": "answer: decision 186; also: doc_chunk 462, task 144, task 152. category: seed"
+      "notes": "answer: decision 186; also: docs/reference/operations.md > Retrieval, task 144, task 152. category: seed"
     },
     {
       "id": "seed-33",
@@ -1071,7 +1050,7 @@
           ]
         }
       ],
-      "notes": "answer: decision 162; also: doc_chunk 457. category: keyword bag"
+      "notes": "answer: decision 162; also: docs/reference/operations.md > Cross-machine Drive sync. category: keyword bag"
     },
     {
       "id": "kw-content-tables-drift-test",
@@ -1107,16 +1086,9 @@
             "Add a test asserting"
           ],
           "body_contains": []
-        },
-        {
-          "source_type": "fact",
-          "title_contains": [
-            "rust.msrv"
-          ],
-          "body_contains": []
         }
       ],
-      "notes": "answer: fact 51; also: decision 172, task 136, fact 38. category: keyword bag"
+      "notes": "answer: fact 51; also: decision 172, task 136. category: keyword bag"
     },
     {
       "id": "kw-first-tagged-release",
@@ -1494,7 +1466,7 @@
       "body_contains": [
         "`[retrieval] rerank_candidate_pool`"
       ],
-      "notes": "answer: doc_chunk 460. category: keyword bag"
+      "notes": "answer: docs/reference/operations.md > Retrieval. category: keyword bag"
     },
     {
       "id": "kw-fact-retire-doc-archive",
@@ -1961,7 +1933,7 @@
           ]
         }
       ],
-      "notes": "answer: decision 100; also: fact 11, doc_chunk 484. category: paraphrase"
+      "notes": "answer: decision 100; also: fact 11, docs/reference/operations.md > Machine-wide upgrade. category: paraphrase"
     },
     {
       "id": "semantic-eval-audit-trace",
@@ -2131,7 +2103,7 @@
           "body_contains": []
         }
       ],
-      "notes": "answer: doc_chunk 481; also: decision 96. category: paraphrase"
+      "notes": "answer: docs/reference/operations.md > Machine-wide upgrade; also: decision 96. category: paraphrase"
     },
     {
       "id": "two-wal-and-synchronous",
@@ -2160,7 +2132,7 @@
           "body_contains": []
         }
       ],
-      "notes": "answer: decision 140; also: doc_chunk 46, decision 162. category: two-part"
+      "notes": "answer: decision 140; also: docs/reference/memhub-prd-addendum-m10-drive-sync.md > 7. WAL consistency, decision 162. category: two-part"
     },
     {
       "id": "two-eval-metric-and-floor",
@@ -2243,7 +2215,7 @@
           ]
         }
       ],
-      "notes": "answer: decision 97; also: decision 100, doc_chunk 484. category: two-part"
+      "notes": "answer: decision 97; also: decision 100, docs/reference/operations.md > Machine-wide upgrade. category: two-part"
     },
     {
       "id": "two-mcp-direct-and-accept",
@@ -2382,7 +2354,7 @@
           ]
         }
       ],
-      "notes": "answer: decision 188; also: decision 186, doc_chunk 461, doc_chunk 462. category: two-part"
+      "notes": "answer: decision 188; also: decision 186, docs/reference/operations.md > Retrieval. category: two-part"
     },
     {
       "id": "two-nonrust-golden-and-locate-recall",
@@ -2769,7 +2741,7 @@
           ]
         }
       ],
-      "notes": "answer: decision 100; also: doc_chunk 484. category: vocabulary mismatch"
+      "notes": "answer: decision 100; also: docs/reference/operations.md > Machine-wide upgrade. category: vocabulary mismatch"
     },
     {
       "id": "vm-noun-bundles-vs-questions",
@@ -2866,7 +2838,7 @@
           ]
         }
       ],
-      "notes": "answer: decision 96; also: doc_chunk 481. category: vocabulary mismatch"
+      "notes": "answer: decision 96; also: docs/reference/operations.md > Machine-wide upgrade. category: vocabulary mismatch"
     },
     {
       "id": "vm-shared-server-box-down",
@@ -2879,7 +2851,7 @@
       "body_contains": [
         "Pi down = no memory"
       ],
-      "notes": "answer: doc_chunk 295. category: vocabulary mismatch"
+      "notes": "answer: \"memhub MCP 2026-07-28 migration & remote hub spec (r2.2)\" (not in this repository) > 6. Part C — `memhub-remote`: the Pi 5 hub > 6.10 Honest cost ledger. category: vocabulary mismatch"
     },
     {
       "id": "vm-open-source-cli-session-details",
@@ -2967,13 +2939,6 @@
         {
           "source_type": "fact",
           "title_contains": [
-            "clippy.local-version-drift"
-          ],
-          "body_contains": []
-        },
-        {
-          "source_type": "fact",
-          "title_contains": [
             "ci-lint-unix-only-surface"
           ],
           "body_contains": []
@@ -2986,7 +2951,7 @@
           "body_contains": []
         }
       ],
-      "notes": "answer: task 125; also: fact 33, fact 31, fact 60. category: vocabulary mismatch"
+      "notes": "answer: task 125; also: fact 31, fact 60. category: vocabulary mismatch"
     },
     {
       "id": "vm-obscurely-named-ruling",
@@ -3008,7 +2973,7 @@
           ]
         }
       ],
-      "notes": "answer: decision 72; also: doc_chunk 464. category: vocabulary mismatch"
+      "notes": "answer: decision 72; also: docs/reference/operations.md > Retrieval. category: vocabulary mismatch"
     },
     {
       "id": "vm-characters-before-cut-in-claude",
@@ -3068,7 +3033,7 @@
           ]
         }
       ],
-      "notes": "answer: decision 122; also: decision 114, doc_chunk 56. category: vocabulary mismatch"
+      "notes": "answer: decision 122; also: decision 114, docs/reference/memhub-prd-addendum-m11-code-locator.md > 5. Retrieval: fusion default, reranker off (D110, D114, D122, D123). category: vocabulary mismatch"
     },
     {
       "id": "vm-two-copies-same-numbering",
@@ -3112,7 +3077,7 @@
       "body_contains": [
         "Mismatch fails loudly"
       ],
-      "notes": "answer: doc_chunk 299. category: vocabulary mismatch"
+      "notes": "answer: \"memhub MCP 2026-07-28 migration & remote hub spec (r2.2)\" (not in this repository) > 7. Part D — Updates & deployment > 7.3 Version skew — the one that will actually bite. category: vocabulary mismatch"
     },
     {
       "id": "doc-maintenance-on-open",
@@ -3134,7 +3099,7 @@
           "body_contains": []
         }
       ],
-      "notes": "answer: doc_chunk 453; also: task 120. category: doc chunk"
+      "notes": "answer: docs/reference/operations.md > Maintenance-on-open contract; also: task 120. category: doc chunk"
     },
     {
       "id": "doc-mac-to-windows-no-sync",
@@ -3147,7 +3112,7 @@
       "body_contains": [
         "bootstrap a target that has no DB yet"
       ],
-      "notes": "answer: doc_chunk 451. category: doc chunk"
+      "notes": "answer: docs/reference/operations.md > Cross-machine workflow. category: doc chunk"
     },
     {
       "id": "doc-adopt-safety-copy",
@@ -3169,7 +3134,7 @@
           "body_contains": []
         }
       ],
-      "notes": "answer: doc_chunk 457; also: decision 162. category: doc chunk"
+      "notes": "answer: docs/reference/operations.md > Cross-machine Drive sync; also: decision 162. category: doc chunk"
     },
     {
       "id": "doc-snapshot-file-naming",
@@ -3191,7 +3156,7 @@
           "body_contains": []
         }
       ],
-      "notes": "answer: doc_chunk 458; also: task 114. category: doc chunk"
+      "notes": "answer: docs/reference/operations.md > Cross-machine Drive sync; also: task 114. category: doc chunk"
     },
     {
       "id": "doc-baseline-stale-after-upgrade",
@@ -3204,7 +3169,7 @@
       "body_contains": [
         "One-time baseline-stale note"
       ],
-      "notes": "answer: doc_chunk 459. category: doc chunk"
+      "notes": "answer: docs/reference/operations.md > Cross-machine Drive sync. category: doc chunk"
     },
     {
       "id": "doc-partial-token-retry",
@@ -3226,7 +3191,7 @@
           "body_contains": []
         }
       ],
-      "notes": "answer: doc_chunk 461; also: decision 188. category: doc chunk"
+      "notes": "answer: docs/reference/operations.md > Retrieval; also: decision 188. category: doc chunk"
     },
     {
       "id": "doc-low-confidence-json-field",
@@ -3248,7 +3213,7 @@
           "body_contains": []
         }
       ],
-      "notes": "answer: doc_chunk 462; also: decision 186. category: doc chunk"
+      "notes": "answer: docs/reference/operations.md > Retrieval; also: decision 186. category: doc chunk"
     },
     {
       "id": "doc-first-baseline-fallback-matches",
@@ -3261,7 +3226,7 @@
       "body_contains": [
         "three of the keyword-bag matches"
       ],
-      "notes": "answer: doc_chunk 466. category: doc chunk"
+      "notes": "answer: docs/reference/operations.md > Retrieval. category: doc chunk"
     },
     {
       "id": "doc-cache-churn",
@@ -3274,7 +3239,7 @@
       "body_contains": [
         "Cache churn"
       ],
-      "notes": "answer: doc_chunk 471. category: doc chunk"
+      "notes": "answer: docs/reference/operations.md > Token Accounting. category: doc chunk"
     },
     {
       "id": "doc-exclude-docs-from-export",
@@ -3287,7 +3252,7 @@
       "body_contains": [
         "excluded from `memhub export`"
       ],
-      "notes": "answer: doc_chunk 473. category: doc chunk"
+      "notes": "answer: docs/reference/operations.md > Doc Ingestion. category: doc chunk"
     },
     {
       "id": "doc-locate-no-refresh",
@@ -3309,7 +3274,7 @@
           "body_contains": []
         }
       ],
-      "notes": "answer: doc_chunk 476; also: decision 109. category: doc chunk"
+      "notes": "answer: docs/reference/operations.md > Code Index; also: decision 109. category: doc chunk"
     },
     {
       "id": "doc-locate-scoring-config",
@@ -3322,7 +3287,7 @@
       "body_contains": [
         "Scoring config is independent of recall"
       ],
-      "notes": "answer: doc_chunk 478. category: doc chunk"
+      "notes": "answer: docs/reference/operations.md > Code Index. category: doc chunk"
     },
     {
       "id": "doc-registry-vs-global-optin",
@@ -3344,7 +3309,7 @@
           "body_contains": []
         }
       ],
-      "notes": "answer: doc_chunk 483; also: decision 96. category: doc chunk"
+      "notes": "answer: docs/reference/operations.md > Machine-wide upgrade; also: decision 96. category: doc chunk"
     },
     {
       "id": "doc-audit-adopt-coordination",
@@ -3366,7 +3331,7 @@
           "body_contains": []
         }
       ],
-      "notes": "answer: doc_chunk 202; also: task 112. category: doc chunk"
+      "notes": "answer: \"2026-07-13 Codex Orch audit\" (not in this repository) > Detailed findings > F4 — High: adopt lacks effective live-process coordination; also: task 112. category: doc chunk"
     },
     {
       "id": "doc-audit-document-state-sync",
@@ -3388,7 +3353,7 @@
           "body_contains": []
         }
       ],
-      "notes": "answer: doc_chunk 199; also: task 113. category: doc chunk"
+      "notes": "answer: \"2026-07-13 Codex Orch audit\" (not in this repository) > Detailed findings > F2 — High: sync logical equality omits document state; also: task 113. category: doc chunk"
     },
     {
       "id": "doc-prd-m10-byte-stable",
@@ -3410,7 +3375,7 @@
           "body_contains": []
         }
       ],
-      "notes": "answer: doc_chunk 42; also: decision 102. category: doc chunk"
+      "notes": "answer: docs/reference/memhub-prd-addendum-m10-drive-sync.md > 3. Change detection is logical, not byte-level (load-bearing); also: decision 102. category: doc chunk"
     },
     {
       "id": "doc-prd-m9-promotable",
@@ -3423,7 +3388,7 @@
       "body_contains": [
         "Promotable to global"
       ],
-      "notes": "answer: doc_chunk 28. category: doc chunk"
+      "notes": "answer: docs/reference/memhub-prd-addendum-m9-machine-global-memory.md > 2. Scope guardrail: what is promotable (the anti-noise rule). category: doc chunk"
     },
     {
       "id": "doc-prd-m11-reranker-tradeoff",
@@ -3445,7 +3410,7 @@
           "body_contains": []
         }
       ],
-      "notes": "answer: doc_chunk 56; also: decision 114. category: doc chunk"
+      "notes": "answer: docs/reference/memhub-prd-addendum-m11-code-locator.md > 5. Retrieval: fusion default, reranker off (D110, D114, D122, D123); also: decision 114. category: doc chunk"
     },
     {
       "id": "doc-review-no-ci",
@@ -3467,7 +3432,7 @@
           "body_contains": []
         }
       ],
-      "notes": "answer: doc_chunk 408; also: task 115. category: doc chunk"
+      "notes": "answer: docs/reviews/2026-07-improvement-review.md > 10. Completeness-critic findings — `[C]`, confidence High > 10.1 Zero CI/CD, release engineering, or branch protection — on a public repo; also: task 115. category: doc chunk"
     },
     {
       "id": "doc-review-doc-add-file-read",
@@ -3489,7 +3454,7 @@
           "body_contains": []
         }
       ],
-      "notes": "answer: doc_chunk 410; also: decision 139. category: doc chunk"
+      "notes": "answer: docs/reviews/2026-07-improvement-review.md > 10. Completeness-critic findings — `[C]`, confidence High > 10.3 MCP `doc_add` arbitrary-file read — F11 in §1. The critic's sharpest finding:; also: decision 139. category: doc chunk"
     },
     {
       "id": "doc-review-available-docs-nudge",
@@ -3502,7 +3467,7 @@
       "body_contains": [
         "available_docs"
       ],
-      "notes": "answer: doc_chunk 440. category: doc chunk"
+      "notes": "answer: docs/reviews/2026-07-improvement-review.md > 14. Free-form pass — token economics, ergonomics, workflow shape (2026-07-05) — confidence High > 14.1 Token / context economics. category: doc chunk"
     },
     {
       "id": "doc-spec-rmcp-tasks-support",
@@ -3515,7 +3480,7 @@
       "body_contains": [
         "supports the Tasks extension"
       ],
-      "notes": "answer: doc_chunk 306. category: doc chunk"
+      "notes": "answer: \"memhub MCP 2026-07-28 migration & remote hub spec (r2.2)\" (not in this repository) > 9. Open questions — resolve before writing code > 9.1 Research resolutions (r2.2, 2026-07-29) — and what they change. category: doc chunk"
     },
     {
       "id": "arch-which-crate-parses-cli",
@@ -3752,7 +3717,7 @@
           ]
         }
       ],
-      "notes": "answer: arch_section 7; also: doc_chunk 458. category: architecture section"
+      "notes": "answer: arch_section 7; also: docs/reference/operations.md > Cross-machine Drive sync. category: architecture section"
     },
     {
       "id": "arch-bundled-models",
