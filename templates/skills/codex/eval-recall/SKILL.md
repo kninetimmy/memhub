@@ -74,7 +74,8 @@ JSON shape (the values below are illustrative, not a recorded baseline):
     "mode": "hybrid",
     "reranker": true,
     "min_rerank_score": 2.0,
-    "rerank_candidate_pool": 20
+    "rerank_candidate_pool": 20,
+    "rerank_doc_cap": 3
   },
   "recall_at_k": 1.0,
   "recall_at_1": 0.935,
@@ -103,7 +104,9 @@ Headline numbers to report:
   set. `recall_at_1` (with `totals.match_passes_at_1`) is the same
   measure at rank 1, and `settings` records what the run actually
   used (mode, whether the re-ranker was enabled for the run, the rerank
-  score floor and candidate pool size).
+  score floor, the candidate pool size and the doc cap; the pool is
+  filled from the vector and FTS rankings in turn, with at most
+  `rerank_doc_cap` default-included doc chunks, not cut by blended score).
 - **Safety**. `safety_failures` MUST be zero. A non-zero count means
   a `kind: empty` probe returned a hit that cleared the relevance
   floor — recall is surfacing false-positives that the golden set

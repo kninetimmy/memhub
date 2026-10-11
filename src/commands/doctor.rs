@@ -366,6 +366,7 @@ const KNOWN_LEAVES: &[&str] = &[
     "retrieval.fact_stale_after_days",
     "retrieval.use_reranker",
     "retrieval.rerank_candidate_pool",
+    "retrieval.rerank_doc_cap",
     "retrieval.include_docs_in_default",
     "retrieval.log_queries",
     "retrieval.scoring.fts_weight",
@@ -664,6 +665,7 @@ const BASELINE_FIELDS: &[&str] = &[
     "retrieval.fact_stale_after_days",
     "retrieval.use_reranker",
     "retrieval.rerank_candidate_pool",
+    "retrieval.rerank_doc_cap",
     "retrieval.scoring.fts_weight",
     "retrieval.scoring.vector_weight",
     "retrieval.scoring.stale_penalty",
@@ -1772,6 +1774,23 @@ made_up_nested_key = 1
         assert!(detail.contains("made_up_top_level_key"));
         assert!(detail.contains("retrieval.made_up_nested_key"));
         assert!(!detail.contains("retrieval.mode"));
+    }
+
+    #[test]
+    fn rerank_doc_cap_is_known_not_unknown() {
+        let value: toml::Value = toml::from_str(
+            r#"
+project_name = "x"
+auto_sync_md = false
+log_level = "info"
+
+[retrieval]
+rerank_doc_cap = 3
+"#,
+        )
+        .expect("parse");
+        let check = check_unknown_keys(&value);
+        assert_eq!(check.status, Status::Ok, "detail: {:?}", check.detail);
     }
 
     #[test]

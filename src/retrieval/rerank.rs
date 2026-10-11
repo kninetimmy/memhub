@@ -82,8 +82,12 @@ pub fn rerank(query: &str, docs: &[String]) -> Result<Vec<(usize, f32)>> {
         .lock()
         .map_err(|e| MemhubError::Rerank(format!("rerank mutex poisoned: {e}")))?;
     let doc_refs: Vec<&str> = docs.iter().map(String::as_str).collect();
+    // Batch size 1 scores each passage on its own. The bundled model is int8
+    // dynamic-quantized, so a row's score shifts with the passages sharing its
+    // batch (up to ~0.25 logits); one passage per run makes a score independent
+    // of the pool, and keeps memory at one passage (a 50-row batch used 4.1 GB).
     let results = model
-        .rerank(query, &doc_refs, false, None)
+        .rerank(query, &doc_refs, false, Some(1))
         .map_err(|e| MemhubError::Rerank(format!("rerank failed: {e}")))?;
     Ok(results.into_iter().map(|r| (r.index, r.score)).collect())
 }
@@ -99,6 +103,32 @@ mod tests {
         // empty docs guards that.
         let out = rerank("anything", &[]).expect("empty rerank");
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn a_rows_score_does_not_depend_on_the_rest_of_the_pool() {
+        let docs: Vec<String> = (0..11)
+            .map(|i| match i % 3 {
+                0 => "Rust is a systems programming language with strong memory safety".to_string(),
+                1 => format!(
+                    "Cats are domesticated felines kept as household pets. {}",
+                    "They sleep for most of the day and hunt at dusk. ".repeat(i % 4 + 1)
+                ),
+                _ => format!("The borrow checker enforces ownership rules at compile time {i}"),
+            })
+            .collect();
+        assert!(docs.len() > 8);
+        let query = "how does rust prevent memory bugs";
+        let pooled = rerank(query, &docs).expect("pooled rerank");
+        assert_eq!(pooled.len(), docs.len());
+        for (i, pooled_score) in pooled {
+            let alone = rerank(query, std::slice::from_ref(&docs[i])).expect("single rerank");
+            assert!(
+                (pooled_score - alone[0].1).abs() < 1e-4,
+                "doc {i}: pooled {pooled_score} vs alone {}",
+                alone[0].1
+            );
+        }
     }
 
     #[test]

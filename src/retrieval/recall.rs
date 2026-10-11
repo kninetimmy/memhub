@@ -265,7 +265,9 @@ pub struct RecallExplain {
     pub superseded_demoted: usize,
     /// Stale rows kept but demoted by `stale_penalty`.
     pub stale_demoted: usize,
-    /// Rows beyond `rerank_candidate_pool` never sent to the re-ranker.
+    /// Candidates never sent to the re-ranker: those left outside the
+    /// by-retriever fill of `rerank_candidate_pool` rows, and default-included
+    /// doc chunks over `rerank_doc_cap`.
     pub rerank_pool_cut: usize,
     /// Rows beyond `max_results` cut from the final bundle. Counts only rows
     /// that cleared the relevance floor; floor-cut rows the result limit
@@ -300,9 +302,9 @@ pub struct RecallExplain {
 /// guarantee for a query without variants).
 ///
 /// Caller-written `variants` are extra phrasings of the same question: each
-/// is gathered like the main query and its top `rerank_candidate_pool` rows
-/// join the pool, but the single rerank pass (and the relevance floor)
-/// still scores every candidate against the main query.
+/// is gathered like the main query and its own `rerank_candidate_pool` rows
+/// (see `select_rerank_pool`) join the pool, but the single rerank pass (and
+/// the relevance floor) still scores every candidate against the main query.
 pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
     let ctx = db::open_project(start)?;
     let resolved = ResolvedOptions::from(&options, &ctx.config.retrieval)?;
@@ -409,9 +411,9 @@ pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
         });
     }
 
-    // Re-sort each phrasing's unified pool by blended score before the
-    // rerank truncation so the top `rerank_candidate_pool` is drawn from
-    // both corpora, not just whichever gathered first.
+    // Re-sort each phrasing's unified pool by blended score. Without the
+    // re-ranker this is the final order; with it, `select_rerank_pool` uses
+    // this order to break ties within its vector and FTS rankings.
     for list in &mut per_phrasing {
         list.sort_by(cmp_merged);
     }
@@ -481,6 +483,9 @@ struct ResolvedOptions {
     use_reranker: bool,
     /// Effective candidate pool size for the cross-encoder when active.
     rerank_candidate_pool: usize,
+    /// Most default-included doc chunks the pool may hold
+    /// (`[retrieval] rerank_doc_cap`); consulted only when `docs_via_default`.
+    rerank_doc_cap: usize,
     /// Effective cross-encoder score floor; honored only when mode =
     /// hybrid and the re-ranker actually runs. Replaces the prior
     /// `min_vector_score` floor (D70, D71): MiniLM gives positive logits
@@ -561,6 +566,7 @@ impl ResolvedOptions {
             accepted_only: opts.accepted_only.unwrap_or(cfg.accepted_only_by_default),
             use_reranker: opts.use_reranker.unwrap_or(cfg.use_reranker),
             rerank_candidate_pool: cfg.rerank_candidate_pool.max(max_results),
+            rerank_doc_cap: cfg.rerank_doc_cap,
             min_rerank_score: opts
                 .min_rerank_score
                 .unwrap_or(cfg.scoring.min_rerank_score),
@@ -836,42 +842,103 @@ fn cmp_merged(a: &ScoredHit, b: &ScoredHit) -> std::cmp::Ordering {
 
 /// The merged candidate pool `finalize` re-ranks.
 struct MergedPool {
-    /// Sorted by `cmp_merged`.
+    /// Sorted by `cmp_merged`. When the re-ranker will run, already cut to
+    /// the rows sent to it.
     hits: Vec<ScoredHit>,
-    /// `Some` when `merge_phrasings` already cut the pool per phrasing
-    /// (variants present): `hits` is then re-ranked whole and this is the
-    /// `rerank_pool_cut` count. `None`: `finalize` truncates to the pool.
-    rerank_pool_cut: Option<usize>,
+    /// Distinct rows not sent to the re-ranker (`rerank_pool_cut`); 0 when
+    /// the re-ranker will not run.
+    rerank_pool_cut: usize,
+}
+
+/// Choose the rows sent to the re-ranker from one phrasing's merged list.
+///
+/// Rows are taken from the vector-similarity ranking and the FTS ranking in
+/// turn (vector first), each skipping rows already taken, until
+/// `rerank_candidate_pool` rows are chosen or both rankings run out; when one
+/// ranking runs out the other fills the remaining slots. So every row in the
+/// top half (rounded down) of either ranking is chosen whatever its blended
+/// score. Each ranking applies the stale, superseded and age-decay
+/// adjustments of the blended score (`ScoredHit::{vector,fts}_rank`).
+/// Default-included doc chunks stop being eligible once
+/// `rerank_doc_cap` of them are chosen. The result keeps the input order.
+fn select_rerank_pool(opts: &ResolvedOptions, hits: Vec<ScoredHit>) -> Vec<ScoredHit> {
+    // `hits` is already in `cmp_merged` order, so its index breaks ties.
+    let ranking = |key: fn(&ScoredHit) -> Option<f64>| -> Vec<usize> {
+        let mut idx: Vec<usize> = (0..hits.len())
+            .filter(|&i| key(&hits[i]).is_some())
+            .collect();
+        idx.sort_by(|&a, &b| {
+            key(&hits[b])
+                .partial_cmp(&key(&hits[a]))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.cmp(&b))
+        });
+        idx
+    };
+    let rankings = [ranking(|h| h.vector_rank), ranking(|h| h.fts_rank)];
+    let mut next = [0usize; 2];
+    let mut chosen = vec![false; hits.len()];
+    let (mut chosen_count, mut doc_count) = (0, 0);
+    'fill: while chosen_count < opts.rerank_candidate_pool {
+        let mut progressed = false;
+        for (ranked, cursor) in rankings.iter().zip(next.iter_mut()) {
+            while let Some(&i) = ranked.get(*cursor) {
+                *cursor += 1;
+                if chosen[i] {
+                    continue;
+                }
+                if opts.docs_via_default && hits[i].source_type == SourceType::DocChunk {
+                    if doc_count >= opts.rerank_doc_cap {
+                        continue;
+                    }
+                    doc_count += 1;
+                }
+                chosen[i] = true;
+                chosen_count += 1;
+                progressed = true;
+                break;
+            }
+            if chosen_count >= opts.rerank_candidate_pool {
+                break 'fill;
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+    hits.into_iter()
+        .zip(chosen)
+        .filter_map(|(hit, keep)| keep.then_some(hit))
+        .collect()
 }
 
 /// Union the per-phrasing pools (each already sorted by `cmp_merged`) into
 /// the one list `finalize` re-ranks.
 ///
-/// A single phrasing passes through untouched (`None`: `finalize` truncates
-/// to the rerank pool itself). With variants, and when the re-ranker will
-/// run, each phrasing contributes its own top `rerank_candidate_pool` rows;
-/// the union is deduplicated by row identity (scope, source type, id), so
-/// the main query's pool is always a subset and a variant never pushes out
-/// a row the main query would have re-ranked. A row found by several
-/// phrasings keeps its best blended hit. The second value is how many
-/// distinct rows fell outside every phrasing's pool (`rerank_pool_cut`).
-/// Without the re-ranker nothing is truncated here and the merged list is
-/// ordered by each row's best blended score across phrasings.
+/// Without the re-ranker nothing is cut: a single phrasing passes through
+/// untouched, and several are merged ordered by each row's best blended
+/// score across phrasings. When the re-ranker will run, each phrasing
+/// contributes the rows `select_rerank_pool` chooses for it; the union is
+/// deduplicated by row identity (scope, source type, id), so the main
+/// query's pool is always a subset and a variant never pushes out a row the
+/// main query would have re-ranked. A row found by several phrasings keeps
+/// its best blended hit. `rerank_pool_cut` is how many distinct rows no
+/// phrasing sent to the re-ranker, doc chunks over the cap included.
 fn merge_phrasings(opts: &ResolvedOptions, per_phrasing: Vec<Vec<ScoredHit>>) -> MergedPool {
-    if per_phrasing.len() == 1 {
+    let will_rerank = opts.mode == RetrievalMode::Hybrid && opts.use_reranker;
+    if per_phrasing.len() == 1 && !will_rerank {
         return MergedPool {
             hits: per_phrasing.into_iter().flatten().collect(),
-            rerank_pool_cut: None,
+            rerank_pool_cut: 0,
         };
     }
-    let will_rerank = opts.mode == RetrievalMode::Hybrid && opts.use_reranker;
     let row_key = |h: &ScoredHit| (h.source_type, h.scope.clone(), h.source_id);
     let mut seen = HashSet::new();
     let mut best: HashMap<_, ScoredHit> = HashMap::new();
     for mut list in per_phrasing {
         if will_rerank {
             seen.extend(list.iter().map(row_key));
-            list.truncate(opts.rerank_candidate_pool);
+            list = select_rerank_pool(opts, list);
         }
         for hit in list {
             match best.entry(row_key(&hit)) {
@@ -891,7 +958,7 @@ fn merge_phrasings(opts: &ResolvedOptions, per_phrasing: Vec<Vec<ScoredHit>>) ->
     hits.sort_by(cmp_merged);
     MergedPool {
         hits,
-        rerank_pool_cut: Some(pool_cut),
+        rerank_pool_cut: pool_cut,
     }
 }
 
@@ -913,21 +980,15 @@ fn finalize(
     } = merged;
     // Optional cross-encoder re-rank pass (decision 68). Only runs on
     // hybrid mode and only when the operator hasn't opted out. Takes the
-    // top `rerank_candidate_pool` by blended score, reorders them by the
-    // cross-encoder, drops anything below `min_rerank_score` (D71 — the
-    // nonsense-rejection floor that replaced `min_vector_score`), then
-    // truncates to `max_results`. fts-only callers and an empty candidate
-    // set bypass entirely.
+    // `rerank_candidate_pool` rows `merge_phrasings` chose from the vector
+    // and FTS rankings, reorders them by the cross-encoder, drops anything
+    // below `min_rerank_score` (D71 — the nonsense-rejection floor that
+    // replaced `min_vector_score`), then truncates to `max_results`. fts-only
+    // callers and an empty candidate set bypass entirely.
     let reranked = opts.mode == RetrievalMode::Hybrid && opts.use_reranker && !scored.is_empty();
     explain.reranker_ran = reranked;
     if reranked {
-        match rerank_pool_cut {
-            Some(cut) => explain.rerank_pool_cut = cut,
-            None => {
-                explain.rerank_pool_cut = scored.len().saturating_sub(opts.rerank_candidate_pool);
-                scored.truncate(opts.rerank_candidate_pool);
-            }
-        }
+        explain.rerank_pool_cut = rerank_pool_cut;
         // Cross-encoder input mirrors the bi-encoder's embed text shape:
         // prepend the row's natural-language summary when present so the
         // re-ranker can score paraphrase matches, not just title+body
@@ -1237,6 +1298,12 @@ struct ScoredHit {
     /// shape — callers see only title/body/score/etc.
     summary: Option<String>,
     score: f64,
+    /// Position keys for `select_rerank_pool`'s two rankings: the row's FTS
+    /// (`fts_score`) / vector (`vector_score`) component with the same
+    /// age-decay, stale and superseded adjustments as `score`. `None` when
+    /// the phrasing found the row through the other retriever only.
+    fts_rank: Option<f64>,
+    vector_rank: Option<f64>,
     fts_score: f64,
     vector_score: f64,
     stale: bool,
@@ -1911,6 +1978,8 @@ fn score(rows: &[CandidateRow], scoring: &RetrievalScoringConfig) -> Vec<ScoredH
             let age_decay = age_decay_multiplier(c.age_days, scoring.age_half_life_days);
             let relevance = scoring.fts_weight * fts_score + scoring.vector_weight * vector_score;
             let score = relevance * age_decay - stale_penalty - superseded_penalty;
+            let adjusted =
+                |component: f64| component * age_decay - stale_penalty - superseded_penalty;
             ScoredHit {
                 source_type: c.source_type,
                 scope: String::new(),
@@ -1919,6 +1988,8 @@ fn score(rows: &[CandidateRow], scoring: &RetrievalScoringConfig) -> Vec<ScoredH
                 body: c.body.clone(),
                 summary: c.summary.clone(),
                 score,
+                fts_rank: c.fts_raw.map(|_| adjusted(fts_score)),
+                vector_rank: c.vector_score.map(|_| adjusted(vector_score)),
                 fts_score,
                 vector_score,
                 stale: c.is_stale,
@@ -3030,6 +3101,11 @@ mod tests {
         assert!(
             cfg.retrieval.include_stale_by_default,
             "Q1 default is demote+flag: stale facts are included by default"
+        );
+        assert_eq!(
+            cfg.retrieval.rerank_doc_cap,
+            super::super::super::config::DEFAULT_RERANK_DOC_CAP,
+            "a config.toml without the key uses the default"
         );
     }
 
@@ -4255,6 +4331,192 @@ explainscopeprobe second.
         // The union of two 2-row pools reranks at least 2 rows.
         assert!(response.explain.result_limit_cut >= 1);
         assert!(response.explain.rerank_pool_cut <= response.candidate_count - 2);
+    }
+
+    // Issue #337: the re-ranker's pool is filled from the vector and FTS
+    // rankings in turn, with default-included doc chunks capped.
+    fn pool_opts(pool: usize, doc_cap: usize, docs_via_default: bool) -> ResolvedOptions {
+        let mut opts = ResolvedOptions::from(
+            &explain_opts("q", RetrievalMode::Hybrid, 1, vec![]),
+            &crate::config::RetrievalConfig::default(),
+        )
+        .expect("resolve");
+        opts.use_reranker = true;
+        opts.rerank_candidate_pool = pool;
+        opts.rerank_doc_cap = doc_cap;
+        opts.docs_via_default = docs_via_default;
+        opts
+    }
+
+    /// A hit whose blended score is `0.4 * fts + 0.6 * vector`; a missing
+    /// component means the retriever did not find the row.
+    fn pool_hit(st: SourceType, id: i64, fts: Option<f64>, vector: Option<f64>) -> ScoredHit {
+        ScoredHit {
+            source_type: st,
+            scope: SCOPE_REPO.to_string(),
+            source_id: id,
+            title: String::new(),
+            body: String::new(),
+            summary: None,
+            score: 0.4 * fts.unwrap_or(0.0) + 0.6 * vector.unwrap_or(0.0),
+            fts_rank: fts,
+            vector_rank: vector,
+            fts_score: fts.unwrap_or(0.0),
+            vector_score: vector.unwrap_or(0.0),
+            stale: false,
+            superseded_by: None,
+            source: String::new(),
+            created_at: String::new(),
+            rerank_score: None,
+            low_confidence: false,
+            kind: None,
+        }
+    }
+
+    fn fact_hit(id: i64, fts: Option<f64>, vector: Option<f64>) -> ScoredHit {
+        pool_hit(SourceType::Fact, id, fts, vector)
+    }
+
+    fn doc_hit(id: i64, fts: Option<f64>, vector: Option<f64>) -> ScoredHit {
+        pool_hit(SourceType::DocChunk, id, fts, vector)
+    }
+
+    fn by_blended_score(mut hits: Vec<ScoredHit>) -> Vec<ScoredHit> {
+        hits.sort_by(cmp_merged);
+        hits
+    }
+
+    fn ids(hits: &[ScoredHit]) -> Vec<i64> {
+        let mut ids: Vec<i64> = hits.iter().map(|h| h.source_id).collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    #[test]
+    fn pool_takes_a_top_vector_row_outside_the_blended_top_pool() {
+        // Rows 1-5 match on both retrievers and fill the blended top 4; row
+        // 9 has the best cosine but no word overlap, so it blends low.
+        let mut hits: Vec<ScoredHit> = (1..=5)
+            .map(|i| fact_hit(i, Some(1.0), Some(0.9 - 0.01 * i as f64)))
+            .collect();
+        hits.push(fact_hit(9, None, Some(0.95)));
+        let hits = by_blended_score(hits);
+        let opts = pool_opts(4, 5, false);
+        let blended_top: Vec<i64> = hits.iter().take(4).map(|h| h.source_id).collect();
+        assert!(
+            !blended_top.contains(&9),
+            "row 9 is outside the blended top 4"
+        );
+
+        let pool = select_rerank_pool(&opts, hits);
+        assert_eq!(pool.len(), 4);
+        assert!(ids(&pool).contains(&9), "pool: {:?}", ids(&pool));
+    }
+
+    #[test]
+    fn pool_fills_from_the_other_ranking_when_one_runs_out() {
+        let mut hits: Vec<ScoredHit> = (1..=6)
+            .map(|i| fact_hit(i, Some(0.9 - 0.01 * i as f64), None))
+            .collect();
+        hits.extend((7..=8).map(|i| fact_hit(i, None, Some(0.5))));
+        let pool = select_rerank_pool(&pool_opts(5, 5, false), by_blended_score(hits.clone()));
+        assert_eq!(pool.len(), 5, "pool: {:?}", ids(&pool));
+        let pool = select_rerank_pool(&pool_opts(20, 5, false), by_blended_score(hits));
+        assert_eq!(pool.len(), 8, "every eligible row when the pool is larger");
+    }
+
+    #[test]
+    fn pool_ranks_apply_the_stale_superseded_and_age_decay_adjustments() {
+        let scoring = RetrievalScoringConfig {
+            age_half_life_days: 30,
+            ..RetrievalScoringConfig::default()
+        };
+        // The penalized row (id 1) has the higher raw cosine, so only its
+        // adjustment can put the current row (id 2) ahead in the rankings.
+        let row = |id: i64, vector: f64| {
+            let mut c = CandidateRow::empty(SourceType::Fact, id);
+            c.fts_raw = Some(-1.0);
+            c.vector_score = Some(vector);
+            c.age_days = Some(0.0);
+            c
+        };
+        type Adjust = fn(&mut CandidateRow);
+        let cases: [(&str, Adjust); 3] = [
+            ("stale", |c| c.is_stale = true),
+            ("superseded", |c| c.superseded_by = Some(9)),
+            ("aged", |c| c.age_days = Some(400.0)),
+        ];
+        for (label, adjust) in cases {
+            let mut penalized = row(1, 0.85);
+            adjust(&mut penalized);
+            let mut hits = score(&[penalized, row(2, 0.8)], &scoring);
+            hits.sort_by(cmp_merged);
+            let picked = select_rerank_pool(&pool_opts(1, 5, false), hits);
+            assert_eq!(
+                ids(&picked),
+                vec![2],
+                "the {label} row must not take the slot ahead of the current row"
+            );
+        }
+    }
+
+    #[test]
+    fn doc_cap_limits_default_docs_but_not_explicit_source_types() {
+        let mut hits: Vec<ScoredHit> = (1..=5)
+            .map(|i| doc_hit(i, Some(0.9), Some(0.9 - 0.01 * i as f64)))
+            .collect();
+        hits.extend((11..=14).map(|i| fact_hit(i, Some(0.5), Some(0.5 - 0.01 * i as f64))));
+        let hits = by_blended_score(hits);
+
+        let docs_in = |pool: &[ScoredHit]| {
+            pool.iter()
+                .filter(|h| h.source_type == SourceType::DocChunk)
+                .count()
+        };
+        let capped = select_rerank_pool(&pool_opts(6, 2, true), hits.clone());
+        assert_eq!(capped.len(), 6);
+        assert_eq!(docs_in(&capped), 2);
+        let uncapped = select_rerank_pool(&pool_opts(6, 2, false), hits);
+        assert_eq!(uncapped.len(), 6);
+        assert_eq!(
+            docs_in(&uncapped),
+            5,
+            "explicit source types are not capped"
+        );
+    }
+
+    #[test]
+    fn rerank_pool_cut_counts_doc_chunks_over_the_cap() {
+        let opts = pool_opts(10, 1, true);
+        let hits = by_blended_score(vec![
+            doc_hit(1, Some(0.9), Some(0.9)),
+            doc_hit(2, Some(0.8), Some(0.8)),
+            doc_hit(3, Some(0.7), Some(0.7)),
+            fact_hit(4, Some(0.5), Some(0.5)),
+        ]);
+        let merged = merge_phrasings(&opts, vec![hits]);
+        assert_eq!(merged.hits.len(), 2);
+        assert_eq!(merged.rerank_pool_cut, 2);
+    }
+
+    #[test]
+    fn variants_fill_each_phrasings_pool_before_the_union() {
+        let opts = pool_opts(2, 5, false);
+        // Main query: vector picks C, FTS picks A, so B is left out.
+        let main = by_blended_score(vec![
+            fact_hit(1, Some(0.9), Some(0.1)),
+            fact_hit(2, Some(0.5), Some(0.5)),
+            fact_hit(3, Some(0.1), Some(0.9)),
+        ]);
+        // Variant: vector picks D, FTS picks B; E is left out.
+        let variant = by_blended_score(vec![
+            fact_hit(2, Some(0.9), Some(0.1)),
+            fact_hit(4, Some(0.1), Some(0.9)),
+            fact_hit(5, Some(0.05), Some(0.05)),
+        ]);
+        let merged = merge_phrasings(&opts, vec![main, variant]);
+        assert_eq!(ids(&merged.hits), vec![1, 2, 3, 4]);
+        assert_eq!(merged.rerank_pool_cut, 1, "only row 5 reached no pool");
     }
 
     #[test]
