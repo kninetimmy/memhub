@@ -267,7 +267,10 @@ pub struct RecallExplain {
     pub stale_demoted: usize,
     /// Rows beyond `rerank_candidate_pool` never sent to the re-ranker.
     pub rerank_pool_cut: usize,
-    /// Rows beyond `max_results` cut from the final bundle.
+    /// Rows beyond `max_results` cut from the final bundle. Counts only rows
+    /// that cleared the relevance floor; floor-cut rows the result limit
+    /// trimmed from the low-confidence fill are counted only in
+    /// `dropped_by_floor`.
     pub result_limit_cut: usize,
     /// Default-included doc chunks dropped because the re-ranker did not
     /// run to vet them.
@@ -1134,13 +1137,14 @@ fn rerank_floor_warning(
         )
     } else if normal_floor.is_none() {
         // Only default-included doc chunks were dropped, and they are never
-        // fallback hits. Any other zero-fallback cause gets the generic text
-        // below instead of a claim about doc chunks.
-        "No fallback hits were returned because default-included doc chunks are never \
-         fallback hits."
+        // returned as low-confidence rows. Any other zero-low-confidence
+        // cause gets the generic text below instead of a claim about doc
+        // chunks.
+        "No low-confidence rows were returned because default-included doc chunks are \
+         never returned as low-confidence rows."
             .to_string()
     } else {
-        "No fallback hits were returned.".to_string()
+        "No low-confidence rows were returned.".to_string()
     };
     RecallWarning {
         kind: "rerank_floor_dropped_all".to_string(),
@@ -3199,7 +3203,7 @@ mod tests {
     }
 
     #[test]
-    fn hybrid_all_dropped_only_default_docs_returns_no_fallback_hits() {
+    fn hybrid_all_dropped_only_default_docs_returns_no_low_confidence_rows() {
         let temp = tempdir().expect("tempdir");
         init::run(temp.path()).expect("init");
         for name in ["floor-docs-a.md", "floor-docs-b.md"] {
@@ -3239,7 +3243,7 @@ mod tests {
 
         assert!(
             response.results.is_empty(),
-            "default-included docs are never low-confidence fallback hits"
+            "default-included docs are never returned as low-confidence rows"
         );
         let warning = response
             .warnings
@@ -3248,23 +3252,32 @@ mod tests {
             .expect("all-dropped doc-only pool must still warn callers");
         assert!(warning.reason.contains("doc_min_rerank_score = 1001.000"));
         assert!(!warning.reason.contains("flagged"));
-        assert!(warning.reason.contains("never fallback hits"));
+        assert!(
+            warning
+                .reason
+                .contains("never returned as low-confidence rows")
+        );
     }
 
-    /// Issue #237: the doc-chunk explanation for zero fallback hits is only
-    /// given when the normal floor never applied (only docs were dropped), so
-    /// it cannot go stale if the fallback cap or `max_results` rules change.
+    /// Issue #237: the doc-chunk explanation for zero low-confidence rows is
+    /// only given when the normal floor never applied (only docs were
+    /// dropped), so it cannot go stale if the low-confidence fill cap or
+    /// `max_results` rules change.
     #[test]
-    fn zero_fallback_explanation_follows_the_dropped_candidates() {
+    fn zero_low_confidence_explanation_follows_the_dropped_candidates() {
         let docs_only = rerank_floor_warning(-1.0, None, Some(2.0), 3, 0);
-        assert!(docs_only.reason.contains("never fallback hits"));
+        assert!(
+            docs_only
+                .reason
+                .contains("never returned as low-confidence rows")
+        );
 
         let non_doc_dropped = rerank_floor_warning(-1.0, Some(0.0), None, 3, 0);
         assert!(!non_doc_dropped.reason.contains("doc chunks"));
         assert!(
             non_doc_dropped
                 .reason
-                .contains("No fallback hits were returned.")
+                .contains("No low-confidence rows were returned.")
         );
     }
 
@@ -3914,7 +3927,7 @@ explainscopeprobe second.
         assert!(response.candidate_count > 1);
         assert_eq!(response.explain.dropped_by_floor, response.candidate_count);
         assert_eq!(response.explain.dropped_by_doc_floor, 0);
-        // The fallback hits are among the floor-dropped rows.
+        // The low-confidence rows are among the floor-dropped rows.
         assert!(response.results.iter().all(|h| h.low_confidence));
     }
 
@@ -4545,7 +4558,8 @@ explainscopeprobe second.
         );
 
         // An unreachable floor drops everything: arch sections are
-        // fallback-eligible like facts/decisions/tasks (unlike default docs).
+        // eligible for the low-confidence fill like facts/decisions/tasks
+        // (unlike default docs).
         let dropped = arch_recall(
             temp.path(),
             "Where does the zebrafinch ledger keep every durable row?",
@@ -4558,7 +4572,7 @@ explainscopeprobe second.
                 .results
                 .iter()
                 .any(|h| h.source_type == "arch_section" && h.low_confidence),
-            "arch sections must be low-confidence fallback hits"
+            "arch sections must be returned as low-confidence rows"
         );
     }
 
