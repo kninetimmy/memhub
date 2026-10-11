@@ -265,7 +265,9 @@ pub struct RecallExplain {
     pub superseded_demoted: usize,
     /// Stale rows kept but demoted by `stale_penalty`.
     pub stale_demoted: usize,
-    /// Rows beyond `rerank_candidate_pool` never sent to the re-ranker.
+    /// Candidates never sent to the re-ranker: those left outside the
+    /// by-retriever fill of `rerank_candidate_pool` rows, and default-included
+    /// doc chunks over `rerank_doc_cap`.
     pub rerank_pool_cut: usize,
     /// Rows beyond `max_results` cut from the final bundle. Counts only rows
     /// that cleared the relevance floor; floor-cut rows the result limit
@@ -409,9 +411,9 @@ pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
         });
     }
 
-    // Re-sort each phrasing's unified pool by blended score before the
-    // rerank truncation so the top `rerank_candidate_pool` is drawn from
-    // both corpora, not just whichever gathered first.
+    // Re-sort each phrasing's unified pool by blended score. Without the
+    // re-ranker this is the final order; with it, `select_rerank_pool` uses
+    // this order to break ties within its vector and FTS rankings.
     for list in &mut per_phrasing {
         list.sort_by(cmp_merged);
     }
@@ -4424,29 +4426,38 @@ explainscopeprobe second.
     }
 
     #[test]
-    fn pool_ranks_apply_the_stale_and_superseded_adjustments() {
-        let scoring = RetrievalScoringConfig::default();
-        let row = |id: i64| {
+    fn pool_ranks_apply_the_stale_superseded_and_age_decay_adjustments() {
+        let scoring = RetrievalScoringConfig {
+            age_half_life_days: 30,
+            ..RetrievalScoringConfig::default()
+        };
+        // The penalized row (id 1) has the higher raw cosine, so only its
+        // adjustment can put the current row (id 2) ahead in the rankings.
+        let row = |id: i64, vector: f64| {
             let mut c = CandidateRow::empty(SourceType::Fact, id);
             c.fts_raw = Some(-1.0);
-            c.vector_score = Some(0.8);
+            c.vector_score = Some(vector);
+            c.age_days = Some(0.0);
             c
         };
-        let (mut stale, mut superseded, current) = (row(1), row(2), row(3));
-        stale.is_stale = true;
-        superseded.superseded_by = Some(9);
-        let mut hits = score(&[stale, superseded, current], &scoring);
-        hits.sort_by(cmp_merged);
-        for pool in [1, 2] {
-            let picked = select_rerank_pool(&pool_opts(pool, 5, false), hits.clone());
-            assert!(
-                ids(&picked).contains(&3),
-                "pool {pool} must hold the current row: {:?}",
-                ids(&picked)
+        type Adjust = fn(&mut CandidateRow);
+        let cases: [(&str, Adjust); 3] = [
+            ("stale", |c| c.is_stale = true),
+            ("superseded", |c| c.superseded_by = Some(9)),
+            ("aged", |c| c.age_days = Some(400.0)),
+        ];
+        for (label, adjust) in cases {
+            let mut penalized = row(1, 0.85);
+            adjust(&mut penalized);
+            let mut hits = score(&[penalized, row(2, 0.8)], &scoring);
+            hits.sort_by(cmp_merged);
+            let picked = select_rerank_pool(&pool_opts(1, 5, false), hits);
+            assert_eq!(
+                ids(&picked),
+                vec![2],
+                "the {label} row must not take the slot ahead of the current row"
             );
         }
-        let picked = select_rerank_pool(&pool_opts(1, 5, false), hits);
-        assert_eq!(ids(&picked), vec![3]);
     }
 
     #[test]

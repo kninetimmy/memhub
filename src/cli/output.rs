@@ -438,7 +438,10 @@ pub(crate) fn print_recall_explain(e: &crate::retrieval::RecallExplain) {
     println!("  excluded by accepted-only: {}", e.accepted_only_excluded);
     println!("  superseded rows demoted: {}", e.superseded_demoted);
     println!("  stale rows demoted: {}", e.stale_demoted);
-    println!("  cut by rerank candidate pool: {}", e.rerank_pool_cut);
+    println!(
+        "  not sent to the re-ranker (pool / doc cap): {}",
+        e.rerank_pool_cut
+    );
     println!("  cut by result limit: {}", e.result_limit_cut);
     println!(
         "  doc chunks dropped (re-ranker did not run): {}",

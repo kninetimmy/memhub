@@ -136,8 +136,8 @@ include_stale_by_default = true
 # flag above). Promotes the formerly hardcoded 90-day window to config
 # without changing its length.
 fact_stale_after_days = 90
-# Cross-encoder re-ranker (ms-marco-MiniLM-L-6-v2). Adds ~275 ms per
-# recall at pool=20; lifted Recall@1 by ~17pp on memhub's golden set in
+# Cross-encoder re-ranker (ms-marco-MiniLM-L-6-v2). Latency grows with
+# the pool size; lifted Recall@1 by ~17pp on memhub's golden set in
 # the bake-off (decision 68). Ignored in fts mode.
 use_reranker = true
 # Rows sent to the re-ranker. They are taken from the vector-similarity
@@ -146,6 +146,7 @@ use_reranker = true
 # in the top half of either ranking is re-ranked whatever its blended
 # score; when one ranking runs out the other fills the remaining slots.
 # Each passage is scored on its own, so a score does not depend on the pool.
+# memhub locate uses the same key over its own fusion order, not this fill.
 rerank_candidate_pool = 20
 # Most default-included doc chunks (plain recall with
 # include_docs_in_default, no --source-type) the pool may hold; doc

@@ -241,7 +241,7 @@ truncating to `max_results`. The re-ranker adds
 ~275 ms per recall at pool=20 in exchange for ~+17 percentage points of
 Recall@1 on memhub's own golden set (decision 68).
 
-**Re-rank pool (issue #330).** The rows sent to the re-ranker are not the
+**Re-rank pool (issue #337).** The rows sent to the re-ranker are not the
 top `rerank_candidate_pool` by blended score. Blended score min-max
 normalizes BM25 over the hits and adds raw cosine, so a row with no word
 overlap rarely made the cut, and default-included doc chunks crowded it.
