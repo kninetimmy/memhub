@@ -374,8 +374,9 @@ For A/B testing in any repo: `memhub eval retrieval` vs
 **Judging a change per query (`memhub eval compare`).** `memhub eval
 retrieval --json` reports the rank-1 pass count (`totals.match_passes_at_1`,
 `recall_at_1`) alongside Recall@K, and records the settings the run used
-under `settings`: retrieval `mode`, whether the `reranker` ran, the
-`min_rerank_score` floor, and the `rerank_candidate_pool` size.
+under `settings`: retrieval `mode`, whether the `reranker` was enabled
+for the run, the `min_rerank_score` floor, and the
+`rerank_candidate_pool` size.
 `memhub eval compare <A> <B>` reads two such saved outputs and pairs them by
 query id. For rank-1 and for found@K separately it reports each run's pass
 count over the match queries, the ids that passed only in A and only in B,
@@ -408,7 +409,7 @@ decisions where one is cited, including the real backfilled `summary` text
 on the four decisions that need it), then drives the compiled `memhub eval
 retrieval --json` binary against it with `--golden` pointed at the real
 shipped `tests/retrieval_golden.json`. That is the same pattern
-`tests/locate_polyglot.rs` already established for `eval locate` — a fixture
+`tests/retrieval/locate_polyglot.rs` already established for `eval locate` — a fixture
 seeded fresh per run, independent of live `.memhub` state — applied to the
 retrieval golden.
 
@@ -428,8 +429,8 @@ root (what `/eval-recall` still drives by default) remains a self-hosted
 calibration signal, not the enforced gate.
 
 **Live golden set (task 174).** `tests/retrieval_golden_live.json` is a
-second, larger golden set (190 match queries and 18 empty probes) that is
-scored against the repository's own memhub project database rather than a
+second, larger golden set that is scored against the repository's own
+memhub project database rather than a
 seeded fixture. The hermetic set seeds about 19 rows, each one a query's
 answer, so it cannot tell close retrieval variants apart; the live database
 has about 1,000 candidate rows with real distractors. Any change to
@@ -444,10 +445,11 @@ queries are the real agent recall queries from this repo's session history
 sharing no whole word of four or more letters with the title of the row
 that answers it), and questions answered by an ingested doc chunk (`doc-`)
 or an architecture section (`arch-`). Where several rows genuinely answer a
-query, `also_accept` lists them. The 18 empty probes (`empty-`, `near-`)
-ask about topics no row covers. Each query's `notes` name the answering row
-by type and id as of 2026-10-10; the matchers (title and body substrings),
-not the ids, decide pass or fail.
+query, `also_accept` lists them. Its empty probes (`empty-`, `near-`)
+ask about topics no row covers. Each query's `notes` name the answering row:
+a doc chunk by its document and section heading (chunk ids change on every
+re-ingest), any other row by type and id as of 2026-10-10; the matchers
+(title and body substrings), not the ids, decide pass or fail.
 
 First baseline, recorded 2026-10-10 with a debug build of main at 7e17fff
 against this machine's database (live config: hybrid mode, re-ranker on,
@@ -486,7 +488,11 @@ on the same database, compared with `memhub eval compare`:
    (`--no-rerank`, `--min-rerank-score`, `--mode`) or a config edit is
    enough.
 3. Run A with the old binary: `<old-memhub> eval retrieval --golden
-   tests/retrieval_golden_live.json --k 5 --json > a.json`.
+   tests/retrieval_golden_live.json --k 5 --json > a.json`. Run the older
+   binary first: every `eval retrieval` run applies the maintenance-on-open
+   pass (see Maintenance-on-open contract above), so a binary with a newer
+   schema migrates the database during its run, and an older binary then
+   refuses to open it.
 4. Immediately run B with the new binary and the same arguments: `<new-memhub>
    eval retrieval --golden tests/retrieval_golden_live.json --k 5 --json >
    b.json`. Save the files with a redirect that writes UTF-8 (Git Bash, zsh,
@@ -681,7 +687,7 @@ real AST chunking — **Rust, Go, Python, TypeScript/JavaScript, Java, C#**
 — via a hybrid `GrammarSpec` + typed hooks whose defaults reproduce Rust
 byte-for-byte; a frozen snapshot test guards Rust output (the Rust freeze
 is unchanged by task 87). Task 88 added a hermetic polyglot eval —
-`tests/locate_polyglot.rs` writes a six-language fixture repo and runs
+`tests/retrieval/locate_polyglot.rs` writes a six-language fixture repo and runs
 `eval::run_locate` over `tests/code_locate_golden_polyglot.json` — so
 non-Rust module-doc capture is held to the same Recall@K contract as Rust
 (100% Recall@3), not just the chunker unit tests.
@@ -723,7 +729,7 @@ of 0 rejects both gibberish probes but also kills a true match (lowest
 true-match logit −5.44), so the 2 nonsense-probe leaks under fusion are an
 accepted no-floor cost. `memhub eval locate [--rerank]` is the A/B harness;
 it indexes memhub's own (Rust) tree, so the non-Rust grammars are A/B'd by
-the polyglot fixture eval in `tests/locate_polyglot.rs` (task 88) instead.
+the polyglot fixture eval in `tests/retrieval/locate_polyglot.rs` (task 88) instead.
 
 Surfaces: `memhub locate` / `memhub code index|status|rm` (CLI) ·
 `memhub.locate` (MCP, read-only — clipped snippets only, never full code) ·
