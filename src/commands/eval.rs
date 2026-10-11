@@ -257,14 +257,34 @@ fn median_ms(values: &[u128]) -> f64 {
     }
 }
 
-pub fn load_golden(path: &Path) -> Result<GoldenFile> {
-    let bytes = fs::read(path).map_err(|err| match err.kind() {
-        std::io::ErrorKind::NotFound => MemhubError::InvalidInput(format!(
-            "golden file not found at {} — pass --golden <path> or create one",
-            path.display()
-        )),
+/// Read an eval input JSON file, tolerating a UTF-8 byte-order mark and
+/// naming UTF-16 (what Windows PowerShell 5.1's `>` writes) instead of
+/// letting serde report a bare "expected value at line 1 column 1".
+fn read_input_json(path: &Path, not_found: String) -> Result<Vec<u8>> {
+    let mut bytes = fs::read(path).map_err(|err| match err.kind() {
+        std::io::ErrorKind::NotFound => MemhubError::InvalidInput(not_found),
         _ => MemhubError::from(err),
     })?;
+    if bytes.starts_with(&[0xFF, 0xFE]) || bytes.starts_with(&[0xFE, 0xFF]) {
+        return Err(MemhubError::InvalidInput(format!(
+            "{} is UTF-16 encoded; re-save it as UTF-8 (PowerShell 5.1 `>` writes UTF-16, use `| Out-File -Encoding utf8`)",
+            path.display()
+        )));
+    }
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        bytes.drain(..3);
+    }
+    Ok(bytes)
+}
+
+pub fn load_golden(path: &Path) -> Result<GoldenFile> {
+    let bytes = read_input_json(
+        path,
+        format!(
+            "golden file not found at {} — pass --golden <path> or create one",
+            path.display()
+        ),
+    )?;
     let parsed: GoldenFile = serde_json::from_slice(&bytes)?;
     if parsed.version != 1 {
         return Err(MemhubError::InvalidInput(format!(
@@ -279,8 +299,16 @@ pub fn load_golden(path: &Path) -> Result<GoldenFile> {
             path.display(),
         )));
     }
+    let mut seen = std::collections::HashSet::new();
     for q in &parsed.queries {
         validate_query(q)?;
+        if !seen.insert(q.id.as_str()) {
+            return Err(MemhubError::InvalidInput(format!(
+                "golden file {} lists query id `{}` more than once",
+                path.display(),
+                q.id
+            )));
+        }
     }
     Ok(parsed)
 }
@@ -684,13 +712,13 @@ pub fn run_locate(start: &Path, opts: LocateEvalOptions) -> Result<LocateEvalSum
 }
 
 pub fn load_locate_golden(path: &Path) -> Result<LocateGoldenFile> {
-    let bytes = fs::read(path).map_err(|err| match err.kind() {
-        std::io::ErrorKind::NotFound => MemhubError::InvalidInput(format!(
+    let bytes = read_input_json(
+        path,
+        format!(
             "code golden file not found at {} — pass --golden <path> or create one",
             path.display()
-        )),
-        _ => MemhubError::from(err),
-    })?;
+        ),
+    )?;
     let parsed: LocateGoldenFile = serde_json::from_slice(&bytes)?;
     if parsed.version != 1 {
         return Err(MemhubError::InvalidInput(format!(
@@ -1019,12 +1047,10 @@ pub struct Comparison {
 }
 
 fn load_saved_run(path: &Path) -> Result<SavedRun> {
-    let bytes = fs::read(path).map_err(|err| match err.kind() {
-        std::io::ErrorKind::NotFound => {
-            MemhubError::InvalidInput(format!("saved eval run not found at {}", path.display()))
-        }
-        _ => MemhubError::from(err),
-    })?;
+    let bytes = read_input_json(
+        path,
+        format!("saved eval run not found at {}", path.display()),
+    )?;
     let run: SavedRun = serde_json::from_slice(&bytes).map_err(|err| {
         MemhubError::InvalidInput(format!(
             "{} is not a `memhub eval retrieval --json` output: {err}",
@@ -1964,6 +1990,99 @@ mod tests {
         format!(
             r#"{{ "id": "{id}", "query": "{query}", "kind": "{kind}", "passed": {passed}, "matched_rank": {rank} }}"#
         )
+    }
+
+    // Valid for both the retrieval and the code (locate) golden loaders.
+    const GOLDEN_JSON: &str =
+        r#"{ "version": 1, "queries": [ { "id": "a", "query": "q", "kind": "empty" } ] }"#;
+
+    fn utf16_with_bom(text: &str, little_endian: bool) -> Vec<u8> {
+        let mut out = if little_endian {
+            vec![0xFF, 0xFE]
+        } else {
+            vec![0xFE, 0xFF]
+        };
+        for unit in text.encode_utf16() {
+            out.extend(if little_endian {
+                unit.to_le_bytes()
+            } else {
+                unit.to_be_bytes()
+            });
+        }
+        out
+    }
+
+    #[test]
+    fn load_golden_rejects_duplicate_query_ids() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("golden.json");
+        std::fs::write(
+            &path,
+            r#"{ "version": 1, "queries": [
+                { "id": "dup", "query": "one", "kind": "empty" },
+                { "id": "dup", "query": "two", "kind": "empty" } ] }"#,
+        )
+        .expect("write");
+        let msg = load_golden(&path).expect_err("duplicate id").to_string();
+        assert!(msg.contains("`dup`"), "{msg}");
+        assert!(msg.contains("golden.json"), "{msg}");
+    }
+
+    #[test]
+    fn shipped_golden_files_have_unique_ids_and_validate() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+        load_golden(&root.join("retrieval_golden.json")).expect("base golden");
+        load_golden(&root.join("retrieval_golden_live.json")).expect("live golden");
+    }
+
+    #[test]
+    fn input_loaders_accept_a_utf8_bom() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let with_bom = |name: &str, body: &str| {
+            let path = dir.path().join(name);
+            let mut bytes = vec![0xEF, 0xBB, 0xBF];
+            bytes.extend_from_slice(body.as_bytes());
+            std::fs::write(&path, bytes).expect("write");
+            path
+        };
+        assert_eq!(
+            load_golden(&with_bom("g.json", GOLDEN_JSON))
+                .expect("golden")
+                .queries
+                .len(),
+            1
+        );
+        assert_eq!(
+            load_locate_golden(&with_bom("c.json", GOLDEN_JSON))
+                .expect("code golden")
+                .queries
+                .len(),
+            1
+        );
+        let run = r#"{ "k": 3, "mode": "fts", "outcomes": [] }"#;
+        let a = with_bom("a.json", run);
+        let b = with_bom("b.json", run);
+        compare_runs(&a, &b).expect("compare with BOM");
+    }
+
+    #[test]
+    fn input_loaders_name_utf16_and_the_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for little_endian in [true, false] {
+            let path = dir.path().join("u16.json");
+            std::fs::write(&path, utf16_with_bom(GOLDEN_JSON, little_endian)).expect("write");
+            let errs = [
+                load_golden(&path).expect_err("golden").to_string(),
+                load_locate_golden(&path)
+                    .expect_err("code golden")
+                    .to_string(),
+                compare_runs(&path, &path).expect_err("compare").to_string(),
+            ];
+            for msg in errs {
+                assert!(msg.contains("UTF-16"), "{msg}");
+                assert!(msg.contains("u16.json"), "{msg}");
+            }
+        }
     }
 
     fn write_run(dir: &Path, name: &str, k: usize, outcomes: &[String]) -> PathBuf {
