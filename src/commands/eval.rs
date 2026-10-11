@@ -258,13 +258,21 @@ fn median_ms(values: &[u128]) -> f64 {
 }
 
 /// Read an eval input JSON file, tolerating a UTF-8 byte-order mark and
-/// naming UTF-16 (what Windows PowerShell 5.1's `>` writes) instead of
+/// naming UTF-16 (what Windows PowerShell 5.1's `>` writes) and UTF-32 instead of
 /// letting serde report a bare "expected value at line 1 column 1".
 fn read_input_json(path: &Path, not_found: String) -> Result<Vec<u8>> {
     let mut bytes = fs::read(path).map_err(|err| match err.kind() {
         std::io::ErrorKind::NotFound => MemhubError::InvalidInput(not_found),
         _ => MemhubError::from(err),
     })?;
+    // UTF-32 first: its little-endian BOM (FF FE 00 00) begins with the UTF-16 one.
+    if bytes.starts_with(&[0xFF, 0xFE, 0x00, 0x00]) || bytes.starts_with(&[0x00, 0x00, 0xFE, 0xFF])
+    {
+        return Err(MemhubError::InvalidInput(format!(
+            "{} is UTF-32 encoded; re-save it as UTF-8",
+            path.display()
+        )));
+    }
     if bytes.starts_with(&[0xFF, 0xFE]) || bytes.starts_with(&[0xFE, 0xFF]) {
         return Err(MemhubError::InvalidInput(format!(
             "{} is UTF-16 encoded; re-save it as UTF-8 (PowerShell 5.1 `>` writes UTF-16, use `| Out-File -Encoding utf8`)",
@@ -2081,6 +2089,41 @@ mod tests {
             for msg in errs {
                 assert!(msg.contains("UTF-16"), "{msg}");
                 assert!(msg.contains("u16.json"), "{msg}");
+            }
+        }
+    }
+
+    #[test]
+    fn utf8_bom_does_not_change_the_loaded_queries() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let plain = dir.path().join("plain.json");
+        let bom = dir.path().join("bom.json");
+        std::fs::write(&plain, GOLDEN_JSON).expect("write");
+        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend_from_slice(GOLDEN_JSON.as_bytes());
+        std::fs::write(&bom, bytes).expect("write");
+        let queries = |path: &Path| format!("{:?}", load_golden(path).expect("golden").queries);
+        assert_eq!(queries(&plain), queries(&bom));
+    }
+
+    #[test]
+    fn input_loaders_name_utf32_and_the_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for bom in [[0xFF, 0xFE, 0x00, 0x00], [0x00, 0x00, 0xFE, 0xFF]] {
+            let path = dir.path().join("u32.json");
+            let mut bytes = bom.to_vec();
+            bytes.extend_from_slice(GOLDEN_JSON.as_bytes());
+            std::fs::write(&path, bytes).expect("write");
+            let errs = [
+                load_golden(&path).expect_err("golden").to_string(),
+                load_locate_golden(&path)
+                    .expect_err("code golden")
+                    .to_string(),
+                compare_runs(&path, &path).expect_err("compare").to_string(),
+            ];
+            for msg in errs {
+                assert!(msg.contains("UTF-32"), "{msg}");
+                assert!(msg.contains("u32.json"), "{msg}");
             }
         }
     }
