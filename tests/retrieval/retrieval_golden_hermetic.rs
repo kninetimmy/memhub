@@ -847,3 +847,42 @@ fn hermetic_partial_token_fts_lifts_keyword_bag_target_into_the_pool() {
         "hits that clear the (disabled) floor are never low-confidence"
     );
 }
+
+/// Issue #348: `fact N` names this repository's row N, never the
+/// machine-global store's row with the same id, even when the repo is opted
+/// in to a global store that holds one.
+#[test]
+fn named_fact_resolves_to_the_repo_row_with_a_global_store_present() {
+    let temp = tempdir().expect("tempdir");
+    let home = tempdir().expect("home tempdir");
+    init::run(temp.path()).expect("init");
+    fact::add(
+        temp.path(),
+        "repo-owned-fact",
+        "zzqq repo fact body",
+        "user",
+        "cli:user",
+    )
+    .expect("repo fact");
+    seed_global_store(home.path()); // its fact 1 is "global-git-signing-key"
+    set_global_enabled(temp.path(), true);
+
+    let out = Command::new(env!("CARGO_BIN_EXE_memhub"))
+        .current_dir(temp.path())
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .args(["recall", "fact 1", "--mode", "fts", "--json"])
+        .output()
+        .expect("spawn memhub recall");
+    assert!(
+        out.status.success(),
+        "memhub recall failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("parse recall JSON");
+    let first = &json["results"][0];
+    assert_eq!(first["source_type"], "fact", "{json}");
+    assert_eq!(first["source_id"], 1, "{json}");
+    assert_eq!(first["scope"], "repo", "{json}");
+    assert_eq!(first["title"], "repo-owned-fact", "{json}");
+}
