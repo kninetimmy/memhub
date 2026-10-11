@@ -4178,15 +4178,26 @@ explainscopeprobe second.
         let ids: Vec<i64> = ["tie-a", "tie-b", "tie-c"]
             .iter()
             .map(|key| {
-                fact::add(temp.path(), key, "tiebreakprobe shared value", "user", "cli:user")
-                    .expect("fact")
-                    .0
+                fact::add(
+                    temp.path(),
+                    key,
+                    "tiebreakprobe shared value",
+                    "user",
+                    "cli:user",
+                )
+                .expect("fact")
+                .0
             })
             .collect();
 
         let response = recall(
             temp.path(),
-            explain_opts("tiebreakprobe", RetrievalMode::Fts, 10, vec![SourceType::Fact]),
+            explain_opts(
+                "tiebreakprobe",
+                RetrievalMode::Fts,
+                10,
+                vec![SourceType::Fact],
+            ),
         )
         .expect("recall");
         assert_eq!(response.results.len(), 3);

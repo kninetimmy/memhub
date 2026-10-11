@@ -1631,7 +1631,10 @@ mod tests {
         response.available_docs = 3;
         response.explain.docs_not_searched = 3;
         let note = doc_chunks_note(&response).expect("note");
-        assert!(note.contains("3 ingested doc chunk(s) not searched"), "{note}");
+        assert!(
+            note.contains("3 ingested doc chunk(s) not searched"),
+            "{note}"
+        );
         assert!(note.contains("--source-type doc"), "{note}");
 
         // Docs in the default bundle: searched, just not surfaced.

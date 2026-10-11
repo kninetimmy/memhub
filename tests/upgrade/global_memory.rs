@@ -428,14 +428,23 @@ fn machine_global_memory_end_to_end() {
     let found = keys.len();
     keys.sort();
     keys.dedup();
-    assert_eq!(keys.len(), found, "a row appears once: {:?}", varied.results);
+    assert_eq!(
+        keys.len(),
+        found,
+        "a row appears once: {:?}",
+        varied.results
+    );
     assert!(
         has_scope(&varied, "global") && has_scope(&varied, "repo"),
         "{:?}",
         varied.results
     );
     assert_eq!(
-        varied.results.iter().filter(|h| h.scope == "global").count(),
+        varied
+            .results
+            .iter()
+            .filter(|h| h.scope == "global")
+            .count(),
         1
     );
 }
