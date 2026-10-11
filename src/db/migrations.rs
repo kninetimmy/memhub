@@ -138,7 +138,15 @@ const MIGRATIONS: &[(&str, &str)] = &[
         ARCH_SECTIONS_MIGRATION,
         include_str!("../../migrations/0025_arch_sections.sql"),
     ),
+    (
+        SUMMARIES_PORTER_FTS_MIGRATION,
+        include_str!("../../migrations/0026_summaries_porter_fts.sql"),
+    ),
 ];
+
+/// Migration that adds fact/task summaries and recreates the six recall
+/// FTS tables with porter stemming (issue #349).
+const SUMMARIES_PORTER_FTS_MIGRATION: &str = "0026_summaries_porter_fts";
 
 /// Migration that adds the derived `arch_sections` table. SQL cannot
 /// chunk markdown, so when this one is applied `apply_all` derives the
@@ -198,6 +206,55 @@ pub fn apply_all(conn: &mut Connection) -> Result<Vec<String>> {
 
     tx.commit()?;
     Ok(applied)
+}
+
+/// Test-only: a DB left by the binary before migration 0026 (schema at
+/// 0025), seeded with one row per recall FTS table whose text says
+/// "migration", plus one embedding per fact/decision/task. Shared by the
+/// 0026 migration test and doctor's upgraded-DB test.
+#[cfg(test)]
+pub(crate) fn seeded_pre_0026_db() -> Connection {
+    let conn = Connection::open_in_memory().expect("open");
+    conn.execute_batch(
+        "CREATE TABLE schema_migrations (
+             version TEXT PRIMARY KEY,
+             applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+         );",
+    )
+    .expect("create migration ledger");
+    for (version, sql) in MIGRATIONS
+        .iter()
+        .take_while(|(v, _)| *v != SUMMARIES_PORTER_FTS_MIGRATION)
+    {
+        conn.execute_batch(sql).expect("apply legacy migration");
+        conn.execute(
+            "INSERT INTO schema_migrations(version) VALUES (?1)",
+            [version],
+        )
+        .expect("record legacy migration");
+    }
+    conn.execute_batch(
+        "INSERT INTO projects(id, root_path, schema_version) VALUES (1, 'test', 'test');
+         INSERT INTO facts(id, key, value) VALUES (1, 'db-move', 'the schema migration runs on open');
+         INSERT INTO decisions(id, title, rationale) VALUES (1, 'Ship one migration', 'fewer steps');
+         INSERT INTO tasks(id, title, notes) VALUES (1, 'Plan the migration', 'before release');
+         INSERT INTO documents(id, path, title, content_hash, byte_len)
+             VALUES (1, 'doc.md', 'Doc', 'h', 1);
+         INSERT INTO doc_chunks(id, doc_id, ord, heading_path, body)
+             VALUES (1, 1, 0, 'Upgrade', 'a migration guide');
+         INSERT INTO session_notes(id, actor, actor_raw, text)
+             VALUES (1, 'user', 'cli:user', 'paused mid migration');
+         INSERT INTO project_arch(id, body, actor, actor_raw)
+             VALUES (1, '# Storage', 'user', 'cli:user');
+         INSERT INTO arch_sections(id, arch_id, ord, heading_path, body)
+             VALUES (1, 1, 0, 'Storage', 'each migration is ordered');
+         INSERT INTO embeddings(source_type, source_id, model_name, dimension, vector, content_hash)
+             VALUES ('fact', 1, 'test-model', 1, X'01', 'fact-hash'),
+                    ('decision', 1, 'test-model', 1, X'01', 'decision-hash'),
+                    ('task', 1, 'test-model', 1, X'01', 'task-hash');",
+    )
+    .expect("seed legacy rows");
+    conn
 }
 
 #[cfg(test)]
@@ -475,7 +532,7 @@ mod tests {
         .expect("create migration ledger");
         for (version, sql) in MIGRATIONS
             .iter()
-            .filter(|(v, _)| *v != ARCH_SECTIONS_MIGRATION)
+            .take_while(|(v, _)| *v != ARCH_SECTIONS_MIGRATION)
         {
             conn.execute_batch(sql).expect("apply legacy migration");
             conn.execute(
@@ -518,7 +575,10 @@ mod tests {
         .expect("seed legacy arch body");
 
         let applied = apply_all(&mut conn).expect("auto-apply 0025");
-        assert_eq!(applied, vec![ARCH_SECTIONS_MIGRATION]);
+        assert_eq!(
+            applied,
+            vec![ARCH_SECTIONS_MIGRATION, SUMMARIES_PORTER_FTS_MIGRATION]
+        );
 
         let after: Vec<(i64, String, i64, String)> = {
             let mut stmt = conn
@@ -567,5 +627,94 @@ mod tests {
             [],
         )
         .expect("widened CHECK must admit 'arch_section'");
+    }
+
+    /// Migration 0026 (issue #349) on a DB built by the previous head:
+    /// every recall FTS table is rebuilt with porter stemming, so each
+    /// pre-existing row is still found, now by another inflection of its
+    /// word; the summary columns exist and are NULL; existing embeddings
+    /// are untouched; the FTS table outside recall keeps unicode61; and a
+    /// second apply changes nothing.
+    #[test]
+    fn migration_0026_rebuilds_recall_fts_with_porter_and_keeps_rows() {
+        let mut conn = seeded_pre_0026_db();
+        let read_embeddings = |conn: &Connection| -> Vec<(String, String)> {
+            let mut stmt = conn
+                .prepare("SELECT source_type, content_hash FROM embeddings ORDER BY id")
+                .expect("prepare");
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .expect("query")
+                .collect::<std::result::Result<_, _>>()
+                .expect("collect")
+        };
+        let embeddings_before = read_embeddings(&conn);
+
+        let applied = apply_all(&mut conn).expect("auto-apply 0026");
+        assert_eq!(applied, vec![SUMMARIES_PORTER_FTS_MIGRATION]);
+
+        for fts in [
+            "facts_fts",
+            "decisions_fts",
+            "tasks_fts",
+            "doc_chunks_fts",
+            "session_notes_fts",
+            "arch_sections_fts",
+        ] {
+            let hits: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {fts} WHERE {fts} MATCH '\"migrating\"'"),
+                    [],
+                    |r| r.get(0),
+                )
+                .expect("fts query");
+            assert_eq!(hits, 1, "{fts} must find its pre-0026 row by a stemmed word");
+        }
+        for table in ["facts", "tasks"] {
+            let summary: Option<String> = conn
+                .query_row(&format!("SELECT summary FROM {table}"), [], |r| r.get(0))
+                .expect("summary column");
+            assert_eq!(summary, None, "{table}.summary starts empty");
+        }
+        assert_eq!(embeddings_before, read_embeddings(&conn));
+
+        let porter_outside_recall: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master \
+                 WHERE name = 'chunk_fts' AND sql LIKE '%porter%'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("chunk_fts sql");
+        assert_eq!(porter_outside_recall, 0, "chunk_fts keeps unicode61");
+
+        assert!(apply_all(&mut conn).expect("re-apply").is_empty());
+    }
+
+    /// The summary columns are indexed: a word that appears only in a
+    /// fact's, decision's or task's summary finds that row.
+    #[test]
+    fn summary_only_words_are_full_text_searchable() {
+        let mut conn = Connection::open_in_memory().expect("open");
+        apply_all(&mut conn).expect("apply");
+        conn.execute_batch(
+            "INSERT INTO projects(id, root_path, schema_version) VALUES (1, 'test', 'test');
+             INSERT INTO facts(key, value) VALUES ('k', 'v');
+             INSERT INTO decisions(title, rationale) VALUES ('t', 'r');
+             INSERT INTO tasks(title) VALUES ('t');
+             UPDATE facts SET summary = 'which port does the quokka use';
+             UPDATE decisions SET summary = 'why the quokka';
+             UPDATE tasks SET summary = 'quokka work';",
+        )
+        .expect("seed");
+        for fts in ["facts_fts", "decisions_fts", "tasks_fts"] {
+            let hits: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {fts} WHERE {fts} MATCH 'quokkas'"),
+                    [],
+                    |r| r.get(0),
+                )
+                .expect("fts query");
+            assert_eq!(hits, 1, "{fts} must index the summary column");
+        }
     }
 }
