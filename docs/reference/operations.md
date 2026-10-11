@@ -378,6 +378,27 @@ JSON key:
   looks for the store only when `--explain` (or `explain: true`) was
   requested, so a plain recall does no filesystem check for it.
 
+**Rows named by number (issue #340).** A recall whose main query contains the
+word `decision`, `task` or `fact` (any letter case, a whole word) followed by
+whitespace and/or `#` and a number (`decision 201`, `Task #99`, `fact 7`) returns
+that row first. Only the main query is read, not the variants. The row must
+exist in the repo store and pass the call's source-type, accepted-only and
+stale filters (accepted-only excludes a task, since tasks carry no `source`);
+a superseded row is kept, as in ranked results. Named rows come in the order
+the query names them, once each, ahead of every other hit, are never flagged
+`low_confidence` and skip the relevance floor, and they count toward
+`max_results` (named rows past the limit are dropped, last named first); the
+remaining slots are filled by the normal ranking, which does not see them.
+When the re-ranker ran, a named row carries its `rerank_score`. Rows of the
+machine-global store are never routed (their ids are separate), and nothing
+else is read as an id: plurals (`decisions 12`), shorthand (`D17`, `T164`,
+which spec documents use for their own numbering), a number after any other
+word (`issue 290`, `PR #328`, `run 2`), a number glued to letters or a decimal
+point (`task 5b`, `fact 3.5`) and a number that matches no row do nothing. The
+`--explain` counters are those of the ranked gather: named rows are not counted
+in the stale or accepted-only exclusions, and a row only the routing found
+counts in `candidate_count`.
+
 **Query variants (issue #319).** The calling agent can send extra phrasings of
 one question so rows the main wording misses can still enter the candidate
 pool: `memhub recall <query> --variant <TEXT>` (repeatable) on the CLI, and an

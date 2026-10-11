@@ -48,6 +48,14 @@ review require_review"). The cross-encoder scores question phrasings
 several logits higher, so a keyword bag can miss the relevance floor
 even when the row exists.
 
+A decision, task or fact you name by number in the query ("what does
+decision 201 say about X", "task #99", "fact 7") is returned first,
+ahead of every other hit and never flagged `low_confidence`, when that
+row exists and the filters allow it (`accepted_only` drops a task); it
+takes one of the `max_results` slots, and the other hits fill the rest.
+Shorthand such as `D17` and a number after any other word (`issue 290`,
+`PR #328`) is not treated as a row id.
+
 CLI fallback (no MCP, or you want to pipe the bundle to other shell
 tools):
 
