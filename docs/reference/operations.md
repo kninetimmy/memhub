@@ -559,6 +559,31 @@ the hermetic 36-query baseline above (memhub fact
 `retrieval.live-eval-not-comparable`), so never compare a fresh run against
 a number recorded elsewhere: always take run A and run B yourself.
 
+**Recall query log (issue #324, opt-in).** Real agent queries are the best
+source of new golden probes, so `[retrieval] log_queries = true` makes every
+agent-facing recall append one JSON line to `.memhub/recall_queries.jsonl`,
+beside `project.sqlite` and `config.toml`. It is **off by default**; with it
+off no file is created and recall is untouched. It covers `memhub recall`
+(surface `cli`) and the MCP recall tool (surface `mcp`) only: `memhub eval
+retrieval`, hooks and every other internal recall never write it. The file is
+a plain file, not a database table, and `/.memhub/*` is git-ignored, so Drive
+sync snapshots, `memhub export` and the machine-global store never carry it.
+Queries are stored in **plaintext**. A line holds `ts` (UTC, ISO 8601),
+`surface`, `query`, `variants`, `source_types` (as requested; empty means the
+default bundle), `max_results` (the effective value), `results` (per returned
+row: `source_type`, `source_id`, `scope`, `title`, `rerank_score`,
+`low_confidence`) and `warnings` (the warning kinds):
+
+```json
+{"ts":"2026-10-11T17:40:02Z","surface":"cli","query":"cargo build","variants":["compile command"],"source_types":["fact"],"max_results":3,"results":[{"source_type":"fact","source_id":1,"scope":"repo","title":"build","rerank_score":null,"low_confidence":false}],"warnings":[]}
+```
+
+Each line is one append, so concurrent CLI and MCP processes do not
+interleave. A failure to create or write the file never fails or alters the
+recall; it prints `memhub: recall query log not written: ...` on stderr only.
+**The log is never rotated or size-capped and grows with every agent recall;**
+delete or truncate it by hand when it gets large.
+
 **A/B procedure for a code change.** An A/B is two back-to-back local runs
 on the same database, compared with `memhub eval compare`:
 
