@@ -1514,6 +1514,7 @@ mod tests {
             reranker,
             min_rerank_score: 0.5,
             rerank_candidate_pool: 20,
+            rerank_doc_cap: Some(5),
             variants: false,
         }
     }

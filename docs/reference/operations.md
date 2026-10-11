@@ -235,10 +235,34 @@ correctly again. No data is lost; only the stale marker is replaced.
 
 Hybrid recall (the default) combines FTS5 BM25 and BGE-small embeddings,
 then by default runs a bundled cross-encoder re-ranker
-(ms-marco-MiniLM-L-6-v2) over the top `[retrieval] rerank_candidate_pool`
-candidates before truncating to `max_results`. The re-ranker adds
+(ms-marco-MiniLM-L-6-v2) over `[retrieval] rerank_candidate_pool`
+candidates, chosen as described under "Re-rank pool" below, before
+truncating to `max_results`. The re-ranker adds
 ~275 ms per recall at pool=20 in exchange for ~+17 percentage points of
 Recall@1 on memhub's own golden set (decision 68).
+
+**Re-rank pool (issue #330).** The rows sent to the re-ranker are not the
+top `rerank_candidate_pool` by blended score. Blended score min-max
+normalizes BM25 over the hits and adds raw cosine, so a row with no word
+overlap rarely made the cut, and default-included doc chunks crowded it.
+Instead the pool is filled from two rankings in turn, vector similarity first
+and FTS second, each skipping rows already taken, until it holds
+`rerank_candidate_pool` distinct rows or both rankings run out; when one
+ranking runs out the other fills the remaining slots. Every row in the top
+half (rounded down) of either ranking therefore reaches the re-ranker
+whatever its blended score. Each ranking applies the same stale, superseded
+and age-decay adjustments as the blended score, so a stale or superseded row
+never takes a slot ahead of an otherwise-equal current row. In a default
+recall that includes doc chunks (`include_docs_in_default`, no
+`--source-type`), `[retrieval] rerank_doc_cap` (default 5) limits how many doc
+chunks may enter the pool; doc chunks over the cap are not eligible, and a
+recall with explicit source types, including `--source-type doc`, is not
+capped. The pool is scored in batches of at most 8 passages, so a larger pool
+does not need gigabytes of memory (one 50-row batch used 4.1 GB). The bundled
+model is int8 dynamic-quantized, so a row's score depends slightly on which
+rows share its batch (measured drift up to about 0.25 logits on long padded
+passages). The code locator (`memhub locate`) chooses its own re-rank
+candidates as before.
 
 Toggle per-call with `memhub recall <query> --no-rerank`, or globally
 with `[retrieval] use_reranker = false` in `.memhub/config.toml`. The
@@ -333,8 +357,9 @@ JSON key:
   `superseded_penalty`.
 - `stale_demoted`: stale rows kept but demoted by `stale_penalty` (the count
   behind the `stale_facts_demoted` warning).
-- `rerank_pool_cut`: rows beyond `rerank_candidate_pool` that never reached the
-  re-ranker.
+- `rerank_pool_cut`: candidates not sent to the re-ranker: rows beyond
+  `rerank_candidate_pool` in the by-retriever fill, and default-included doc
+  chunks over `rerank_doc_cap`.
 - `result_limit_cut`: rows beyond `max_results` cut from the final bundle. It
   counts only rows that cleared the relevance floor; floor-cut rows that the
   result limit trimmed from the low-confidence fill are counted only in
@@ -367,7 +392,8 @@ single-query path, unchanged by the variants feature.
 Variants widen the candidate pool only. Each phrasing is embedded (the main
 query and the variants in one batch) and gathered like the main query, in the
 repo store and, when the repo opted in, the machine-global store. Each
-phrasing's own top `rerank_candidate_pool` rows (by blended score) are unioned,
+phrasing's own `rerank_candidate_pool` rows (filled from its vector and FTS
+rankings in turn, as under "Re-rank pool" above) are unioned,
 deduplicated by row (scope, source type, id), and one re-rank pass then runs
 over that union. A row found by several phrasings keeps the hit from its
 best-scoring phrasing, so its blended `score`, `fts_score` and `vector_score`
@@ -380,7 +406,7 @@ whatever the variants say, so its rows come back only flagged
 `low_confidence`). The main query's own pool is always a subset of the
 union, so a variant can never push out a row the main query would have
 re-ranked. Cost: the union has up to (1 + variants) x `rerank_candidate_pool`
-rows, so re-rank time grows with the variants sent (each pool-sized batch costs
+rows, so re-rank time grows with the variants sent (each phrasing's pool costs
 roughly what a plain recall's re-rank costs, about 275 ms at pool 20), plus,
 per variant, one more embedding and, in each searched store (the repo store
 and, when the repo opted in, the machine-global store), one more set of
@@ -392,7 +418,8 @@ no pool is cut and variant-only rows have no main-query score, so the merged
 set is ordered by each row's best blended score across phrasings; the filters
 and the doc-chunk rule still apply as they do without variants. With `--explain`
 each distinct row is counted once however many phrasings found it, and
-`rerank_pool_cut` counts the rows outside every phrasing's pool. With `[global]`
+`rerank_pool_cut` counts the rows outside every phrasing's pool (doc chunks over
+the cap included). With `[global]`
 disabled only the repo store is searched, as before M9; variants add rows
 from that store alone.
 
@@ -479,8 +506,9 @@ retrieval --json` reports the rank-1 pass count (`totals.match_passes_at_1`,
 `recall_at_1`) alongside Recall@K, and records the settings the run used
 under `settings`: retrieval `mode`, whether the `reranker` was enabled
 for the run, the `min_rerank_score` floor, the
-`rerank_candidate_pool` size, and whether `variants` were sent (a saved run
-from before this setting existed reads as `false`).
+`rerank_candidate_pool` size, the `rerank_doc_cap`, and whether `variants` were
+sent (a saved run from before the variants setting existed reads as `false`,
+and one from before the doc cap existed reads as not recorded).
 A golden query may carry an optional `variants` list (at most 4, none blank,
 checked when the file loads); `eval retrieval` sends it with the query exactly as
 an agent would (`recall --variant`), and `memhub eval retrieval --no-variants`

@@ -102,6 +102,8 @@ pub const DEFAULT_INCLUDE_STALE: bool = true;
 pub const DEFAULT_FACT_STALE_AFTER_DAYS: i64 = crate::models::FACT_STALE_AFTER_DAYS;
 pub const DEFAULT_USE_RERANKER: bool = true;
 pub const DEFAULT_RERANK_CANDIDATE_POOL: usize = 20;
+/// Most default-included doc chunks the re-rank pool may hold.
+pub const DEFAULT_RERANK_DOC_CAP: usize = 5;
 /// Docs are opt-in to default recall (decision 86). Auto-flipped to
 /// true by the first successful `memhub doc add` in a project so the
 /// user-pointed write that establishes docs also wires up retrieval.
@@ -282,6 +284,9 @@ fn default_use_reranker() -> bool {
 fn default_rerank_candidate_pool() -> usize {
     DEFAULT_RERANK_CANDIDATE_POOL
 }
+fn default_rerank_doc_cap() -> usize {
+    DEFAULT_RERANK_DOC_CAP
+}
 fn default_metrics_enabled() -> bool {
     DEFAULT_METRICS_ENABLED
 }
@@ -350,11 +355,18 @@ pub struct RetrievalConfig {
     /// Ignored in fts mode. On by default; set to `false` to skip.
     #[serde(default = "default_use_reranker")]
     pub use_reranker: bool,
-    /// Number of top-blended candidates to feed into the cross-encoder
-    /// before the final truncate to `max_results`. Only consulted when
-    /// `use_reranker = true` and mode = hybrid.
+    /// Number of candidates to feed into the cross-encoder before the final
+    /// truncate to `max_results`, taken from the vector-similarity and FTS
+    /// rankings in turn. Only consulted when `use_reranker = true` and
+    /// mode = hybrid.
     #[serde(default = "default_rerank_candidate_pool")]
     pub rerank_candidate_pool: usize,
+    /// Most default-included doc chunks (plain recall with
+    /// `include_docs_in_default`) that may enter the re-rank pool; the rest
+    /// are not sent to the cross-encoder. Recall with explicit source types
+    /// is never capped.
+    #[serde(default = "default_rerank_doc_cap")]
+    pub rerank_doc_cap: usize,
     /// When true, plain `memhub recall` (no `--source-type`) makes
     /// ingested doc chunks eligible for the default bundle, gated by
     /// `scoring.doc_min_rerank_score`. Off by default (decision 86);
@@ -382,6 +394,7 @@ impl Default for RetrievalConfig {
             fact_stale_after_days: DEFAULT_FACT_STALE_AFTER_DAYS,
             use_reranker: DEFAULT_USE_RERANKER,
             rerank_candidate_pool: DEFAULT_RERANK_CANDIDATE_POOL,
+            rerank_doc_cap: DEFAULT_RERANK_DOC_CAP,
             include_docs_in_default: DEFAULT_INCLUDE_DOCS_IN_DEFAULT,
             log_queries: false,
             scoring: RetrievalScoringConfig::default(),

@@ -12,6 +12,7 @@
 #   - retrieval.fact_stale_after_days  (recall behavior)
 #   - retrieval.use_reranker           (recall behavior)
 #   - retrieval.rerank_candidate_pool  (recall behavior)
+#   - retrieval.rerank_doc_cap         (recall behavior)
 #   - retrieval.scoring.*              (reproducible recall)
 #   - code_index.*                     (reproducible locate ranking; split
 #                                       from retrieval.scoring.* in R11 /
@@ -139,7 +140,18 @@ fact_stale_after_days = 90
 # recall at pool=20; lifted Recall@1 by ~17pp on memhub's golden set in
 # the bake-off (decision 68). Ignored in fts mode.
 use_reranker = true
+# Rows sent to the re-ranker. They are taken from the vector-similarity
+# ranking and the FTS ranking in turn (each ranking applies the stale,
+# superseded and age-decay adjustments of the blended score), so every row
+# in the top half of either ranking is re-ranked whatever its blended
+# score; when one ranking runs out the other fills the remaining slots.
+# Passages are scored in batches of 8 to bound memory.
 rerank_candidate_pool = 20
+# Most default-included doc chunks (plain recall with
+# include_docs_in_default, no --source-type) the pool may hold; doc
+# chunks over the cap are not sent to the re-ranker. A recall with explicit
+# source types, including doc, is not capped.
+rerank_doc_cap = 5
 # Make ingested doc chunks eligible for the *default* recall bundle
 # (no --source-type needed), gated by scoring.doc_min_rerank_score.
 # Canonical baseline is false (decision 86: docs are opt-in). The

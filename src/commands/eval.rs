@@ -124,6 +124,10 @@ pub struct RunSettings {
     pub reranker: bool,
     pub min_rerank_score: f32,
     pub rerank_candidate_pool: usize,
+    /// `[retrieval] rerank_doc_cap` the run used. Absent from runs saved
+    /// before the cap existed, which read as `None` (not recorded).
+    #[serde(default)]
+    pub rerank_doc_cap: Option<usize>,
     /// At least one query was sent with its golden-set `variants`. Absent
     /// from runs saved before variants existed, which read as `false`.
     #[serde(default)]
@@ -244,6 +248,7 @@ pub fn run_retrieval(start: &Path, opts: EvalOptions) -> Result<EvalSummary> {
             .min_rerank_score
             .unwrap_or(cfg.scoring.min_rerank_score),
         rerank_candidate_pool: cfg.rerank_candidate_pool.max(opts.k),
+        rerank_doc_cap: Some(cfg.rerank_doc_cap),
         variants: !opts.no_variants && golden.queries.iter().any(|q| !q.variants.is_empty()),
     };
     let warm_latency_p50_ms = median_ms(&latencies_ms);
@@ -1584,6 +1589,7 @@ mod tests {
                 reranker: false,
                 min_rerank_score: -1.0,
                 rerank_candidate_pool: 20,
+                rerank_doc_cap: Some(5),
                 variants: false,
             },
             PathBuf::from("x.json"),
@@ -1993,6 +1999,7 @@ mod tests {
                 reranker: true,
                 min_rerank_score: -2.0,
                 rerank_candidate_pool: 20,
+                rerank_doc_cap: Some(5),
                 variants: false,
             },
             PathBuf::from("x.json"),
@@ -2121,6 +2128,16 @@ mod tests {
         let c = compare_runs(&old, &old).expect("compare");
         let s = c.a.settings.expect("settings recorded");
         assert!(!s.variants, "a pre-variants run reads as variants off");
+        assert_eq!(
+            s.rerank_doc_cap, None,
+            "a pre-doc-cap run reads as not recorded"
+        );
+        let json = serde_json::to_value(RunSettings {
+            rerank_doc_cap: Some(5),
+            ..s
+        })
+        .expect("serialize");
+        assert_eq!(json["rerank_doc_cap"], 5);
     }
 
     #[test]
