@@ -1994,6 +1994,7 @@ pub fn run(cli: Cli) -> Result<()> {
             accepted_only,
             no_rerank,
             min_rerank_score,
+            variant,
             explain,
             json: as_json,
         } => {
@@ -2010,6 +2011,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 use_reranker: if no_rerank { Some(false) } else { None },
                 min_rerank_score,
                 log_metrics: true,
+                variants: variant,
                 surface: Some(RecallSurface::Cli),
             };
             let response = retrieval::recall(&cwd, opts)?;
@@ -2033,6 +2035,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 mode,
                 no_rerank,
                 min_rerank_score,
+                no_variants,
                 json: as_json,
             } => {
                 let golden_path =
@@ -2043,6 +2046,7 @@ pub fn run(cli: Cli) -> Result<()> {
                     mode: mode.map(|m| m.to_mode()),
                     use_reranker: if no_rerank { Some(false) } else { None },
                     min_rerank_score,
+                    no_variants,
                 };
                 let summary = commands::eval::run_retrieval(&cwd, opts)?;
                 if as_json {

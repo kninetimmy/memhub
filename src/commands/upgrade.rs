@@ -1249,6 +1249,7 @@ fn smoke(root: &Path) -> Result<()> {
             use_reranker: None,
             min_rerank_score: None,
             log_metrics: false,
+            variants: Vec::new(),
             surface: None,
         },
     )?;

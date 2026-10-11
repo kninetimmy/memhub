@@ -566,12 +566,17 @@ fn format_run_settings(
         // Floor and pool only take effect when the re-ranker runs, so omit
         // them for reranker-off runs (the --json output still records them).
         Some(s) if s.reranker => format!(
-            "mode {}, reranker on, rerank floor {}, rerank pool {}",
+            "mode {}, reranker on, rerank floor {}, rerank pool {}, variants {}",
             recall_mode_label(s.mode),
             s.min_rerank_score,
             s.rerank_candidate_pool,
+            if s.variants { "on" } else { "off" },
         ),
-        Some(s) => format!("mode {}, reranker off", recall_mode_label(s.mode)),
+        Some(s) => format!(
+            "mode {}, reranker off, variants {}",
+            recall_mode_label(s.mode),
+            if s.variants { "on" } else { "off" }
+        ),
         None => format!(
             "mode {} (other settings not recorded)",
             recall_mode_label(mode)
@@ -1493,6 +1498,7 @@ mod tests {
             reranker,
             min_rerank_score: 0.5,
             rerank_candidate_pool: 20,
+            variants: false,
         }
     }
 

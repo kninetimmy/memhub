@@ -818,6 +818,7 @@ fn hermetic_partial_token_fts_lifts_keyword_bag_target_into_the_pool() {
             use_reranker: None,
             min_rerank_score: Some(-1000.0),
             log_metrics: false,
+            variants: Vec::new(),
             surface: None,
         },
     )

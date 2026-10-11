@@ -195,6 +195,67 @@ fn cargo_toml_declares_a_rust_version() {
     );
 }
 
+/// Issue #319: `memhub recall --variant` finds a row the main query misses,
+/// and a blank variant or a fifth one fails with the reason.
+#[test]
+fn recall_variant_flag_widens_the_pool_and_rejects_bad_variants() {
+    let temp = tempdir().expect("tempdir");
+    let home = tempdir().expect("home tempdir");
+    init::run(temp.path()).expect("init");
+    fact::add(
+        temp.path(),
+        "variant-cli",
+        "variantcliprobe value",
+        "user",
+        "cli:user",
+    )
+    .expect("fact");
+    let run = |extra: &[&str]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_memhub"))
+            .args([
+                "recall",
+                "which marsupial dwells",
+                "--mode",
+                "fts",
+                "--json",
+            ])
+            .args(extra)
+            .current_dir(temp.path())
+            .env("MEMHUB_LOG", "off")
+            .env("HOME", home.path())
+            .env("USERPROFILE", home.path())
+            .output()
+            .expect("spawn memhub binary")
+    };
+    let returned = |extra: &[&str]| {
+        let out = run(extra);
+        assert!(out.status.success(), "recall failed: {out:?}");
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+        v["results"].as_array().expect("results").len()
+    };
+
+    assert_eq!(returned(&[]), 0);
+    assert_eq!(returned(&["--variant", "variantcliprobe"]), 1);
+
+    let blank = run(&["--variant", "variantcliprobe", "--variant", " "]);
+    assert!(!blank.status.success());
+    assert!(String::from_utf8_lossy(&blank.stderr).contains("variant 2 is blank"));
+    let five = run(&[
+        "--variant",
+        "a",
+        "--variant",
+        "b",
+        "--variant",
+        "c",
+        "--variant",
+        "d",
+        "--variant",
+        "e",
+    ]);
+    assert!(!five.status.success());
+    assert!(String::from_utf8_lossy(&five.stderr).contains("at most 4"));
+}
+
 /// Issue #318: `memhub recall --explain` adds the breakdown (JSON `explain`
 /// object / human "Explain:" block) and changes nothing else; without the
 /// flag neither appears.

@@ -482,6 +482,7 @@ impl MemhubServer {
                 use_reranker: None,
                 min_rerank_score: None,
                 log_metrics: true,
+                variants: params.variants.unwrap_or_default(),
                 surface: Some(RecallSurface::Mcp),
             },
         )
@@ -845,7 +846,7 @@ impl MemhubServer {
 
     #[tool(
         name = "recall",
-        description = "Retrieve relevant facts, decisions, tasks, and architecture sections via SQL+RAG hybrid recall (FTS5 + brute-force cosine when hybrid mode is configured). Read-only; prefer this over reading PROJECT_LEDGER.md mid-session. Phrase `query` as a natural-language question (\"are task writes reviewed or direct writes?\"), not a keyword list — the cross-encoder scores question phrasings several logits higher, so a keyword bag can miss the relevance floor. A hit with `low_confidence: true` did not clear the floor; it is returned only when the floor dropped every candidate (with a `rerank_floor_dropped_all` warning) and is a weak lead to verify before relying on it. Default-included doc chunks are never returned as low-confidence fallback hits. Sections of the latest architecture narrative (`memhub arch set`, split by heading; source_type `arch_section`, titled `Architecture — <heading path>`) are part of the default bundle with the same floor and fallback as facts, decisions, and tasks; source_types=[\"arch\"] scopes a query to them alone. Ingested reference docs are opt-in (add one with doc_add); once added they join the default bundle when a chunk clears the relevance floor (decision 90), and source_types=[\"doc\"] scopes a query to docs alone. The response's `available_docs` counts ingested doc chunks that did NOT surface this call — when it is non-zero and the question is design/spec/architecture-flavored, consider a follow-up recall scoped to docs (use judgment; not every turn). Session notes (log_session_note) are write-only scratch and never join the default bundle at all — source_types=[\"note\"] is the only way to retrieve one."
+        description = "Retrieve relevant facts, decisions, tasks, and architecture sections via SQL+RAG hybrid recall (FTS5 + brute-force cosine when hybrid mode is configured). Read-only; prefer this over reading PROJECT_LEDGER.md mid-session. Phrase `query` as a natural-language question (\"are task writes reviewed or direct writes?\"), not a keyword list — the cross-encoder scores question phrasings several logits higher, so a keyword bag can miss the relevance floor. When the first call comes back empty or thin, or the answer likely uses different words than your question, retry with `variants`: up to 4 extra phrasings of the same question, such as a keyword form and a sentence worded like the answer. Variants only widen which rows are considered; every row is still scored against `query` alone, so keep `query` the best natural-language question. A hit with `low_confidence: true` did not clear the floor; it is returned only when the floor dropped every candidate (with a `rerank_floor_dropped_all` warning) and is a weak lead to verify before relying on it. Default-included doc chunks are never returned as low-confidence fallback hits. Sections of the latest architecture narrative (`memhub arch set`, split by heading; source_type `arch_section`, titled `Architecture — <heading path>`) are part of the default bundle with the same floor and fallback as facts, decisions, and tasks; source_types=[\"arch\"] scopes a query to them alone. Ingested reference docs are opt-in (add one with doc_add); once added they join the default bundle when a chunk clears the relevance floor (decision 90), and source_types=[\"doc\"] scopes a query to docs alone. The response's `available_docs` counts ingested doc chunks that did NOT surface this call — when it is non-zero and the question is design/spec/architecture-flavored, consider a follow-up recall scoped to docs (use judgment; not every turn). Session notes (log_session_note) are write-only scratch and never join the default bundle at all — source_types=[\"note\"] is the only way to retrieve one."
     )]
     async fn recall(
         &self,
@@ -1497,6 +1498,14 @@ struct RecallParams {
     /// source, so they are never returned when this is true.
     accepted_only: Option<bool>,
     include_stale: Option<bool>,
+    /// Up to 4 extra phrasings of the same question, to catch rows the main
+    /// `query` wording misses: a keyword form ("task review writes"), or a
+    /// sentence worded the way the answer would be ("Task writes go through
+    /// review before they are accepted"). Rows found by any phrasing join the
+    /// candidate pool, but ranking and the relevance floor still score
+    /// against `query` only. Send them when a plain call returned nothing
+    /// useful; no blank entries. Omit for the normal single-phrasing call.
+    variants: Option<Vec<String>>,
     /// When true, the response also carries an `explain` object counting
     /// the candidate rows this call dropped, demoted or cut, per reason
     /// (relevance floor, doc floor, stale/accepted-only exclusion,
@@ -3124,6 +3133,7 @@ mod tests {
                 source_types: None,
                 accepted_only: None,
                 include_stale: None,
+                variants: None,
                 explain: None,
             })))
             .expect("recall");
@@ -3158,6 +3168,7 @@ mod tests {
                     source_types: None,
                     accepted_only: None,
                     include_stale: None,
+                    variants: None,
                     explain,
                 })))
                 .expect("recall");
@@ -3170,6 +3181,54 @@ mod tests {
         let on = call(Some(true));
         assert_eq!(on["explain"]["result_limit_cut"], 1);
         assert_eq!(on["explain"]["reranker_ran"], false);
+    }
+
+    /// Issue #319: `variants` widen the pool; a blank or a fifth variant is
+    /// an invalid-params error that says why.
+    #[test]
+    fn mcp_recall_variants_widen_the_pool_and_reject_bad_input() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        crate::commands::fact::add(
+            temp.path(),
+            "variant-mcp",
+            "mcpvariantprobe",
+            "user",
+            "cli:user",
+        )
+        .expect("fact");
+        let server = MemhubServer::new(temp.path().to_path_buf());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let call = |variants: Option<Vec<&str>>| {
+            runtime.block_on(server.recall_impl(Parameters(RecallParams {
+                query: "which marsupial dwells".to_string(),
+                mode: Some("fts".to_string()),
+                max_results: None,
+                source_types: None,
+                accepted_only: None,
+                include_stale: None,
+                variants: variants.map(|v| v.into_iter().map(String::from).collect()),
+                explain: None,
+            })))
+        };
+
+        assert!(call(None).expect("recall").0.results.is_empty());
+        let found = call(Some(vec!["mcpvariantprobe"])).expect("recall");
+        assert_eq!(found.0.results.len(), 1);
+
+        let Err(blank) = call(Some(vec!["mcpvariantprobe", "  "])) else {
+            panic!("blank variant must be rejected");
+        };
+        assert_eq!(blank.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(blank.message.contains("variant 2 is blank"), "{blank:?}");
+        let Err(five) = call(Some(vec!["a", "b", "c", "d", "e"])) else {
+            panic!("five variants must be rejected");
+        };
+        assert_eq!(five.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(five.message.contains("at most 4"), "{five:?}");
     }
 
     /// Issue #70 / Wave 4 gate Q17: the MCP `recall` tool is one of the
@@ -3201,6 +3260,7 @@ mod tests {
                 source_types: None,
                 accepted_only: None,
                 include_stale: None,
+                variants: None,
                 explain: None,
             })))
             .expect("recall");
@@ -3229,6 +3289,7 @@ mod tests {
             source_types: None,
             accepted_only: None,
             include_stale: None,
+            variants: None,
             explain: None,
         })));
         let err = match result {
@@ -3274,6 +3335,7 @@ mod tests {
                 source_types: Some(source_types.into_iter().map(String::from).collect()),
                 accepted_only: None,
                 include_stale: None,
+                variants: None,
                 explain: None,
             })
         };

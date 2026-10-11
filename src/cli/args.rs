@@ -232,6 +232,12 @@ pub enum TopLevelCommand {
         /// nonsense rejection.
         #[arg(long, value_name = "F", allow_negative_numbers = true)]
         min_rerank_score: Option<f32>,
+        /// An extra phrasing of the same question (repeatable, at most 4,
+        /// none blank), for example a keyword form or an answer-shaped
+        /// sentence. Rows any phrasing finds join the candidate pool; the
+        /// re-ranker and relevance floor still score against QUERY only.
+        #[arg(long, value_name = "TEXT")]
+        variant: Vec<String>,
         /// Report how many candidate rows were dropped, demoted or cut,
         /// per reason, to diagnose an empty or thin result.
         #[arg(long)]
@@ -411,6 +417,10 @@ pub enum EvalCommand {
         /// rejection at the cost of recall on borderline matches.
         #[arg(long, value_name = "F", allow_negative_numbers = true)]
         min_rerank_score: Option<f32>,
+        /// Ignore the `variants` a golden-set query carries and run its main
+        /// query alone. Use for the A/B baseline against a with-variants run.
+        #[arg(long)]
+        no_variants: bool,
         #[arg(long)]
         json: bool,
     },

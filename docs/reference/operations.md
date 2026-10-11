@@ -334,6 +334,42 @@ JSON key:
 - `global_store_not_searched` (bool): a machine-global store exists but was not
   searched because this repo has not opted in (`[global] enabled`).
 
+**Query variants (issue #319).** The calling agent can send extra phrasings of
+one question so rows the main wording misses can still enter the candidate
+pool: `memhub recall <query> --variant <TEXT>` (repeatable) on the CLI, and an
+optional `variants` list of strings on the MCP `recall` tool. Send them when a
+plain call came back empty or thin, or the answer likely uses different words
+than the question; useful phrasings are a keyword form of the question and a
+sentence worded the way the answer would be. At most 4 variants per call, none
+blank: a blank variant, or a fifth one, is rejected with an error saying why
+(CLI error exit; MCP invalid-params). A call without variants takes the
+unchanged single-query path and returns the same rows, order and scores as
+before.
+
+Variants widen the candidate pool only. Each phrasing is embedded (the main
+query and the variants in one batch) and gathered like the main query, in the
+repo store and, when the repo opted in, the machine-global store. Each
+phrasing's own top `rerank_candidate_pool` rows (by blended score) are unioned,
+deduplicated by row (scope, source type, id), and one re-rank pass then runs
+over that union. The re-ranker and the `min_rerank_score` / `doc_min_rerank_score`
+floors score every candidate against the **main query only**, never a variant,
+so each returned hit's `rerank_score` is its score against the main query and
+the floor keeps its meaning (a gibberish main query still returns nothing,
+whatever the variants say). The main query's own pool is always a subset of the
+union, so a variant can never push out a row the main query would have
+re-ranked. Cost: the union has up to (1 + variants) x `rerank_candidate_pool`
+rows, so re-rank time grows with the variants sent (each pool-sized batch costs
+roughly what a plain recall's re-rank costs, about 275 ms at pool 20), plus one
+more embedding and one more scan of the stored vectors per variant. When the
+re-ranker does not run (FTS-only mode, `--no-rerank`, `use_reranker = false`)
+no pool is cut and variant-only rows have no main-query score, so the merged
+set is ordered by each row's best blended score across phrasings; the filters
+and the doc-chunk rule still apply as they do without variants. With `--explain`
+each distinct row is counted once however many phrasings found it, and
+`rerank_pool_cut` counts the rows outside every phrasing's pool. With `[global]`
+disabled the output is byte-identical to a pre-M9 recall, with or without
+variants.
+
 **Architecture sections (issue #232).** The latest architecture narrative
 (`memhub arch set`) is split by markdown heading, with the same chunker
 `memhub doc add` uses, into a derived `arch_sections` table (migration 0025),
@@ -416,8 +452,16 @@ For A/B testing in any repo: `memhub eval retrieval` vs
 retrieval --json` reports the rank-1 pass count (`totals.match_passes_at_1`,
 `recall_at_1`) alongside Recall@K, and records the settings the run used
 under `settings`: retrieval `mode`, whether the `reranker` was enabled
-for the run, the `min_rerank_score` floor, and the
-`rerank_candidate_pool` size.
+for the run, the `min_rerank_score` floor, the
+`rerank_candidate_pool` size, and whether `variants` were sent (a saved run
+from before this setting existed reads as `false`).
+A golden query may carry an optional `variants` list (at most 4, none blank,
+checked when the file loads); `eval retrieval` sends it with the query exactly as
+an agent would (`recall --variant`), and `memhub eval retrieval --no-variants`
+runs the same golden file on the main queries alone, so one file can be A/B
+measured with `memhub eval compare`. Golden files without the field score as
+before. Every query in `tests/retrieval_golden_live.json` carries two variants,
+written without sight of the answers.
 `memhub eval compare <A> <B>` reads two such saved outputs and pairs them by
 query id. For rank-1 and for found@K separately it reports each run's pass
 count over the match queries, the ids that passed only in A and only in B,
