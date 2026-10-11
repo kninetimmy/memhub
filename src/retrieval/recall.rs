@@ -618,7 +618,8 @@ fn split_query(query: &str) -> Vec<String> {
     let lower = query.to_ascii_lowercase(); // same byte offsets as `query`
     let mut parts = Vec::new();
     let mut start = 0;
-    for (at, _) in lower.match_indices(" and ") {
+    // Every " and " is a candidate, overlapping ones included ("x and and what").
+    for at in (0..lower.len()).filter(|&i| lower.as_bytes()[i..].starts_with(b" and ")) {
         let rest = &lower[at + 5..];
         let word_len = rest
             .find(|c: char| !c.is_ascii_alphabetic())
@@ -5803,6 +5804,8 @@ explainscopeprobe second.
             "build and whatever",
             "build and isolate the cache",
             "build and  where",
+            "x and and",
+            "é and é where",
             "tests and what",
             "what and",
             "Q and A about docs",
@@ -5811,6 +5814,7 @@ explainscopeprobe second.
             let parts = split_query(q);
             assert_eq!(parts.is_empty(), q != "tests and what", "{q:?}: {parts:?}");
         }
+        assert_eq!(split_query("x and and what"), ["x and", "what"]);
         for word in QUESTION_WORDS {
             assert_eq!(split_query(&format!("a and {word} b")).len(), 2, "{word}");
         }

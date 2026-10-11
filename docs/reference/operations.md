@@ -418,12 +418,12 @@ rankings in turn, as under "Re-rank pool" above) are unioned,
 deduplicated by row (scope, source type, id), and one re-rank pass then runs
 over that union. A row found by several phrasings keeps the hit from its
 best-scoring phrasing, so its blended `score`, `fts_score` and `vector_score`
-come from that phrasing, while `rerank_score` is always scored against the
-main query. The re-ranker and the `min_rerank_score` / `doc_min_rerank_score`
-floors score every candidate against the **main query only** (or, for a
-two-question query, its parts: see below), never a variant,
-so each returned hit's `rerank_score` is its score against the main query and
-the floor keeps its meaning (a gibberish main query clears no floor
+come from that phrasing, while `rerank_score` is never scored against a
+variant. The re-ranker and the `min_rerank_score` / `doc_min_rerank_score`
+floors score every candidate against the **main query** (and, for a
+two-question query, each of its parts, taking the highest: see below), never a
+variant, so each returned hit's `rerank_score` is its score against the main
+query (or its best part) and the floor keeps its meaning (a gibberish main query clears no floor
 whatever the variants say, so its rows come back only flagged
 `low_confidence`). The main query's own pool is always a subset of the
 union, so a variant can never push out a row the main query would have
@@ -452,7 +452,7 @@ comma before it, immediately followed by one of `what`, `which`, `how`, `why`,
 `where`, `when`, `who`, `do`, `does`, `did`, `is`, `are`, `can` or `should`
 (any letter case, a whole word); the query is cut at each such point into
 parts, each trimmed and without its trailing comma, the question word kept
-with its part. `build and lint` or `tests and what` is not split. Each part
+with its part. `build and lint` and `and whatever` (not a whole question word) are not split. Each part
 is gathered like a caller variant (embedded in the same batch, its own
 `rerank_candidate_pool` rows joined into the union), so a row only one half
 matches can reach the re-ranker; parts do not count toward the 4-variant limit
