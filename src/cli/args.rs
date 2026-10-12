@@ -235,7 +235,8 @@ pub enum TopLevelCommand {
         /// An extra phrasing of the same question (repeatable, at most 4,
         /// none blank), for example a keyword form or an answer-shaped
         /// sentence. Rows any phrasing finds join the candidate pool; the
-        /// re-ranker and relevance floor still score against QUERY only.
+        /// re-ranker and relevance floor score each row against QUERY or,
+        /// for a two-question query, its best part, never a variant.
         #[arg(long, value_name = "TEXT")]
         variant: Vec<String>,
         /// Report how many candidate rows were dropped, demoted or cut,

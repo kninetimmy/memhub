@@ -119,8 +119,8 @@ pub struct RecallOptions {
     /// Extra caller-written phrasings of `query` (at most
     /// [`MAX_QUERY_VARIANTS`], none blank). They only widen the candidate
     /// pool: the re-ranker and the relevance floor still score every
-    /// candidate against `query` alone. Empty = the plain single-phrasing
-    /// path.
+    /// candidate against `query` or, for a two-question query, its best
+    /// part, never a variant. Empty = no caller variants.
     pub variants: Vec<String>,
     /// Override of `[retrieval.scoring] min_rerank_score`. None = use
     /// project config. Ignored when mode resolves to fts or when the
@@ -303,11 +303,11 @@ pub struct RecallExplain {
 ///
 /// Caller-written `variants` are extra phrasings of the same question: each
 /// is gathered like the main query and its own `rerank_candidate_pool` rows
-/// (see `select_rerank_pool`) join the pool, but the single rerank pass (and
-/// the relevance floor) never scores a candidate against a variant. When the
-/// re-ranker will run and the main query asks two things (`split_query`), each
-/// part gathers like a variant and a row's rerank score is its best against
-/// the whole query or any part.
+/// (see `select_rerank_pool`) join the pool, but the rerank pass (and the
+/// relevance floor) never scores a candidate against a variant: a row is
+/// scored against the query or, when the re-ranker will run and the main query
+/// asks two things (`split_query`), its best part. Each part gathers like a
+/// variant.
 pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
     let ctx = db::open_project(start)?;
     let resolved = ResolvedOptions::from(&options, &ctx.config.retrieval)?;
@@ -316,8 +316,8 @@ pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
 
     // Embed each phrasing once (main query first) and reuse it for every
     // corpus gather so the cross-corpus blended scores are computed on the
-    // same basis. A call without variants takes the plain single-query
-    // embed.
+    // same basis. A lone main query (no variants, no parts) takes the plain
+    // single-text embed.
     let texts: Vec<&str> = std::iter::once(resolved.query.as_str())
         .chain(resolved.variants.iter().map(String::as_str))
         .chain(resolved.parts.iter().map(String::as_str))
@@ -369,6 +369,7 @@ pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
     let mut doc_chunk_total = repo.doc_chunk_total;
     let mut demoted_stale_count = repo.demoted_stale_count;
     let mut explain = repo.explain;
+    let repo_excluded = repo.excluded;
 
     if ctx.config.global.enabled
         && let Some(gctx) = db::open_global_if_exists()?
@@ -392,6 +393,20 @@ pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
         // that never needed the global store.
         explain.global_store_not_searched = matches!(db::global_store_exists(), Ok(true));
     }
+
+    // A decision, task or fact the query names by number goes first and out
+    // of the ranked pool (see `named_rows`). Done before the stale counters
+    // and warning below so a row only the routing loaded is counted in them.
+    let named = take_named_rows(
+        &ctx.conn,
+        &resolved,
+        scoring,
+        &mut per_phrasing,
+        &repo_excluded,
+        &mut candidate_count,
+        &mut demoted_stale_count,
+        &mut explain,
+    )?;
     explain.stale_demoted = demoted_stale_count;
 
     // Un-silence staleness (Q1 / decision 145): when stale facts were kept
@@ -414,16 +429,6 @@ pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
                 .to_string(),
         });
     }
-
-    // A decision, task or fact the query names by number goes first and out
-    // of the ranked pool (see `named_rows`).
-    let named = take_named_rows(
-        &ctx.conn,
-        &resolved,
-        scoring,
-        &mut per_phrasing,
-        &mut candidate_count,
-    )?;
 
     // Re-sort each phrasing's unified pool by blended score. Without the
     // re-ranker this is the final order; with it, `select_rerank_pool` uses
@@ -624,7 +629,15 @@ fn split_query(query: &str) -> Vec<String> {
         let word_len = rest
             .find(|c: char| !c.is_ascii_alphabetic())
             .unwrap_or(rest.len());
-        if !QUESTION_WORDS.contains(&&rest[..word_len]) {
+        // A part must hold more than a bare question word, on either side.
+        let bare = |text: &str| {
+            let word = text.trim_matches(|c: char| !c.is_alphanumeric());
+            word.is_empty() || QUESTION_WORDS.contains(&word)
+        };
+        if !QUESTION_WORDS.contains(&&rest[..word_len])
+            || bare(&rest[word_len..])
+            || bare(&lower[start..at])
+        {
             continue;
         }
         parts.push(&query[start..at]);
@@ -667,6 +680,9 @@ struct GatherResult {
     /// the orchestrator. It feeds both `available_docs` and
     /// `RecallExplain::docs_not_searched`.
     doc_chunk_total: i64,
+    /// Rows a retriever found that the stale / accepted-only filters then
+    /// excluded; already counted in `explain`.
+    excluded: HashSet<(SourceType, i64)>,
     /// Only the per-store counters (`stale_excluded`,
     /// `accepted_only_excluded`, `superseded_demoted`) are filled here.
     explain: RecallExplain,
@@ -742,15 +758,18 @@ fn gather_scored(
     // (`stale_penalty`) with `stale: true`, rather than silently dropping
     // them. `include_stale = false` restores the old hard exclusion.
     let mut explain = RecallExplain::default();
+    let mut excluded = HashSet::new();
     let surviving: Vec<CandidateRow> = candidates
         .into_values()
         .filter(|c| c.has_source_row())
         .filter(|c| {
             if !opts.include_stale && c.is_stale {
                 explain.stale_excluded += 1;
+                excluded.insert((c.source_type, c.source_id));
                 false
             } else if opts.accepted_only && !is_accepted_source(&c.source) {
                 explain.accepted_only_excluded += 1;
+                excluded.insert((c.source_type, c.source_id));
                 false
             } else {
                 true
@@ -824,6 +843,7 @@ fn gather_scored(
         warnings,
         demoted_stale_count,
         doc_chunk_total,
+        excluded,
         explain,
     })
 }
@@ -926,7 +946,9 @@ struct MergedPool {
 /// ranking runs out the other fills the remaining slots. So every row in the
 /// top half (rounded down) of either ranking is chosen whatever its blended
 /// score. Each ranking applies the stale, superseded and age-decay
-/// adjustments of the blended score (`ScoredHit::{vector,fts}_rank`).
+/// adjustments of the blended score (`ScoredHit::{vector,fts}_rank`), the
+/// stale and superseded penalties at about half their blended strength (see
+/// `score`).
 /// Default-included doc chunks stop being eligible once
 /// `rerank_doc_cap` of them are chosen. The result keeps the input order.
 fn select_rerank_pool(opts: &ResolvedOptions, hits: Vec<ScoredHit>) -> Vec<ScoredHit> {
@@ -1037,11 +1059,17 @@ fn merge_phrasings(opts: &ResolvedOptions, per_phrasing: Vec<Vec<ScoredHit>>) ->
 /// number, e.g. `decision 201`, `Task #99`. Deduplicated, in the order the
 /// query names them. Plurals (`decisions 12`), shorthand (`D17`), any other
 /// word before the number, and a number glued to letters or a decimal point
-/// (`task 5b`, `fact 3.5`) do not match.
+/// (`task 5b`, `fact 3.5`) do not match, nor does a number followed by a unit
+/// or count word (`in fact 3 rows`, `the decision 2 days ago`).
 fn named_rows(query: &str) -> Vec<(SourceType, i64)> {
     let lower = query.to_ascii_lowercase();
     let b = lower.as_bytes();
     let in_word = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'-';
+    // Words that make `<keyword> <n> <word>` ordinary prose, not a row id.
+    const UNIT_WORDS: [&str; 16] = [
+        "second", "seconds", "minute", "minutes", "hour", "hours", "day", "days", "week", "weeks",
+        "month", "months", "year", "years", "row", "rows",
+    ];
     let mut found: Vec<(usize, SourceType, i64)> = Vec::new();
     for (word, st) in [
         ("decision", SourceType::Decision),
@@ -1068,7 +1096,12 @@ fn named_rows(query: &str) -> Vec<(SourceType, i64)> {
                 .get(i)
                 .is_some_and(|&c| c.is_ascii_alphanumeric() || c == b'_')
                 || (b.get(i) == Some(&b'.') && b.get(i + 1).is_some_and(u8::is_ascii_digit));
-            if digits == sep || i == digits || glued {
+            let next_word = lower[i..]
+                .trim_start()
+                .split(|c: char| !c.is_ascii_alphabetic())
+                .next()
+                .unwrap_or("");
+            if digits == sep || i == digits || glued || UNIT_WORDS.contains(&next_word) {
                 continue;
             }
             if let Ok(id) = lower[digits..i].parse::<i64>() {
@@ -1089,15 +1122,23 @@ fn named_rows(query: &str) -> Vec<(SourceType, i64)> {
 /// `max_results`. A named row is skipped when its source type is outside the
 /// search scope, it does not exist, or the stale / accepted-only filters
 /// exclude it; global-store rows are never touched (their ids are their own).
-/// A row the retrievers already found keeps its blended hit; any other is
-/// loaded and counted in `candidate_count`. The filter counters in `explain`
-/// stay as the ranked gather left them.
+/// A row the retrievers already found keeps its blended hit and the counts the
+/// ranked gather gave it. Any other row is loaded and counted as the gather
+/// would have counted it had a retriever found it: in `candidate_count`, the
+/// stale and superseded counters, or the stale / accepted-only exclusions.
+/// A row a retriever found but a filter excluded (`excluded`) is already
+/// counted by the gather and is skipped without counting it again.
+/// Named rows past `max_results` are added to `explain.result_limit_cut`.
+#[allow(clippy::too_many_arguments)]
 fn take_named_rows(
     conn: &Connection,
     opts: &ResolvedOptions,
     scoring: &RetrievalScoringConfig,
     per_phrasing: &mut [Vec<ScoredHit>],
+    excluded: &HashSet<(SourceType, i64)>,
     candidate_count: &mut usize,
+    demoted_stale_count: &mut usize,
+    explain: &mut RecallExplain,
 ) -> Result<Vec<ScoredHit>> {
     let mut named = Vec::new();
     for (st, id) in named_rows(&opts.query) {
@@ -1116,17 +1157,25 @@ fn take_named_rows(
         }
         let hit = match found {
             Some(hit) => hit,
+            None if excluded.contains(&(st, id)) => continue,
             None => {
                 let mut one = HashMap::from([((st, id), CandidateRow::empty(st, id))]);
                 hydrate_sources(conn, &mut one, opts.fact_stale_after_days)?;
                 let row = one.remove(&(st, id)).expect("inserted above");
-                if !row.has_source_row()
-                    || (!opts.include_stale && row.is_stale)
-                    || (opts.accepted_only && !is_accepted_source(&row.source))
-                {
+                if !row.has_source_row() {
+                    continue;
+                }
+                if !opts.include_stale && row.is_stale {
+                    explain.stale_excluded += 1;
+                    continue;
+                }
+                if opts.accepted_only && !is_accepted_source(&row.source) {
+                    explain.accepted_only_excluded += 1;
                     continue;
                 }
                 *candidate_count += 1;
+                *demoted_stale_count += usize::from(row.is_stale);
+                explain.superseded_demoted += usize::from(row.superseded_by.is_some());
                 let mut hit = score(&[row], scoring).remove(0);
                 hit.scope = SCOPE_REPO.to_string();
                 hit
@@ -1134,6 +1183,7 @@ fn take_named_rows(
         };
         named.push(hit);
     }
+    explain.result_limit_cut += named.len().saturating_sub(opts.max_results);
     named.truncate(opts.max_results);
     Ok(named)
 }
@@ -1166,7 +1216,8 @@ fn finalize(
     // and FTS rankings, reorders them by the cross-encoder, drops anything
     // below `min_rerank_score` (D71 — the nonsense-rejection floor that
     // replaced `min_vector_score`), then truncates to `max_results`. fts-only
-    // callers and an empty candidate set bypass entirely.
+    // callers, `use_reranker = false` and a call with neither pooled nor named
+    // rows bypass entirely.
     let reranked = opts.mode == RetrievalMode::Hybrid
         && opts.use_reranker
         && !(scored.is_empty() && named.is_empty());
@@ -1259,7 +1310,9 @@ fn finalize(
         // floor-clearers leave open, so a flagged row is never cut by the
         // limit and `result_limit_cut` keeps counting floor-clearers only.
         fallback.truncate(slots.saturating_sub(reshuffled.len()));
+        // A returned named row means the call is not empty-handed.
         if reshuffled.is_empty()
+            && named.is_empty()
             && let Some(highest_score) = highest_dropped
         {
             warnings.push(rerank_floor_warning(
@@ -1284,7 +1337,7 @@ fn finalize(
         scored.retain(|h| h.source_type != SourceType::DocChunk);
         explain.docs_dropped_no_rerank = before - scored.len();
     }
-    explain.result_limit_cut = scored.len().saturating_sub(slots);
+    explain.result_limit_cut += scored.len().saturating_sub(slots);
     scored.truncate(slots);
     named.extend(scored);
     let scored = named;
@@ -2186,6 +2239,12 @@ fn score(rows: &[CandidateRow], scoring: &RetrievalScoringConfig) -> Vec<ScoredH
             let age_decay = age_decay_multiplier(c.age_days, scoring.age_half_life_days);
             let relevance = scoring.fts_weight * fts_score + scoring.vector_weight * vector_score;
             let score = relevance * age_decay - stale_penalty - superseded_penalty;
+            // Pool rankings (`select_rerank_pool`) adjust one unweighted
+            // component, which carries only its `fts_weight` / `vector_weight`
+            // (0.5 by default) of the blended relevance. A penalty therefore
+            // moves a row about half as far in a pool ranking as in `score`.
+            // Intended: the pool is a wide net the re-ranker then judges, so
+            // the penalties only need to order rows within a ranking.
             let adjusted =
                 |component: f64| component * age_decay - stale_penalty - superseded_penalty;
             ScoredHit {
@@ -4639,12 +4698,19 @@ explainscopeprobe second.
             age_half_life_days: 30,
             ..RetrievalScoringConfig::default()
         };
-        // The penalized row (id 1) has the higher raw cosine, so only its
-        // adjustment can put the current row (id 2) ahead in the rankings.
-        let row = |id: i64, vector: f64| {
+        // The penalized row (id 1) has the stronger raw signal, so only its
+        // adjustment can put the current row (id 2) ahead in the ranking.
+        // Rows come from one retriever at a time so the other ranking cannot
+        // mask a missing adjustment; pool 1 takes the top of the ranking
+        // that exists. The FTS case adds a weak third row so the min-max
+        // normalization leaves the first two close together.
+        let row = |id: i64, vector: bool, signal: f64| {
             let mut c = CandidateRow::empty(SourceType::Fact, id);
-            c.fts_raw = Some(-1.0);
-            c.vector_score = Some(vector);
+            if vector {
+                c.vector_score = Some(signal);
+            } else {
+                c.fts_raw = Some(-signal); // BM25: lower raw is better
+            }
             c.age_days = Some(0.0);
             c
         };
@@ -4654,17 +4720,23 @@ explainscopeprobe second.
             ("superseded", |c| c.superseded_by = Some(9)),
             ("aged", |c| c.age_days = Some(400.0)),
         ];
-        for (label, adjust) in cases {
-            let mut penalized = row(1, 0.85);
-            adjust(&mut penalized);
-            let mut hits = score(&[penalized, row(2, 0.8)], &scoring);
-            hits.sort_by(cmp_merged);
-            let picked = select_rerank_pool(&pool_opts(1, 5, false), hits);
-            assert_eq!(
-                ids(&picked),
-                vec![2],
-                "the {label} row must not take the slot ahead of the current row"
-            );
+        for (ranking, vector) in [("vector", true), ("FTS", false)] {
+            for (label, adjust) in cases {
+                let mut penalized = row(1, vector, if vector { 0.85 } else { 1.1 });
+                adjust(&mut penalized);
+                let mut rows = vec![penalized, row(2, vector, if vector { 0.8 } else { 1.0 })];
+                if !vector {
+                    rows.push(row(3, vector, 0.5));
+                }
+                let mut hits = score(&rows, &scoring);
+                hits.sort_by(cmp_merged);
+                let picked = select_rerank_pool(&pool_opts(1, 5, false), hits);
+                assert_eq!(
+                    ids(&picked),
+                    vec![2],
+                    "{ranking} ranking: the {label} row must not take the slot ahead of the current row"
+                );
+            }
         }
     }
 
@@ -5589,9 +5661,20 @@ explainscopeprobe second.
             "decision # 5",
             "decision",
             "decision 99999999999999999999",
+            "in fact 3 rows were dropped",
+            "the decision 2 days ago",
+            "task 4 weeks",
         ] {
             assert!(named_rows(q).is_empty(), "{q:?} must not name a row");
         }
+        assert_eq!(
+            named_rows("decision 186, task #203, fact 33"),
+            vec![(Decision, 186), (Task, 203), (Fact, 33)]
+        );
+        assert_eq!(
+            named_rows("What did decision 186 and decision 189 decide"),
+            vec![(Decision, 186), (Decision, 189)]
+        );
     }
 
     fn result_ids(response: &RecallResponse) -> Vec<(String, i64)> {
@@ -5746,6 +5829,202 @@ explainscopeprobe second.
         }
     }
 
+    // Issue #348: variants must not displace the named rows in fts mode, nor
+    // in hybrid mode without the re-ranker.
+    #[test]
+    fn named_row_leads_with_variants_in_fts_and_in_hybrid_without_the_reranker() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        edit_config(temp.path(), |cfg| {
+            cfg.retrieval.mode = RetrievalMode::Hybrid
+        });
+        seed(temp.path());
+
+        for mode in [RetrievalMode::Fts, RetrievalMode::Hybrid] {
+            let mut opts = explain_opts("zxqv decision 1", mode, 5, vec![]);
+            opts.variants = vec!["cargo build command".to_string()];
+            opts.use_reranker = Some(false);
+            let response = recall(temp.path(), opts).expect("recall");
+
+            assert!(!response.explain.reranker_ran);
+            let got = result_ids(&response);
+            assert_eq!(got[0], ("decision".to_string(), 1), "{mode:?}: {got:?}");
+            assert!(got.len() > 1, "{mode:?}: the variant still finds rows");
+            assert_eq!(got.len(), got.iter().collect::<HashSet<_>>().len());
+        }
+    }
+
+    // Issue #348: a row only the routing loaded is counted like a found one.
+    #[test]
+    fn named_row_loaded_only_by_the_routing_is_counted_like_a_found_row() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let (stale_id, _) = fact::add(
+            temp.path(),
+            "alpha",
+            "unrelated aging text",
+            "user",
+            "cli:user",
+        )
+        .expect("stale fact");
+        age_fact(temp.path(), stale_id, 200);
+        let (old_id, _) = fact::add(
+            temp.path(),
+            "bravo",
+            "unrelated old text",
+            "user",
+            "cli:user",
+        )
+        .expect("old fact");
+        let (new_id, _) = fact::add(
+            temp.path(),
+            "charlie",
+            "unrelated new text",
+            "user",
+            "cli:user",
+        )
+        .expect("new fact");
+        fact::supersede(
+            temp.path(),
+            &old_id.to_string(),
+            &new_id.to_string(),
+            "cli:user",
+        )
+        .expect("supersede");
+        let (agent_id, _) = fact::add(
+            temp.path(),
+            "delta",
+            "unrelated agent text",
+            "agent:codex",
+            "cli:user",
+        )
+        .expect("agent fact");
+        let ask = |id: i64| explain_opts(&format!("zxqv fact {id}"), RetrievalMode::Fts, 5, vec![]);
+
+        // Stale: kept and demoted, so counted in the counter and the warning.
+        let stale = recall(temp.path(), ask(stale_id)).expect("recall");
+        assert_eq!(result_ids(&stale), vec![("fact".to_string(), stale_id)]);
+        assert!(stale.results[0].stale);
+        assert_eq!(stale.explain.stale_demoted, 1);
+        let warning = stale
+            .warnings
+            .iter()
+            .find(|w| w.kind == "stale_facts_demoted")
+            .expect("stale warning");
+        assert_eq!(warning.stale_count, 1);
+        assert_eq!(warning.total_count, stale.candidate_count);
+
+        // Stale with include_stale off: excluded and counted as such.
+        let excluded = recall(
+            temp.path(),
+            RecallOptions {
+                include_stale: Some(false),
+                ..ask(stale_id)
+            },
+        )
+        .expect("recall");
+        assert!(excluded.results.is_empty());
+        assert_eq!(excluded.explain.stale_excluded, 1);
+
+        // Superseded: kept with its link, counted as demoted.
+        let superseded = recall(temp.path(), ask(old_id)).expect("recall");
+        assert_eq!(superseded.results[0].superseded_by, Some(new_id));
+        assert_eq!(superseded.explain.superseded_demoted, 1);
+
+        // Accepted-only: the agent-sourced row is excluded and counted.
+        let accepted = recall(
+            temp.path(),
+            RecallOptions {
+                accepted_only: Some(true),
+                ..ask(agent_id)
+            },
+        )
+        .expect("recall");
+        assert!(accepted.results.is_empty());
+        assert_eq!(accepted.explain.accepted_only_excluded, 1);
+    }
+
+    // Issue #348: a named row a retriever found and a filter excluded is
+    // counted once, not again by the routing.
+    #[test]
+    fn named_row_found_then_excluded_is_counted_once() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let (stale_id, _) = fact::add(
+            temp.path(),
+            "stale-zebra",
+            "the zebra crossing rule",
+            "user",
+            "cli:user",
+        )
+        .expect("stale fact");
+        age_fact(temp.path(), stale_id, 200);
+        let (agent_id, _) = fact::add(
+            temp.path(),
+            "agent-zebra",
+            "the zebra crossing rule",
+            "agent:codex",
+            "cli:user",
+        )
+        .expect("agent fact");
+
+        // Without the number the retriever finds the row; with it, the
+        // routing sees the same row. The exclusion counter must agree.
+        for (with_number, plain) in [
+            (format!("zebra fact {stale_id}"), "zebra"),
+            (format!("zebra fact {agent_id}"), "zebra"),
+        ] {
+            let stale_case = with_number.ends_with(&stale_id.to_string());
+            let opts = |query: &str| RecallOptions {
+                include_stale: stale_case.then_some(false),
+                accepted_only: (!stale_case).then_some(true),
+                ..explain_opts(query, RetrievalMode::Fts, 5, vec![SourceType::Fact])
+            };
+            let counter = |r: &RecallResponse| {
+                if stale_case {
+                    r.explain.stale_excluded
+                } else {
+                    r.explain.accepted_only_excluded
+                }
+            };
+            let plain = recall(temp.path(), opts(plain)).expect("recall");
+            let named = recall(temp.path(), opts(&with_number)).expect("recall");
+            assert_eq!(counter(&plain), 1, "{with_number}");
+            assert_eq!(counter(&named), 1, "{with_number}");
+            let excluded_id = if stale_case { stale_id } else { agent_id };
+            assert!(
+                named.results.iter().all(|h| h.source_id != excluded_id),
+                "{with_number}"
+            );
+        }
+    }
+
+    // Issue #348: named rows past `max_results` are counted in the limit cut.
+    #[test]
+    fn named_rows_cut_by_max_results_are_counted_in_the_result_limit_cut() {
+        let temp = tempdir().expect("tempdir");
+        seed(temp.path());
+
+        let response = recall(
+            temp.path(),
+            explain_opts(
+                "task 1 decision 1 fact 1 cargo",
+                RetrievalMode::Fts,
+                1,
+                vec![],
+            ),
+        )
+        .expect("recall");
+        assert_eq!(result_ids(&response), vec![("task".to_string(), 1)]);
+        // Every candidate but the returned row was cut: two named rows plus
+        // the ranked remainder.
+        assert!(response.explain.result_limit_cut >= 2);
+        assert_eq!(
+            response.explain.result_limit_cut,
+            response.candidate_count - response.returned_count
+        );
+    }
+
     #[test]
     fn named_row_carries_rerank_score_in_hybrid_with_and_without_variants() {
         let temp = tempdir().expect("tempdir");
@@ -5777,6 +6056,14 @@ explainscopeprobe second.
                 "{got:?}"
             );
             assert!(response.results[1..].iter().all(|h| h.low_confidence));
+            assert!(
+                response
+                    .warnings
+                    .iter()
+                    .all(|w| w.kind != "rerank_floor_dropped_all"),
+                "a returned named row means the floor did not empty the call: {:?}",
+                response.warnings
+            );
         }
 
         // Re-ranker off: still routed, no rerank score.
@@ -5807,14 +6094,21 @@ explainscopeprobe second.
             "x and and",
             "é and é where",
             "tests and what",
+            "build the index, and what",
+            "foo and why?",
+            "what and what is x",
             "what and",
             "Q and A about docs",
             "rock-and-roll who",
         ] {
             let parts = split_query(q);
-            assert_eq!(parts.is_empty(), q != "tests and what", "{q:?}: {parts:?}");
+            assert!(parts.is_empty(), "{q:?}: {parts:?}");
         }
-        assert_eq!(split_query("x and and what"), ["x and", "what"]);
+        assert_eq!(split_query("x and and what is it"), ["x and", "what is it"]);
+        assert_eq!(
+            split_query("a and what and why is b"),
+            ["a", "what and why is b"]
+        );
         for word in QUESTION_WORDS {
             assert_eq!(split_query(&format!("a and {word} b")).len(), 2, "{word}");
         }
@@ -5835,6 +6129,63 @@ explainscopeprobe second.
         assert_eq!(parts(RetrievalMode::Hybrid, Some(true)).len(), 2);
         assert!(parts(RetrievalMode::Hybrid, Some(false)).is_empty());
         assert!(parts(RetrievalMode::Fts, Some(true)).is_empty());
+    }
+
+    // Issue #348: with a pool of 2, the whole query's own pool is taken by
+    // two decoys that echo its wording; each answer reaches the re-ranker only
+    // through its own part.
+    #[test]
+    fn row_pooled_only_through_a_part_is_returned() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        edit_config(temp.path(), |cfg| {
+            cfg.retrieval.mode = RetrievalMode::Hybrid;
+            cfg.retrieval.rerank_candidate_pool = 2;
+        });
+        for (key, value) in [
+            (
+                "latency-metric",
+                "The latency metric measures end-to-end request time in milliseconds",
+            ),
+            (
+                "timeout-setting",
+                "The gadget timeout is set in the GADGET_TIMEOUT environment variable",
+            ),
+            (
+                "decoy-one",
+                "Questions about what the latency metric measures and where the gadget timeout is set",
+            ),
+            (
+                "decoy-two",
+                "Asking what does the latency metric measure and where is the gadget timeout set",
+            ),
+        ] {
+            fact::add(temp.path(), key, value, "user", "cli:user").expect("fact");
+        }
+        let run = |query: &str| {
+            recall(
+                temp.path(),
+                RecallOptions {
+                    min_rerank_score: Some(-1000.0),
+                    ..explain_opts(query, RetrievalMode::Hybrid, 2, vec![SourceType::Fact])
+                },
+            )
+            .expect("recall")
+        };
+        let titles = |r: &RecallResponse| -> Vec<String> {
+            r.results.iter().map(|h| h.title.clone()).collect()
+        };
+        // Without a split point the whole query's pool holds only the decoys.
+        assert_eq!(
+            titles(&run(
+                "what does the latency metric measure; where is the gadget timeout set?"
+            )),
+            ["decoy-two", "decoy-one"]
+        );
+        let split =
+            run("what does the latency metric measure, and where is the gadget timeout set?");
+        assert_eq!(titles(&split), ["latency-metric", "timeout-setting"]);
+        assert!(split.results.iter().all(|h| !h.low_confidence));
     }
 
     #[test]

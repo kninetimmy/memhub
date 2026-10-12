@@ -237,9 +237,10 @@ Hybrid recall (the default) combines FTS5 BM25 and BGE-small embeddings,
 then by default runs a bundled cross-encoder re-ranker
 (ms-marco-MiniLM-L-6-v2) over `[retrieval] rerank_candidate_pool`
 candidates, chosen as described under "Re-rank pool" below, before
-truncating to `max_results`. The re-ranker adds
-~275 ms per recall at pool=20 in exchange for ~+17 percentage points of
-Recall@1 on memhub's own golden set (decision 68).
+truncating to `max_results`. A recall takes about 240 ms with the re-ranker
+(about 380 ms with variants; medians of the live-set A/B at pool 20), in
+exchange for ~+17 percentage points of Recall@1 on memhub's own golden set
+(decision 68).
 
 **Re-rank pool (issue #337).** The rows sent to the re-ranker are not the
 top `rerank_candidate_pool` by blended score. Blended score min-max
@@ -250,19 +251,23 @@ and FTS second, each skipping rows already taken, until it holds
 `rerank_candidate_pool` distinct rows or both rankings run out; when one
 ranking runs out the other fills the remaining slots. Every row in the top
 half (rounded down) of either ranking therefore reaches the re-ranker
-whatever its blended score. Each ranking applies the same stale, superseded
-and age-decay adjustments as the blended score, so a stale or superseded row
-never takes a slot ahead of an otherwise-equal current row. In a default
-recall that includes doc chunks (`include_docs_in_default`, no
-`--source-type`), `[retrieval] rerank_doc_cap` (default 3) limits how many doc
-chunks may enter the pool; doc chunks over the cap are not eligible, and a
-recall with explicit source types, including `--source-type doc`, is not
-capped. Each pool passage is scored on its own, so a row's
-`rerank_score` does not depend on which other rows are in the pool (the
+whatever its blended score. Each ranking applies the same stale, superseded and
+age-decay adjustments as the blended score, so a stale or superseded row never
+takes a slot ahead of an otherwise-equal current row. The penalties come off
+one unweighted retriever component, which carries only its weight (0.5 by
+default) of the blended relevance, so in a pool ranking the stale and
+superseded penalties count for about half their strength in the blended score.
+This is intended: the pool is a wide net the re-ranker then judges, and the
+penalty arithmetic is unchanged. In a default recall that includes doc chunks
+(`include_docs_in_default`, no `--source-type`), `[retrieval] rerank_doc_cap`
+(default 3) limits how many doc chunks may enter the pool; doc chunks over the
+cap are not eligible, and a recall with explicit source types, including
+`--source-type doc`, is not capped. Each pool passage is scored on its own, so
+a row's `rerank_score` does not depend on which other rows are in the pool (the
 bundled model is int8 dynamic-quantized, so in a shared batch a score shifts by
 up to about 0.25 logits with its neighbours) and a large pool does not need
-gigabytes of memory (one 50-row batch used 4.1 GB). The code locator (`memhub locate`) chooses its own re-rank
-candidates as before.
+gigabytes of memory (one 50-row batch used 4.1 GB). The code locator (`memhub
+locate`) chooses its own re-rank candidates as before.
 
 Toggle per-call with `memhub recall <query> --no-rerank`, or globally
 with `[retrieval] use_reranker = false` in `.memhub/config.toml`. The
@@ -271,16 +276,17 @@ flag) — turning it off in config skips the inference cost but doesn't
 strip the model from disk. FTS-only mode bypasses the re-ranker
 entirely.
 
-Candidates whose cross-encoder logit falls below
-`[retrieval.scoring] min_rerank_score` (default 2.0) are dropped
-after re-ranking, primarily to keep gibberish queries from surfacing
-as answers (see the low-confidence fill below for what a recall
-returns in place of the dropped candidates). This replaces the legacy `min_vector_score` cosine floor
-(decisions 70, 71) — the cosine band of nonsense overlapped borderline
-semantic queries, so a vector-path floor had no safe sweet spot.
-The rerank-score band is similarly noisy on memhub's own corpus, so
-2.0 is a parity calibration rather than an improvement; override with
-`memhub recall --min-rerank-score <F>` or `memhub eval retrieval
+Candidates whose cross-encoder logit falls below `[retrieval.scoring]
+min_rerank_score` (default 2.0) are dropped after re-ranking, primarily to keep
+gibberish queries from surfacing as answers (see the low-confidence fill below
+for what a recall returns in place of the dropped candidates). A candidate's
+logit is its score against the query or, for a two-question query, its best
+part (see "Two-question queries" below). This replaces the legacy
+`min_vector_score` cosine floor (decisions 70, 71) — the cosine band of
+nonsense overlapped borderline semantic queries, so a vector-path floor had no
+safe sweet spot. The rerank-score band is similarly noisy on memhub's own
+corpus, so 2.0 is a parity calibration rather than an improvement; override
+with `memhub recall --min-rerank-score <F>` or `memhub eval retrieval
 --min-rerank-score <F>` (a negative value disables the floor).
 
 **Partial-token FTS (issue #225).** The recall FTS path first requires every
@@ -394,10 +400,14 @@ machine-global store are never routed (their ids are separate), and nothing
 else is read as an id: plurals (`decisions 12`), shorthand (`D17`, `T164`,
 which spec documents use for their own numbering), a number after any other
 word (`issue 290`, `PR #328`, `run 2`), a number glued to letters or a decimal
-point (`task 5b`, `fact 3.5`) and a number that matches no row do nothing. The
-`--explain` counters are those of the ranked gather: named rows are not counted
-in the stale or accepted-only exclusions, and a row only the routing found
-counts in `candidate_count`.
+point (`task 5b`, `fact 3.5`), a number followed by a unit or count word such
+as `days` or `rows` (`in fact 3 rows were dropped`, `the decision 2 days ago`)
+and a number that matches no row do nothing. A row only the routing loaded is
+counted as if a retriever had found it: in `candidate_count`, in the stale and
+superseded counters and the stale warning, and in the stale or accepted-only
+exclusions; named rows cut by `max_results` count in the `--explain`
+result-limit cut. A returned named row also keeps the
+`rerank_floor_dropped_all` warning off the response.
 
 **Query variants (issue #319).** The calling agent can send extra phrasings of
 one question so rows the main wording misses can still enter the candidate
@@ -407,43 +417,43 @@ plain call came back empty or thin, or the answer likely uses different words
 than the question; useful phrasings are a keyword form of the question and a
 sentence worded the way the answer would be. At most 4 variants per call, none
 blank: a blank variant, or a fifth one, is rejected with an error saying why
-(CLI error exit; MCP invalid-params). A call without variants takes the
-single-query path, unchanged by the variants feature.
+(CLI error exit; MCP invalid-params). A call without variants gathers only the
+main query (and, for a two-question query, its parts: see below), unchanged by
+the variants feature.
 
 Variants widen the candidate pool only. Each phrasing is embedded (the main
 query and the variants in one batch) and gathered like the main query, in the
 repo store and, when the repo opted in, the machine-global store. Each
 phrasing's own `rerank_candidate_pool` rows (filled from its vector and FTS
-rankings in turn, as under "Re-rank pool" above) are unioned,
-deduplicated by row (scope, source type, id), and one re-rank pass then runs
-over that union. A row found by several phrasings keeps the hit from its
-best-scoring phrasing, so its blended `score`, `fts_score` and `vector_score`
-come from that phrasing, while `rerank_score` is never scored against a
-variant. The re-ranker and the `min_rerank_score` / `doc_min_rerank_score`
-floors score every candidate against the **main query** (and, for a
-two-question query, each of its parts, taking the highest: see below), never a
-variant, so each returned hit's `rerank_score` is its score against the main
-query (or its best part) and the floor keeps its meaning (a gibberish main query clears no floor
-whatever the variants say, so its rows come back only flagged
-`low_confidence`). The main query's own pool is always a subset of the
-union, so a variant can never push out a row the main query would have
-re-ranked. Cost: the union has up to (1 + variants) x `rerank_candidate_pool`
-rows, so re-rank time grows with the variants sent (each phrasing's pool costs
-roughly what a plain recall's re-rank costs, about 275 ms at pool 20), plus,
-per variant, one more embedding and, in each searched store (the repo store
-and, when the repo opted in, the machine-global store), one more set of
-full-text lookups (one per searched source type, and a second set with the
+rankings in turn, as under "Re-rank pool" above) are unioned, deduplicated by
+row (scope, source type, id), and one re-rank pass then runs over that union. A
+row found by several phrasings keeps the hit from its best-scoring phrasing, so
+its blended `score`, `fts_score` and `vector_score` come from that phrasing,
+while `rerank_score` is never scored against a variant. The re-ranker and the
+`min_rerank_score` / `doc_min_rerank_score` floors score every candidate
+against the **main query** (and, for a two-question query, each of its parts,
+taking the highest: see below), never a variant, so each returned hit's
+`rerank_score` is its score against the main query (or its best part) and the
+floor keeps its meaning (a gibberish main query clears no floor whatever the
+variants say, so its rows come back only flagged `low_confidence`). The main
+query's own pool is always a subset of the union, so a variant can never push
+out a row the main query would have re-ranked. Cost: the union has up to (1 +
+variants + parts) x `rerank_candidate_pool` rows, so re-rank time grows with
+the variants sent and the parts found (a recall takes about 240 ms with no
+variants and about 380 ms with them, medians of the live-set A/B at pool 20),
+plus, per variant or part, one more embedding and, in each searched store (the
+repo store and, when the repo opted in, the machine-global store), one more set
+of full-text lookups (one per searched source type, and a second set with the
 partial-token retry when no row holds every token) and one more scan of the
-stored vectors. When the
-re-ranker does not run (FTS-only mode, `--no-rerank`, `use_reranker = false`)
-no pool is cut and variant-only rows have no main-query score, so the merged
-set is ordered by each row's best blended score across phrasings; the filters
-and the doc-chunk rule still apply as they do without variants. With `--explain`
-each distinct row is counted once however many phrasings found it, and
-`rerank_pool_cut` counts the rows outside every phrasing's pool (doc chunks over
-the cap included). With `[global]`
-disabled only the repo store is searched, as before M9; variants add rows
-from that store alone.
+stored vectors. When the re-ranker does not run (FTS-only mode, `--no-rerank`,
+`use_reranker = false`) no pool is cut and variant-only rows have no main-query
+score, so the merged set is ordered by each row's best blended score across
+phrasings; the filters and the doc-chunk rule still apply as they do without
+variants. With `--explain` each distinct row is counted once however many
+phrasings found it, and `rerank_pool_cut` counts the rows outside every
+phrasing's pool (doc chunks over the cap included). With `[global]` disabled
+only the repo store is searched, as before M9; variants add rows from that
+store alone.
 
 **Two-question queries (issue #341).** A main query that asks two things
 (`what does X measure, and where is Y set?`) is split when the re-ranker will
@@ -451,20 +461,22 @@ run (hybrid mode, re-ranker on). A split point is ` and `, with or without a
 comma before it, immediately followed by one of `what`, `which`, `how`, `why`,
 `where`, `when`, `who`, `do`, `does`, `did`, `is`, `are`, `can` or `should`
 (any letter case, a whole word); the query is cut at each such point into
-parts, each trimmed and without its trailing comma, the question word kept
-with its part. `build and lint` and `and whatever` (not a whole question word) are not split. Each part
-is gathered like a caller variant (embedded in the same batch, its own
+parts, each trimmed and without its trailing comma, the question word kept with
+its part. `build and lint` and `and whatever` (not a whole question word) are
+not split, and neither is a query where the question word would be a part on
+its own (`build the index, and what`, `foo and why?`). Each part is gathered
+like a caller variant (embedded in the same batch, its own
 `rerank_candidate_pool` rows joined into the union), so a row only one half
 matches can reach the re-ranker; parts do not count toward the 4-variant limit
 and are not crossed with variants. The re-ranker then scores every pooled row
-(a row named by number included) against the whole query and against each
-part and keeps the highest, and that score is the row's `rerank_score`, used
-by the floors, the `low_confidence` flag and the order. A caller variant is
-still never scored against. Cost: one more re-ranker pass over the union per
-part, plus per part the extra embedding and gather a variant costs. A query
-with no split point, and any recall in FTS-only mode or with the re-ranker
-off, runs exactly as before. The query log and `memhub eval` record the query
-as given; parts are not logged.
+(a row named by number included) against the whole query and against each part
+and keeps the highest, and that score is the row's `rerank_score`, used by the
+floors, the `low_confidence` flag and the order. A caller variant is still
+never scored against. Cost: one more re-ranker pass over the union per part,
+plus per part the extra embedding and gather a variant costs. A query with no
+split point, and any recall in FTS-only mode or with the re-ranker off, runs
+exactly as before. The query log and `memhub eval` record the query as given;
+parts are not logged.
 
 **Architecture sections (issue #232).** The latest architecture narrative
 (`memhub arch set`) is split by markdown heading, with the same chunker
