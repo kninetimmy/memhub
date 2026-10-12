@@ -266,8 +266,8 @@ cap are not eligible, and a recall with explicit source types, including
 a row's `rerank_score` does not depend on which other rows are in the pool (the
 bundled model is int8 dynamic-quantized, so in a shared batch a score shifts by
 up to about 0.25 logits with its neighbours) and a large pool does not need
-gigabytes of memory (one 50-row batch used 4.1 GB). The code locator (`memhub
-locate`) chooses its own re-rank candidates as before.
+gigabytes of memory (one 50-row batch used 4.1 GB). The code locator
+(`memhub locate`) chooses its own re-rank candidates as before.
 
 Toggle per-call with `memhub recall <query> --no-rerank`, or globally
 with `[retrieval] use_reranker = false` in `.memhub/config.toml`. The
