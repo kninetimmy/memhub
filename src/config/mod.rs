@@ -350,8 +350,8 @@ pub struct RetrievalConfig {
     #[serde(default = "default_fact_stale_after_days")]
     pub fact_stale_after_days: i64,
     /// Apply the bundled cross-encoder re-ranker (ms-marco-MiniLM-L-6-v2)
-    /// to hybrid recall results. Brings a recall to ~240 ms at pool=20 and
-    /// lifts Recall@1 by ~17pp on memhub's own golden set (decision 68).
+    /// to hybrid recall results. Decision 68 measured ~240 ms per recall at
+    /// pool=20 and a ~17pp Recall@1 lift on memhub's own golden set.
     /// Ignored in fts mode. On by default; set to `false` to skip.
     #[serde(default = "default_use_reranker")]
     pub use_reranker: bool,
