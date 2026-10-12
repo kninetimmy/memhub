@@ -371,9 +371,23 @@ pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
     let mut explain = repo.explain;
     let repo_excluded = repo.excluded;
 
-    if ctx.config.global.enabled
-        && let Some(gctx) = db::open_global_if_exists()?
-    {
+    // Never migrates the shared global store; one at another schema than
+    // this binary's is skipped with a `global_store_skipped` warning.
+    let gctx = if ctx.config.global.enabled {
+        db::open_global_unmigrated()?
+    } else {
+        None
+    };
+    let skipped = gctx.as_ref().and_then(db::global_schema_mismatch);
+    if let Some(reason) = skipped {
+        warnings.push(RecallWarning {
+            kind: "global_store_skipped".to_string(),
+            stale_count: 0,
+            total_count: 0,
+            reason,
+            fix: "run `memhub upgrade`".to_string(),
+        });
+    } else if let Some(gctx) = gctx {
         let g = gather_scored(&gctx.conn, &resolved, scoring, &phrasings)?;
         for (merged, mut list) in per_phrasing.iter_mut().zip(g.per_phrasing) {
             for h in &mut list {
