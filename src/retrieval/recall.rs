@@ -1060,15 +1060,17 @@ fn merge_phrasings(opts: &ResolvedOptions, per_phrasing: Vec<Vec<ScoredHit>>) ->
 /// query names them. Plurals (`decisions 12`), shorthand (`D17`), any other
 /// word before the number, and a number glued to letters or a decimal point
 /// (`task 5b`, `fact 3.5`) do not match, nor does a number followed by a unit
-/// or count word (`in fact 3 rows`, `the decision 2 days ago`).
+/// or count word (`in fact 3 rows`, `the decision 2 days ago`), by `of them`
+/// (`task 3 of them`), or by a hyphen joining it to a word (`decision 2-day`,
+/// `task 3-week`).
 fn named_rows(query: &str) -> Vec<(SourceType, i64)> {
     let lower = query.to_ascii_lowercase();
     let b = lower.as_bytes();
     let in_word = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'-';
     // Words that make `<keyword> <n> <word>` ordinary prose, not a row id.
-    const UNIT_WORDS: [&str; 16] = [
+    const UNIT_WORDS: [&str; 18] = [
         "second", "seconds", "minute", "minutes", "hour", "hours", "day", "days", "week", "weeks",
-        "month", "months", "year", "years", "row", "rows",
+        "month", "months", "year", "years", "row", "rows", "times", "items",
     ];
     let mut found: Vec<(usize, SourceType, i64)> = Vec::new();
     for (word, st) in [
@@ -1096,12 +1098,30 @@ fn named_rows(query: &str) -> Vec<(SourceType, i64)> {
                 .get(i)
                 .is_some_and(|&c| c.is_ascii_alphanumeric() || c == b'_')
                 || (b.get(i) == Some(&b'.') && b.get(i + 1).is_some_and(u8::is_ascii_digit));
-            let next_word = lower[i..]
-                .trim_start()
+            // `2-day`: a hyphen directly joining the number to a word.
+            let hyphenated =
+                b.get(i) == Some(&b'-') && b.get(i + 1).is_some_and(u8::is_ascii_alphabetic);
+            let rest = lower[i..].trim_start();
+            let next_word = rest
                 .split(|c: char| !c.is_ascii_alphabetic())
                 .next()
                 .unwrap_or("");
-            if digits == sep || i == digits || glued || UNIT_WORDS.contains(&next_word) {
+            // "of them" is two words, so it cannot sit in `UNIT_WORDS`; a bare
+            // "of" must keep routing.
+            let of_them = next_word == "of" && {
+                let mut words = rest.split_whitespace();
+                words.next() == Some("of")
+                    && words.next().is_some_and(|w| {
+                        w.trim_end_matches(|c: char| !c.is_ascii_alphabetic()) == "them"
+                    })
+            };
+            if digits == sep
+                || i == digits
+                || glued
+                || hyphenated
+                || of_them
+                || UNIT_WORDS.contains(&next_word)
+            {
                 continue;
             }
             if let Ok(id) = lower[digits..i].parse::<i64>() {
@@ -1308,7 +1328,8 @@ fn finalize(
         // `rerank::rerank` yields best-first, so `fallback` is the reranked
         // non-doc floor-cut candidates, best first. Fill only the slots the
         // floor-clearers leave open, so a flagged row is never cut by the
-        // limit and `result_limit_cut` keeps counting floor-clearers only.
+        // limit. `result_limit_cut` counts the floor-clearers cut below and
+        // the named rows cut in `take_named_rows`, never a flagged row.
         fallback.truncate(slots.saturating_sub(reshuffled.len()));
         // A returned named row means the call is not empty-handed.
         if reshuffled.is_empty()
@@ -1328,9 +1349,9 @@ fn finalize(
     }
     // Safety invariant: a doc may enter the *default* bundle only when
     // the cross-encoder actually vetted it. If the re-rank pass did
-    // not run (fts mode, use_reranker = false, or an empty candidate
-    // set), drop default-included docs entirely rather than
-    // letting unscored chunks displace project memory. Explicit
+    // not run (fts mode, use_reranker = false, or no candidates at all:
+    // neither pooled nor named rows), drop default-included docs entirely
+    // rather than letting unscored chunks displace project memory. Explicit
     // `--source-type doc` (docs_via_default = false) is unaffected.
     if opts.docs_via_default && !reranked {
         let before = scored.len();
@@ -5664,9 +5685,20 @@ explainscopeprobe second.
             "in fact 3 rows were dropped",
             "the decision 2 days ago",
             "task 4 weeks",
+            "decision 3 times",
+            "fact 5 items",
+            "task 3 of them",
+            "Task 3 OF  them.",
+            "decision 2-day",
+            "task 3-week",
         ] {
             assert!(named_rows(q).is_empty(), "{q:?} must not name a row");
         }
+        // A bare "of", a trailing hyphen and a hyphen before a non-letter still route.
+        assert_eq!(
+            named_rows("task #5, fact 3? decision 12 of the plan, task 7- done, fact 8-9"),
+            vec![(Task, 5), (Fact, 3), (Decision, 12), (Task, 7), (Fact, 8)]
+        );
         assert_eq!(
             named_rows("decision 186, task #203, fact 33"),
             vec![(Decision, 186), (Task, 203), (Fact, 33)]
