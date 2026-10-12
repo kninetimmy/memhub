@@ -33,6 +33,28 @@ fn newer_than_compiled(conn: &Connection) -> Result<Option<String>> {
     Ok(newest.map(|(_, v)| v))
 }
 
+/// A DB's schema as its `schema_migrations` ledger records it, read
+/// without migrating: the newest version unknown to this build when there
+/// is one (the DB is newer), else the last compiled migration before the
+/// first one the ledger lacks (the newest compiled one at head). `None`
+/// when the first compiled migration is missing. Errors when the ledger
+/// cannot be read.
+pub fn ledger_schema(conn: &Connection) -> Result<Option<String>> {
+    if let Some(newer) = newer_than_compiled(conn)? {
+        return Ok(Some(newer));
+    }
+    let mut stmt =
+        conn.prepare("SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = ?1)")?;
+    let mut at = None;
+    for (version, _) in MIGRATIONS {
+        if !stmt.query_row([version], |r| r.get::<_, bool>(0))? {
+            break;
+        }
+        at = Some(*version);
+    }
+    Ok(at.map(str::to_string))
+}
+
 const MIGRATIONS: &[(&str, &str)] = &[
     (
         "0001_initial",

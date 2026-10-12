@@ -129,10 +129,11 @@ pub fn status(start: &Path) -> Result<GlobalStatus> {
     let path = db::global_db_path()?;
     let exists = db::global_store_exists()?;
 
-    // A read: reports whatever schema the store records, never migrates it.
+    // A read: reports the store's schema from its migration ledger (what
+    // recall's skip check uses), never migrates it.
     let (schema_version, fact_count, decision_count, doc_chunk_count) =
         if let Some(g) = db::open_global_unmigrated()? {
-            let schema_version = db::recorded_schema_version(&g.conn);
+            let schema_version = db::global_schema_version(&g.conn);
             let count = |table: &str| -> i64 {
                 g.conn
                     .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))

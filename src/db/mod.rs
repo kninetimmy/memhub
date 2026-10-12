@@ -392,23 +392,21 @@ pub fn open_global_unmigrated() -> Result<Option<ProjectContext>> {
     }))
 }
 
-/// The global store's recorded schema (`projects.schema_version`), or
-/// `None` when it cannot be read.
-pub fn recorded_schema_version(conn: &Connection) -> Option<String> {
-    conn.query_row(
-        "SELECT schema_version FROM projects WHERE id = 1",
-        [],
-        |row| row.get(0),
-    )
-    .ok()
+/// The global store's schema per its applied-migration ledger
+/// (`migrations::ledger_schema`), or `None` when that cannot be read.
+/// Not `projects.schema_version`: `upsert_project` only ratchets that
+/// upward, so once a newer build touched the store it stays ahead even
+/// after the ledger is back at head.
+pub fn global_schema_version(conn: &Connection) -> Option<String> {
+    migrations::ledger_schema(conn).ok().flatten()
 }
 
-/// `Some(message)` when the global store opened by
-/// `open_global_unmigrated` records a schema other than this binary's
+/// `Some(message)` when the ledger of the global store opened by
+/// `open_global_unmigrated` puts it at a schema other than this binary's
 /// newest migration (older, newer, or unreadable). The message names
 /// both schemas and the fix.
 pub fn global_schema_mismatch(ctx: &ProjectContext) -> Option<String> {
-    let recorded = recorded_schema_version(&ctx.conn);
+    let recorded = global_schema_version(&ctx.conn);
     let head = migrations::latest_version();
     if recorded.as_deref() == Some(head) {
         return None;

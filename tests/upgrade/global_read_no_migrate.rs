@@ -264,3 +264,40 @@ fn global_reads_leave_a_newer_store_untouched() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("written by a newer memhub"));
     assert_eq!(f.schema_state(), before);
 }
+
+/// `projects.schema_version` only ratchets upward, so a store a newer
+/// build once touched can record a newer schema while its migration
+/// ledger is back at head. Reads judge the ledger, so that store is at
+/// head and is still read.
+#[test]
+fn global_reads_judge_the_ledger_not_the_ratcheted_schema_version() {
+    let f = fixture();
+    let (head, _) = f.schema_state();
+    {
+        let conn = Connection::open(f.global_db()).expect("open global");
+        conn.execute(
+            "UPDATE projects SET schema_version = ?1 WHERE id = 1",
+            ["9999_from_a_newer_memhub"],
+        )
+        .expect("ratchet recorded schema ahead");
+    }
+    let before = f.schema_state();
+
+    let body = recall_json(&f);
+    assert!(
+        scopes(&body["results"]).contains(&"global".to_string()),
+        "{body}"
+    );
+    assert!(
+        !body["warnings"]
+            .as_array()
+            .expect("warnings")
+            .iter()
+            .any(|w| w["kind"] == "global_store_skipped"),
+        "{body}"
+    );
+    f.ok(&["doc", "ls", "--global"]);
+    let status = f.ok_json(&["global", "status", "--json"]);
+    assert_eq!(status["schema_version"], json!(head), "{status}");
+    assert_eq!(f.schema_state(), before, "a read touched the store");
+}
