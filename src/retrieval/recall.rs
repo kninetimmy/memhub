@@ -369,6 +369,7 @@ pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
     let mut doc_chunk_total = repo.doc_chunk_total;
     let mut demoted_stale_count = repo.demoted_stale_count;
     let mut explain = repo.explain;
+    let repo_excluded = repo.excluded;
 
     if ctx.config.global.enabled
         && let Some(gctx) = db::open_global_if_exists()?
@@ -401,6 +402,7 @@ pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
         &resolved,
         scoring,
         &mut per_phrasing,
+        &repo_excluded,
         &mut candidate_count,
         &mut demoted_stale_count,
         &mut explain,
@@ -678,6 +680,9 @@ struct GatherResult {
     /// the orchestrator. It feeds both `available_docs` and
     /// `RecallExplain::docs_not_searched`.
     doc_chunk_total: i64,
+    /// Rows a retriever found that the stale / accepted-only filters then
+    /// excluded; already counted in `explain`.
+    excluded: HashSet<(SourceType, i64)>,
     /// Only the per-store counters (`stale_excluded`,
     /// `accepted_only_excluded`, `superseded_demoted`) are filled here.
     explain: RecallExplain,
@@ -753,15 +758,18 @@ fn gather_scored(
     // (`stale_penalty`) with `stale: true`, rather than silently dropping
     // them. `include_stale = false` restores the old hard exclusion.
     let mut explain = RecallExplain::default();
+    let mut excluded = HashSet::new();
     let surviving: Vec<CandidateRow> = candidates
         .into_values()
         .filter(|c| c.has_source_row())
         .filter(|c| {
             if !opts.include_stale && c.is_stale {
                 explain.stale_excluded += 1;
+                excluded.insert((c.source_type, c.source_id));
                 false
             } else if opts.accepted_only && !is_accepted_source(&c.source) {
                 explain.accepted_only_excluded += 1;
+                excluded.insert((c.source_type, c.source_id));
                 false
             } else {
                 true
@@ -835,6 +843,7 @@ fn gather_scored(
         warnings,
         demoted_stale_count,
         doc_chunk_total,
+        excluded,
         explain,
     })
 }
@@ -1117,12 +1126,16 @@ fn named_rows(query: &str) -> Vec<(SourceType, i64)> {
 /// ranked gather gave it. Any other row is loaded and counted as the gather
 /// would have counted it had a retriever found it: in `candidate_count`, the
 /// stale and superseded counters, or the stale / accepted-only exclusions.
+/// A row a retriever found but a filter excluded (`excluded`) is already
+/// counted by the gather and is skipped without counting it again.
 /// Named rows past `max_results` are added to `explain.result_limit_cut`.
+#[allow(clippy::too_many_arguments)]
 fn take_named_rows(
     conn: &Connection,
     opts: &ResolvedOptions,
     scoring: &RetrievalScoringConfig,
     per_phrasing: &mut [Vec<ScoredHit>],
+    excluded: &HashSet<(SourceType, i64)>,
     candidate_count: &mut usize,
     demoted_stale_count: &mut usize,
     explain: &mut RecallExplain,
@@ -1144,6 +1157,7 @@ fn take_named_rows(
         }
         let hit = match found {
             Some(hit) => hit,
+            None if excluded.contains(&(st, id)) => continue,
             None => {
                 let mut one = HashMap::from([((st, id), CandidateRow::empty(st, id))]);
                 hydrate_sources(conn, &mut one, opts.fact_stale_after_days)?;
@@ -5928,6 +5942,61 @@ explainscopeprobe second.
         .expect("recall");
         assert!(accepted.results.is_empty());
         assert_eq!(accepted.explain.accepted_only_excluded, 1);
+    }
+
+    // Issue #348: a named row a retriever found and a filter excluded is
+    // counted once, not again by the routing.
+    #[test]
+    fn named_row_found_then_excluded_is_counted_once() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let (stale_id, _) = fact::add(
+            temp.path(),
+            "stale-zebra",
+            "the zebra crossing rule",
+            "user",
+            "cli:user",
+        )
+        .expect("stale fact");
+        age_fact(temp.path(), stale_id, 200);
+        let (agent_id, _) = fact::add(
+            temp.path(),
+            "agent-zebra",
+            "the zebra crossing rule",
+            "agent:codex",
+            "cli:user",
+        )
+        .expect("agent fact");
+
+        // Without the number the retriever finds the row; with it, the
+        // routing sees the same row. The exclusion counter must agree.
+        for (with_number, plain) in [
+            (format!("zebra fact {stale_id}"), "zebra"),
+            (format!("zebra fact {agent_id}"), "zebra"),
+        ] {
+            let stale_case = with_number.ends_with(&stale_id.to_string());
+            let opts = |query: &str| RecallOptions {
+                include_stale: stale_case.then_some(false),
+                accepted_only: (!stale_case).then_some(true),
+                ..explain_opts(query, RetrievalMode::Fts, 5, vec![SourceType::Fact])
+            };
+            let counter = |r: &RecallResponse| {
+                if stale_case {
+                    r.explain.stale_excluded
+                } else {
+                    r.explain.accepted_only_excluded
+                }
+            };
+            let plain = recall(temp.path(), opts(plain)).expect("recall");
+            let named = recall(temp.path(), opts(&with_number)).expect("recall");
+            assert_eq!(counter(&plain), 1, "{with_number}");
+            assert_eq!(counter(&named), 1, "{with_number}");
+            let excluded_id = if stale_case { stale_id } else { agent_id };
+            assert!(
+                named.results.iter().all(|h| h.source_id != excluded_id),
+                "{with_number}"
+            );
+        }
     }
 
     // Issue #348: named rows past `max_results` are counted in the limit cut.

@@ -858,8 +858,8 @@ fn named_fact_resolves_to_the_repo_row_with_a_global_store_present() {
     init::run(temp.path()).expect("init");
     fact::add(
         temp.path(),
-        "repo-owned-fact",
-        "zzqq repo fact body",
+        "repo-owned-note",
+        "zzqq repo note body",
         "user",
         "cli:user",
     )
@@ -871,7 +871,7 @@ fn named_fact_resolves_to_the_repo_row_with_a_global_store_present() {
         .current_dir(temp.path())
         .env("HOME", home.path())
         .env("USERPROFILE", home.path())
-        .args(["recall", "fact 1", "--mode", "fts", "--json"])
+        .args(["recall", "fact 1 GPG commit", "--mode", "fts", "--json"])
         .output()
         .expect("spawn memhub recall");
     assert!(
@@ -884,5 +884,18 @@ fn named_fact_resolves_to_the_repo_row_with_a_global_store_present() {
     assert_eq!(first["source_type"], "fact", "{json}");
     assert_eq!(first["source_id"], 1, "{json}");
     assert_eq!(first["scope"], "repo", "{json}");
-    assert_eq!(first["title"], "repo-owned-fact", "{json}");
+    assert_eq!(first["title"], "repo-owned-note", "{json}");
+    // The global row with the same id competes in the ranked pool (it
+    // matches "GPG commit"), so the repo-scope guard is what keeps it from
+    // being taken as the named row.
+    assert!(
+        json["results"]
+            .as_array()
+            .expect("results")
+            .iter()
+            .any(|r| {
+                r["scope"] == "global" && r["source_type"] == "fact" && r["source_id"] == 1
+            }),
+        "{json}"
+    );
 }
