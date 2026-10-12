@@ -1030,12 +1030,17 @@ machine, an experimental build included, can reach the same file.
 add --global`, `fact|decision promote --global`, `review accept` of a
 global-scoped proposal, `doc add|rm --global`) still migrate an older
 store to the binary's schema and still refuse a newer one with the
-"written by a newer memhub" error. When the store's recorded schema
-differs from the binary's newest migration (older, newer, or
-unreadable), `recall` skips it: it returns the repo's rows only, with
-a `global_store_skipped` warning naming both schemas and `memhub
-upgrade`. `doc ls|show --global` fail with the same message, and
-`global status` reports the recorded schema and the store's counts.
+"written by a newer memhub" error. The store's schema is read from
+its applied-migration ledger (`schema_migrations`, the ledger
+migrations themselves check), not from `projects.schema_version`,
+which only ever ratchets upward and so can stay ahead of a store a
+newer build once touched. When that schema differs from the binary's
+newest migration (a compiled migration missing, a version this build
+does not know, or a ledger that cannot be read), `recall` skips the
+store: it returns the repo's rows only, with a `global_store_skipped`
+warning naming both schemas and `memhub upgrade`. `doc ls|show
+--global` fail with the same message, and `global status` reports the
+ledger's schema and the store's counts.
 Before issue #353 every one of those reads migrated an older store to
 the binary's schema as a side effect, and failed outright (recall
 included) on a newer one with the "written by a newer memhub" error.
