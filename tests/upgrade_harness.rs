@@ -16,6 +16,8 @@ mod support;
 mod discover_outside_repo;
 #[path = "upgrade/global_memory.rs"]
 mod global_memory;
+#[path = "upgrade/global_read_no_migrate.rs"]
+mod global_read_no_migrate;
 #[path = "upgrade/json_contracts.rs"]
 mod json_contracts;
 #[path = "upgrade/migrations_auto_apply.rs"]

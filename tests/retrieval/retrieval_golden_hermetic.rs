@@ -445,7 +445,7 @@ fn seed_hermetic_corpus(root: &Path) {
 /// machine-global store [`seed_global_store`] builds (M9, Wave 4 R10 /
 /// issue #74). Must be `true` for the golden's `global-*` queries to have
 /// anything to find; harmless to set before the store exists —
-/// `open_global_if_exists` just returns `None` until it does.
+/// `open_global_unmigrated` just returns `None` until it does.
 fn set_global_enabled(root: &Path, enabled: bool) {
     let config_path = root.join(".memhub").join("config.toml");
     let mut config = ProjectConfig::load(&config_path).expect("load config");

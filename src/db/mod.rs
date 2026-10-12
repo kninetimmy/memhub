@@ -361,14 +361,68 @@ pub fn open_global() -> Result<ProjectContext> {
     })
 }
 
-/// Open the machine-global store only if it already exists. Recall
-/// must not fail in the common repo-with-no-global case, so this
-/// returns `None` rather than creating the store.
+/// Open the machine-global store only if it already exists, migrating
+/// it like `open_global`. Before issue #353 recall and `doc ls|show
+/// --global` opened the store through this too, so a read migrated it;
+/// now only `doc rm --global` does (a write that must not create the
+/// store), and read-only commands use `open_global_unmigrated`.
 pub fn open_global_if_exists() -> Result<Option<ProjectContext>> {
     if !global_store_exists()? {
         return Ok(None);
     }
     Ok(Some(open_global()?))
+}
+
+/// Open the machine-global store, if it exists, WITHOUT migrating it.
+/// Unlike a repo DB (decision 161, migrated on every open), the global
+/// store is shared by every memhub binary on the machine, so a command
+/// that only reads it must leave its schema alone: `memhub upgrade` and
+/// the global write commands (`open_global`) own migration. Pair with
+/// `global_schema_mismatch` before querying it.
+pub fn open_global_unmigrated() -> Result<Option<ProjectContext>> {
+    if !global_store_exists()? {
+        return Ok(None);
+    }
+    let paths = global_paths()?;
+    let conn = open_connection(&paths.db_path)?;
+    Ok(Some(ProjectContext {
+        config: ProjectConfig::default_for_repo_name("<global>"),
+        paths,
+        conn,
+    }))
+}
+
+/// The global store's recorded schema (`projects.schema_version`), or
+/// `None` when it cannot be read.
+pub fn recorded_schema_version(conn: &Connection) -> Option<String> {
+    conn.query_row(
+        "SELECT schema_version FROM projects WHERE id = 1",
+        [],
+        |row| row.get(0),
+    )
+    .ok()
+}
+
+/// `Some(message)` when the global store opened by
+/// `open_global_unmigrated` records a schema other than this binary's
+/// newest migration (older, newer, or unreadable). The message names
+/// both schemas and the fix.
+pub fn global_schema_mismatch(ctx: &ProjectContext) -> Option<String> {
+    let recorded = recorded_schema_version(&ctx.conn);
+    let head = migrations::latest_version();
+    if recorded.as_deref() == Some(head) {
+        return None;
+    }
+    let store = match &recorded {
+        Some(v) => format!("is at schema '{v}'"),
+        None => "has a schema that could not be read".to_string(),
+    };
+    Some(format!(
+        "the machine-global store at {} {store}, but this memhub's newest schema \
+         is '{head}'; commands that only read it never migrate it. Run `memhub \
+         upgrade` to bring the binary and the store to the same schema.",
+        ctx.paths.db_path.display()
+    ))
 }
 
 pub fn discover_paths(start: &Path) -> Result<ProjectPaths> {

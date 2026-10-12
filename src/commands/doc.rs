@@ -366,13 +366,26 @@ pub fn list(start: &Path) -> Result<Vec<Document>> {
 /// List documents in the machine-global store (M9). Requires this repo
 /// to have opted in (`memhub global enable`), mirroring the gate on
 /// `doc add --global`. Returns empty when the store does not yet exist
-/// — a read never creates it.
+/// — a read never creates it, nor migrates it: a store at another schema
+/// than this binary's is refused (see `read_global`).
 pub fn list_global(start: &Path) -> Result<Vec<Document>> {
-    let repo = db::open_project(start)?;
-    crate::commands::global::ensure_enabled(&repo.config)?;
-    match db::open_global_if_exists()? {
+    match read_global(start)? {
         Some(g) => list_in_conn(&g.conn),
         None => Ok(Vec::new()),
+    }
+}
+
+/// The opt-in gate plus a non-migrating open shared by the global doc
+/// reads: `Err` when the store's schema differs from this binary's.
+fn read_global(start: &Path) -> Result<Option<db::ProjectContext>> {
+    let repo = db::open_project(start)?;
+    crate::commands::global::ensure_enabled(&repo.config)?;
+    let Some(g) = db::open_global_unmigrated()? else {
+        return Ok(None);
+    };
+    match db::global_schema_mismatch(&g) {
+        Some(msg) => Err(crate::MemhubError::InvalidInput(msg)),
+        None => Ok(Some(g)),
     }
 }
 
@@ -492,11 +505,9 @@ pub fn show(start: &Path, ident: &str) -> Result<Option<(Document, Vec<DocChunk>
 
 /// Show a document from the machine-global store (M9). Requires this
 /// repo opted in, mirroring `doc add --global`. Returns None when the
-/// store does not exist or nothing matched `ident`.
+/// store does not exist or nothing matched `ident`; never migrates it.
 pub fn show_global(start: &Path, ident: &str) -> Result<Option<(Document, Vec<DocChunk>)>> {
-    let repo = db::open_project(start)?;
-    crate::commands::global::ensure_enabled(&repo.config)?;
-    match db::open_global_if_exists()? {
+    match read_global(start)? {
         Some(g) => show_in_conn(&g.conn, ident),
         None => Ok(None),
     }
