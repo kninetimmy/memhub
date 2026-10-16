@@ -333,6 +333,17 @@ fn global_reads_skip_a_store_whose_ledger_cannot_be_read() {
     let status = f.ok_json(&["global", "status", "--json"]);
     assert_eq!(status["schema_version"], Value::Null, "{status}");
     assert_eq!(status["exists"], json!(true), "{status}");
+
+    // None of those reads recreated the ledger table.
+    let conn = Connection::open(f.global_db()).expect("open global");
+    let ledgers: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("count ledger tables");
+    assert_eq!(ledgers, 0, "a read recreated schema_migrations");
 }
 
 // ---------------------------------------------------------------------------
@@ -507,6 +518,62 @@ fn upgrade_judges_the_global_store_by_its_ledger() {
     let f = fixture();
     let (head, _) = f.schema_state();
     let older = make_ledger_older(&f, &head);
+    let preview = dry_run_global_preview(&f);
+    assert_eq!(preview["verdict"], json!("would migrate"), "{preview}");
+    assert_eq!(preview["schema"], json!(older), "{preview}");
+    let row = finish_global_row(&f);
+    assert_eq!(row["status"], json!("migrated"), "{row}");
+    assert_eq!(row["before"], json!(older), "{row}");
+    assert_eq!(row["after"], json!(head), "{row}");
+}
+
+#[test]
+fn mcp_recall_global_store_skipped_warning_has_every_field() {
+    let f = fixture();
+    let (head, _) = f.schema_state();
+    let older = make_ledger_older(&f, &head);
+    let body = f.mcp_recall("widget");
+    let warn = body["warnings"]
+        .as_array()
+        .expect("warnings")
+        .iter()
+        .find(|w| w["kind"] == "global_store_skipped")
+        .unwrap_or_else(|| panic!("no global_store_skipped warning: {body}"));
+    assert_eq!(warn["kind"], json!("global_store_skipped"), "{warn}");
+    assert_eq!(warn["stale_count"], json!(0), "{warn}");
+    assert_eq!(warn["total_count"], json!(0), "{warn}");
+    assert_eq!(warn["fix"], json!("run `memhub upgrade`"), "{warn}");
+    let expected_reason = format!(
+        "the machine-global store at {} is at schema '{older}', but this memhub's \
+         newest schema is '{head}'; commands that only read it never migrate it. \
+         Run `memhub upgrade` to bring the binary and the store to the same \
+         schema.",
+        f.global_db().display()
+    );
+    assert_eq!(warn["reason"], json!(expected_reason), "{warn}");
+    assert_eq!(warn.as_object().expect("object").len(), 5, "{warn}");
+}
+
+#[test]
+fn upgrade_migrates_a_store_whose_ledger_is_behind_but_recorded_schema_is_at_head() {
+    let f = fixture();
+    let (head, _) = f.schema_state();
+    // Drop only the newest ledger row; `projects.schema_version` stays at head.
+    let conn = Connection::open(f.global_db()).expect("open global");
+    conn.execute("DELETE FROM schema_migrations WHERE version = ?1", [&head])
+        .expect("drop newest migration row");
+    let older: String = conn
+        .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| {
+            r.get(0)
+        })
+        .expect("previous version");
+    drop(conn);
+    assert_eq!(
+        f.schema_state().0,
+        head,
+        "recorded schema must stay at head"
+    );
+
     let preview = dry_run_global_preview(&f);
     assert_eq!(preview["verdict"], json!("would migrate"), "{preview}");
     assert_eq!(preview["schema"], json!(older), "{preview}");

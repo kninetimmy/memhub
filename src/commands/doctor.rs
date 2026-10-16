@@ -1817,6 +1817,26 @@ test_path_penalty = 0.8
     }
 
     #[test]
+    fn global_keys_are_known_not_unknown() {
+        // `include_docs_in_default` is retired but kept as an inert legacy key.
+        let value: toml::Value = toml::from_str(
+            r#"
+project_name = "x"
+auto_sync_md = false
+log_level = "info"
+
+[global]
+enabled = true
+include_docs_in_default = true
+"#,
+        )
+        .expect("parse");
+
+        let check = check_unknown_keys(&value);
+        assert_eq!(check.status, Status::Ok, "detail: {:?}", check.detail);
+    }
+
+    #[test]
     fn gc_keys_are_known_not_unknown() {
         // Doctor parity for the Wave 5 U5/U8 `[gc]` section.
         let value: toml::Value = toml::from_str(

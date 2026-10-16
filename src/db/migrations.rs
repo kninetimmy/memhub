@@ -293,6 +293,19 @@ mod tests {
     }
 
     #[test]
+    fn ledger_schema_ignores_an_unknown_version_sharing_the_newest_ordinal() {
+        // Same numeric prefix as head, different name: not newer than head.
+        let mut versions: Vec<&str> = MIGRATIONS.iter().map(|(v, _)| *v).collect();
+        let sibling = format!("{:04}_unknown_to_this_build", ordinal(latest_version()));
+        versions.push(&sibling);
+        let conn = ledger_with(&versions);
+        assert_eq!(
+            ledger_schema(&conn).expect("read"),
+            Some(latest_version().to_string())
+        );
+    }
+
+    #[test]
     fn ledger_schema_of_an_empty_ledger_is_none() {
         let conn = ledger_with(&[]);
         assert_eq!(ledger_schema(&conn).expect("read"), None);
