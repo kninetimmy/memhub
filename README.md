@@ -36,8 +36,8 @@ memhub is one offline binary and one SQLite file next to your code. Claude Code,
 - **Named rows**: a decision, task, or fact you name by number in a query, such as "decision 201". Recall returns it first, and it skips the rerank floor.
 - **Low-confidence rows**: rows that score under the rerank floor. Recall still returns them to fill the result, after every row that cleared the floor, and marks them `low_confidence`. Treat them as leads to verify. If no row clears the floor and no named row is returned, recall also adds a `rerank_floor_dropped_all` warning.
 - **Pending writes**: agent proposals (`pending_writes` in the database) that wait for your review. Each becomes a fact or decision only when you accept it.
-- **PROJECT_LEDGER.md**: a markdown dump of everything in the database, written by `memhub render`. Agents use recall instead of reading it.
-- **Hibernated**: fully written but compiled out of normal builds, so a default binary has no trace of it.
+- **PROJECT_LEDGER.md**: a markdown file written by `memhub render` that lists decisions, the task backlog, facts, and recent write activity. Agents use recall instead of reading it.
+- **Hibernated**: fully written but compiled out of normal builds, so a default binary has no commands or other surface for it. Its database tables and config keys remain.
 
 </details>
 
@@ -97,7 +97,7 @@ Please install memhub for me, then turn on hybrid recall.
      - If I say FTS: nothing to do; the default is already FTS.
 9. Run `memhub recall "<some keyword from my project>" --max-results 3`
    so I can see the recall surface working end-to-end.
-10. Tell me about the optional machine-global store: a second SQLite at
+10. Tell me about the optional machine-global memory: a second SQLite at
    ~/.memhub/global.sqlite, shared by every repo on this machine, for
    machine/toolchain facts and standing engineering policy — it's the
    global-vs-repo CLAUDE.md idea, made retrievable. Off by default and
@@ -132,7 +132,7 @@ Please install memhub for me, then turn on hybrid recall.
 Don't touch any files in this repo other than what `memhub init` writes
 (.memhub/ and the generated-output .gitignore entries), the
 .memhub/config.toml edits in steps 8, 10, and 12, and — only if I opt in
-at step 10 — the machine-global store at ~/.memhub/global.sqlite (outside
+at step 10 — the machine-global memory file at ~/.memhub/global.sqlite (outside
 this repo, in my home directory; that is expected).
 ```
 
@@ -198,7 +198,7 @@ Please install memhub for me, then turn on hybrid recall.
      - If I say FTS: nothing to do; the default is already FTS.
 9. Run `memhub recall "<some keyword from my project>" --max-results 3`
    so I can see the recall surface working end-to-end.
-10. Tell me about the optional machine-global store: a second SQLite at
+10. Tell me about the optional machine-global memory: a second SQLite at
     ~/.memhub/global.sqlite, shared by every repo on this machine, for
     machine/toolchain facts and standing engineering policy — it's the
     global-vs-repo AGENTS.md idea, made retrievable. Off by default and
@@ -234,7 +234,7 @@ Please install memhub for me, then turn on hybrid recall.
 Don't touch any files in this repo other than what `memhub init` writes
 (.memhub/ and the generated-output .gitignore entries), the
 .memhub/config.toml edits in steps 8, 10, and 12, and — only if I opt in
-at step 10 — the machine-global store at ~/.memhub/global.sqlite (outside
+at step 10 — the machine-global memory file at ~/.memhub/global.sqlite (outside
 this repo, in my home directory; that is expected).
 ```
 
@@ -308,7 +308,7 @@ Please install memhub for me, then turn on hybrid recall.
      - If I say FTS: nothing to do; the default is already FTS.
 10. Run `memhub recall "<some keyword from my project>" --max-results 3`
     so I can see the recall surface working end-to-end.
-11. Tell me about the optional machine-global store: a second SQLite at
+11. Tell me about the optional machine-global memory: a second SQLite at
     ~/.memhub/global.sqlite, shared by every repo on this machine, for
     machine/toolchain facts and standing engineering policy — it's the
     global-vs-repo AGENTS.md idea, made retrievable. Off by default and
@@ -344,7 +344,7 @@ Please install memhub for me, then turn on hybrid recall.
 Don't touch any files in this repo other than what `memhub init` writes
 (.memhub/ and the generated-output .gitignore entries), the
 .memhub/config.toml edits in steps 9, 11, and 13, and — only if I opt in
-at step 11 — the machine-global store at ~/.memhub/global.sqlite (outside
+at step 11 — the machine-global memory file at ~/.memhub/global.sqlite (outside
 this repo, in my home directory; that is expected).
 ```
 
@@ -396,15 +396,15 @@ Then continue with the steps you need:
 # 6. Register the MCP server for each agent you use
 claude mcp add memhub -- memhub serve
 
-# Codex: append this to its config (it also needs this repo trusted; see below)
-cat >> ~/.codex/config.toml <<'EOF'
+# Codex: append this once (it also needs this repo trusted; see below)
+grep -qs 'mcp_servers.memhub' ~/.codex/config.toml || cat >> ~/.codex/config.toml <<'EOF'
 [mcp_servers.memhub]
 command = "memhub"
 args = ["serve"]
 EOF
 
 # OpenCode: merge the memhub block from "Register the MCP server" below
-# into ~/.config/opencode/opencode.json
+# into ~/.config/opencode/opencode.json (or opencode.jsonc, whichever exists)
 
 # 7. (Recommended) Turn on hybrid recall: set mode = "hybrid" under [retrieval]
 #    in .memhub/config.toml, then backfill embeddings for existing rows
@@ -530,7 +530,7 @@ Retrieval numbers below come from `memhub eval` on this repo's own golden set, a
 - **Opt-in log of agent recall queries (2026-10-11, PR #327).** Before: real agent queries were not recorded anywhere, so new golden-set probes had to be written by hand. After: setting `[retrieval] log_queries = true` appends one JSON line per `memhub recall` and MCP recall call to `.memhub/recall_queries.jsonl`. It is off by default and holds queries in plaintext. It is never synced, exported or rotated, and a write failure never alters the recall.
 - **Live-database golden set and paired comparison for `memhub eval` (2026-10-10, PRs #308, #309).** Before: the only golden set scored a small seeded fixture in CI, so it could not tell close retrieval variants apart. The eval command reported only Recall@K, with no rank-1 count and no way to judge two runs query by query. After: `--json` output records the rank-1 pass count and the settings used. The new `memhub eval compare` pairs two saved runs and reports the queries only one run passed, with an exact McNemar p-value (a significance test on those queries). A golden query may list several acceptable answers with `also_accept`. The new file `tests/retrieval_golden_live.json` adds 190 match queries and 18 empty probes scored against this repo's own database. It is not run in CI, and the A/B procedure is in `docs/reference/operations.md`.
 - **PROJECT.md size cap, session-start hook and turn-1 read fallback (2026-10-10, PRs #288, #292, #293).** Before: PROJECT.md had no byte cap, only a `memhub state set` stderr warning above 4,000 characters. Agents also had to read it themselves at session start. After: render keeps PROJECT.md within an 8,000-byte budget by removing sections. It removes the Token Accounting section first, then session note stubs from the oldest, then the architecture section index. The Currently building state is never shortened. Every render ends with a size line giving the byte count and naming what was removed. `memhub upgrade` now installs a user-scope SessionStart hook for Claude Code and Codex (see [Session-start hook](#session-start-hook)). The turn-1 PROJECT.md read in CLAUDE.md, AGENTS.md, the routing block, the MCP instructions and the recall skills is now a fallback, skipped when the hook already put the frame in context.
-- **One-line task output drops outer whitespace too (2026-10-10, PR #279).** Before: `memhub task add " foo "` printed `Created task N:  foo ` with a trailing space. A whitespace-only title did not print `(untitled)`, and plain-list notes kept their outer spaces. After: whitespace at the outer ends of a title or plain-list notes is dropped, including any Unicode whitespace such as a no-break space. A whitespace-only title prints `(untitled)`, and whitespace-only plain-list notes print `(none)`. Spaces within a line are kept. Stored text, every `--json` output and the `task show` notes body are unchanged.
+- **One-line task output drops outer whitespace too (2026-10-10, PR #279).** Before: `memhub task add " foo "` printed `Created task N:  foo ` with a trailing space. A whitespace-only title did not print `(untitled)`. Plain-list notes kept their outer spaces, so notes made only of whitespace with no line break (for example two spaces) printed that whitespace after `notes:`. After: whitespace at the outer ends of a title or plain-list notes is dropped, including any Unicode whitespace such as a no-break space. A whitespace-only title prints `(untitled)`, and whitespace-only plain-list notes print `(none)`. Spaces within a line are kept. Stored text, every `--json` output and the `task show` notes body are unchanged.
 
 ### Known issues
 
@@ -710,7 +710,7 @@ Sync moves your repo's memory between *your own* machines (one person, not a tea
 
 1. **A synced folder on every machine.** Install Google Drive for Desktop (macOS/Windows) or set up an rclone mount (Linux), and note the local path, such as `G:\My Drive\memhub-sync` on Windows. A leading `~` in `drive_subpath` expands to the home directory.
 
-   > **Linux and rclone are for advanced users.** Google doesn't ship Drive for Desktop on Linux, so you mount Drive yourself with [rclone](https://rclone.org/). It works, but it is fiddly: OAuth config, a mount that has to stay up across reboots. If that's not for you, skip sync on Linux and use `memhub export` / `import` by hand.
+   > **Linux and rclone are for advanced users.** Google doesn't ship Drive for Desktop on Linux, so you mount Drive yourself with [rclone](https://rclone.org/). It works, but it is fiddly: OAuth config, a FUSE mount (Drive shown as a folder) that has to stay up across reboots. If that's not for you, skip sync on Linux and use `memhub export` / `import` by hand.
 
    ```bash
    rclone config                                   # one-time: add a "gdrive" remote
@@ -840,8 +840,9 @@ Every write records two things. `source` on facts and decisions says where a cla
 `memhub serve` starts a stdio MCP server. Tools:
 
 - **Read:** `status`, `search`, `recall`, `locate`, `list_tasks`, `list_decisions`, `list_facts`, `list_pending_writes`, `get_command`
-- **Write (direct):** `task_add`, `task_done`, `record_command`, `log_session_note`, `render`
-- **Write (staged for review):** `propose_fact`, `propose_decision`, both with an optional `global` flag (see [Machine-global memory](#machine-global-memory)).
+- **Write (direct):** `task_add`, `task_done`, `record_command`, `log_session_note`, `render`, `doc_add`, `archive_transcript`
+- **Write (staged for review):** `propose_fact`, `propose_decision`, `propose_supersede` (retires an outdated fact or decision by linking the row that replaces it). The first two take an optional `global` flag (see [Machine-global memory](#machine-global-memory)).
+- **Hibernated:** `metrics`, which exists only in a `--features metrics` build.
 - **Sync:** the five `sync_*` tools (see [Cross-machine sync](#cross-machine-sync)).
 
 #### Register the MCP server
@@ -930,7 +931,7 @@ memhub CLI / MCP
 
 ## Hibernated token metrics
 
-Token metrics is fully implemented but hibernated. The default binary has no metrics surface and does no recall logging or transcript scraping. Reactivate it with `cargo build --features metrics`. That build adds per-recall bundle-size accounting and real token totals scraped from Claude Code and Codex transcripts. In it, `memhub metrics calibrate` is the one command that touches the network: it sends a fixed built-in corpus (never your project's content) to Anthropic's `count_tokens` endpoint. It is opt-in, needs `ANTHROPIC_API_KEY`, and refuses cleanly without it. Details: [operations reference](docs/reference/operations.md#token-accounting).
+Token metrics is fully implemented but hibernated. A default build compiles out the `memhub metrics` commands, the MCP `metrics` tool, the `/metrics` skill, token accounting and transcript scraping. The metrics database tables and `[metrics]` config keys stay, along with any stored rows. Reactivate it with `cargo build --features metrics`. That build adds per-recall bundle-size accounting and real token totals scraped from Claude Code and Codex transcripts. In it, `memhub metrics calibrate` is the one command that touches the network: it sends a fixed built-in corpus (never your project's content) to Anthropic's `count_tokens` endpoint. It is opt-in, needs `ANTHROPIC_API_KEY`, and refuses cleanly without it. Details: [operations reference](docs/reference/operations.md#token-accounting).
 
 ---
 
