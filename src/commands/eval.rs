@@ -162,6 +162,10 @@ pub struct EvalSummary {
     /// `recall_at_k`, nothing here fails the eval run — it exists so a
     /// 10x latency regression is visible without a hard threshold to tune.
     pub warm_latency_p50_ms: f64,
+    /// The reason recall skipped the machine-global store (its schema
+    /// differs from this binary's), so the run scored without global rows.
+    /// `None` when the store was read or not enabled.
+    pub global_store_skipped: Option<String>,
 }
 
 pub fn run_retrieval(start: &Path, opts: EvalOptions) -> Result<EvalSummary> {
@@ -206,6 +210,7 @@ pub fn run_retrieval(start: &Path, opts: EvalOptions) -> Result<EvalSummary> {
     let mut outcomes = Vec::with_capacity(golden.queries.len());
     let mut resolved_mode = opts.mode;
     let mut latencies_ms: Vec<u128> = Vec::with_capacity(golden.queries.len());
+    let mut global_store_skipped = None;
 
     for query in &golden.queries {
         let recall_opts = RecallOptions {
@@ -234,6 +239,13 @@ pub fn run_retrieval(start: &Path, opts: EvalOptions) -> Result<EvalSummary> {
             resolved_mode = Some(response.mode);
         }
         latencies_ms.push(response.elapsed_ms);
+        if let Some(w) = response
+            .warnings
+            .iter()
+            .find(|w| w.kind == "global_store_skipped")
+        {
+            global_store_skipped = Some(w.reason.clone());
+        }
         outcomes.push(evaluate_query(query, &response, opts.k));
     }
 
@@ -252,7 +264,7 @@ pub fn run_retrieval(start: &Path, opts: EvalOptions) -> Result<EvalSummary> {
         variants: !opts.no_variants && golden.queries.iter().any(|q| !q.variants.is_empty()),
     };
     let warm_latency_p50_ms = median_ms(&latencies_ms);
-    let summary = summarize(
+    let mut summary = summarize(
         &golden,
         opts.k,
         settings,
@@ -261,6 +273,7 @@ pub fn run_retrieval(start: &Path, opts: EvalOptions) -> Result<EvalSummary> {
         started,
         warm_latency_p50_ms,
     );
+    summary.global_store_skipped = global_store_skipped;
     Ok(summary)
 }
 
@@ -611,6 +624,7 @@ fn summarize(
         outcomes,
         elapsed_ms: started.elapsed().as_millis(),
         warm_latency_p50_ms,
+        global_store_skipped: None,
     }
 }
 
