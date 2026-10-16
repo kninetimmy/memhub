@@ -318,8 +318,9 @@ carrying its `rerank_score`. Treat them as leads, not answers. A hit that clears
 its floor is never marked, and marked hits always come after unmarked ones. When
 no candidate clears the floor, recall returns up to `max_results` marked rows
 and emits the `rerank_floor_dropped_all` warning, whose text states how many
-marked rows were returned; a recall in which any candidate clears the floor
-carries no such warning. Doc chunks that joined the default bundle and missed
+marked rows were returned; a recall in which any candidate clears the floor, or
+that returns a row named by number in the query (below), carries no such
+warning. Doc chunks that joined the default bundle and missed
 `doc_min_rerank_score` are never returned, marked or not (decisions 90/91, 189);
 doc chunks in a recall scoped to doc chunks (`--source-type doc`) are not
 default-included, so they take the normal floor and fill like every other row.
@@ -403,8 +404,9 @@ else is read as an id: plurals (`decisions 12`), shorthand (`D17`, `T164`,
 which spec documents use for their own numbering), a number after any other
 word (`issue 290`, `PR #328`, `run 2`), a number glued to letters or a decimal
 point (`task 5b`, `fact 3.5`), a number followed by a unit or count word such
-as `days` or `rows` (`in fact 3 rows were dropped`, `the decision 2 days ago`)
-and a number that matches no row do nothing. A row only the routing loaded is
+as `days` or `rows` (`in fact 3 rows were dropped`, `the decision 2 days ago`),
+a number followed by `of them` (`task 3 of them`), a number hyphen-joined to a
+word (`decision 2-day`) and a number that matches no row do nothing. A row only the routing loaded is
 counted as if a retriever had found it: in `candidate_count`, in the stale and
 superseded counters and the stale warning, and in the stale or accepted-only
 exclusions; named rows cut by `max_results` count in the `--explain`
