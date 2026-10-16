@@ -297,8 +297,10 @@ pub struct RecallExplain {
 /// and the store exists) the global store, merges them with `scope`
 /// provenance, then runs one rerank pass over the unified pool.
 ///
-/// The global corpus is consulted only when `[global] enabled` AND
-/// `~/.memhub/global.sqlite` exists; otherwise the repo store alone is
+/// The global corpus is consulted only when `[global] enabled` is set,
+/// `~/.memhub/global.sqlite` exists, AND its migration ledger is at this
+/// binary's newest schema (a store at any other schema is skipped with a
+/// `global_store_skipped` warning); otherwise the repo store alone is
 /// searched, as in the pre-M9 single-corpus path (the eval-regression
 /// guarantee for a query without variants).
 ///

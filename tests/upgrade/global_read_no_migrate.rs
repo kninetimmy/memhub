@@ -302,6 +302,39 @@ fn global_reads_judge_the_ledger_not_the_ratcheted_schema_version() {
     assert_eq!(f.schema_state(), before, "a read touched the store");
 }
 
+/// A store with no `schema_migrations` table has a ledger that cannot be
+/// read: reads skip it or refuse with "could not be read", and
+/// `global status` still succeeds, reporting no schema.
+#[test]
+fn global_reads_skip_a_store_whose_ledger_cannot_be_read() {
+    let f = fixture();
+    let (head, _) = f.schema_state();
+    {
+        let conn = Connection::open(f.global_db()).expect("open global");
+        conn.execute("DROP TABLE schema_migrations", [])
+            .expect("drop ledger");
+    }
+
+    assert_recall_skips(&f, "could not be read", &head);
+    for args in [
+        &["doc", "ls", "--global"][..],
+        &["doc", "show", "--global", "1"][..],
+    ] {
+        let out = f.run(args);
+        assert!(!out.status.success(), "{args:?} must fail");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        for needle in ["could not be read", head.as_str(), "memhub upgrade"] {
+            assert!(
+                stderr.contains(needle),
+                "{args:?} lacks {needle:?}: {stderr}"
+            );
+        }
+    }
+    let status = f.ok_json(&["global", "status", "--json"]);
+    assert_eq!(status["schema_version"], Value::Null, "{status}");
+    assert_eq!(status["exists"], json!(true), "{status}");
+}
+
 // ---------------------------------------------------------------------------
 // Issue #357: eval, recall text and upgrade report the global store honestly.
 // ---------------------------------------------------------------------------

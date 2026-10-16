@@ -1036,9 +1036,14 @@ store to the binary's schema and still refuse a newer one with the
 its applied-migration ledger (`schema_migrations`, the ledger
 migrations themselves check), not from `projects.schema_version`,
 which only ever ratchets upward and so can stay ahead of a store a
-newer build once touched. When that schema differs from the binary's
-newest migration (a compiled migration missing, a version this build
-does not know, or a ledger that cannot be read), `recall` skips the
+newer build once touched. Only a ledger version numbered above the
+binary's newest migration counts as a newer schema; an unknown version
+numbered at or below it is ignored. Absent such a newer version, the
+schema is the last compiled migration before the first one the ledger
+lacks; an empty ledger, or one missing the first migration, yields no
+schema and is reported as "could not be read", the same as a ledger that cannot be
+read. When that schema differs from the binary's newest migration
+(older, newer, or could not be read), `recall` skips the
 store: it returns the repo's rows only, with a `global_store_skipped`
 warning naming both schemas and `memhub upgrade`. `doc ls|show
 --global` fail with the same message, and `global status` reports the
