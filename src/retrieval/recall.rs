@@ -229,7 +229,7 @@ pub struct RecallResponse {
     /// doc-scoped recall is worthwhile. Doc chunks join the *default*
     /// bundle (no explicit `source_types`) only when `[retrieval]
     /// include_docs_in_default` is set — auto-enabled by the first `doc
-    /// add` / `doc add --global` (decision 90) — and even then only past
+    /// add` (decision 90) — and even then only past
     /// the `doc_min_rerank_score` relevance floor (decisions 90/91), so
     /// most ingested chunks still don't surface and this count stays
     /// meaningfully non-zero.
