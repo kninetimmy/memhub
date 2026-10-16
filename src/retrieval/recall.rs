@@ -299,8 +299,9 @@ pub struct RecallExplain {
 ///
 /// The global corpus is consulted only when `[global] enabled` is set,
 /// `~/.memhub/global.sqlite` exists, AND its migration ledger is at this
-/// binary's newest schema (a store at any other schema is skipped with a
-/// `global_store_skipped` warning); otherwise the repo store alone is
+/// binary's newest schema (a store whose ledger is older or newer than
+/// that, or cannot be read, is skipped with a `global_store_skipped`
+/// warning); otherwise the repo store alone is
 /// searched, as in the pre-M9 single-corpus path (the eval-regression
 /// guarantee for a query without variants).
 ///
@@ -1124,8 +1125,9 @@ fn named_rows(query: &str) -> Vec<(SourceType, i64)> {
                 .next()
                 .unwrap_or("");
             // "of them" is two words, so it cannot sit in `UNIT_WORDS`; a bare
-            // "of" must keep routing. Any punctuation between the words (a
-            // hyphen, a quote) still counts as "of them".
+            // "of" must keep routing. Any run of characters that are not ASCII
+            // letters or digits (spaces, a hyphen, a quote) may sit between
+            // "of" and "them".
             let of_them = next_word == "of"
                 && rest[2..]
                     .trim_start_matches(|c: char| !c.is_ascii_alphanumeric())
