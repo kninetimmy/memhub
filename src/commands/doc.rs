@@ -97,9 +97,9 @@ struct IngestResult {
     /// machine), NOT "first global doc for this repo". `add` (repo-scoped)
     /// uses it as its config-flip trigger, since there the `documents`
     /// table it queries genuinely is scoped to the calling repo. `add_global`
-    /// must NOT use it for that purpose — it gates its config flip on the
-    /// calling repo's own config state instead (see
-    /// `maybe_enable_global_default_doc_recall`).
+    /// must NOT use it for that purpose: it makes no config flip at all, and
+    /// relies on the calling repo's `[retrieval] include_docs_in_default`
+    /// alone to decide whether a global doc joins default recall.
     was_first_doc: bool,
 }
 

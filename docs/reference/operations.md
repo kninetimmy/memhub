@@ -389,28 +389,28 @@ JSON key:
 
 **Rows named by number (issue #340).** A recall whose main query contains the
 word `decision`, `task` or `fact` (any letter case, a whole word) followed by
-whitespace and/or `#` and a number (`decision 201`, `Task #99`, `fact 7`) returns
-that row first. Only the main query is read, not the variants. The row must
-exist in the repo store and pass the call's source-type, accepted-only and
-stale filters (accepted-only excludes a task, since tasks carry no `source`);
-a superseded row is kept, as in ranked results. Named rows come in the order
-the query names them, once each, ahead of every other hit, are never flagged
+whitespace and/or `#` and a number (`decision 201`, `Task #99`, `fact 7`)
+returns that row first. Only the main query is read, not the variants. The row
+must exist in the repo store and pass the call's source-type, accepted-only and
+stale filters (accepted-only excludes a task, since tasks carry no `source`); a
+superseded row is kept, as in ranked results. Named rows come in the order the
+query names them, once each, ahead of every other hit, are never flagged
 `low_confidence` and skip the relevance floor, and they count toward
 `max_results` (named rows past the limit are dropped, last named first); the
-remaining slots are filled by the normal ranking, which does not see them.
-When the re-ranker ran, a named row carries its `rerank_score`. Rows of the
-machine-global store are never routed (their ids are separate), and nothing
-else is read as an id: plurals (`decisions 12`), shorthand (`D17`, `T164`,
-which spec documents use for their own numbering), a number after any other
-word (`issue 290`, `PR #328`, `run 2`), a number glued to letters or a decimal
-point (`task 5b`, `fact 3.5`), a number followed by a unit or count word such
-as `days` or `rows` (`in fact 3 rows were dropped`, `the decision 2 days ago`),
-a number followed by `of them` (`task 3 of them`), a number hyphen-joined to a
-word (`decision 2-day`) and a number that matches no row do nothing. A row only the routing loaded is
-counted as if a retriever had found it: in `candidate_count`, in the stale and
-superseded counters and the stale warning, and in the stale or accepted-only
-exclusions; named rows cut by `max_results` count in the `--explain`
-result-limit cut. A returned named row also keeps the
+remaining slots are filled by the normal ranking, which does not see them. When
+the re-ranker ran, a named row carries its `rerank_score`. Rows of the
+machine-global store are never routed (their ids are separate), and nothing else
+is read as an id: plurals (`decisions 12`), shorthand (`D17`, `T164`, which spec
+documents use for their own numbering), a number after any other word
+(`issue 290`, `PR #328`, `run 2`), a number glued to letters or a decimal point
+(`task 5b`, `fact 3.5`), a number followed by a unit or count word such as
+`days` or `rows` (`in fact 3 rows were dropped`, `the decision 2 days ago`), a
+number followed by `of them` (`task 3 of them`), a number hyphen-joined to a
+word (`decision 2-day`) and a number that matches no row do nothing. A row only
+the routing loaded is counted as if a retriever had found it: in
+`candidate_count`, in the stale and superseded counters and the stale warning,
+and in the stale or accepted-only exclusions; named rows cut by `max_results`
+count in the `--explain` result-limit cut. A returned named row also keeps the
 `rerank_floor_dropped_all` warning off the response.
 
 **Query variants (issue #319).** The calling agent can send extra phrasings of
@@ -1041,13 +1041,19 @@ binary's newest migration counts as a newer schema; an unknown version
 numbered at or below it is ignored. Absent such a newer version, the
 schema is the last compiled migration before the first one the ledger
 lacks; an empty ledger, or one missing the first migration, yields no
-schema and is reported as "could not be read", the same as a ledger that cannot be
-read. When that schema differs from the binary's newest migration
+schema and is reported as "could not be read", the same as a ledger that
+cannot be read. When that schema differs from the binary's newest migration
 (older, newer, or could not be read), `recall` skips the
 store: it returns the repo's rows only, with a `global_store_skipped`
 warning naming both schemas and `memhub upgrade`. `doc ls|show
 --global` fail with the same message, and `global status` reports the
-ledger's schema and the store's counts.
+ledger's schema and the store's counts. `memhub eval retrieval` reports a
+skipped global store too: a "Global store skipped" line in the text output
+and a `global_store_skipped` field in the JSON, both carrying the reason,
+so a score computed without global rows is never read as a global-inclusive
+one. `memhub upgrade` reads the same ledger for its `<global store>` row:
+the row's schema, and its `ready` or `would migrate` verdict in a dry run,
+come from `schema_migrations`, not from `projects.schema_version`.
 Before issue #353 every one of those reads migrated an older store to
 the binary's schema as a side effect, and failed outright (recall
 included) on a newer one with the "written by a newer memhub" error.

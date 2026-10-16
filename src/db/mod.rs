@@ -320,8 +320,8 @@ pub fn probe_schema_version(db_path: &Path) -> Result<Option<String>> {
 
 /// True iff the machine-global store file already exists on disk.
 /// A plain existence check; it does not open, read or migrate the store.
-/// Callers include the one-time disclosure on the first global write,
-/// the "store was just created" flag, the openers that return `None` for
+/// Callers include the one-time disclosure on the first global write
+/// (the "store was just created" flag), the openers that return `None` for
 /// an absent store (`open_global_if_exists`, `open_global_unmigrated`),
 /// the machine-global repo registry, `global status` and `memhub
 /// upgrade` reporting, and recall's `global_store_not_searched`
