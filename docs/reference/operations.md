@@ -406,11 +406,11 @@ word (`issue 290`, `PR #328`, `run 2`), a number glued to letters or a decimal
 point (`task 5b`, `fact 3.5`), a number followed by a unit or count word such
 as `days` or `rows` (`in fact 3 rows were dropped`, `the decision 2 days ago`),
 a number followed by `of them` (`task 3 of them`), a number hyphen-joined to a
-word (`decision 2-day`) and a number that matches no row do nothing. A row only the routing loaded is
-counted as if a retriever had found it: in `candidate_count`, in the stale and
-superseded counters and the stale warning, and in the stale or accepted-only
-exclusions; named rows cut by `max_results` count in the `--explain`
-result-limit cut. A returned named row also keeps the
+word (`decision 2-day`) and a number that matches no row do nothing. A row
+only the routing loaded is counted as if a retriever had found it: in
+`candidate_count`, in the stale and superseded counters and the stale warning,
+and in the stale or accepted-only exclusions; named rows cut by `max_results`
+count in the `--explain` result-limit cut. A returned named row also keeps the
 `rerank_floor_dropped_all` warning off the response.
 
 **Query variants (issue #319).** The calling agent can send extra phrasings of
@@ -1047,7 +1047,13 @@ read. When that schema differs from the binary's newest migration
 store: it returns the repo's rows only, with a `global_store_skipped`
 warning naming both schemas and `memhub upgrade`. `doc ls|show
 --global` fail with the same message, and `global status` reports the
-ledger's schema and the store's counts.
+ledger's schema and the store's counts. `memhub eval retrieval` reports a
+skipped global store too: a "Global store skipped" line in the text output
+and a `global_store_skipped` field in the JSON, both carrying the reason,
+so a score computed without global rows is never read as a global-inclusive
+one. `memhub upgrade` reads the same ledger for its `<global store>` row:
+the row's schema, and its `ready` or `would migrate` verdict in a dry run,
+come from `schema_migrations`, not from `projects.schema_version`.
 Before issue #353 every one of those reads migrated an older store to
 the binary's schema as a side effect, and failed outright (recall
 included) on a newer one with the "written by a newer memhub" error.
