@@ -1034,11 +1034,10 @@ pub fn run(cli: Cli) -> Result<()> {
                     );
                     if outcome.enabled_default_recall {
                         println!(
-                            "  Default doc recall enabled for this {} \
+                            "  Default doc recall enabled for this repo \
                              (first doc ingested) — strong topical matches now\n  \
                              surface in plain `memhub recall`; \
-                             scope to docs only with --source-type doc.",
-                            if global { "machine" } else { "repo" }
+                             scope to docs only with --source-type doc."
                         );
                     } else if outcome.status != commands::doc::IngestStatus::Unchanged {
                         println!("  Searchable via: memhub recall \"<query>\" --source-type doc");

@@ -129,10 +129,8 @@ pub const DEFAULT_METRICS_CALIBRATION_FACTOR: f64 = 1.0;
 /// opts into reading from / writing to the machine-wide
 /// `~/.memhub/global.sqlite` store via `memhub global enable`. The
 /// global store itself is machine-wide; this flag is the per-repo
-/// consumption + write gate. `include_docs_in_default` mirrors the
-/// repo-scoped flag and auto-flips on the first `doc add --global`.
+/// consumption + write gate.
 pub const DEFAULT_GLOBAL_ENABLED: bool = false;
-pub const DEFAULT_GLOBAL_INCLUDE_DOCS_IN_DEFAULT: bool = false;
 
 /// Cross-machine Drive sync (M10). Off by default and per-repo: a repo
 /// opts in via `memhub sync enable`. memhub itself stays offline — this
@@ -310,9 +308,6 @@ fn default_metrics_calibration_factor() -> f64 {
 }
 fn default_global_enabled() -> bool {
     DEFAULT_GLOBAL_ENABLED
-}
-fn default_global_include_docs_in_default() -> bool {
-    DEFAULT_GLOBAL_INCLUDE_DOCS_IN_DEFAULT
 }
 fn default_sync_enabled() -> bool {
     DEFAULT_SYNC_ENABLED
@@ -520,20 +515,12 @@ impl Default for MetricsConfig {
 pub struct GlobalConfig {
     #[serde(default = "default_global_enabled")]
     pub enabled: bool,
-    /// Mirrors `[retrieval] include_docs_in_default` for the global
-    /// corpus. Canonical baseline false; the first successful
-    /// `memhub doc add --global` flips the local config to true so the
-    /// user-pointed write that establishes global docs also wires up
-    /// their default-bundle retrieval.
-    #[serde(default = "default_global_include_docs_in_default")]
-    pub include_docs_in_default: bool,
 }
 
 impl Default for GlobalConfig {
     fn default() -> Self {
         Self {
             enabled: DEFAULT_GLOBAL_ENABLED,
-            include_docs_in_default: DEFAULT_GLOBAL_INCLUDE_DOCS_IN_DEFAULT,
         }
     }
 }

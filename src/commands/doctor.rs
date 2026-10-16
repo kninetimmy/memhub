@@ -388,6 +388,8 @@ const KNOWN_LEAVES: &[&str] = &[
     "metrics.retention_days",
     "metrics.calibration_factor",
     "global.enabled",
+    // Retired (issue #360): never read by recall. Kept as an inert legacy
+    // key, same precedent as `auto_sync_md` above.
     "global.include_docs_in_default",
     "sync.enabled",
     "sync.project_id",
