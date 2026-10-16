@@ -66,10 +66,6 @@
 #   - global.enabled = false           (opt-in machine-global memory;
 #                                       each repo opts in independently
 #                                       via `memhub global enable`)
-#   - global.include_docs_in_default   (baseline false here; auto-flips
-#                                       to true in the local config on
-#                                       first `doc add --global` — do
-#                                       NOT commit a true value back)
 #   - sync.enabled = false             (opt-in cross-machine Drive sync;
 #                                       each repo opts in per machine via
 #                                       `memhub sync enable`)
@@ -273,13 +269,10 @@ calibration_factor = 1.0
 # build. The global store is machine-wide and per-machine (never
 # exported, never synced); `enabled` is the per-repo consumption +
 # write gate.
-# include_docs_in_default mirrors retrieval.include_docs_in_default
-# for the global corpus: canonical baseline false here, auto-flips to
-# true in the LOCAL config.toml on the first `doc add --global` — do
-# NOT commit a true value back.
+# Whether global docs join a repo's default recall is governed only by
+# that repo's `[retrieval] include_docs_in_default`.
 [global]
 enabled = false
-include_docs_in_default = false
 
 # Cross-machine Drive sync (M10). Off by default and per-repo; opt in
 # via `memhub sync enable`. memhub itself stays OFFLINE — the `sync`

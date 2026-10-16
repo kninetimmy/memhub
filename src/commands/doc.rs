@@ -48,8 +48,9 @@ pub struct DocAddOutcome {
     pub chunk_count: usize,
     pub status: IngestStatus,
     /// True when this call flipped `[retrieval] include_docs_in_default`
-    /// on for the repo (first successful doc add). The CLI surfaces a
-    /// one-line notice so the behavior change is visible, not silent.
+    /// on for the repo (first successful repo doc add; always false for
+    /// `add_global`). The CLI surfaces a one-line notice so the behavior
+    /// change is visible, not silent.
     pub enabled_default_recall: bool,
     /// True only for `add_global` when this call created
     /// `~/.memhub/global.sqlite` (first global write on the machine).
@@ -219,14 +220,9 @@ pub fn add(start: &Path, file: &Path, title: Option<&str>, actor: &str) -> Resul
 /// Ingest a markdown file into the machine-global store (M9). A
 /// global doc is a broadly-applicable guide visible to every repo
 /// that has opted in. Requires `memhub global enable` in this repo.
-/// This repo's *first* global doc add flips `[global]
-/// include_docs_in_default` in this repo's config (mirrors the
-/// repo-scoped behavior) — gated on THIS REPO's own config state (see
-/// `maybe_enable_global_default_doc_recall`), never on whether the
-/// shared global store itself was empty. The global `documents` table
-/// spans every repo on the machine that has opted in, so a second repo
-/// adding to an already-populated global store must still flip its own
-/// config on its own first add.
+/// Whether a global doc joins this repo's default recall is governed
+/// only by the repo's `[retrieval] include_docs_in_default`; this path
+/// never touches the config.
 pub fn add_global(
     start: &Path,
     file: &Path,
@@ -235,7 +231,7 @@ pub fn add_global(
 ) -> Result<DocAddOutcome> {
     let doc = prepare_doc(file, title)?;
 
-    let mut repo = db::open_project(start)?;
+    let repo = db::open_project(start)?;
     crate::commands::global::ensure_enabled(&repo.config)?;
     let mode = repo.config.retrieval.mode;
     let store_created = !db::global_store_exists()?;
@@ -245,15 +241,13 @@ pub fn add_global(
     let r = ingest_in_tx(&tx, &doc, actor, mode)?;
     tx.commit()?;
 
-    let enabled_default_recall = maybe_enable_global_default_doc_recall(&mut repo)?;
-
     Ok(DocAddOutcome {
         doc_id: r.doc_id,
         title: doc.resolved_title,
         path: doc.path_str,
         chunk_count: r.chunk_count,
         status: r.status,
-        enabled_default_recall,
+        enabled_default_recall: false,
         store_created,
     })
 }
@@ -270,36 +264,6 @@ fn maybe_enable_default_doc_recall(ctx: &mut db::ProjectContext) -> Result<bool>
     }
     ctx.config.retrieval.include_docs_in_default = true;
     ctx.config.save(&ctx.paths.config_path)?;
-    Ok(true)
-}
-
-/// Flip `[global] include_docs_in_default` on for THIS repo (mirrors
-/// `maybe_enable_default_doc_recall`, but for the `add_global` path).
-///
-/// Gated purely on this repo's own config state — not on
-/// `was_first_doc`, which for the global store reflects whether the
-/// shared `documents` table (spanning every opted-in repo on the
-/// machine) was empty, not whether *this repo* has flipped its mirror
-/// yet. Using `was_first_doc` here was the bug (issue #123): repo A's
-/// first `doc add --global` flips A's config and consumes the store's
-/// only "empty" moment, so repo B's own later first global add saw
-/// `was_first_doc == false` and never flipped B's config — no notice,
-/// and B's ingested global doc silently never joined B's default
-/// recall. Checking this repo's own current flag instead is also a
-/// no-op (no rewrite, no duplicate notice) when it is already enabled.
-///
-/// Cross-machine gap (untouched by this fix): `config.toml` is never
-/// part of a Drive-sync snapshot (only the DB travels — see
-/// "Cross-machine Drive sync" in docs/reference/operations.md), so a
-/// machine that `sync adopt`s a snapshot containing global docs does
-/// not gain this flag locally; run `doc add --global` (or set the flag
-/// by hand) on each machine that should see them in default recall.
-fn maybe_enable_global_default_doc_recall(repo: &mut db::ProjectContext) -> Result<bool> {
-    if repo.config.global.include_docs_in_default {
-        return Ok(false);
-    }
-    repo.config.global.include_docs_in_default = true;
-    repo.config.save(&repo.paths.config_path)?;
     Ok(true)
 }
 

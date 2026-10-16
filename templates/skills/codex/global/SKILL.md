@@ -101,8 +101,9 @@ scope when it matters.
 Explicit install-time choices: `[retrieval] mode = fts|hybrid` and
 machine-global store (`memhub global enable`). Auto-followers with a
 manual override: `[retrieval] use_reranker` (auto-on with hybrid) and
-`[retrieval] include_docs_in_default` plus its `[global]` mirror
-(auto-flips true on the first `doc add` / `doc add --global`).
+`[retrieval] include_docs_in_default` (auto-flips true on the first
+repo `doc add`; it also governs whether global docs join the repo's
+default recall).
 
 ## Notes
 

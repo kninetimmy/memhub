@@ -220,6 +220,13 @@ proposal a human accepts.*
     `[global] include_docs_in_default`, flipping on first
     `doc add --global`.
 
+    > **Removed 2026-10-16 (issue #360):** the `[global]
+    > include_docs_in_default` mirror was removed. Recall never read
+    > it, so it changed nothing; whether global docs join a repo's
+    > default recall depends only on that repo's `[retrieval]
+    > include_docs_in_default`. The sentence above is retained as
+    > history.
+
 ## 8. What does not change
 
 - **Local-first, offline, boring** (PRD §3.2, §3.5). No network. The

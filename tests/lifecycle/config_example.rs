@@ -182,6 +182,28 @@ log_level = "info"
     assert_eq!(config.metrics.calibration_factor, 1.0);
 }
 
+/// `[global] include_docs_in_default` was removed (issue #360). A config
+/// that still carries the line must keep loading.
+#[test]
+fn legacy_global_include_docs_in_default_key_still_loads() {
+    let temp = tempdir().expect("tempdir");
+    let memhub_dir = temp.path().join(".memhub");
+    fs::create_dir_all(&memhub_dir).expect("create .memhub");
+
+    let legacy = r#"project_name = "legacy-global"
+log_level = "info"
+
+[global]
+enabled = true
+include_docs_in_default = true
+"#;
+    let local = memhub_dir.join("config.toml");
+    fs::write(&local, legacy).expect("write legacy config");
+
+    let config = ProjectConfig::load(&local).expect("load legacy config");
+    assert!(config.global.enabled);
+}
+
 /// The tracked example's `[wrap_up]` block (Wave 6 W1, issue #95 /
 /// decision Q7) must seed the "standard" baseline — never "transcript",
 /// which Q7 reserves as a per-machine opt-in — so a fresh install's
