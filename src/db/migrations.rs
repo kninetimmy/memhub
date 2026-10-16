@@ -255,6 +255,49 @@ mod tests {
         );
     }
 
+    fn ledger_with(versions: &[&str]) -> Connection {
+        let conn = Connection::open_in_memory().expect("open");
+        conn.execute(
+            "CREATE TABLE schema_migrations(version TEXT PRIMARY KEY)",
+            [],
+        )
+        .expect("create ledger");
+        for v in versions {
+            conn.execute("INSERT INTO schema_migrations(version) VALUES (?1)", [v])
+                .expect("seed ledger");
+        }
+        conn
+    }
+
+    #[test]
+    fn ledger_schema_stops_at_a_mid_ledger_gap() {
+        // Every compiled migration except the third.
+        let all: Vec<&str> = MIGRATIONS.iter().map(|(v, _)| *v).collect();
+        let gapped: Vec<&str> = all.iter().copied().filter(|v| *v != all[2]).collect();
+        let conn = ledger_with(&gapped);
+        assert_eq!(
+            ledger_schema(&conn).expect("read"),
+            Some(all[1].to_string())
+        );
+    }
+
+    #[test]
+    fn ledger_schema_ignores_an_unknown_version_below_the_newest() {
+        let mut versions: Vec<&str> = MIGRATIONS.iter().map(|(v, _)| *v).collect();
+        versions.push("0002_unknown_to_this_build");
+        let conn = ledger_with(&versions);
+        assert_eq!(
+            ledger_schema(&conn).expect("read"),
+            Some(latest_version().to_string())
+        );
+    }
+
+    #[test]
+    fn ledger_schema_of_an_empty_ledger_is_none() {
+        let conn = ledger_with(&[]);
+        assert_eq!(ledger_schema(&conn).expect("read"), None);
+    }
+
     #[test]
     fn ordinal_parses_migration_prefix() {
         assert_eq!(ordinal("0017_session_baseline"), 17);
