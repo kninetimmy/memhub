@@ -135,7 +135,8 @@ need day to day (issue #72) — no `rank`/`score`/`fts_score`/
 - `low_confidence: true` (CLI text: `[low-confidence]`) marks a hit
   that did NOT clear the floor. It fills the result slots left after
   every floor-clearing hit, up to `max_results` (with a
-  `rerank_floor_dropped_all` warning when nothing cleared the floor),
+  `rerank_floor_dropped_all` warning when nothing cleared the floor and no
+  row named by number in the query is returned),
   as a weak lead: verify it against the source before relying on it,
   and say it is low-confidence when you cite it. Flagged hits always
   come after the unflagged ones, and a hit that cleared the floor is

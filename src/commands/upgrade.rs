@@ -1190,18 +1190,23 @@ fn verify_repo(root: &Path) -> InstanceReport {
     }
 }
 
+/// The global store's schema per its migration ledger, the same authority
+/// read commands use (`db::global_schema_version`), without migrating it.
+/// Not `projects.schema_version`, which only ratchets upward.
+fn global_ledger_schema() -> Option<String> {
+    let ctx = db::open_global_unmigrated().ok().flatten()?;
+    db::global_schema_version(&ctx.conn)
+}
+
 fn verify_global() -> InstanceReport {
-    let path = match db::global_db_path() {
-        Ok(p) => p,
-        Err(e) => {
-            return InstanceReport {
-                label: "<global store>".to_string(),
-                before: None,
-                after: None,
-                status: InstanceStatus::Error(e.to_string()),
-            };
-        }
-    };
+    if let Err(e) = db::global_db_path() {
+        return InstanceReport {
+            label: "<global store>".to_string(),
+            before: None,
+            after: None,
+            status: InstanceStatus::Error(e.to_string()),
+        };
+    }
     let exists = db::global_store_exists().unwrap_or(false);
     if !exists {
         return InstanceReport {
@@ -1213,7 +1218,7 @@ fn verify_global() -> InstanceReport {
             ),
         };
     }
-    let before = db::probe_schema_version(&path).ok().flatten();
+    let before = global_ledger_schema();
     if let Err(e) = db::open_global() {
         return InstanceReport {
             label: "<global store>".to_string(),
@@ -1497,9 +1502,7 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
         previews.push((abbrev(root), cur, verdict));
     }
     let global_preview = if db::global_store_exists()? {
-        let cur = db::probe_schema_version(&db::global_db_path()?)
-            .ok()
-            .flatten();
+        let cur = global_ledger_schema();
         let verdict = if cur.as_deref() == Some(head.as_str()) {
             "ready"
         } else {

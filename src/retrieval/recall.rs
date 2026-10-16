@@ -188,7 +188,8 @@ pub struct RecallHit {
     /// True only for a fill hit: a candidate under the relevance floor that
     /// is returned anyway, after every floor-clearing hit, to fill the bundle
     /// up to `max_results` (when no candidate clears the floor, alongside the
-    /// `rerank_floor_dropped_all` warning). A hit that cleared its floor is
+    /// `rerank_floor_dropped_all` warning, which a returned row named by
+    /// number in the query suppresses). A hit that cleared its floor is
     /// never low-confidence. Default-included doc chunks under the doc floor
     /// are never fill hits.
     pub low_confidence: bool,
@@ -1084,9 +1085,9 @@ fn named_rows(query: &str) -> Vec<(SourceType, i64)> {
     let b = lower.as_bytes();
     let in_word = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'-';
     // Words that make `<keyword> <n> <word>` ordinary prose, not a row id.
-    const UNIT_WORDS: [&str; 18] = [
+    const UNIT_WORDS: [&str; 20] = [
         "second", "seconds", "minute", "minutes", "hour", "hours", "day", "days", "week", "weeks",
-        "month", "months", "year", "years", "row", "rows", "times", "items",
+        "month", "months", "year", "years", "row", "rows", "time", "times", "item", "items",
     ];
     let mut found: Vec<(usize, SourceType, i64)> = Vec::new();
     for (word, st) in [
@@ -1123,14 +1124,14 @@ fn named_rows(query: &str) -> Vec<(SourceType, i64)> {
                 .next()
                 .unwrap_or("");
             // "of them" is two words, so it cannot sit in `UNIT_WORDS`; a bare
-            // "of" must keep routing.
-            let of_them = next_word == "of" && {
-                let mut words = rest.split_whitespace();
-                words.next() == Some("of")
-                    && words.next().is_some_and(|w| {
-                        w.trim_end_matches(|c: char| !c.is_ascii_alphabetic()) == "them"
-                    })
-            };
+            // "of" must keep routing. Any punctuation between the words (a
+            // hyphen, a quote) still counts as "of them".
+            let of_them = next_word == "of"
+                && rest[2..]
+                    .trim_start_matches(|c: char| !c.is_ascii_alphanumeric())
+                    .split(|c: char| !c.is_ascii_alphabetic())
+                    .next()
+                    == Some("them");
             if digits == sep
                 || i == digits
                 || glued
@@ -5705,6 +5706,11 @@ explainscopeprobe second.
             "fact 5 items",
             "task 3 of them",
             "Task 3 OF  them.",
+            "decision 1 time",
+            "task 1 item",
+            "fact 2 of-them",
+            "task 3 of \"them\"",
+            "task 3 of 'them'",
             "decision 2-day",
             "task 3-week",
         ] {
