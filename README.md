@@ -7,7 +7,7 @@
   <img src="https://img.shields.io/badge/Rust-1.87%2B-B7410E?style=flat&logo=rust&logoColor=white" alt="Rust 1.87+"/>
   <img src="https://img.shields.io/badge/SQLite-bundled-003B57?style=flat&logo=sqlite&logoColor=white" alt="SQLite bundled"/>
   <br/>
-  <img src="https://img.shields.io/badge/Recall-FTS5%20%2B%20RAG-5E81AC?style=flat" alt="Recall: FTS5 + RAG"/>
+  <img src="https://img.shields.io/badge/Recall-keyword%20%2B%20meaning-5E81AC?style=flat" alt="Recall: keyword and meaning-based search"/>
   <img src="https://img.shields.io/badge/MCP-Claude%20%C2%B7%20Codex%20%C2%B7%20OpenCode-D97757?style=flat&logo=anthropic&logoColor=white" alt="MCP: Claude, Codex, and OpenCode"/>
   <img src="https://img.shields.io/badge/Offline-local--first-4C566A?style=flat" alt="Offline, local-first"/>
   <br/>
@@ -16,17 +16,36 @@
 
 ---
 
-Every new session, your AI agent starts from zero — you re-explain the build command, the naming conventions, why you chose Postgres over SQLite six months ago. memhub gives the agent a persistent, searchable memory of your project, so it looks those things up instead of asking you again.
+Every new session, your AI agent starts from zero. You re-explain the build command, the naming conventions, and why you chose Postgres over SQLite six months ago. memhub gives the agent a persistent, searchable memory of your project, so it looks those things up instead of asking you again.
 
-It's one offline binary and one SQLite file next to your code, shared by Claude Code, Codex, and OpenCode: decisions (with the *why* behind them), facts, tasks, your own reference docs, and an index of where things live in your codebase. When the agent needs context, it pulls a small ranked bundle of just the relevant rows — not your whole README — so prompts stay short and your token bill stays down. No cloud, no account, no daemon; everything, including semantic search, runs locally.
+memhub is one offline binary and one SQLite file next to your code. Claude Code, Codex, and OpenCode all share it. It holds decisions (with the *why* behind them), facts, tasks, your own reference docs, and an index of where things live in your codebase. When the agent needs context, it pulls a small ranked bundle of just the relevant rows, not your whole README. Prompts stay short and your token bill stays down. There is no cloud, no account, and no daemon, and everything, including semantic search, runs locally.
 
 **[Jump to Quickstart →](#quickstart)** · **[See how it works →](#how-it-works)**
+
+<details>
+<summary><b>Plain-word definitions</b> of the technical terms used below</summary>
+
+- **MCP** (Model Context Protocol): a standard way for an agent to call a local tool, such as memhub, as a structured function.
+- **Skills**: the short instruction files, such as `/wrap-up` and `/recall`, that memhub installs for each agent.
+- **FTS5**: SQLite's built-in full-text search. It finds rows by the words they contain.
+- **BM25**: the formula FTS5 uses to rank rows by how well their words match a query.
+- **BGE-small**: the small embedding model bundled in the binary. It turns text into a list of numbers, so rows with similar meaning end up close together.
+- **Hybrid recall**: a recall that blends keyword search (FTS5 with BM25) and meaning-based search (BGE-small), then re-ranks the best candidates. The alternative, FTS-only recall, uses keyword search alone.
+- **Re-ranker**: a second small model that reads the query together with one candidate row and scores how well the row answers it. The bundled one is ms-marco-MiniLM-L-6-v2, called **ms-marco** below.
+- **Rerank floor**: the lowest re-ranker score a row can have and still count as a confident answer.
+- **Named rows**: a decision, task, or fact you name by number in a query, such as "decision 201". Recall returns it first, and it skips the rerank floor.
+- **Low-confidence rows**: rows that score under the rerank floor. Recall still returns them to fill the result, after every row that cleared the floor, and marks them `low_confidence`. Treat them as leads to verify. If no row clears the floor and no named row is returned, recall also adds a `rerank_floor_dropped_all` warning.
+- **Pending writes**: agent proposals (`pending_writes` in the database) that wait for your review. Each becomes a fact or decision only when you accept it.
+- **PROJECT_LEDGER.md**: a markdown dump of everything in the database, written by `memhub render`. Agents use recall instead of reading it.
+- **Hibernated**: fully written but compiled out of normal builds, so a default binary has no trace of it.
+
+</details>
 
 ---
 
 ## Quickstart
 
-Each agent below gets a copy-paste prompt that installs memhub end-to-end — expand the one you use. Prefer to run the steps yourself? See **Install by hand**.
+Each agent below has a copy-paste prompt that installs memhub end to end. Expand the one you use. To run the steps yourself, expand **Install by hand**.
 
 <details>
 <summary><b>Install via Claude Code</b> — recommended</summary>
@@ -41,8 +60,8 @@ Please install memhub for me, then turn on hybrid recall.
    (1.87+) is missing.
 2. Run `cargo install --path ~/src/memhub --force` so `memhub` ends up on
    PATH (~/.cargo/bin must be on PATH; warn me if it isn't). First build
-   takes a couple of minutes — it downloads and bundles a ~130 MB
-   embedding model into the binary.
+   takes a couple of minutes — it downloads and bundles ~150 MB of
+   model files (embedding model and re-ranker) into the binary.
 3. Run `memhub --version` to verify.
 4. Register memhub as an MCP server so Claude Code can call it as a
    structured tool (this is also how its routing instructions load):
@@ -132,8 +151,8 @@ Please install memhub for me, then turn on hybrid recall.
    (1.87+) is missing.
 2. Run `cargo install --path ~/src/memhub --force` so `memhub` ends up on
    PATH (~/.cargo/bin must be on PATH; warn me if it isn't). First build
-   takes a couple of minutes — it downloads and bundles a ~130 MB
-   embedding model into the binary.
+   takes a couple of minutes — it downloads and bundles ~150 MB of
+   model files (embedding model and re-ranker) into the binary.
 3. Run `memhub --version` to verify.
 4. Register memhub as an MCP server so you can call it as a structured
    tool. Append this to ~/.codex/config.toml:
@@ -234,8 +253,8 @@ Please install memhub for me, then turn on hybrid recall.
    (1.87+) is missing.
 2. Run `cargo install --path ~/src/memhub --force` so `memhub` ends up on
    PATH (~/.cargo/bin must be on PATH; warn me if it isn't). First build
-   takes a couple of minutes — it downloads and bundles a ~130 MB
-   embedding model into the binary.
+   takes a couple of minutes — it downloads and bundles ~150 MB of
+   model files (embedding model and re-ranker) into the binary.
 3. Run `memhub --version` to verify.
 4. Register memhub as an MCP server so you can call it as a structured
    tool. Add this to ~/.config/opencode/opencode.jsonc (or
@@ -335,7 +354,7 @@ this repo, in my home directory; that is expected).
 <summary><b>Install by hand</b></summary>
 
 ```bash
-# 1. Build + install the binary (slow on first build; bundles BGE-small)
+# 1. Build and install the binary (the first build is slow: it bundles ~150 MB of model files)
 git clone https://github.com/kninetimmy/memhub.git ~/src/memhub
 cargo install --path ~/src/memhub --force
 
@@ -347,13 +366,11 @@ cd /path/to/your/project
 memhub init
 memhub status
 
-# 4. Warm up the code locator — builds a local index so `memhub locate`
-#    (and the /locate skill) can answer "where is X" with ranked
-#    file:line breadcrumbs instead of grepping around.
+# 4. Build the code index so `memhub locate` can answer "where is X"
 memhub code index
 memhub code status   # confirm files indexed
 
-# 5. Agent skills / command wrappers (Claude + Codex + OpenCode)
+# 5. Install the skills for Claude Code, Codex, and OpenCode (the hibernated metrics skill is skipped)
 mkdir -p ~/.claude/commands ~/.codex/skills
 for f in ~/src/memhub/templates/skills/claude/*.md; do case "$(basename "$f")" in metrics.md) continue;; esac; cp "$f" ~/.claude/commands/; done
 for d in ~/src/memhub/templates/skills/codex/*; do case "$(basename "$d")" in metrics) continue;; esac; cp -R "$d" ~/.codex/skills/; done
@@ -365,7 +382,6 @@ for f in ~/src/memhub/templates/commands/opencode/*.md; do case "$(basename "$f"
 Windows PowerShell equivalent for step 5 (the `for`/`case`/`basename` loops above are POSIX-only):
 
 ```powershell
-# 5. Agent skills / command wrappers (Claude + Codex + OpenCode)
 New-Item -ItemType Directory -Force -Path "$HOME\.claude\commands","$HOME\.codex\skills" | Out-Null
 Get-ChildItem "$HOME\src\memhub\templates\skills\claude\*.md" | Where-Object { $_.Name -notin 'metrics.md' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.claude\commands\" }
 Get-ChildItem "$HOME\src\memhub\templates\skills\codex" -Directory | Where-Object { $_.Name -notin 'metrics' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.codex\skills\" -Recurse -Force }
@@ -374,51 +390,40 @@ Get-ChildItem "$HOME\src\memhub\templates\skills\opencode" -Directory | Where-Ob
 Get-ChildItem "$HOME\src\memhub\templates\commands\opencode\*.md" | Where-Object { $_.Name -notin 'metrics.md' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.config\opencode\commands\" }
 ```
 
+Then continue with the steps you need:
+
 ```bash
-# 6. MCP for Codex — append to ~/.codex/config.toml (Codex has no repo
-#    scope, so this is a per-machine step, and it also needs this repo
-#    trusted or the MCP-first skill instructions won't reliably fire —
-#    accept Codex's trust prompt on first run here, or add
-#    [projects.<abs-repo-path>] with trust_level = "trusted" by hand):
-#   [mcp_servers.memhub]
-#   command = "memhub"
-#   args = ["serve"]
+# 6. Register the MCP server for each agent you use
+claude mcp add memhub -- memhub serve
 
-# MCP for OpenCode V2 — merge into ~/.config/opencode/opencode.json:
-#   { "mcp": { "servers": { "memhub": { "type": "local", "command": ["memhub", "serve"], "disabled": false } } } }
+# Codex: append this to its config (it also needs this repo trusted; see below)
+cat >> ~/.codex/config.toml <<'EOF'
+[mcp_servers.memhub]
+command = "memhub"
+args = ["serve"]
+EOF
 
-# 7. (Recommended) Turn on hybrid recall — FTS + semantic search, with a
-#    bundled cross-encoder re-ranker over the blended results on by
-#    default; nothing extra to enable once hybrid mode is set.
-#    In .memhub/config.toml, set mode under the existing [retrieval]
-#    table (memhub init already writes it):
-#       mode = "hybrid"
-#    Then backfill embeddings for existing rows:
+# OpenCode: merge the memhub block from "Register the MCP server" below
+# into ~/.config/opencode/opencode.json
+
+# 7. (Recommended) Turn on hybrid recall: set mode = "hybrid" under [retrieval]
+#    in .memhub/config.toml, then backfill embeddings for existing rows
 memhub index rebuild --actor cli:user
 memhub index status   # confirm Missing: 0
 
-# 8. (Optional) Machine-wide memory: a second store at
-#    ~/.memhub/global.sqlite shared by every repo on this machine.
-#    Off by default; opt this repo in, then write/promote with --global.
+# 8. (Optional) Turn on machine-global memory for this repo
 memhub global enable
 memhub global status
 
-# 9. (Optional) Ingest a reference doc — after first add, relevant chunks
-#    automatically surface in plain recall (relevance-gated; off-topic
-#    docs stay silent). /doc wraps this as a slash command.
+# 9. (Optional) Ingest a reference doc
 memhub doc add path/to/design-spec.md --json
 
-# 10. (Optional) Cross-machine sync via a synced folder (Google Drive for
-#     Desktop, or an rclone mount on Linux). memhub stays offline and only
-#     reads/writes a local path. Opt in per repo, then set [sync]
-#     drive_subpath in .memhub/config.toml to the absolute synced-folder
-#     path. /catch-up pulls at session start; /wrap-up pushes at the end.
+# 10. (Optional) Turn on cross-machine sync, then set [sync] drive_subpath in .memhub/config.toml
 memhub sync enable
-#    .memhub/config.toml:
-#       [sync]
-#       drive_subpath = "/abs/path/to/your/synced/folder"
-memhub sync status   # confirms enablement + the resolved remote dir
+memhub sync status
 ```
+
+Hybrid mode runs the re-ranker by default, so nothing extra needs enabling. Steps 8 to 10 are explained in [Machine-global memory](#machine-global-memory), [Search your design docs](#search-your-design-docs), and [Cross-machine sync](#cross-machine-sync).
 
 </details>
 
@@ -434,7 +439,9 @@ Three views: the system as a whole, how memory follows you between machines, and
   <img src="docs/images/system-overview-motion.gif" alt="memhub system overview" width="920"/>
 </p>
 
-Your agents call memhub over [MCP](https://modelcontextprotocol.io/) or the CLI. Reads come back as a small ranked bundle pulled from the SQLite database sitting next to your code. When an agent wants to *save* something durable — a fact, a decision — the write is staged in `pending_writes` and waits at the review gate until you accept it. Low-stakes writes (tasks, notes, commands) go straight in, and `memhub render` keeps a compact `PROJECT.md` frame: the current state in full, an architecture section index, and session note stubs, with the full text a recall away; the architecture section index and the session note stubs may be dropped to keep it within its size budget.
+Your agents call memhub over [MCP](https://modelcontextprotocol.io/) or the CLI. Reads come back as a small ranked bundle from the SQLite database next to your code. When an agent wants to *save* a fact or decision, the write is staged as a pending write and waits at the review gate until you accept it. Low-stakes writes (tasks, notes, commands) go straight in.
+
+`memhub render` keeps a compact `PROJECT.md` frame: the current state in full, an architecture section index, and session note stubs. The full text is one recall away. The index and the stubs may be dropped to keep the file within its size budget.
 
 ### Sync between your machines
 
@@ -442,7 +449,7 @@ Your agents call memhub over [MCP](https://modelcontextprotocol.io/) or the CLI.
   <img src="docs/images/sync-model-motion.gif" alt="memhub cross-machine Drive sync model" width="920"/>
 </p>
 
-Opt a repo in, and your laptop and desktop share memory through a folder that's already syncing (Google Drive for Desktop, or an rclone mount). A push writes one whole-database snapshot, manifest last — so a half-finished push is never visible to the other side. A pull compares content digests and reports one of five verdicts; adopting remote state is the one destructive step, so it always waits for your confirm and writes a backup first. memhub itself never makes a network call. [Setup →](#sync-across-your-machines-google-drive)
+Opt a repo in, and your machines share its memory through a folder that already syncs, such as Google Drive for Desktop. memhub never makes a network call, and adopting remote state always waits for your confirm. [Setup →](#cross-machine-sync)
 
 ### Inside a recall
 
@@ -450,7 +457,7 @@ Opt a repo in, and your laptop and desktop share memory through a folder that's 
   <img src="docs/images/hybrid-recall-motion.gif" alt="how hybrid recall works" width="920"/>
 </p>
 
-A recall runs two searches at once: FTS5 finds the exact words, BGE-small embeddings find the meaning (so "compile settings" still finds the fact filed under `release_build`). The scores blend, a cross-encoder re-ranks the top candidates, and the agent gets back a small, cited, staleness-flagged bundle instead of a wall of markdown. Both models are compiled into the binary — nothing downloads at runtime, nothing leaves your machine.
+A recall runs two searches at once. Keyword search (FTS5) finds the exact words. BGE-small embeddings find the meaning, so "compile settings" still finds the fact filed under `release_build`. The scores blend, and the re-ranker re-orders the top candidates. The agent gets back a small, cited bundle with stale rows flagged, instead of a wall of markdown. Both models are compiled into the binary, so nothing downloads at runtime and nothing leaves your machine.
 
 ---
 
@@ -458,19 +465,19 @@ A recall runs two searches at once: FTS5 finds the exact words, BGE-small embedd
 
 - **Context that sticks.** "What's the build command?" gets a real answer on day 90, not just day 1. You stop repeating yourself.
 - **Decisions with reasons.** Six months from now you'll know *why* a call was made, not just that it was made.
-- **Your docs are searchable too.** Point memhub at a spec or style guide and the agent pulls the relevant section on demand — and stays silent when the doc is off-topic.
-- **It knows where your code lives.** "Where's the retry logic?" returns ranked `file:line` breadcrumbs with clipped snippets — never whole files, so it costs almost no context.
-- **You stay in control.** Agent proposals stage for review; nothing becomes durable until you say yes.
+- **Your docs are searchable too.** Point memhub at a spec or style guide and the agent pulls the relevant section on demand, staying silent when the doc is off-topic. [How →](#search-your-design-docs)
+- **It knows where your code lives.** "Where's the retry logic?" returns ranked `file:line` breadcrumbs with clipped snippets, never whole files, so it costs almost no context. [How →](#find-where-code-lives)
+- **You stay in control.** Agent proposals stage for review, and nothing becomes durable until you say yes.
 - **Same memory across agents.** Claude Code, Codex, and OpenCode share the same rows. Switching tools doesn't cost you context.
-- **Memory that follows you.** Opt in per repo and your machines stay in sync through a folder that's already syncing — memhub still never goes online.
-- **Optional machine-wide memory.** Truths that aren't about one repo — toolchain facts, standing engineering rules — can live in an opt-in store shared by every repo on the machine.
-- **It's just a file.** SQLite, gitignored, in your repo. Back it up, move it, or `rm -rf .memhub/` and it's gone.
+- **Memory that follows you.** Opt in per repo and your machines stay in sync through a folder that's already syncing, and memhub still never goes online. [How →](#cross-machine-sync)
+- **Optional machine-global memory.** Truths that aren't about one repo, such as toolchain facts and standing engineering rules, can live in an opt-in store shared by every repo on the machine. [How →](#machine-global-memory)
+- **It's just a file.** SQLite, gitignored, in your repo; [back it up](#back-up-and-move-your-memory), move it, or `rm -rf .memhub/` and it's gone.
 
 ---
 
 ## A session in practice
 
-You talk to your agent; memhub runs in the background. At the end you run `/wrap-up`, and the agent walks you through everything it wants to commit — you say yes or no to each item.
+You talk to your agent, and memhub runs in the background. At the end you run `/wrap-up`, and the agent walks you through everything it wants to commit. You say yes or no to each item.
 
 ```
 You: "What did we decide about the authentication flow?"
@@ -488,9 +495,9 @@ You: "/wrap-up"
   → session note written, PROJECT.md re-rendered
 ```
 
-The `/wrap-up` gate is the whole point: the agent is good at surfacing knowledge; you decide what's true.
+The `/wrap-up` gate is the whole point: the agent is good at surfacing knowledge, and you decide what's true.
 
-You can also drive it from the terminal — both flows write to the same database:
+You can also drive it from the terminal. Both flows write to the same database:
 
 ```bash
 memhub recall "auth flow"
@@ -506,51 +513,46 @@ memhub render
 ## Project status
 
 <details>
-<summary><b>Expand for the current snapshot</b> — pulled from the memhub task DB as of <b>2026-10-11</b> (not a live feed; run <code>memhub task list</code> in this repo for the current picture)</summary>
+<summary><b>Expand for the current snapshot</b>, taken from the memhub task tracker as of <b>2026-10-16</b> (not a live feed; run <code>memhub task list</code> in this repo for the current picture)</summary>
 
 ### Recently fixed
 
-- **Two-question recall queries are split and re-ranked per part (2026-10-11, PR #346).** Before: a query asking two things (`what does X measure, and where is Y set?`) was re-ranked as one string, so a row that answered only one half scored low and could miss the bundle. After: when the re-ranker runs, the main query is cut at ` and ` (with or without a comma) followed by a question word such as `what`, `how` or `where`. Each part is gathered like a caller variant, and each pooled row is scored against the whole query and each part and keeps the highest score as its `rerank_score`. A query with no split point, FTS-only mode and `--no-rerank` run as before. On the live golden set found@5 rose by 2 and rank-1 fell by 2. Across Retrieval Run 2 (PRs #344 to #346), without variants found@5 rose 156 to 162 and rank-1 134 to 136; with variants found@5 rose 159 to 163 and rank-1 132 to 133. The empty probes did not change, and recall p50 latency fell from 628 to 242 ms without variants and from 1048 to 380 ms with them. On the held-out file the result was flat (29 to 30 and 31 to 30 of 35).
-- **A decision, task or fact named by number comes first in recall (2026-10-11, PR #345).** Before: a recall such as `what did decision 201 say` ranked the named row like any other candidate, so it could land below other rows. After: a main query containing `decision`, `task` or `fact` followed by a number (`decision 201`, `Task #99`) returns that repo row first, ahead of every other hit, unflagged and exempt from the relevance floor. Only the main query is read, and plurals, `D17`-style shorthand and other words before a number do nothing. On the live golden set found@5 was unchanged and rank-1 rose by 1.
-- **Recall re-rank pool filled by retriever, with a doc chunk cap and per-passage scoring (2026-10-11, PR #344).** Before: the re-ranker pool was the top rows by blended score, so a row with no word overlap with the query rarely reached it and default-included doc chunks could crowd it out. The bundled int8 re-ranker also scored a batch together, which shifted each row's score by up to 0.25 with the rest of the pool and let memory grow with the pool (4.1 GB at 50 rows). After: the pool is filled from the vector and full-text rankings in turn, and the new `[retrieval] rerank_doc_cap` (default 3) limits default-included doc chunks in it. Each passage is re-ranked on its own, so a row's `rerank_score` no longer depends on the other rows and memory stays bounded. `memhub eval retrieval --json` records the cap. On the live golden set found@5 rose 156 to 160 without variants and 159 to 161 with, rank-1 rose 134 to 137 and 132 to 134, and recall p50 latency fell from 638 to 247 ms and from 1073 to 379 ms.
-- **Retrieval Run 1 review follow-ups (2026-10-11, PRs #336, #343).** Before: the docs called results byte-identical with a disabled `[global]` store without saying that holds only for queries without variants, the `result_limit_cut` counter was undocumented, the floor warning called low-confidence rows "fallback" rows, and several query-log, MCP output-schema and global-dedup tests were weak. After: the byte-identical claims are qualified, `result_limit_cut` is documented, the floor warning says "low-confidence rows", and the tests assert exactly one query-log row, check the hybrid log's title and `low_confidence`, and pin the MCP output schema and global dedup more tightly. #343 also fixed two doc wording nits.
-- **Floor-cut recall candidates fill the bundle, flagged low-confidence (2026-10-11, PR #328).** Before: candidates under the relevance floor were dropped, and only when the floor dropped every candidate did recall return the top 3 flagged. A one-row candidate pool skipped the re-ranker, so the floor never applied to it. After: floor-cut candidates fill the bundle up to `max_results`, after every hit that cleared the floor and each flagged `low_confidence`. A one-row pool is now re-ranked and floored like any other. Default-included doc chunks under the doc floor still never fill the bundle.
-- **Opt-in log of agent recall queries (2026-10-11, PR #327).** Before: real agent queries were not recorded anywhere, so new golden-set probes had to be written by hand. After: setting `[retrieval] log_queries = true` appends one JSON line per `memhub recall` and MCP recall call to `.memhub/recall_queries.jsonl`. It is off by default, holds queries in plaintext, is never synced, exported or rotated, and a write failure never alters the recall.
-- **Live-database golden set and paired comparison for `memhub eval` (2026-10-10, PRs #308, #309).** Before: the only golden set scored a small seeded fixture in CI, so it could not tell close retrieval variants apart. `memhub eval retrieval` reported only Recall@K, with no rank-1 count and no way to judge two runs query by query. After: `--json` output records the rank-1 pass count and the settings used, and `memhub eval compare` pairs two saved runs and reports the queries only one run passed with an exact McNemar p-value. A golden query may list several acceptable answers with `also_accept`. `tests/retrieval_golden_live.json` adds 190 match queries and 18 empty probes scored against this repo's own database, with the A/B procedure in `docs/reference/operations.md`; it is not run in CI.
-- **PROJECT.md size cap, session-start hook and turn-1 read fallback (2026-10-10, PRs #288, #292, #293).** Before: PROJECT.md had no byte cap, only a `memhub state set` stderr warning above 4,000 characters. Agents also had to read it themselves at session start. After: render keeps PROJECT.md within an 8,000-byte budget by removing sections. When it is over, render removes the Token Accounting section first (shown only in a build with the metrics feature and with metrics enabled in config), then session note stubs from the oldest, then the architecture section index. The Currently building state is never shortened, so a state too large on its own still produces a file over the budget. Every render ends with a size line giving the byte count, naming what was removed and telling you to shorten the state if it is still over. `memhub upgrade` now installs a user-scope SessionStart hook for Claude Code and Codex, only for an agent whose directory exists and keeping existing hooks. `--no-hooks` skips it, Codex needs one approval in its `/hooks` screen, and OpenCode is not supported (see [Session-start hook](#session-start-hook)). The turn-1 PROJECT.md read in CLAUDE.md, AGENTS.md, the routing block, the MCP instructions and the recall skills is now a fallback, skipped when the hook already put the frame in context.
-- **One-line task output drops outer whitespace too (2026-10-10, PR #279).** Before: `memhub task add " foo "` printed `Created task N:  foo ` with a trailing space, a whitespace-only title did not print `(untitled)`, and plain-list notes kept their outer spaces, so notes made only of whitespace with no line break (for example two spaces) printed that whitespace after `notes:`. After: whitespace at the outer ends of a title or plain-list notes is dropped (any Unicode whitespace, such as a no-break space), a whitespace-only title prints `(untitled)`, whitespace-only plain-list notes print `(none)`, and spaces within a line are kept. Stored text, every `--json` output and the `task show` notes body are unchanged.
-- **One-line task output drops whitespace next to line breaks and shows `(untitled)`, plus install-block test follow-ups (2026-10-09, PRs #275, #274).** Before: whitespace next to a line break survived flattening in the `task add` confirmation, the plain `task list`, `task list --brief` and the `task show` header. A title stored as `\n \nfoo` printed with two leading spaces (`Created task 1:   foo`, `[1] [open]   foo`), and plain-list notes `a \n b` printed `a   b`. A title of `""` or `\n\n` printed `Created task N: ` with a trailing space, `[N] [open] ` in `--brief`, and `[N]  [open]` (double space) in the plain list and the `task show` header. After: whitespace next to a line break and blank lines are dropped, so `\n \nfoo` prints `foo` and `a \n b` prints `a b`, while spaces within a line are kept (`x  y`). An empty or newline-only title prints `(untitled)` in all four outputs, mirroring the `(none)` notes placeholder. Stored text, every `--json` output and the `task show` notes body are unchanged. #274 is test-only. In the grown-README test (`readme_install_block_checker_tolerates_added_copy_lines`), the equal-count failure message now reports both demanded creation-deletion counts instead of claiming a repeated creation landed ahead of a copy. The doc comment of that test notes the count comparison cannot see a repeat placed between a destination's two copy lines. The extra-creation test (`readme_install_block_checker_tolerates_extra_creation_before_copy`) now asserts the battery demands zero creation-deletion rejections when every creation line is doubled, as the doc comment of that test said.
-- **Plain `task list` and `task add` output flattened, and install-block test hardening (2026-10-09, PRs #268, #269).** Before: plain `memhub task list` (no `--brief`) printed a multi-line title, and multi-line notes, across several lines, and the `task add` confirmation (`Created task N: ...`) did the same. A title starting or ending with a line break also showed a leading or trailing space in `task list --brief` and the `task show` header (a title stored as `\nfoo\n` printed as `[2] [open]  foo ` in `task list --brief` and as `[2]  foo  [open]` in the `task show` header). After: every one of those outputs collapses each run of line breaks (LF, CR, VT, FF, U+0085, U+2028, U+2029) to one space and drops breaks at the start or end, so each plain-list task is exactly two lines and `\nfoo\n` prints as `foo`. Plain-list notes that are only line breaks show `(none)`; stored text, all `--json` output and the `task show` notes body are unchanged. #269 also added tests for the `--brief` 120-character notes cap when the first notes line follows blank lines or a lone CR. #268 is test-only. The install-block checker's `mkdir -p` creation list now also ends at a `&&`, `||` or `|` token. The `readme_install_block_checker_rejects_mutations` test asserts its floor of 10 over the creation-line deletions the mutation battery demanded and confirmed a rejection for, rather than over the lines the mutation battery visited. The grown-README test asserts that premise by comparing that count with the unmodified README's.
-- **SVG line endings pinned, `task list --brief` and `task show` line breaks flattened, and install-block test follow-ups (2026-10-09, PRs #261, #262, #263).** Before: a `core.autocrlf=true` checkout, with no `.gitattributes`, wrote every tracked SVG under `docs/images/` with CRLF, so the on-disk bytes and SHA-256 differed from the LF git blob (verified for all 7 SVGs). `task list --brief` flattened only CR and LF in titles (a CRLF became two spaces). It split notes on LF only, so a lone CR or U+2028/U+2029/U+0085/VT/FF in notes leaked into the one-line output. `task list --brief` also showed no notes text for a note starting with a blank line. `task show` printed a multi-line title across lines, and `task list --limit` had no help text. After: a root `.gitattributes` declares `*.svg text eol=lf` and `*.gif binary`, so a fresh `autocrlf` clone has every SVG byte-identical to its blob (existing checkouts keep CRLF SVGs until those files are checked out again). Every one of those break forms collapses to a single space per run in `--brief` titles and the `task show` header (`--json` is unchanged), `--brief` shows the first notes line with text (120-character cap unchanged), and `task list --help` describes `--limit`. #263 is test-only follow-ups to #255 and #256. The README install-block checker and mutation battery share one install-block boundary definition, and the grown-README test exercises creation ordering in every install-block half (an extra creation ahead of a copy moved to its own test). The checker's `mkdir -p` parsing now ends a creation list at the first `;`, so a POSIX combined create-and-copy line is covered alongside PowerShell. The `Cargo.toml` `rust-version` test checks only that the key is present, and one over-long test comment was re-wrapped.
-- **Viz dashboard deleted (2026-10-09, PRs #248, #247).** Before: the hibernated `viz` dashboard (`src/dashboard/`, the `viz` Cargo feature, the `axum`/`tower-http` dependencies, the `memhub viz` subcommand, the viz skill templates, and a CI viz lane) still shipped in the tree. After: all of it is gone, so `memhub viz` is an unknown subcommand in every build, the CI feature lane builds and tests `--features metrics` instead, and `memhub upgrade` still reports a leftover viz wrapper as an orphan without touching it. The metrics feature stays hibernated. The README's copy lines now exclude only the hibernated metrics templates, and the install-block test enforces it. #247 closed the #241–#243 review follow-ups: a plain-text `memhub index status` Notes-line test, the architecture wrapper-heading rule documented in `docs/reference/operations.md`, a non-empty PROJECT.md stub for a blank session note, and a consistent `source_type` CHECK account in the M8 addendum.
-- **Doctor and index-status coverage plus doc and test fixes (2026-10-09, PRs #241–#244).** Before: `memhub doctor`'s FTS integrity and rowcount checks skipped the session-notes and architecture-section indexes, `memhub index status` left note counts out of its output, and the README install-block tests ignored the PowerShell copy lines and destination-directory creation. After: doctor covers both indexes, `index status` prints note total and embedded counts in text and `--json`, and the install-block tests check the PowerShell halves and `mkdir -p` / `New-Item` lines. #242 also made the PROJECT.md architecture index list two distinct adjacent same-named sections separately, left out a lone wrapper heading, and stopped a note stub from rendering as a bare ellipsis. #243 documented `arch` scoping and that `--accepted-only` never returns tasks, architecture sections or session notes.
-- **Architecture sections are recall-searchable and PROJECT.md is slim (2026-10-09, PRs #234, #235).** Before: the architecture narrative was one blob that recall could not search by section, and PROJECT.md rendered the full architecture body and full session notes. After: migration 0025 derives per-heading `arch_sections` that default recall returns (`recall --source-type arch` scopes to them), and PROJECT.md holds the current state in full, an index of the architecture's section headings, and session notes cut to 300-character stubs. `memhub state set` also warns on stderr above 4,000 characters; the stored architecture and notes are unchanged (`memhub arch show`, `memhub note list`).
-- **Hybrid recall no longer comes back empty for answerable queries (2026-10-09, PRs #228, #229, #231).** Before: recall required every query token to match in full-text search and the relevance floor could drop every candidate, so most multi-word keyword queries returned nothing even when a relevant row existed (5 of 6 probes in the investigation). After: rows matching only some tokens still earn full-text signal, and when the floor drops every candidate recall returns the top 3 flagged `low_confidence` (with the `rerank_floor_dropped_all` warning; default-included doc chunks are never such hits). Issue #323 later changed this: floor-cut candidates now fill the bundle up to `max_results`, flagged, after every hit that cleared the floor (see [docs/reference/operations.md](docs/reference/operations.md)). The recall skills and MCP tool now tell agents to phrase queries as natural-language questions and to treat low-confidence hits as leads to verify, `--min-rerank-score -1000` now parses space-separated, and #231 updated the dashboard (since deleted in #248), the addendum, and the all-doc warning text.
-- **Brief task lists, `task show`, and a slimmer wrap-up policy (2026-10-08, PRs #222, #223, #227).** Before: `memhub task list` always printed every task with full notes (about 126 KB for 88 open tasks in a downstream repo), there was no `task show`, `task done` on an already-done task silently succeeded and bumped `updated_at`, and the wrap-up read window used that full list and could stack dated architecture paragraphs. After: `task list --brief` prints one line per task and `--limit N` caps the count (`--json` is unchanged), `task show <id>` prints one task in full, re-closing a done task is refused (CLI and MCP), and the wrap-up policy reads the brief list, rewrites the architecture narrative as one current body, and skips superseded facts. #227 passes the previous wrap-up time to `git log --since` in UTC `Z` form, since a zone-less value was read as local time and missed commits west of UTC.
-- **OpenCode 2 support and the v0.2.2 release (2026-08-28–29, PRs #201, #207, #209, #211, #213, #215, #217).** Before: `memhub doctor` only recognized the legacy `mcp.memhub` OpenCode registration, the README and repo `opencode.json` used V1 syntax, hibernated metrics/viz skills were discoverable from OpenCode, the MCP `clientInfo.name` `cli` that OpenCode V2 sends was not attributed to OpenCode, and transcript-mode wrap-up rejected OpenCode. After: doctor detects native `mcp.servers.memhub` (legacy still accepted), the guidance and config use native V2 syntax, metrics and viz are no longer registered for OpenCode, the recorded actor for that `cli` client is the normalized `opencode`, with the raw name preserved, wrap-up records structured OpenCode session provenance, and transcript mode archives the verified current session via the local export API. v0.2.2 was published 2026-08-29 and the README MSRV now says Rust 1.87+, matching `Cargo.toml`.
-- **The weekly `cargo audit` hard failure is resolved (2026-08-28, task 127).** Before: `main` was red on RUSTSEC-2026-0204 because it resolved `crossbeam-epoch` 0.9.18. After: `crossbeam-epoch` 0.9.20 resolves the hard failure and `cargo audit` now succeeds; the two warning-only advisories remain non-blocking: unmaintained `paste` (RUSTSEC-2024-0436) and the `anyhow` unsoundness advisory (RUSTSEC-2026-0190). The weekly job remains outside the required merge checks.
-- **MCP `list_pending_writes` honors its documented `pending` default (2026-07-27, PR #174).** It used to pass an omitted status through as *every* status, and because `LIMIT` applied afterwards, reviewed rows could crowd genuinely pending ones out of the window entirely. It now defaults to `pending`, adds an explicit `all` spelling, and always reports the filter actually applied.
-- **Cross-CLI verification sweep (2026-07-18, task 124, #168).** Codex checked end to end; OpenCode verified live for the first time (MCP round-trip and all 14 skills discoverable), so its support stays advertised. The one drift found — the `opencode.json` command block — was fixed and is now guarded by a skill-parity test.
-- **Branch protection on `main` is live (2026-07-18, task 121).** PRs required, with lint and Windows/macOS build+test as required checks and `enforce_admins` on.
-- **K9 removal and onboarding parity (2026-07-18, PRs #161, #162, #165).** The K9 integration subsystem is removed entirely; onboarding surfaces now offer all five current runtime toggles.
-- **Run C (2026-07-17–18, PRs #151–#156): audit remediation and CI baseline.** Maintenance-on-open codified with tests, initial CI (Windows/macOS/viz lanes + weekly `cargo audit`), the `sync_md` channel retired, four small hardenings closed, docs reconciled, and rustfmt+clippy adopted with a CI lint gate.
-- **Run B (2026-07-17, PRs #138–#142): sync divergence blind spots closed.** The logical-version digest now covers doc ingests and fact edits; adopt is fail-closed with online-backup restore; publication is atomic (content-addressed snapshot, manifest-last); `sync check --diff` shows per-table divergence.
-- **Run A (2026-07-15, PRs #124–#128).** Transcript deletion containment, export of `facts.kind`, repo-first doc default flip, dual-shell preflights, and upgrade aside-restore.
+Retrieval numbers below come from `memhub eval` on this repo's own golden set, a list of queries with known answers. Found@5 counts queries whose answer is in the top 5 hits, and rank-1 counts those whose answer is the first hit. Empty probes are queries that should return nothing confident. Recall p50 latency is the median recall time.
 
-### Known issues (non-blocking)
+- **Eval and upgrade handle a skipped machine-global memory file (2026-10-16, PR #363).** Before: eval said nothing when recall skipped the file, the recall warning printed a meaningless `0/0` count, and upgrade judged the file by `projects.schema_version`, which only ratchets upward. After: eval reports the skip in text and `--json`, the warning drops the count and its repeated advice, and upgrade reads the file's `schema_migrations` ledger instead ([details](#machine-global-memory)).
+- **Singular `time` and `item`, and quoted `of them`, no longer name a row (2026-10-16, PR #361).** Before: `decision 1 time` and `task 1 item` still pulled a named row. The `of them` check missed `fact 2 of-them` and `task 3 of "them"`, because it allowed no punctuation between the words. After: the singular unit words are skipped, and `of them` matches through any punctuation between the words. The operations reference now lists the `of them` and hyphen forms.
+- **Reading machine-global memory never migrates it, and a schema mismatch degrades recall (2026-10-12, PR #356).** Before: `recall`, `doc ls|show --global` and `global status` migrated an older file as a side effect and failed outright on a newer one. After: those reads never migrate it, and recall skips a file whose schema differs from this binary's, with a `global_store_skipped` warning ([details](#machine-global-memory)).
+- **Recall wording, comments and two named-row routing gaps (2026-10-12, PR #355).** Before: `decision 3 times`, `fact 5 items`, `task 3 of them` and `decision 2-day` each pulled a named row. The MCP tool text and code comments also left out that a returned named row suppresses the `rerank_floor_dropped_all` warning. After: those phrases name no row. The warning appears only when no row clears the rerank floor and no row named by number in the query is returned.
+- **Two-question recall queries are split and re-ranked per part (2026-10-11, PR #346).** Before: a query asking two things (`what does X measure, and where is Y set?`) was re-ranked as one string. A row that answered only one half scored low and could miss the bundle. After: when the re-ranker runs, the main query is cut at ` and ` (with or without a comma) before a question word such as `what`, `how` or `where`. Each part is gathered like a caller variant. Each pooled row is scored against the whole query and each part, and keeps the highest score as its `rerank_score`. A query with no split point, FTS-only mode and `--no-rerank` run as before. On the live golden set found@5 rose by 2 and rank-1 fell by 2. Across Retrieval Run 2 (PRs #344 to #346), found@5 without variants rose from 156 to 162 and rank-1 from 134 to 136. With variants, found@5 rose from 159 to 163 and rank-1 from 132 to 133. The empty probes did not change. Recall p50 latency fell from 628 to 242 ms without variants and from 1048 to 380 ms with them. On the held-out file the result was flat (29 to 30 and 31 to 30 of 35).
+- **A decision, task or fact named by number comes first in recall (2026-10-11, PR #345).** Before: a recall such as `what did decision 201 say` ranked the named row like any other candidate, so it could land below other rows. After: a main query containing `decision`, `task` or `fact` followed by a number (`decision 201`, `Task #99`) returns that repo row first, ahead of every other hit. The row is unflagged and exempt from the rerank floor. Only the main query is read. Plurals, `D17`-style shorthand and other words before a number do nothing. On the live golden set found@5 was unchanged and rank-1 rose by 1.
+- **Recall re-rank pool filled by retriever, with a doc chunk cap and per-passage scoring (2026-10-11, PR #344).** Before: the re-ranker pool was the top rows by blended score. A row with no word overlap with the query rarely reached it, and default-included doc chunks could crowd it out. The bundled int8 re-ranker also scored a batch together. That shifted each row's score by up to 0.25 with the rest of the pool and let memory grow with the pool (4.1 GB at 50 rows). After: the pool is filled from the vector and full-text rankings in turn. The new `[retrieval] rerank_doc_cap` (default 3) limits default-included doc chunks in it. Each passage is re-ranked on its own, so a row's `rerank_score` no longer depends on the other rows and memory stays bounded. `memhub eval retrieval --json` records the cap. On the live golden set found@5 rose from 156 to 160 without variants and from 159 to 161 with them. Rank-1 rose from 134 to 137 and from 132 to 134. Recall p50 latency fell from 638 to 247 ms and from 1073 to 379 ms.
+- **Floor-cut recall candidates fill the bundle, flagged low-confidence (2026-10-11, PR #328).** Before: candidates under the rerank floor were dropped, and only when the floor dropped every candidate did recall return the top 3 flagged. A one-row candidate pool skipped the re-ranker, so the floor never applied to it. After: floor-cut candidates fill the bundle up to `max_results`, after every hit that cleared the floor, each flagged `low_confidence`. A one-row pool is now re-ranked and floored like any other. Default-included doc chunks under the doc floor still never fill the bundle.
+- **Opt-in log of agent recall queries (2026-10-11, PR #327).** Before: real agent queries were not recorded anywhere, so new golden-set probes had to be written by hand. After: setting `[retrieval] log_queries = true` appends one JSON line per `memhub recall` and MCP recall call to `.memhub/recall_queries.jsonl`. It is off by default and holds queries in plaintext. It is never synced, exported or rotated, and a write failure never alters the recall.
+- **Live-database golden set and paired comparison for `memhub eval` (2026-10-10, PRs #308, #309).** Before: the only golden set scored a small seeded fixture in CI, so it could not tell close retrieval variants apart. The eval command reported only Recall@K, with no rank-1 count and no way to judge two runs query by query. After: `--json` output records the rank-1 pass count and the settings used. The new `memhub eval compare` pairs two saved runs and reports the queries only one run passed, with an exact McNemar p-value (a significance test on those queries). A golden query may list several acceptable answers with `also_accept`. The new file `tests/retrieval_golden_live.json` adds 190 match queries and 18 empty probes scored against this repo's own database. It is not run in CI, and the A/B procedure is in `docs/reference/operations.md`.
+- **PROJECT.md size cap, session-start hook and turn-1 read fallback (2026-10-10, PRs #288, #292, #293).** Before: PROJECT.md had no byte cap, only a `memhub state set` stderr warning above 4,000 characters. Agents also had to read it themselves at session start. After: render keeps PROJECT.md within an 8,000-byte budget by removing sections. It removes the Token Accounting section first, then session note stubs from the oldest, then the architecture section index. The Currently building state is never shortened. Every render ends with a size line giving the byte count and naming what was removed. `memhub upgrade` now installs a user-scope SessionStart hook for Claude Code and Codex (see [Session-start hook](#session-start-hook)). The turn-1 PROJECT.md read in CLAUDE.md, AGENTS.md, the routing block, the MCP instructions and the recall skills is now a fallback, skipped when the hook already put the frame in context.
+- **One-line task output drops outer whitespace too (2026-10-10, PR #279).** Before: `memhub task add " foo "` printed `Created task N:  foo ` with a trailing space. A whitespace-only title did not print `(untitled)`, and plain-list notes kept their outer spaces. After: whitespace at the outer ends of a title or plain-list notes is dropped, including any Unicode whitespace such as a no-break space. A whitespace-only title prints `(untitled)`, and whitespace-only plain-list notes print `(none)`. Spaces within a line are kept. Stored text, every `--json` output and the `task show` notes body are unchanged.
 
-- **Non-blocking transcript-archive residual races**, noted during review but not yet acted on (task 122).
+### Known issues
+
+- **Transcript-archive races (task 122).** Some residual races in the transcript archive were noted during review and are not yet fixed. They are non-blocking.
+- **A damaged machine-global file breaks some commands (task 211).** If `~/.memhub/global.sqlite` exists but is not a SQLite file, recall, `doc ls|show --global` and `global status` fail in a repo that has [machine-global memory](#machine-global-memory) enabled. Workaround: restore or delete the file, or run `memhub global disable` in that repo.
 
 ### Roadmap (open tasks)
 
-- Optional Haiku recall reranker with local fallback (task 98)
-- Transcript content-level secret redaction (task 103)
-- Metrics follow-on read attribution (task 92)
-- Bring OpenCode back into Orch Delivery (task 151)
-- MCP 2026-07-28 migration (task 139)
-- Pi 5 recall benchmark (task 138)
-- Fact retire and doc archive (task 156)
+- A stronger embedding model, then a re-ranker upgrade (Retrieval Run 4; tasks 200 and 207)
+- Language guide stores and `memhub guides` (task 209)
+- Faster MCP startup (task 157)
+- MCP tool annotations (task 179)
+- On supersede, list other rows that still state the old value (task 180)
+- A verification field and confidence class on proposals (task 181)
+- Retire facts and archive docs without deleting them (task 156)
 - Bound `PROJECT_LEDGER.md` and render backups (task 158)
+- Migrate to the MCP 2026-07-28 spec revision (task 139)
+- Bring OpenCode back into Orch Delivery, the tooling this repo uses to ship changes (task 151)
+- Benchmark hybrid recall on a Raspberry Pi 5 (task 138)
+- Optional Haiku re-ranker with a local fallback (task 98)
+- Secret redaction in archived transcripts (task 103)
+- Read attribution for metrics (task 92)
 
 </details>
 
@@ -568,23 +570,21 @@ memhub render
 | **state / arch** | The "currently building" and architecture narratives | Agent at wrap-up | Yes — agent-authored but explicit |
 | **reference docs** | External markdown you point it at: specs, contracts, style guides | You (you hand it a file) | Yes — auto-joins default recall after first ingest |
 
-The rule behind the table: things that could be *wrong* — facts that might be outdated, decisions that might be misattributed — need a human in the loop. Ephemeral or observational things write directly.
-
-When an agent proposal gets staged, the source is recorded as e.g. `agent:claude-code`. When you accept it at `/wrap-up`, that upgrades to `user+agent:claude-code` — both signals preserved, so you can always tell what was verified.
+The rule behind the table: things that could be *wrong* need a human in the loop. That covers facts that might be outdated and decisions that might be misattributed. Ephemeral or observational things write directly.
 
 ---
 
-## Point it at your design docs
+## Search your design docs
 
-Sometimes what the agent needs is sitting in an existing file — a design spec, an API contract, a style guide. Don't paste it into prompts or hand-transcribe it into facts:
+Sometimes what the agent needs is already in a file: a design spec, an API contract, a style guide. Don't paste it into prompts or hand-transcribe it into facts:
 
 ```bash
 memhub doc add ~/specs/design-system.md
 ```
 
-memhub splits the file into section-aware chunks (heading breadcrumbs preserved, so a hit knows it came from *Typography > Design Tokens*), embeds them, and makes the whole thing searchable through the same recall path as everything else.
+memhub splits the file into section-aware chunks (heading breadcrumbs preserved, so a hit knows it came from *Typography > Design Tokens*), embeds them, and searches them through the same recall path as everything else.
 
-**After the first `doc add` in a repo, relevant chunks surface in plain recall automatically.** A relevance threshold keeps it from being noisy: a UI style guide stays silent on a backend query, but a question about color tokens pulls the right spec section. When chunks don't clear the bar, recall reports an `available_docs` count — your cue to run a targeted query:
+**After the first `doc add` in a repo, relevant chunks surface in plain recall automatically.** A relevance threshold keeps it quiet. A UI style guide stays silent on a backend query, but a question about color tokens pulls the right spec section. When chunks don't clear the bar, recall reports an `available_docs` count. That is your cue to run a targeted query:
 
 ```bash
 memhub recall "color token naming" --source-type doc
@@ -592,23 +592,25 @@ memhub recall "color token naming" --source-type doc
 
 Worth knowing:
 
-- Docs are excluded from `memhub export` — they're file-backed and re-ingestable. Re-run `doc add` on another machine.
-- Re-ingesting an unchanged file is a no-op; changed content replaces every chunk in place.
-- `memhub doc ls / show / rm` to manage what's ingested.
+- Docs are excluded from `memhub export`. They are file-backed, so re-run `doc add` on another machine.
+- Re-ingesting an unchanged file is a no-op, and changed content replaces every chunk in place.
+- `memhub doc ls / show / rm` manage what's ingested, and the `/doc` skill wraps `doc add`.
 - Set `include_docs_in_default = false` in config for strict opt-in.
+
+Details: [operations reference](docs/reference/operations.md#doc-ingestion).
 
 ---
 
 ## Find where code lives
 
-Memory answers "what did we decide?" Sometimes the question is "*where is the code that does X?*" memhub builds a local **code index** for that: it walks your repo, splits each source file into symbol-aware chunks via tree-sitter, embeds them, and lets you search by intent:
+Memory answers "what did we decide?" Sometimes the question is "*where is the code that does X?*" memhub builds a local **code index** for that. It walks your repo, splits each source file into symbol-aware chunks with tree-sitter (a code parser), embeds them, and lets you search by intent:
 
 ```bash
 memhub code index                 # build / refresh the index
 memhub locate "where does the retry backoff happen"
 ```
 
-You get ranked breadcrumbs — path, line range, symbol, and a **clipped** snippet, not a wall of code:
+You get ranked breadcrumbs: path, line range, symbol, and a **clipped** snippet, not a wall of code:
 
 ```
 1. src/net/client.rs:88-121   fn send_with_retry      (score 0.91)
@@ -617,20 +619,20 @@ You get ranked breadcrumbs — path, line range, symbol, and a **clipped** snipp
 2. src/config/retry.rs:12-19   struct RetryPolicy      (score 0.74)
 ```
 
-It's a **locator, not a reader** — you (or the agent) open those exact lines with your own tools. What keeps it honest and cheap:
+It's a **locator, not a reader**. You (or the agent) open those exact lines with your own tools. What keeps it honest and cheap:
 
-- **Symbol-aware** in Rust, Go, Python, TypeScript/JavaScript, Java, and C#; non-source files (docs, lockfiles, config) are excluded so prose can't out-rank code.
-- **Separate from your memory** — a sibling database (`.memhub/code_index.sqlite`) with its own query path; it never pollutes recall.
-- **A throwaway cache** — gitignored, never exported or synced; `memhub code rm` and rebuild anytime.
-- **Automatically fresh** — every `locate` does a lazy staleness check; edited files re-chunk transparently.
+- **Symbol-aware** in Rust, Go, Python, TypeScript/JavaScript, Java, and C#. Non-source files (docs, lockfiles, config) are excluded so prose can't out-rank code.
+- **Separate from your memory.** It lives in a sibling database (`.memhub/code_index.sqlite`) with its own query path, so it never pollutes recall.
+- **A throwaway cache.** It is gitignored and never exported or synced. `memhub code rm` and rebuild anytime.
+- **Automatically fresh.** Every `locate` does a lazy staleness check, and edited files re-chunk transparently.
 
-Surfaces: `memhub code index|status|rm` and `memhub locate` (CLI) · `memhub.locate` (MCP) · `/locate` (skill).
+Surfaces: `memhub code index|status|rm` and `memhub locate` (CLI) · `memhub.locate` (MCP) · `/locate` (skill). Details: [operations reference](docs/reference/operations.md#code-index).
 
 ---
 
 ## One machine, many projects
 
-memhub is per-repo. Every project gets its own `.memhub/project.sqlite` — isolated, no leakage between projects. (The one deliberate exception is the opt-in machine-global store below, and even that never merges repo databases.)
+memhub is per-repo, so every project gets its own isolated `.memhub/project.sqlite`. The one exception is opt-in [machine-global memory](#machine-global-memory), which never merges repo databases.
 
 ```
 ~/code/
@@ -646,21 +648,21 @@ The binary installs once at `~/.cargo/bin/memhub`. To add a project: `cd` in, `m
 
 ---
 
-## Shared memory across repos (optional)
+## Machine-global memory
 
-Some knowledge isn't about *this* repo — it's about this machine, or how you work everywhere: toolchain versions, install commands, a standing rule like "always integration-test against a real database." That's the machine-global store: a second SQLite at `~/.memhub/global.sqlite`, shared by every repo on this machine. The global-vs-repo `CLAUDE.md` idea — made retrievable instead of always-loaded.
+Some knowledge isn't about *this* repo. It is about this machine, or how you work everywhere: toolchain versions, install commands, a standing rule like "always integration-test against a real database." Machine-global memory is a second SQLite file at `~/.memhub/global.sqlite`, shared by every repo on this machine. It is the global-vs-repo `CLAUDE.md` idea, made retrievable instead of always loaded.
 
-**Off by default, per-repo opt-in.** When disabled, recall for a query without variants is byte-for-byte identical to a build without the feature.
+**Off by default, per-repo opt-in.** When it is disabled, recall for a query without variants is byte-for-byte identical to a build without the feature. The setting is `[global] enabled` in `.memhub/config.toml`, which `memhub global enable` and `disable` manage. It is per-machine, so the tracked `.memhub/config.example.toml` baseline ships `false`.
 
 ```bash
-memhub global enable     # opt this repo in; create the store if absent
+memhub global enable     # opt this repo in; create the file if absent
 memhub global status     # path, schema version, counts
 memhub global disable    # opt back out (non-destructive)
 ```
 
-**What belongs in it** — only the broadly-applicable kind of facts, decisions, and docs: machine/toolchain truths, standing engineering policy, a universal style guide. Never: tasks, narratives, or anything naming a repo-specific path.
+**What belongs in it** is only the broadly applicable kind of facts, decisions, and docs: machine and toolchain truths, standing engineering policy, a universal style guide. Never tasks, narratives, or anything naming a repo-specific path.
 
-**Writing to it is always a deliberate human action** — born-global from the CLI, or promoted from an existing repo row (**copy, not move**; the repo row stays and still wins locally):
+**Writing to it is always a deliberate human action.** Write it born-global from the CLI, or promote an existing repo row (**copy, not move**; the repo row stays and still wins locally):
 
 ```bash
 memhub fact add ci-runner "self-hosted, 16 vCPU" --global
@@ -671,43 +673,44 @@ memhub fact promote 12 --global
 memhub decision promote 8 --global
 ```
 
-**An agent can never write global on its own.** Its only route is a staged proposal (`propose_fact` / `propose_decision` with `global=true`) that becomes durable only when you run `memhub review accept`. One bad global write would poison every repo on the machine, so this path is deliberately never agent-automatic.
+**An agent can never write to it on its own.** Its only route is a staged proposal (`propose_fact` / `propose_decision` with `global=true`) that becomes durable only when you run `memhub review accept`. One bad write would poison every repo on the machine, so this path is deliberately never agent-automatic. MCP `doc_add` has no `global` parameter.
 
-**Recall merges, then you arbitrate.** Global hits blend with repo hits in one re-ranked pool; every hit carries a `scope` of `"repo"` or `"global"`, and the agent applies **repo-overrides-global** — exactly how a repo `CLAUDE.md` overrides the global one. The store inherits the active repo's `[retrieval]` config, is per-machine, and is not part of `memhub export`. `/global` wraps all of this.
+**Recall merges, then you arbitrate.** Machine-global hits blend with repo hits in one re-ranked pool. Every hit carries a `scope` of `"repo"` or `"global"`, and the agent applies **repo-overrides-global**, exactly as a repo `CLAUDE.md` overrides the global one. The file inherits the active repo's `[retrieval]` config, including `include_docs_in_default`, which alone decides whether machine-global docs join that repo's default recall. It is per-machine and is not part of `memhub export`. `/global` wraps all of this.
+
+**Reads never migrate it.** If the file's schema differs from the binary's, recall skips it, returns the repo's rows, and warns. Run `memhub upgrade` to bring it up to date. Only `upgrade` and the global write commands migrate it.
+
+Details: [operations reference](docs/reference/operations.md#machine-global-memory).
 
 ---
 
-## Moving between machines
+## Back up and move your memory
 
-memhub state is machine-local by default — only code and migrations travel with the repo. To carry memory over once:
+memhub state is machine-local by default: only code and migrations travel with the repo. `memhub export` writes a portable, version-tagged JSON backup. The same file restores after a loss or carries your memory to a new machine, once you move it by Drive, USB, or scp.
 
 ```bash
-# on your current machine
-memhub export ~/memhub-myproject-backup.json
-
-# move the file (Drive, USB, scp)
-
-# on the new machine, after cloning the repo + installing memhub
-memhub init --from-backup ~/memhub-myproject-backup.json
-memhub index rebuild   # re-generate embeddings from the imported rows
+memhub export ./memhub-backup.json     # on the current machine
+memhub init --from-backup <path>       # new machine, after cloning the repo and installing memhub: init + restore in one shot
+memhub import <path>                   # restore into an existing repo
+memhub import <path> --force           # overwrite live data
+memhub index rebuild                   # re-generate embeddings from the imported rows
 ```
 
-The export is versioned JSON covering facts, decisions, tasks, commands, pending writes, writes log, session notes, and both narratives. Embeddings, ingested docs, and the machine-global store are excluded — re-derive or re-add them on the target machine.
+Export covers facts, decisions, tasks, commands, pending writes, writes_log, session notes, and both narrative tables. Embeddings, ingested docs, and machine-global memory are excluded. After an import, run `memhub index rebuild`, re-run `memhub doc add` for reference docs, and re-add machine-global rows on the new machine. To keep two of your own machines in step without moving files by hand, use [sync](#cross-machine-sync). Details: [operations reference](docs/reference/operations.md#cross-machine-workflow).
 
 ---
 
-## Sync across your machines (Google Drive)
+## Cross-machine sync
 
-The export/import dance above works, but it's manual. Sync automates it: your repo's memory follows you between *your own* machines (one person, not a team) through a folder that's already syncing. The model is animated [above](#sync-between-your-machines); the guardrails worth knowing:
+Sync moves your repo's memory between *your own* machines (one person, not a team). It uses a folder that already syncs, such as Google Drive for Desktop or an rclone mount. memhub never makes a network call: it only reads and writes a local path. A push writes one whole-database snapshot, manifest last, so another machine never sees a half-finished push. A pull compares content digests and reports one of five verdicts. The model is animated [above](#sync-between-your-machines).
 
-- **`diverged` is the one lossy case.** If both machines changed since the last sync, adopting the remote copy discards this machine's local-only changes — memhub shows both logical versions and requires an explicit yes; it never adopts automatically.
-- **Adopt is guarded.** It writes a backup under `.memhub/backups/sync/` first, and refuses outright on a project-id mismatch, a snapshot from a newer memhub schema (run `memhub upgrade` first), or a checksum that disagrees with the manifest.
+- **`diverged` is the one lossy case.** If both machines changed since the last sync, adopting the remote copy discards this machine's local-only changes. memhub shows both versions, requires an explicit yes, and never adopts automatically.
+- **Adopt is guarded.** It writes a backup under `.memhub/backups/sync/` first. It refuses outright on a project-id mismatch, a snapshot from a newer memhub schema (run `memhub upgrade` first), or a checksum that disagrees with the manifest.
 
 ### Prerequisites
 
-1. **A synced folder on every machine.** Install Google Drive for Desktop (macOS/Windows) or set up an rclone mount (Linux), and note the local path — e.g. `G:\My Drive\memhub-sync` on Windows. A leading `~` in `drive_subpath` expands to the home directory.
+1. **A synced folder on every machine.** Install Google Drive for Desktop (macOS/Windows) or set up an rclone mount (Linux), and note the local path, such as `G:\My Drive\memhub-sync` on Windows. A leading `~` in `drive_subpath` expands to the home directory.
 
-   > **Linux / rclone — advanced users only.** Google doesn't ship Drive for Desktop on Linux, so you mount Drive yourself with [rclone](https://rclone.org/). It works, but it's genuinely fiddly (OAuth config, a FUSE mount, keeping it alive across reboots). If that's not your thing, skip sync on Linux and use `memhub export` / `import` by hand.
+   > **Linux and rclone are for advanced users.** Google doesn't ship Drive for Desktop on Linux, so you mount Drive yourself with [rclone](https://rclone.org/). It works, but it is fiddly: OAuth config, a mount that has to stay up across reboots. If that's not for you, skip sync on Linux and use `memhub export` / `import` by hand.
 
    ```bash
    rclone config                                   # one-time: add a "gdrive" remote
@@ -716,15 +719,15 @@ The export/import dance above works, but it's manual. Sync automates it: your re
    ls ~/gdrive/My\ Drive/memhub-sync               # confirm the folder is visible
    ```
 
-   Then set `drive_subpath = "~/gdrive/My Drive/memhub-sync"` (matching the other machines). The mount must be live whenever you sync; for an unattended box, a systemd user unit keeps it up across reboots.
+   Then set `drive_subpath = "~/gdrive/My Drive/memhub-sync"` (matching the other machines). The mount must be live whenever you sync. For an unattended box, a systemd user unit keeps it up across reboots.
 
-2. **memhub on PATH on each machine** (Quickstart above), with the same repo cloned.
+2. **memhub on PATH on each machine** ([Quickstart](#quickstart)), with the same repo cloned.
 3. **A git remote on the repo** (the project id derives from it), *or* an explicit `[sync] project_id` in `.memhub/config.toml`.
 
-### Step by step
+### Set up
 
 ```bash
-# --- once per repo, on each machine ---
+# once per repo, on each machine
 memhub sync enable                       # opt this repo in
 # then set the absolute synced-folder path in .memhub/config.toml:
 #   [sync]
@@ -732,28 +735,31 @@ memhub sync enable                       # opt this repo in
 memhub sync status                       # confirms enablement + the resolved remote dir
 ```
 
-memhub resolves the snapshot location as `<drive_subpath>/memhub/<project_id>` — you never hand-build that path.
+memhub resolves the snapshot location as `<drive_subpath>/memhub/<project_id>`, so you never hand-build that path.
+
+### Push and pull
 
 ```bash
-# --- push (end of a session on machine A) ---
-memhub sync snapshot                     # write DB snapshot + manifest into the folder
-memhub sync commit                       # record the baseline
+# push (end of a session on machine A)
+memhub sync snapshot                     # write the DB snapshot + manifest into the folder
 
-# --- pull (start of a session on machine B) ---
-memhub sync check                        # prints the verdict (drive-ahead / diverged / ...)
+# pull (start of a session on machine B)
+memhub sync check                        # print the verdict (drive-ahead / diverged / ...)
 memhub sync adopt --yes                  # replace local with the snapshot (--yes = confirm gate)
 memhub render                            # refresh the local PROJECT.md view
 ```
 
-**You rarely type these by hand.** `/catch-up` (session start) runs the check, summarizes what's incoming, and adopts only after you approve; `/wrap-up` (session end) pushes if sync is enabled. The everyday loop is just those two commands — give Google's app a moment to finish syncing between machines.
+A snapshot into the resolved folder records the push baseline itself. `memhub sync commit` only verifies or repairs that baseline.
+
+**You rarely type these by hand.** `/catch-up` (session start) runs the check, summarizes what's incoming, and adopts only after you approve. `/wrap-up` (session end) pushes if sync is enabled. Give Google's app a moment to finish syncing between machines.
 
 ### Surfaces
 
 - **CLI:** `memhub sync enable | disable | status | snapshot | check | adopt | commit`
-- **MCP (agent-first):** `memhub.sync_status`, `.sync_snapshot`, `.sync_check`, `.sync_commit`, `.sync_adopt` — all default to the canonical path; `sync_adopt` without `confirm=true` returns the would-change verdict and changes nothing
+- **MCP (agent-first):** `memhub.sync_status`, `.sync_snapshot`, `.sync_check`, `.sync_commit`, `.sync_adopt`. All default to the canonical path. `sync_adopt` without `confirm=true` returns the would-change verdict and changes nothing.
 - **Skills:** `/catch-up` (pull) and the push tail of `/wrap-up`
 
-Sync state (`[sync]` config and the per-machine baseline marker) is wiring, not memory — it's not part of `memhub export`.
+Sync state (the `[sync]` config and the per-machine baseline marker) is wiring, not memory, so it's not part of `memhub export`. Details: [operations reference](docs/reference/operations.md#cross-machine-drive-sync).
 
 ---
 
@@ -775,132 +781,59 @@ Sync state (`[sync]` config and the per-machine baseline marker) is wiring, not 
 | `memhub arch set/show` | The architecture narrative |
 | `memhub ingest-git` | Pull commit + file history into the DB |
 | `memhub doc add/ls/rm/show` | Ingest external markdown docs; scope recall with `--source-type doc` |
-| `memhub locate <query>` | Find code by intent — ranked `file:line` breadcrumbs from the sibling code index |
+| `memhub locate <query>` | Find code by intent: ranked `file:line` breadcrumbs from the sibling code index |
 | `memhub code index/status/rm` | Build / inspect / drop the local code index (`.memhub/code_index.sqlite`) |
-| `memhub global enable/disable/status` | Opt this repo into the optional machine-wide store (`~/.memhub/global.sqlite`) |
+| `memhub global enable/disable/status` | Opt this repo into optional machine-global memory (`~/.memhub/global.sqlite`) |
 | `memhub review list/accept/reject` | Triage agent-proposed writes |
-| `memhub render` | Emit local `PROJECT.md` (state, architecture section index, session note stubs; both may be dropped to keep it within its size budget) and `PROJECT_LEDGER.md` from the DB |
+| `memhub render` | Emit local `PROJECT.md` (state, architecture section index, session note stubs; the index and stubs may be dropped to keep it within its size budget) and `PROJECT_LEDGER.md` from the DB |
 | `memhub index status/rebuild` | Embedding coverage; backfill for `fts → hybrid` migrations |
 | `memhub eval retrieval` | Run the Recall@K harness against `tests/retrieval_golden.json` |
 | `memhub eval locate` | Recall@K harness for the code locator |
 | `memhub stats --window 7d` | Write activity by actor, review rate, stale-fact counts |
 | `memhub metrics enable/status` | Hibernated; available only in an explicit `--features metrics` build |
-| `memhub export/import` | Portable JSON backup; cross-machine restore |
-| `memhub sync enable/status/snapshot/check/adopt/commit` | Cross-machine Drive sync (M10); push/pull a whole-DB snapshot through a synced folder |
-| `memhub upgrade` | Rebuild + install the binary and bring every memhub instance on this machine to head schema; resync skill wrappers; install the [session-start hook](#session-start-hook) (`--no-hooks` skips it) |
+| `memhub export/import` | Portable JSON backup and restore ([Back up and move your memory](#back-up-and-move-your-memory)) |
+| `memhub sync enable/status/snapshot/check/adopt/commit` | Cross-machine sync of a whole-database snapshot ([Cross-machine sync](#cross-machine-sync)) |
+| `memhub upgrade` | Rebuild + install the binary and bring every memhub instance on this machine to head schema; resync skills; install the [session-start hook](#session-start-hook) (`--no-hooks` skips it) |
 | `memhub gc` | Reclaim stale Cargo build artifacts (memhub-owned `target/` rlibs and test binaries) |
 | `memhub serve` | Stdio MCP server for Claude Code / Codex / OpenCode |
 
-`fact add`, `decision add`, and `doc add` take `--global`; `fact promote <id> --global` and `decision promote <id> --global` copy an existing repo row up into the machine-wide store. Run any command with `--help` for flags.
+Run any command with `--help` for flags. The `--global` flags are explained under [Machine-global memory](#machine-global-memory).
 
-### Two retrieval modes
+### Retrieval modes
 
-Both are first-class; the install prompt asks you to pick one.
-
-| | **`fts`** (default) | **`hybrid`** (recommended) |
-|---|---|---|
-| Scoring | FTS5 BM25 over title + body | 0.5 × FTS + 0.5 × cosine − 0.3 × stale_penalty, then re-ranked |
-| What it catches | Exact terms, stemmed variants | Exact + paraphrases (`"compile a release"` → `release_build` fact) |
-| Per-write cost | 0 ms | ~50 ms eager-embed inside the source-write transaction |
-| Per-recall cost | <10 ms | About 240 ms (brute-force cosine + a re-ranker that scores each pool passage on its own); about 380 ms with variants. Medians of the live-set A/B at pool 20 on one machine |
-| Disk footprint | None beyond source rows | ~1.5 KB per row (384-dim f32 vector) |
-| Network | Never | Never. Model is bundled. |
-| Best for | Small projects, scripted use | Multi-month projects where you forget exact wording |
-
-**Switching modes is non-destructive.** `fts → hybrid` needs one `memhub index rebuild`; `hybrid → fts` just stops consulting embeddings.
-
-The `[retrieval]` block in `.memhub/config.toml`:
-
-```toml
-[retrieval]
-mode = "hybrid"                  # "fts" | "hybrid"
-default_max_results = 6
-accepted_only_by_default = false # filter to source IN ('user', 'user+agent:%')
-include_stale_by_default = false # hide stale facts unless asked
-
-[retrieval.scoring]
-fts_weight = 0.5
-vector_weight = 0.5
-stale_penalty = 0.3
-
-[global]
-enabled = false                  # opt-in via `memhub global enable`
-```
-
-`[global] enabled` is managed by `memhub global enable` / `disable` — it's per-machine, so the tracked `.memhub/config.example.toml` baseline ships `false`. The machine-global store has no `[retrieval]` block of its own; it inherits the active repo's, including `[retrieval] include_docs_in_default`, which alone decides whether global docs join that repo's default recall.
+memhub has two retrieval modes, and the install prompt asks you to pick one. Set `mode` under `[retrieval]` in `.memhub/config.toml`. The default, `fts`, is keyword search only: fast, free per write, and enough for small projects. The recommended `hybrid` adds meaning-based search and the re-ranker, so it also catches paraphrases ("compile a release" finds the `release_build` fact). It costs about 50 ms per write, about 240 ms per recall, and about 1.5 KB of vectors per row. Switching is non-destructive: `fts → hybrid` needs one `memhub index rebuild`, and `hybrid → fts` just stops consulting embeddings. Neither mode touches the network. Weights, floors and the other keys are in the [operations reference](docs/reference/operations.md#retrieval-modes-and-configuration).
 
 ### Compatibility
 
 **Claude Code**
 
 - Reads `CLAUDE.md` at session start.
-- Gets this repo's `PROJECT.md` at session start from the user-scope hook `memhub upgrade` installs in `~/.claude/settings.json` — see [Session-start hook](#session-start-hook).
-- MCP server registered repo-scoped via the committed [`.mcp.json`](.mcp.json) — nothing to set up per machine.
-- User-level slash commands at `~/.claude/commands/`: `/wrap-up`, `/catch-up`, `/check-init`, `/init-project`, `/recall`, `/locate`, `/reindex`, `/eval-recall`, `/doc`, `/global`, `/audit-md`, `/upgrade`. The dormant `/metrics` template is retained for feature builds but not installed by default.
-- Skill writes are attributed `actor=claude:wrap-up`, `source=user+agent:claude-code`.
+- MCP server registered repo-scoped via the committed [`.mcp.json`](.mcp.json), so there is nothing to set up per machine in this repo.
+- User-level skills at `~/.claude/commands/`: `/wrap-up`, `/catch-up`, `/check-init`, `/init-project`, `/recall`, `/locate`, `/reindex`, `/eval-recall`, `/doc`, `/global`, `/audit-md`, `/upgrade`. The hibernated `/metrics` template is retained for feature builds but not installed by default.
 
 **Codex CLI**
 
 - Reads `AGENTS.md` at session start (same role as `CLAUDE.md`).
-- Gets this repo's `PROJECT.md` at session start from the user-scope hook `memhub upgrade` installs in `~/.codex/hooks.json`, once you approve it in Codex's `/hooks` screen — see [Session-start hook](#session-start-hook).
 - User-level skills at `~/.codex/skills/`: same set as above.
-- Codex has no repo-scoped MCP config, so registration is a one-time **per-machine** step in `~/.codex/config.toml` — see [Register the MCP server](#register-the-mcp-server).
-- Skill writes are attributed `actor=codex:wrap-up`, `source=user+agent:codex`.
+- Codex has no repo-scoped MCP config, so registration is a one-time **per-machine** step in `~/.codex/config.toml`. See [Register the MCP server](#register-the-mcp-server).
 
 **OpenCode CLI**
 
 - Reads `AGENTS.md` at session start (same role as Codex).
-- No session-start hook: OpenCode has no config-only one, so `memhub upgrade` installs nothing for it — see [Session-start hook](#session-start-hook).
-- User-level skills at `~/.config/opencode/skills/` and command wrappers at `~/.config/opencode/commands/`: same set as above.
-- MCP server registered repo-scoped via the `mcp.servers.memhub` block in the tracked `opencode.json` — nothing to set up per machine.
-- Skill writes are attributed `actor=opencode:wrap-up`, `source=user+agent:opencode`.
-- The OpenCode wrap-up reads and verifies the current `Session.Info` through `opencode2 api`, then stores its session/agent/provider/model/variant values as optional structured fields on the session note only; those values do not change the actor or source above.
+- User-level skills at `~/.config/opencode/skills/`, plus one command file per skill at `~/.config/opencode/commands/`: same set as above.
+- MCP server registered repo-scoped via the `mcp.servers.memhub` block in the tracked `opencode.json`, so there is nothing to set up per machine in this repo.
+- The OpenCode `/wrap-up` skill reads and verifies the current `Session.Info` through `opencode2 api`. It then stores its session/agent/provider/model/variant values as optional structured fields on the session note only. Those values do not change the actor or source.
 - Set the optional root `model` in `opencode.json(c)` for a default, or select one run with `opencode2 run --model provider/model#variant` (short form `-m provider/model#variant`). If no configured default is available, OpenCode can fall back to an available supported model.
 
-**All three at once**
-
-Same DB, same rows. Every write is tagged, so you always know who surfaced what:
-
-```text
-source                      Meaning
-────────────────────────────────────────────────────────────────────
-user                        You typed `memhub fact add` directly
-agent:codex                 Codex proposed it (still in pending_writes)
-agent:claude-code           Claude proposed it
-agent:opencode              OpenCode proposed it
-user+agent:codex            Codex surfaced via /wrap-up, you approved
-user+agent:claude-code      Same, Claude-side
-user+agent:opencode         Same, OpenCode-side
-git                         Reserved for git ingestion
-observed                    Reserved for observed signals
-```
+All three share one database, and every write is tagged with who surfaced it (see [Attribution](#attribution)).
 
 ### Session-start hook
 
-`memhub upgrade` installs a user-scope SessionStart hook so Claude Code and Codex get this repo's `PROJECT.md` frame at session start without the agent having to read it. The hook runs `memhub hook session-start` (hidden from `memhub --help`), which prints the current repo's rendered `PROJECT.md` to stdout, byte for byte, and nothing else. Outside a memhub repo, or when the repo's config or `PROJECT.md` can't be read, it prints nothing and exits 0. It never opens the database or writes a file, so it prints what the last `memhub render` wrote.
+`memhub upgrade` installs a user-scope SessionStart hook for Claude Code (in `~/.claude/settings.json`) and Codex (in `~/.codex/hooks.json`), so each gets this repo's `PROJECT.md` frame at session start without reading it. The hook runs the hidden command `memhub hook session-start`, which prints the last rendered `PROJECT.md` and nothing else, and prints nothing outside a memhub repo. Codex runs a new hook only after you approve it once in its `/hooks` screen. OpenCode has no config-only session-start hook, so upgrade installs nothing for it. `memhub upgrade --no-hooks` skips the step. Details: [operations reference](docs/reference/operations.md#machine-wide-upgrade).
 
-Upgrade merges one entry into each of two files:
+### Attribution
 
-- `~/.claude/settings.json`, matcher `startup|resume|clear|compact`, handler `{"type": "command", "command": "memhub hook session-start", "timeout": 30}`
-- `~/.codex/hooks.json`, matcher `startup|resume`, handler `{"type": "command", "command": "memhub hook session-start", "timeout": 30, "additionalContextLimit": 4000}`
-
-The Codex handler carries `additionalContextLimit` because Codex's default limit is about 2,500 tokens per hook output (past that it saves the full text to a file and shows the model only a head-and-tail preview), and `PROJECT.md` is capped at 8,000 bytes, which sits near that. The Claude Code handler doesn't need it. If an existing memhub entry in `~/.codex/hooks.json` lacks the field (before #300 the Codex handler was written without it), upgrade adds it, and Codex asks for `/hooks` approval again because the hook changed.
-
-Upgrade only acts on an agent whose directory exists: if `~/.claude` or `~/.codex` doesn't exist, that row is reported as skipped (for example `skipped (no ~/.codex)`) and nothing is created for that agent, so `memhub doctor`'s verdict for that agent is unchanged (its Codex check keys on `~/.codex` existing; its Claude Code check reads the repo's `.mcp.json` and `~/.claude.json`, not `~/.claude`). Inside an existing directory, a missing file is created. Every other setting and hook in those files keeps its value (key order may change), the write is atomic, and an existing memhub entry is never duplicated. A file that isn't valid JSON, or that memhub can't write (for example read-only), is left untouched and the report says the hook was not installed there. If you delete the memhub entry, later upgrades leave it out and say so. `memhub upgrade --no-hooks` skips the step; `memhub upgrade --dry-run` reports which entries it would add or update without writing either file. The first upgrade from a binary older than this change can't take `--no-hooks` (the old binary rejects the flag); to skip the hook then, run `cargo install --path .` in the memhub source repo first, then `memhub upgrade --no-hooks`.
-
-- **Codex:** Codex runs a new hook only after you approve it once in its `/hooks` screen. The upgrade report tells you to whenever it adds the Codex entry.
-- **OpenCode:** not supported. OpenCode has no config-only session-start hook (it would need a TypeScript plugin), so upgrade installs nothing for it.
-
-Details: [Operations reference](docs/reference/operations.md), "Machine-wide upgrade".
-
-### Attribution in depth
-
-Two columns split the work:
-
-- `source` on `facts` and `decisions` — *origin of the claim*: `user`, `agent:<id>`, `user+agent:<id>`, `git`, `observed`.
-- `actor` on `writes_log` and `pending_writes` — *who performed the write*: free-form, e.g. `cli:user`, `claude:wrap-up`.
-
-When you accept a pending proposal via `memhub review accept`, the durable row's `source` becomes `user+agent:<actor>` automatically.
+Every write records two things. `source` on facts and decisions says where a claim came from (`user`, `agent:<id>`, `user+agent:<id>`, `git`, `observed`), and `actor` on the write log says who performed the write (free-form, such as `cli:user` or `claude:wrap-up`). An agent proposal is staged as `agent:<id>`, such as `agent:claude-code`. When you accept it with `memhub review accept` or at `/wrap-up`, it becomes `user+agent:<id>`, so you can always tell what was verified. Each skill's writes carry its own actor and source, and the full vocabulary is in the [operations reference](docs/reference/operations.md#attribution).
 
 ### MCP server
 
@@ -908,17 +841,36 @@ When you accept a pending proposal via `memhub review accept`, the durable row's
 
 - **Read:** `status`, `search`, `recall`, `locate`, `list_tasks`, `list_decisions`, `list_facts`, `list_pending_writes`, `get_command`
 - **Write (direct):** `task_add`, `task_done`, `record_command`, `log_session_note`, `render`
-- **Write (staged for review):** `propose_fact`, `propose_decision` — both take an optional `global` flag; a `global=true` proposal only becomes durable in `~/.memhub/global.sqlite` on human `memhub review accept`. (`doc_add` has no `global` parameter.)
-- **Cross-machine sync (M10):** `sync_status`, `sync_snapshot`, `sync_check`, `sync_commit`, `sync_adopt` — all default to the canonical `<drive_subpath>/memhub/<project_id>` folder; `sync_adopt` without `confirm=true` returns the would-change verdict and changes nothing.
+- **Write (staged for review):** `propose_fact`, `propose_decision`, both with an optional `global` flag (see [Machine-global memory](#machine-global-memory)).
+- **Sync:** the five `sync_*` tools (see [Cross-machine sync](#cross-machine-sync)).
 
 #### Register the MCP server
 
-This repo ships repo-scoped registration for the two CLIs that support it — nothing to do:
+In a checkout of this repo, registration for the two CLIs that support repo scope is already committed, so there is nothing to do:
 
-- **Claude Code** — committed [`.mcp.json`](.mcp.json) at the repo root (`mcpServers.memhub`).
-- **OpenCode** — the `mcp.servers.memhub` block in the tracked [`opencode.json`](opencode.json).
+- **Claude Code**: the committed [`.mcp.json`](.mcp.json) at the repo root (`mcpServers.memhub`).
+- **OpenCode**: the `mcp.servers.memhub` block in the tracked [`opencode.json`](opencode.json).
 
-**Codex** has no repo scope, so it's a one-time **per-machine** step — append to `~/.codex/config.toml` (not committed):
+In any other repo, register it once per machine. For Claude Code, run `claude mcp add memhub -- memhub serve` (add `--scope user` to make it available across your sessions).
+
+For OpenCode, merge only the `mcp.servers.memhub` block into `~/.config/opencode/opencode.json` (or `opencode.jsonc`, whichever exists):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "memhub": {
+        "type": "local",
+        "command": ["memhub", "serve"],
+        "disabled": false
+      }
+    }
+  }
+}
+```
+
+**Codex** has no repo scope, so it's a one-time **per-machine** step. Append this to `~/.codex/config.toml` (not committed):
 
 ```toml
 [mcp_servers.memhub]
@@ -932,26 +884,15 @@ trust_level = "trusted"
 # macOS/Linux: [projects."/absolute/path/to/this/repo"]
 ```
 
-The `[projects.*]` table has to be re-added on every machine (and after a repo move/rename). Without a trust entry, Codex runs the repo under its untrusted-project posture and the MCP-first skill instructions won't reliably fire — if you've already accepted Codex's trust prompt for this folder, that entry already exists.
+The `[projects.*]` table has to be re-added on every machine (and after a repo move or rename). Without a trust entry, Codex runs the repo under its untrusted-project posture and the MCP-first skill instructions won't reliably fire. If you've already accepted Codex's trust prompt for this folder, that entry already exists.
 
 Run `memhub doctor` (or `--json`) anytime to confirm registration status per CLI.
 
-### Backup and restore
-
-```bash
-memhub export ./memhub-backup.json     # portable, version-tagged JSON
-memhub init --from-backup <path>       # init + restore in one shot
-memhub import <path>                   # restore into an existing repo
-memhub import <path> --force           # overwrite live data
-```
-
-Export covers facts, decisions, tasks, commands, pending writes, writes_log, session notes, and both narrative tables. Embeddings and ingested docs are excluded; run `memhub index rebuild` after import and re-run `memhub doc add` for reference docs.
-
 ### Staleness and confidence
 
-- **Facts** go stale after 90 days without re-verification. `memhub fact verify <id|key>` refreshes `verified_at` only; `/wrap-up` offers a per-item re-verify step for the oldest facts. CLI only — agent self-verification is exactly what the untrusted-writer guardrail forbids.
+- **Facts** go stale after 90 days without re-verification. `memhub fact verify <id|key>` refreshes `verified_at` only, and `/wrap-up` offers a per-item re-verify step for the oldest facts. It is CLI only, because agent self-verification is exactly what the untrusted-writer guardrail forbids.
 - **Commands** carry a derived confidence: `success_count / (success_count + fail_count)`.
-- **Embeddings** go stale when the source body changes or the bundled model changes. Recall surfaces a warning; you decide whether to run `/reindex`.
+- **Embeddings** go stale when the source body changes or the bundled model changes. Recall surfaces a warning, and you decide whether to run `/reindex`.
 
 ### Deny list
 
@@ -959,27 +900,15 @@ Export covers facts, decisions, tasks, commands, pending writes, writes_log, ses
 
 ### Eval harness
 
-`tests/retrieval_golden.json` ships the golden queries for testing `Recall@K`:
-
-```bash
-memhub eval retrieval                  # markdown summary
-memhub eval retrieval --json           # structured output
-memhub eval retrieval --mode fts       # A/B compare modes
-memhub eval compare a.json b.json      # per-query comparison of two saved --json runs
-memhub eval retrieval --golden tests/retrieval_golden_live.json --k 5 --json   # live-database set (local only)
-```
-
-The `--json` output records the rank-1 pass count next to `Recall@K` and the settings the run used (mode, whether the re-ranker was enabled for the run, the rerank score floor, candidate pool, doc chunk cap, and whether variants were sent). `memhub eval compare <A> <B>` pairs two saved runs by query id and reports, for rank-1 and for found@K, each run's pass count, which queries passed only in A or only in B, and the exact two-sided McNemar p-value, so a change can be judged per query instead of by comparing two totals. It compares saved output rather than config flags, so it also works across code changes (run A from the old binary, run B from the new one), and it refuses runs whose query ids, query text or K differ. A golden query may list several acceptable answers with `also_accept`; it passes when any top-K hit matches any one of them.
-
-`tests/retrieval_golden_live.json` is a second, larger golden set that is scored against this repository's own memhub database instead of a seeded fixture, so it has real distractors among its roughly 1,000 candidate rows. It is not run in CI; use it to measure any retrieval change (tasks 160, 175 and 98, an embedder swap) before it lands. To A/B a code change, run `<old-memhub> eval retrieval --golden tests/retrieval_golden_live.json --k 5 --json > a.json` and then the same command with the new binary to `b.json`, back to back on the same database with nothing writing memhub state in between, and compare with `memhub eval compare a.json b.json`. Save the files with a UTF-8 redirect (Git Bash, zsh, bash or PowerShell 7 and later); Windows PowerShell 5.1's `>` writes UTF-16, which `eval compare` rejects. Keep the held-out file out of tuning: `tests/retrieval_golden_holdout.json` holds about one query in six of the combined set (every 6th query of each id prefix, sorted by id, starting at the 4th), in the same format. While tuning (pool sizes, weights, floors, model swaps), compare and inspect per-query results on the main file only; score the held-out file once at the end with the same two commands and report its totals, never tuning against its per-query outcomes. The first baseline on this set and the full step-by-step procedure are in `docs/reference/operations.md`.
+The command `memhub eval retrieval` scores recall against a golden set of queries with known answers. It reports Recall@K, the share of queries whose answer is in the top K hits. The small set in `tests/retrieval_golden.json` runs in CI against a seeded fixture, and a larger one in `tests/retrieval_golden_live.json` is scored against this repo's own database. Comparing two saved `--json` runs with `memhub eval compare` judges a change per query, and `memhub eval locate` does the same Recall@K check for the code locator. The held-out file, the A/B procedure and the first baseline are in the [operations reference](docs/reference/operations.md#retrieval).
 
 ---
 
 ## How it's built
 
-Single Rust binary over an embedded-migration SQLite database (migrations apply automatically on open, except that read commands never migrate the machine-global store: only `memhub upgrade` and the global write commands do). The MCP server reuses the same command layer. The embedding model is bundled at build time via `build.rs` (downloaded from Hugging Face, SHA256-pinned); no model download at runtime.
+A single Rust binary over an embedded-migration SQLite database. Migrations apply automatically on open. The MCP server reuses the same command layer. The embedding model is bundled at build time via `build.rs` (downloaded from Hugging Face, SHA256-pinned), so there is no model download at runtime.
 
-> **Offline is a runtime guarantee, not a build-time one.** The default binary never touches the network. *Building from source* downloads ~150 MB of SHA256-pinned model assets; `cargo clean` discards the cache. Airgapped source builds are unsupported today.
+> **Offline is a runtime guarantee, not a build-time one.** The default binary never touches the network. *Building from source* downloads ~150 MB of SHA256-pinned model files (the embedding model and the re-ranker), and `cargo clean` discards the cache. Airgapped source builds are unsupported today.
 
 ```text
 memhub CLI / MCP
@@ -987,7 +916,7 @@ memhub CLI / MCP
    ├── src/db/          path discovery, migrations, audit log
    ├── src/config/      per-repo TOML (incl. [retrieval] and [metrics] blocks)
    ├── src/mcp/         stdio MCP server, client identity normalization
-   ├── src/retrieval/   BGE-small bi-encoder + ms-marco cross-encoder, hybrid recall
+   ├── src/retrieval/   BGE-small embeddings + ms-marco re-ranker, hybrid recall
    ├── src/code_index/  tree-sitter chunker + walker + `locate` over the sibling code index
    ├── src/metrics/     hibernated token accounting (`metrics` feature)
    ├── src/render/      PROJECT.md and PROJECT_LEDGER.md emit
@@ -999,13 +928,9 @@ memhub CLI / MCP
 
 ---
 
-## Hibernated: token metrics
+## Hibernated token metrics
 
-Token metrics is fully implemented but compiled out of normal builds — the default binary has no metrics surface, and performs no recall logging or transcript scraping.
-
-- **Token metrics** — per-recall bundle-size accounting and real token totals scraped from Claude Code transcripts. Reactivate with `cargo build --features metrics`.
-- **Web dashboard (removed)** — before: hibernated behind `--features viz`; after: deleted, with the `viz` feature, `memhub viz`, and the `/viz` skill. Recoverable from git history (last present at commit `db4da80`).
-- **The one network call in a metrics build:** `metrics calibrate` sends a fixed built-in corpus (never your project's content) to Anthropic's `count_tokens` endpoint — opt-in, needs `ANTHROPIC_API_KEY`, refuses cleanly without it.
+Token metrics is fully implemented but hibernated. The default binary has no metrics surface and does no recall logging or transcript scraping. Reactivate it with `cargo build --features metrics`. That build adds per-recall bundle-size accounting and real token totals scraped from Claude Code and Codex transcripts. In it, `memhub metrics calibrate` is the one command that touches the network: it sends a fixed built-in corpus (never your project's content) to Anthropic's `count_tokens` endpoint. It is opt-in, needs `ANTHROPIC_API_KEY`, and refuses cleanly without it. Details: [operations reference](docs/reference/operations.md#token-accounting).
 
 ---
 
@@ -1013,17 +938,17 @@ Token metrics is fully implemented but compiled out of normal builds — the def
 
 - **Local-first.** No network, no daemon, no account, no runtime model download.
 - **One per repo.** Project boundaries are repo boundaries.
-- **Boring tech.** SQLite, Rust, FTS5, brute-force cosine. No vector DB, no extension loading, no Python.
+- **Boring tech.** SQLite, Rust, keyword search, brute-force vector comparison. No vector DB, no extension loading, no Python.
 - **Agents are untrusted writers.** Agent proposals stage in `pending_writes` until a human approves. The schema enforces it.
 - **Recall is read-only.** Retrieval never writes to `writes_log` or any durable table.
-- **Narrow milestones.** Ship usable slices; defer speculative work until a real workflow demands it.
+- **Narrow milestones.** Ship usable slices, and defer speculative work until a real workflow demands it.
 
 ---
 
 ## Further reading
 
 - [Product PRD (verbatim)](docs/reference/memhub-prd.md)
-- [Operations reference](docs/reference/operations.md) — retrieval, token accounting, doc ingestion, the code index, machine-global memory, cross-machine sync, and upgrade/GC, in operational detail
+- [Operations reference](docs/reference/operations.md): retrieval, token accounting, doc ingestion, the code index, machine-global memory, cross-machine sync, and upgrade/GC, in operational detail
 - [M8 hybrid retrieval addendum](docs/reference/memhub-prd-addendum-m8-retrieval.md)
 - [M9 machine-global memory addendum](docs/reference/memhub-prd-addendum-m9-machine-global-memory.md)
 - [M10 Drive sync addendum](docs/reference/memhub-prd-addendum-m10-drive-sync.md)
