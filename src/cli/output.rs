@@ -418,6 +418,12 @@ pub(crate) fn print_recall_human(response: &RecallResponse) {
         println!();
         println!("Warnings:");
         for warn in &response.warnings {
+            // The counts mean nothing for this kind, and its reason already
+            // names the fix.
+            if warn.kind == "global_store_skipped" {
+                println!("  {}: {}", warn.kind, warn.reason);
+                continue;
+            }
             println!(
                 "  {} ({}/{}): {} — {}",
                 warn.kind, warn.stale_count, warn.total_count, warn.reason, warn.fix,
@@ -475,7 +481,7 @@ pub(crate) fn eval_summary_to_json(summary: &commands::eval::EvalSummary) -> ser
             })
         })
         .collect::<Vec<_>>();
-    json!({
+    let mut value = json!({
         "golden_path": summary.golden_path.display().to_string(),
         "mode": recall_mode_label(summary.mode),
         "k": summary.k,
@@ -497,7 +503,11 @@ pub(crate) fn eval_summary_to_json(summary: &commands::eval::EvalSummary) -> ser
         // `EvalSummary::warm_latency_p50_ms` for why "warm".
         "warm_latency_p50_ms": summary.warm_latency_p50_ms,
         "outcomes": outcomes,
-    })
+    });
+    if let Some(reason) = &summary.global_store_skipped {
+        value["global_store_skipped"] = json!(reason);
+    }
+    value
 }
 
 pub(crate) fn print_eval_summary(summary: &commands::eval::EvalSummary) {
@@ -513,6 +523,9 @@ pub(crate) fn print_eval_summary(summary: &commands::eval::EvalSummary) {
         summary.elapsed_ms,
         summary.warm_latency_p50_ms,
     );
+    if let Some(reason) = &summary.global_store_skipped {
+        println!("Global store skipped (scored without global rows): {reason}");
+    }
     println!(
         "Recall@{k}: {passes}/{total} = {pct:.1}%",
         k = summary.k,
