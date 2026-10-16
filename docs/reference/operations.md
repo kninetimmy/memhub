@@ -753,6 +753,42 @@ on the same database, compared with `memhub eval compare`:
    counts in the task or pull request, and say they come from this
    machine's database.
 
+### Retrieval modes and configuration
+
+Both modes are first-class; the install prompt asks you to pick one.
+
+| | **`fts`** (default) | **`hybrid`** (recommended) |
+|---|---|---|
+| Scoring | FTS5 BM25 over title + body | 0.5 × FTS + 0.5 × cosine − 0.3 × stale_penalty, then re-ranked |
+| What it catches | Exact terms, stemmed variants | Exact + paraphrases (`"compile a release"` → `release_build` fact) |
+| Per-write cost | 0 ms | ~50 ms eager-embed inside the source-write transaction |
+| Per-recall cost | <10 ms | About 240 ms (brute-force cosine + a re-ranker that scores each pool passage on its own); about 380 ms with variants. Medians of the live-set A/B at pool 20 on one machine |
+| Disk footprint | None beyond source rows | ~1.5 KB per row (384-dim f32 vector) |
+| Network | Never | Never. Model is bundled. |
+| Best for | Small projects, scripted use | Multi-month projects where you forget exact wording |
+
+**Switching modes is non-destructive.** `fts → hybrid` needs one `memhub index rebuild`; `hybrid → fts` just stops consulting embeddings.
+
+The `[retrieval]` block in `.memhub/config.toml`:
+
+```toml
+[retrieval]
+mode = "hybrid"                  # "fts" | "hybrid"
+default_max_results = 6
+accepted_only_by_default = false # filter to source IN ('user', 'user+agent:%')
+include_stale_by_default = false # hide stale facts unless asked
+
+[retrieval.scoring]
+fts_weight = 0.5
+vector_weight = 0.5
+stale_penalty = 0.3
+
+[global]
+enabled = false                  # opt-in via `memhub global enable`
+```
+
+`[global] enabled` is managed by `memhub global enable` / `disable` — it's per-machine, so the tracked `.memhub/config.example.toml` baseline ships `false`. The machine-global store has no `[retrieval]` block of its own; it inherits the active repo's, including `[retrieval] include_docs_in_default`, which alone decides whether global docs join that repo's default recall.
+
 ## Token Accounting
 
 **Hibernated by default (Wave 7 Q30).** Normal builds preserve the metrics
@@ -764,7 +800,7 @@ rewritten or deleted. Reactivation is explicit: build with
 Transcript archiving remains independent and available. The web dashboard
 (`memhub viz`, the `viz` feature, `/viz`) was deleted; `memhub upgrade` still
 reports a leftover `viz` wrapper as an orphan without touching it, and the
-code is recoverable from git history.
+code is recoverable from git history (last present at commit `db4da80`).
 
 The retained feature behaves as follows when explicitly compiled in. Opt in
 per machine with `memhub metrics enable` — this
@@ -1300,6 +1336,41 @@ standalone as `memhub gc [--dry-run] [--json]`. Pure `std::fs`,
 OS-agnostic (macOS + Windows). Intentionally not a skill — ops
 housekeeping like `upgrade` itself, surfaced via the CLI and the
 upgrade flow.
+
+## Attribution
+
+Two columns split the work. `source` on `facts` and `decisions` is the
+*origin of the claim*; `actor` on `writes_log` and `pending_writes` is *who
+performed the write* (free-form, e.g. `cli:user`, `claude:wrap-up`). When an
+agent proposal is staged the source is recorded as e.g. `agent:claude-code`;
+when you accept it with `memhub review accept` (typically at `/wrap-up`), the
+durable row's `source` becomes `user+agent:<actor>` automatically, so both
+signals are preserved and you can always tell what was verified. Design
+anchor:
+[docs/reference/memhub-prd-source-vocabulary-addendum.md](memhub-prd-source-vocabulary-addendum.md).
+
+Skill writes carry a fixed actor and source per agent:
+
+- Claude Code: `actor=claude:wrap-up`, `source=user+agent:claude-code`
+- Codex: `actor=codex:wrap-up`, `source=user+agent:codex`
+- OpenCode: `actor=opencode:wrap-up`, `source=user+agent:opencode`
+
+All three share one database, and every write is tagged, so you always know
+who surfaced what:
+
+```text
+source                      Meaning
+────────────────────────────────────────────────────────────────────
+user                        You typed `memhub fact add` directly
+agent:codex                 Codex proposed it (still in pending_writes)
+agent:claude-code           Claude proposed it
+agent:opencode              OpenCode proposed it
+user+agent:codex            Codex surfaced via /wrap-up, you approved
+user+agent:claude-code      Same, Claude-side
+user+agent:opencode         Same, OpenCode-side
+git                         Reserved for git ingestion
+observed                    Reserved for observed signals
+```
 
 ## Current Build Focus
 
