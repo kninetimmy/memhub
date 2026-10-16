@@ -1068,24 +1068,25 @@ machine).
 Onboarding exposes two explicit toggles — `[retrieval] mode` (fts vs
 hybrid) and the machine-global store — plus two auto-followers with a
 manual override: `[retrieval] use_reranker` (auto-on with hybrid) and
-`[retrieval] include_docs_in_default` / its `[global]` mirror
-(auto-flips true on the first `doc add` / `doc add --global`). The
-`[global]` mirror flips **per repo**, gated on that repo's own current
-config value — `doc add --global` in repo B still flips B's mirror on
-B's own first call even when the shared global store already holds
-docs from repo A (issue #123; the store's `documents` table spans every
-opted-in repo, so store-emptiness is not "first add for this repo").
+`[retrieval] include_docs_in_default` (auto-flips true on the first
+repo `doc add`). That one key also decides whether global docs join the
+repo's default recall; `doc add --global` never touches the config. A
+`[global] include_docs_in_default` mirror used to exist but nothing read
+it, so it was removed (issue #360); a leftover line in `config.toml` is
+ignored and `memhub doctor` does not flag it.
 
 Because `config.toml` never travels through Drive sync — a sync
 snapshot is this repo's `project.sqlite` only (a `VACUUM INTO`
 snapshot + manifest; see "Cross-machine Drive sync" above) — a
 machine that `sync adopt`s this repo's snapshot does not gain the
-source machine's `[global] include_docs_in_default` mirror. The
+source machine's `[retrieval] include_docs_in_default` value. The
 machine-global store (`~/.memhub/global.sqlite`) is itself a separate
 per-machine file that Drive sync never touches at all (same as
 `memhub export`, above), so `sync adopt` cannot bring global docs
-along either way. Run `doc add --global` (or set the flag by hand) on
-each machine that should see those docs in its own default recall.
+along either way. Add the global docs on each machine with `doc add
+--global`, and set `[retrieval] include_docs_in_default` by hand where
+needed, on each machine that should see those docs in its own default
+recall.
 
 ## Machine-wide upgrade
 

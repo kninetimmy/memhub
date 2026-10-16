@@ -124,9 +124,9 @@ Two auto-follow with a manual override:
 
 - `[retrieval] use_reranker` — auto-on with hybrid (FTS-only bypasses
   it). Turn off only to skip the rerank cost.
-- `[retrieval] include_docs_in_default` (and its
-  `[global]` mirror) — auto-flips true on the first `doc add` /
-  `doc add --global`. Set false to keep docs strictly opt-in.
+- `[retrieval] include_docs_in_default` — auto-flips true on the
+  first repo `doc add` and also governs whether global docs join the
+  repo's default recall. Set false to keep docs strictly opt-in.
 
 ## Notes
 

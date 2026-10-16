@@ -825,10 +825,9 @@ stale_penalty = 0.3
 
 [global]
 enabled = false                  # opt-in via `memhub global enable`
-include_docs_in_default = false  # auto-flips on first `doc add --global`
 ```
 
-`[global] enabled` is managed by `memhub global enable` / `disable` — it's per-machine, so the tracked `.memhub/config.example.toml` baseline ships `false`. The machine-global store has no `[retrieval]` block of its own; it inherits the active repo's.
+`[global] enabled` is managed by `memhub global enable` / `disable` — it's per-machine, so the tracked `.memhub/config.example.toml` baseline ships `false`. The machine-global store has no `[retrieval]` block of its own; it inherits the active repo's, including `[retrieval] include_docs_in_default`, which alone decides whether global docs join that repo's default recall.
 
 ### Compatibility
 
