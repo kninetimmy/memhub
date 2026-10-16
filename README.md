@@ -978,7 +978,7 @@ The `--json` output records the rank-1 pass count next to `Recall@K` and the set
 
 ## How it's built
 
-Single Rust binary over an embedded-migration SQLite database (migrations apply automatically on open). The MCP server reuses the same command layer. The embedding model is bundled at build time via `build.rs` (downloaded from Hugging Face, SHA256-pinned); no model download at runtime.
+Single Rust binary over an embedded-migration SQLite database (migrations apply automatically on open, except that read commands never migrate the machine-global store: only `memhub upgrade` and the global write commands do). The MCP server reuses the same command layer. The embedding model is bundled at build time via `build.rs` (downloaded from Hugging Face, SHA256-pinned); no model download at runtime.
 
 > **Offline is a runtime guarantee, not a build-time one.** The default binary never touches the network. *Building from source* downloads ~150 MB of SHA256-pinned model assets; `cargo clean` discards the cache. Airgapped source builds are unsupported today.
 

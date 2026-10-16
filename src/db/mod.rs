@@ -319,8 +319,10 @@ pub fn probe_schema_version(db_path: &Path) -> Result<Option<String>> {
 }
 
 /// True iff the machine-global store file already exists on disk.
-/// Used to print a one-time disclosure on the first global write and
-/// to gate `open_global_if_exists`.
+/// Used to print a one-time disclosure on the first global write, to
+/// decide whether the store was just created, and by the openers that
+/// return `None` for an absent store (`open_global_if_exists`,
+/// `open_global_unmigrated`).
 pub fn global_store_exists() -> Result<bool> {
     Ok(global_db_path()?.exists())
 }
