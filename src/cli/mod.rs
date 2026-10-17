@@ -2103,6 +2103,17 @@ pub fn run(cli: Cli) -> Result<()> {
                     print_locate_eval_summary(&summary);
                 }
             }
+            EvalCommand::SelfCheck {
+                sample,
+                json: as_json,
+            } => {
+                let report = commands::self_check::run(&cwd, sample)?;
+                if as_json {
+                    println!("{}", commands::self_check::to_json(&report));
+                } else {
+                    commands::self_check::print_human(&report);
+                }
+            }
         },
         TopLevelCommand::Locate {
             query,
