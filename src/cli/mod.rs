@@ -362,6 +362,9 @@ pub fn run(cli: Cli) -> Result<()> {
                     println!("  commands: {}", import_summary.commands);
                     println!("  pending writes: {}", import_summary.pending_writes);
                     println!("  writes log entries: {}", import_summary.writes_log);
+                    if let Some(n) = import_summary.embedded {
+                        println!("  embedded: {n}");
+                    }
                     print_retained_docs_hint(import_summary.retained_doc_chunks);
                     print_overwritten_writes_log_warning(import_summary.overwritten_writes_log);
                     print_not_carried_checklist();
@@ -1216,10 +1219,15 @@ pub fn run(cli: Cli) -> Result<()> {
             print_overwritten_writes_log_warning(summary.overwritten_writes_log);
             println!();
             println!("Next steps:");
-            println!(
-                "  Embeddings for imported rows are not yet built. Run `memhub index rebuild`"
-            );
-            println!("  to enable vector recall on this machine.");
+            // Before issue #382 every import printed the rebuild hint; a
+            // hybrid target now embeds the imported rows itself.
+            match summary.embedded {
+                Some(n) => println!("  Embedded {n} row(s) for vector recall on this machine."),
+                None => println!(
+                    "  Retrieval mode is fts, so no embeddings were written; set `mode = \"hybrid\"`\n  \
+                     under [retrieval] and run `memhub index rebuild` to enable vector recall."
+                ),
+            }
             print_not_carried_checklist();
         }
         TopLevelCommand::Command { command } => match command {

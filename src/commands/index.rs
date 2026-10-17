@@ -5,7 +5,9 @@
 //! model's embeddings from current source bodies and removes every other
 //! model's, in the repo DB and (for a repo opted in) the machine-global
 //! store; used after a model upgrade or to clear a `stale_embeddings`
-//! warning from `memhub recall`. Both operate locally; no network.
+//! warning from `memhub recall`. `fill_missing` embeds only the rows that
+//! lack a current active-model vector (`memhub upgrade`, `memhub import`).
+//! All operate locally; no network.
 
 use std::cell::Cell;
 use std::path::Path;
@@ -146,13 +148,14 @@ pub fn rebuild(start: &Path, actor: &str) -> Result<RebuildSummary> {
             Ok(ctx)
         },
         actor,
+        false,
     )?;
     // The global store is shared by every repo, so only a repo that opted in
     // rebuilds it, and rebuilding never creates it. The repo store is already
     // committed here, so a global failure is reported next to its result
     // rather than discarding it.
     let (global, global_error) = if opted_in.get() && db::global_store_exists()? {
-        match rebuild_store(db::open_global, actor) {
+        match rebuild_store(db::open_global, actor, false) {
             Ok(g) => (Some(g), None),
             Err(e) => (None, Some(e)),
         }
@@ -168,13 +171,93 @@ pub fn rebuild(start: &Path, actor: &str) -> Result<RebuildSummary> {
     })
 }
 
-fn rebuild_store(open: impl Fn() -> Result<ProjectContext>, actor: &str) -> Result<StoreRebuild> {
+/// Embeds every row of one store that has no current vector for the active
+/// model (none at all, or one whose `content_hash` no longer matches its
+/// text), leaving every other embedding row alone; returns how many it
+/// wrote. Unlike `rebuild` it never re-embeds a current row or deletes
+/// another model's vectors, and it opens no write transaction (and loads no
+/// model) when nothing is missing. It does not consult `[retrieval] mode`:
+/// callers decide which stores to fill.
+pub fn fill_missing(open: impl Fn() -> Result<ProjectContext>, actor: &str) -> Result<usize> {
+    let s = rebuild_store(open, actor, true)?;
+    Ok(s.facts + s.decisions + s.tasks + s.doc_chunks + s.notes + s.arch_sections)
+}
+
+fn keep_missing<T>(
+    conn: &Connection,
+    source_type: SourceType,
+    rows: Vec<T>,
+    text: impl Fn(&T) -> (i64, String),
+) -> Result<Vec<T>> {
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, t) = text(&row);
+        if !embedding_matches(conn, source_type, id, &t)? {
+            out.push(row);
+        }
+    }
+    Ok(out)
+}
+
+/// `only_missing`: embed only rows without a current active-model vector and
+/// skip the other-model/orphan deletes (`fill_missing`); otherwise re-embed
+/// every row (`rebuild`).
+fn rebuild_store(
+    open: impl Fn() -> Result<ProjectContext>,
+    actor: &str,
+    only_missing: bool,
+) -> Result<StoreRebuild> {
     // Collect all source rows up front so we don't hold a transaction
     // open while the model warms up (~150 ms on first call).
     let rows = {
         let ctx = open()?;
-        collect_source_rows(&ctx.conn)?
+        let rows = collect_source_rows(&ctx.conn)?;
+        if only_missing {
+            let c = &ctx.conn;
+            CollectedRows {
+                facts: keep_missing(c, SourceType::Fact, rows.facts, |(id, k, v)| {
+                    (*id, fact_embed_text(k, v))
+                })?,
+                decisions: keep_missing(
+                    c,
+                    SourceType::Decision,
+                    rows.decisions,
+                    |(id, t, r, s)| (*id, decision_embed_text(t, r, s.as_deref())),
+                )?,
+                tasks: keep_missing(c, SourceType::Task, rows.tasks, |(id, t, n)| {
+                    (*id, task_embed_text(t, n.as_deref()))
+                })?,
+                doc_chunks: keep_missing(
+                    c,
+                    SourceType::DocChunk,
+                    rows.doc_chunks,
+                    |(id, h, b)| (*id, doc_chunk_embed_text(h, b)),
+                )?,
+                notes: keep_missing(c, SourceType::Note, rows.notes, |(id, t)| {
+                    (*id, note_embed_text(t))
+                })?,
+                arch_sections: keep_missing(
+                    c,
+                    SourceType::ArchSection,
+                    rows.arch_sections,
+                    |(id, h, b)| (*id, arch_section_embed_text(h, b)),
+                )?,
+            }
+        } else {
+            rows
+        }
     };
+    if only_missing && rows.is_empty() {
+        return Ok(StoreRebuild {
+            facts: 0,
+            decisions: 0,
+            tasks: 0,
+            doc_chunks: 0,
+            notes: 0,
+            arch_sections: 0,
+            deleted: 0,
+        });
+    }
 
     // Embed in one batch per source type to amortize model overhead.
     let mut facts_vectors: Vec<(i64, Vec<f32>, String)> = Vec::new();
@@ -261,10 +344,14 @@ fn rebuild_store(open: impl Fn() -> Result<ProjectContext>, actor: &str) -> Resu
     // fresher eager embeddings from concurrent writes.
     let mut ctx = open()?;
     let tx = ctx.conn.transaction()?;
-    let deleted = tx.execute(
-        "DELETE FROM embeddings WHERE model_name <> ?1",
-        params![EMBEDDING_MODEL_NAME],
-    )? + delete_orphan_embeddings(&tx)?;
+    let deleted = if only_missing {
+        0
+    } else {
+        tx.execute(
+            "DELETE FROM embeddings WHERE model_name <> ?1",
+            params![EMBEDDING_MODEL_NAME],
+        )? + delete_orphan_embeddings(&tx)?
+    };
 
     let facts_written = upsert_batch(&tx, SourceType::Fact, &facts_vectors)?;
     let decisions_written = upsert_batch(&tx, SourceType::Decision, &decisions_vectors)?;
@@ -280,8 +367,13 @@ fn rebuild_store(open: impl Fn() -> Result<ProjectContext>, actor: &str) -> Resu
         None,
         "rebuild",
         &format!(
-            "index rebuild: model={} facts={} decisions={} tasks={} doc_chunks={} notes={} \
+            "{}: model={} facts={} decisions={} tasks={} doc_chunks={} notes={} \
              arch_sections={}",
+            if only_missing {
+                "embedding fill"
+            } else {
+                "index rebuild"
+            },
             EMBEDDING_MODEL_NAME,
             facts_written,
             decisions_written,
@@ -311,6 +403,17 @@ struct CollectedRows {
     doc_chunks: Vec<(i64, String, String)>,
     notes: Vec<(i64, String)>,
     arch_sections: Vec<(i64, String, String)>,
+}
+
+impl CollectedRows {
+    fn is_empty(&self) -> bool {
+        self.facts.is_empty()
+            && self.decisions.is_empty()
+            && self.tasks.is_empty()
+            && self.doc_chunks.is_empty()
+            && self.notes.is_empty()
+            && self.arch_sections.is_empty()
+    }
 }
 
 fn collect_source_rows(conn: &Connection) -> Result<CollectedRows> {
@@ -878,6 +981,106 @@ mod tests {
         let after = status(temp.path()).expect("status after rebuild");
         assert_eq!(after.arch_sections_embedded, 2);
         assert_eq!(after.missing_count, 0);
+    }
+
+    /// Issue #382: `fill_missing` embeds only rows without a current vector
+    /// (here arch sections derived under fts, and a fact whose text drifted),
+    /// leaves current rows and other models' vectors alone, and a second
+    /// fill with nothing missing writes nothing at all.
+    #[test]
+    fn fill_missing_embeds_only_rows_without_a_current_vector() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        switch_to_fts(temp.path());
+        crate::commands::narrative::set(
+            temp.path(),
+            crate::models::NarrativeKind::Arch,
+            "# Overview\n\nIntro.\n\n## Storage\n\nOne SQLite file per repo.\n",
+            "user",
+            "cli:user",
+        )
+        .expect("arch set");
+        switch_to_hybrid(temp.path());
+        fact::add(
+            temp.path(),
+            "current",
+            "embedded on add",
+            "user",
+            "cli:user",
+        )
+        .expect("fact");
+        fact::add(temp.path(), "drifted", "value-one", "user", "cli:user").expect("fact");
+        let count_log = |p: &std::path::Path| -> i64 {
+            let ctx = db::open_project(p).expect("open");
+            ctx.conn
+                .query_row(
+                    "SELECT COUNT(*) FROM writes_log WHERE table_name = 'embeddings'",
+                    [],
+                    |r| r.get(0),
+                )
+                .expect("count writes_log")
+        };
+        {
+            let ctx = db::open_project(temp.path()).expect("open");
+            ctx.conn
+                .execute(
+                    "UPDATE facts SET value = 'value-two' WHERE key = 'drifted'",
+                    [],
+                )
+                .expect("drift");
+            ctx.conn
+                .execute(
+                    "INSERT INTO embeddings(project_id, source_type, source_id, model_name,
+                         dimension, vector, content_hash)
+                     SELECT 1, 'fact', id, 'other-model', 4, x'00000000', 'h' FROM facts
+                     WHERE key = 'current'",
+                    [],
+                )
+                .expect("plant other-model vector");
+        }
+        let current_hash = |p: &std::path::Path| -> String {
+            let ctx = db::open_project(p).expect("open");
+            ctx.conn
+                .query_row(
+                    "SELECT e.created_at || e.content_hash FROM embeddings e
+                     JOIN facts f ON f.id = e.source_id
+                     WHERE e.source_type = 'fact' AND f.key = 'current' AND e.model_name = ?1",
+                    params![EMBEDDING_MODEL_NAME],
+                    |r| r.get(0),
+                )
+                .expect("current fact vector")
+        };
+        let before = current_hash(temp.path());
+        let log_before = count_log(temp.path());
+
+        let n = fill_missing(|| db::open_project(temp.path()), "cli:user").expect("fill");
+        assert_eq!(n, 3, "two arch sections + the drifted fact");
+        let after = status(temp.path()).expect("status");
+        assert_eq!(after.missing_count, 0);
+        assert_eq!(
+            current_hash(temp.path()),
+            before,
+            "current row not rewritten"
+        );
+        let other: i64 = db::open_project(temp.path())
+            .expect("open")
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM embeddings WHERE model_name = 'other-model'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count other");
+        assert_eq!(other, 1, "fill must not delete another model's vector");
+        assert_eq!(count_log(temp.path()), log_before + 1);
+
+        let again = fill_missing(|| db::open_project(temp.path()), "cli:user").expect("refill");
+        assert_eq!(again, 0);
+        assert_eq!(
+            count_log(temp.path()),
+            log_before + 1,
+            "no-op fill logs nothing"
+        );
     }
 
     #[test]

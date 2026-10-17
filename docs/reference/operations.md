@@ -43,10 +43,15 @@ memhub import ~/transfer/memhub-<repo>-<date>.json --force  # overwrite
 memhub init --from-backup ~/transfer/memhub-<repo>-<date>.json
 ```
 
-After import, the target's embeddings are not yet built (only the
-rows). Run `memhub index` to populate them — the import output
-prints this hint. Until then, recall falls back to FTS-only and may
-miss vector-similar matches.
+Before issue #382, after import the target's embeddings were not yet
+built (only the rows). You ran `memhub index` to populate them — the
+import output printed this hint — and until then recall fell back to
+FTS-only and could miss vector-similar matches. Now an import into a
+hybrid-mode target (the default) embeds every imported row once the
+import commits and reports the count; an fts-mode target still writes
+no embeddings. If embedding fails after the commit, the import exits
+with an error, the rows stay imported, and `memhub index rebuild`
+embeds them.
 
 If recall later surfaces a `stale_embeddings` warning (most likely
 after an embedding-model upgrade on either machine), follow the same
@@ -497,7 +502,9 @@ was only rendered into `PROJECT.md`. Only the latest body is searchable: every
 transaction, embedding them eagerly in hybrid mode. A DB whose latest body was
 stored before migration 0025 gets its sections on the next open, FTS-only
 (open never loads the embedding model); in hybrid mode `memhub index rebuild`
-embeds them, and `memhub index status` counts them. A lone wrapper heading is
+embeds them, and `memhub index status` counts them. Before issue #382 nothing
+else embedded them; now `memhub upgrade` embeds them in every hybrid-mode repo,
+as does `memhub import` into one. A lone wrapper heading is
 left out of section titles: when the body's first heading has nothing before
 it and every other heading, of which there is at least one, is nested under it
 (for example one `# memhub architecture` over the whole body), the wrapper is
@@ -1171,6 +1178,17 @@ would-add hook entries) and changes nothing. Before issue #286 the flow
 wrote no agent-CLI config file at all; it now merges one hook entry into
 `~/.claude/settings.json` and `~/.codex/hooks.json` (MCP registration is
 still manual, and `memhub doctor` still only reads agent-CLI config).
+
+Embedding fill (issue #382): after each instance's migrate and recall
+smoke, the pass embeds, for the active model, every row that has no
+current vector (none, or one whose text changed) — in each hybrid-mode
+repo DB, and in the global store whatever mode wrote its rows. It never
+re-embeds a current row or deletes another model's vectors (that is
+`memhub index rebuild`), and it loads no model when nothing is missing.
+The table's `EMBEDDED` column (`embedded` in `--json`) reports how many
+rows it embedded in each instance; `-` (null) means no fill ran: an
+fts-mode repo, or a skipped or failed instance. A fill failure marks the
+instance `ERROR`. Before this change the pass wrote no embeddings.
 
 Skill resync (decision 97; resolves task 50, internalizes the fact-10
 manual `cp`): the same `memhub upgrade` also refreshes the installed

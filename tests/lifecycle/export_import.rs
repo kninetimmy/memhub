@@ -1109,3 +1109,51 @@ fn export_omits_arch_sections_and_import_rederives_them() {
         "import must re-derive the imported body's sections"
     );
 }
+
+/// Issue #382 criterion 4: import into a hybrid-mode target (the default)
+/// embeds every imported row for the active model; an fts-mode target
+/// (criterion 2) still writes no embeddings.
+#[test]
+fn import_into_hybrid_target_embeds_every_row_and_fts_target_none() {
+    let source = tempdir().expect("source tempdir");
+    seed_project(source.path());
+    session_note::add(source.path(), "Scratch note to carry.", "user", "cli:user").expect("note");
+    narrative::set(
+        source.path(),
+        NarrativeKind::Arch,
+        "# Overview\n\nIntro.\n\n## Storage\n\nOne SQLite file per repo.\n",
+        "user",
+        "cli:user",
+    )
+    .expect("arch");
+    let export_path = source.path().join("export.json");
+    export::run(source.path(), &export_path).expect("export");
+
+    let hybrid = tempdir().expect("hybrid target");
+    init::run(hybrid.path()).expect("init");
+    let summary = import::run(hybrid.path(), &export_path, false).expect("import");
+    let status = memhub::commands::index::status(hybrid.path()).expect("index status");
+    let rows = status.facts_total
+        + status.decisions_total
+        + status.tasks_total
+        + status.notes_total
+        + status.arch_sections_total;
+    assert_eq!(status.arch_sections_total, 2, "sections derived on import");
+    assert_eq!(status.missing_count, 0, "every imported row embedded");
+    assert_eq!(summary.embedded, Some(rows as usize));
+
+    let fts = tempdir().expect("fts target");
+    init::run(fts.path()).expect("init");
+    let config_path = fts.path().join(".memhub").join("config.toml");
+    let mut cfg = memhub::config::ProjectConfig::load(&config_path).expect("load config");
+    cfg.retrieval.mode = memhub::config::RetrievalMode::Fts;
+    cfg.save(&config_path).expect("save config");
+    let summary = import::run(fts.path(), &export_path, false).expect("import");
+    assert_eq!(summary.embedded, None);
+    let ctx = db::open_project(fts.path()).expect("open");
+    let vectors: i64 = ctx
+        .conn
+        .query_row("SELECT COUNT(*) FROM embeddings", [], |r| r.get(0))
+        .expect("count");
+    assert_eq!(vectors, 0, "fts target writes no embeddings");
+}
