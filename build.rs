@@ -3,9 +3,10 @@
 // Stages the bundled retrieval model files into OUT_DIR so the main crate
 // can include them via include_bytes!. Two models are bundled:
 //
-//   * BGE-small-en-v1.5 — bi-encoder used by the M8 hybrid recall path.
-//     ~127 MB. Source: BAAI/bge-small-en-v1.5@main, commit
-//     5c38ec7c405ec4b44b94cc5a9bb96e735b38267a.
+//   * gte-modernbert-base — bi-encoder used by the hybrid recall path and
+//     the code index. ~150 MB (int8 dynamic-quantized `onnx/model_int8.onnx`,
+//     768-dim, CLS pooling, Apache-2.0). Source: Alibaba-NLP/gte-modernbert-
+//     base, pinned to commit e7f32e3c00f91d699e8c43b53106206bcc72bb22.
 //
 //   * ms-marco-MiniLM-L-6-v2 — cross-encoder re-ranker bundled by the
 //     task-#21 work. ~22 MB (int8-quantized `model_int8.onnx`; issue #75
@@ -14,16 +15,12 @@
 //     cross-encoder/ms-marco-MiniLM-L-6-v2). Selected over BGE-reranker-
 //     v2-m3 in the bake-off (decisions 68–70): +17.7pp Recall@1 over
 //     baseline, 15× faster than BGE-v2-m3, no keyword regressions.
-//     BAAI publishes no quantized bge-small ONNX (verified against the
-//     HF repo file tree), so the bi-encoder stays fp32 — only the
-//     re-ranker is int8 here (partial adoption, issue #75).
 //
-// On a clean build this downloads ~150 MB total from Hugging Face (was
-// ~218 MB before the int8 re-ranker swap). On
+// On a clean build this downloads ~172 MB total from Hugging Face. On
 // rebuilds the staged files are reused if their SHA256 matches the
-// pinned value. All hashes were computed locally over the downloaded
-// bytes (or, for BGE-small's model.onnx, match the x-linked-etag
-// returned by Hugging Face for the pinned commit).
+// pinned value. The gte-modernbert-base model.onnx hash is the HF LFS
+// object id for the pinned commit; the other hashes were computed locally
+// over the downloaded bytes. ensure_file re-verifies every file.
 //
 // BUILD-TIME NETWORK CONTRACT (task 52). memhub's offline-first
 // principle is a *runtime* guarantee: the built binary never reaches the
@@ -53,39 +50,44 @@ struct ModelFile {
 struct ModelBundle {
     /// Subdirectory under OUT_DIR where the files are staged.
     local_dir: &'static str,
-    /// Hugging Face base URL (resolve/main).
+    /// Hugging Face base URL (resolve/<ref>).
     base_url: &'static str,
     files: &'static [ModelFile],
 }
 
-const BGE_SMALL: ModelBundle = ModelBundle {
-    local_dir: "bge-small-en-v1.5",
-    base_url: "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main",
+const GTE_MODERNBERT: ModelBundle = ModelBundle {
+    local_dir: "gte-modernbert-base",
+    // Pinned to a commit, not resolve/main, so the bytes cannot drift.
+    base_url: "https://huggingface.co/Alibaba-NLP/gte-modernbert-base/resolve/e7f32e3c00f91d699e8c43b53106206bcc72bb22",
     files: &[
+        // int8 dynamic-quantized export; staged as `model.onnx` so
+        // embeddings.rs's include_bytes! names stay generic. The SHA-256 is
+        // the HF LFS oid for the pinned file, re-verified over the
+        // downloaded bytes by ensure_file below.
         ModelFile {
-            remote_path: "onnx/model.onnx",
+            remote_path: "onnx/model_int8.onnx",
             local_name: "model.onnx",
-            sha256: "828e1496d7fabb79cfa4dcd84fa38625c0d3d21da474a00f08db0f559940cf35",
+            sha256: "bae96b276d342bf86eeee07c1bdbc0c75bb82bf4033941aab7fabc1e33ee3b44",
         },
         ModelFile {
             remote_path: "tokenizer.json",
             local_name: "tokenizer.json",
-            sha256: "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66",
+            sha256: "6c8aaa9a542084f2457eab775d4eeb51f92a70c0fd9de28d5edb0ddec3c08d30",
         },
         ModelFile {
             remote_path: "config.json",
             local_name: "config.json",
-            sha256: "094f8e891b932f2000c92cfc663bac4c62069f5d8af5b5278c4306aef3084750",
+            sha256: "8ba54dc3d35d7194f5178a4194b649f146753e02dabd22bdca5c5cbac15069ed",
         },
         ModelFile {
             remote_path: "special_tokens_map.json",
             local_name: "special_tokens_map.json",
-            sha256: "b6d346be366a7d1d48332dbc9fdf3bf8960b5d879522b7799ddba59e76237ee3",
+            sha256: "ea97ecdbcc73713039d8d64dbb05e3689495c96657fbd9a18f5bed381be81049",
         },
         ModelFile {
             remote_path: "tokenizer_config.json",
             local_name: "tokenizer_config.json",
-            sha256: "9261e7d79b44c8195c1cada2b453e55b00aeb81e907a6664974b4d7776172ab3",
+            sha256: "9654072f7c873161814043cf08cb5ed72f71d0b935abcd4e267935cb34352c21",
         },
     ],
 };
@@ -107,8 +109,6 @@ const RERANKER: ModelBundle = ModelBundle {
             local_name: "model.onnx",
             sha256: "a13ec391ca99f49886694e12d3e800521f36d4267d7d448c34421c541a2baf50",
         },
-        // tokenizer.json and special_tokens_map.json are byte-identical to
-        // BGE-small's (shared BERT WordPiece vocab); SHAs match accordingly.
         ModelFile {
             remote_path: "tokenizer.json",
             local_name: "tokenizer.json",
@@ -132,7 +132,7 @@ const RERANKER: ModelBundle = ModelBundle {
     ],
 };
 
-const BUNDLES: &[&ModelBundle] = &[&BGE_SMALL, &RERANKER];
+const BUNDLES: &[&ModelBundle] = &[&GTE_MODERNBERT, &RERANKER];
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");

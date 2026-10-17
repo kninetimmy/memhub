@@ -2,7 +2,7 @@
 //! (Wave 5 U4, issue #90). One `cargo test` binary in place of eight
 //! separate `tests/*.rs` binaries — same tests, same assertions, just
 //! grouped by subsystem and no longer separately linked (each used to
-//! statically embed its own copy of the ~250 MB bge-small/MiniLM ONNX
+//! statically embed its own copy of the ~170 MB gte-modernbert-base/MiniLM ONNX
 //! models). Per-file `cargo test --test <old-name>` granularity is gone
 //! (decision Q13); `cargo test <substring>` filtering still selects the
 //! same tests, e.g. `cargo test retrieval_golden_hermetic`.

@@ -1,4 +1,4 @@
-//! BGE-small-en-v1.5 embedding wrapper.
+//! gte-modernbert-base embedding wrapper.
 //!
 //! The ONNX model and tokenizer files are bundled into the memhub binary at
 //! build time by `build.rs`. The first call to [`embed_one`] or
@@ -13,8 +13,8 @@ use fastembed::{
 
 use crate::{MemhubError, Result};
 
-pub const EMBEDDING_MODEL_NAME: &str = "bge-small-en-v1.5";
-pub const EMBEDDING_DIMENSION: usize = 384;
+pub const EMBEDDING_MODEL_NAME: &str = "gte-modernbert-base";
+pub const EMBEDDING_DIMENSION: usize = 768;
 
 /// Per-inference batch size handed to fastembed. fastembed's default (256)
 /// pads every chunk in a batch to the longest sequence and allocates the
@@ -28,20 +28,21 @@ pub const EMBEDDING_DIMENSION: usize = 384;
 /// forward pass, and fastembed preserves input order across batches.
 const EMBED_BATCH_SIZE: usize = 16;
 
-const MODEL_ONNX: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/bge-small-en-v1.5/model.onnx"));
+const MODEL_ONNX: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/gte-modernbert-base/model.onnx"));
 const TOKENIZER_JSON: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
-    "/bge-small-en-v1.5/tokenizer.json"
+    "/gte-modernbert-base/tokenizer.json"
 ));
 const CONFIG_JSON: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/bge-small-en-v1.5/config.json"));
+    include_bytes!(concat!(env!("OUT_DIR"), "/gte-modernbert-base/config.json"));
 const SPECIAL_TOKENS_JSON: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
-    "/bge-small-en-v1.5/special_tokens_map.json"
+    "/gte-modernbert-base/special_tokens_map.json"
 ));
 const TOKENIZER_CONFIG_JSON: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
-    "/bge-small-en-v1.5/tokenizer_config.json"
+    "/gte-modernbert-base/tokenizer_config.json"
 ));
 
 static MODEL: OnceLock<Mutex<TextEmbedding>> = OnceLock::new();
@@ -66,14 +67,14 @@ fn shared() -> Result<&'static Mutex<TextEmbedding>> {
     Ok(MODEL.get_or_init(|| Mutex::new(model)))
 }
 
-/// Embed a single text into a 384-dim vector.
+/// Embed a single text into a 768-dim vector.
 pub fn embed_one(text: &str) -> Result<Vec<f32>> {
     let mut out = embed_batch(&[text])?;
     out.pop()
         .ok_or_else(|| MemhubError::Embedding("empty embedding output".to_string()))
 }
 
-/// Embed a batch of texts. Each output is a 384-dim vector in the same order.
+/// Embed a batch of texts. Each output is a 768-dim vector in the same order.
 ///
 /// Inference is split into [`EMBED_BATCH_SIZE`]-text passes to bound peak
 /// memory on small hosts; fastembed preserves input order across passes, so
@@ -99,13 +100,13 @@ mod tests {
     #[test]
     fn smoke_embed_dimension_and_finite() {
         let v = embed_one("memhub local-first project memory").expect("embed_one");
-        assert_eq!(v.len(), EMBEDDING_DIMENSION, "expected 384-dim vector");
+        assert_eq!(v.len(), EMBEDDING_DIMENSION, "expected 768-dim vector");
         assert!(
             v.iter().all(|f| f.is_finite()),
             "embedding contained non-finite values"
         );
         let norm: f32 = v.iter().map(|f| f * f).sum::<f32>().sqrt();
-        // BGE outputs are L2-normalized by fastembed; allow some float slack.
+        // Embeddings are L2-normalized by fastembed; allow some float slack.
         assert!(
             (0.5..=1.5).contains(&norm),
             "embedding norm {norm} is unexpectedly far from 1.0"
@@ -135,18 +136,23 @@ mod tests {
         let vecs = embed_batch(&refs).expect("embed_batch");
         assert_eq!(vecs.len(), refs.len());
         assert!(vecs.iter().all(|v| v.len() == EMBEDDING_DIMENSION));
-        // A single-text embed of one input must match its slot in the batch,
-        // proving order is preserved across the pass boundary.
+        // A single-text embed of one input must land closest to its own slot
+        // in the batch, proving order is preserved across the pass boundary.
+        // Not an exact-equality check: the int8 dynamic-quantized model scales
+        // activations per batch, so a text alone and inside a batch differ
+        // slightly (cosine ~0.99).
         let probe_idx = EMBED_BATCH_SIZE + 1;
         let solo = embed_one(refs[probe_idx]).expect("embed_one");
-        let max_delta = solo
+        let best = vecs
             .iter()
-            .zip(&vecs[probe_idx])
-            .map(|(a, b)| (a - b).abs())
-            .fold(0.0_f32, f32::max);
-        assert!(
-            max_delta < 1e-3,
-            "batched vector diverged from solo embed (max delta {max_delta})"
+            .enumerate()
+            .map(|(i, v)| (i, solo.iter().zip(v).map(|(a, b)| a * b).sum::<f32>()))
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(i, _)| i);
+        assert_eq!(
+            best,
+            Some(probe_idx),
+            "solo embed is not closest to its batch slot"
         );
     }
 }

@@ -38,9 +38,9 @@ jobs:
           restore-keys: |
             cargo-registry-${{ runner.os }}-
 
-      # clippy --all-features needs build.rs to run (same pinned BGE-small +
+      # clippy --all-features needs build.rs to run (same pinned gte-modernbert-base +
       # ms-marco-MiniLM model assets as the build+test lanes above), so this
-      # reuses the exact same target/ cache pattern to avoid a cold ~150 MB
+      # reuses the exact same target/ cache pattern to avoid a cold ~170 MB
       # download on every run. Keyed with a fixed "all-features" slot,
       # distinct from the build-test job's per-matrix feature keys.
       - name: Cache build output and pinned model assets
@@ -87,14 +87,14 @@ jobs:
           restore-keys: |
             cargo-registry-${{ runner.os }}-
 
-      # build.rs downloads and SHA-256-verifies the bundled BGE-small +
+      # build.rs downloads and SHA-256-verifies the bundled gte-modernbert-base +
       # ms-marco-MiniLM model assets into OUT_DIR (under target/) on a cold
       # build, then reuses them whenever the staged file's hash still
       # matches the pinned constant. Caching `target/` and keying on a hash
       # of build.rs itself means the cache is invalidated exactly when
       # build.rs's pinned SHA-256 values (or anything else about how the
       # assets are fetched/staged) change, and otherwise hits — reusing both
-      # the ~150 MB of downloaded model bytes and prior compiled build
+      # the ~170 MB of downloaded model bytes and prior compiled build
       # output. Keyed per OS and per feature set so the `metrics` lane (extra
       # ureq dep) doesn't collide with the default-feature lane.
       - name: Cache build output and pinned model assets

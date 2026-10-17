@@ -235,7 +235,7 @@ correctly again. No data is lost; only the stale marker is replaced.
 
 ## Retrieval
 
-Hybrid recall (the default) combines FTS5 BM25 and BGE-small embeddings,
+Hybrid recall (the default) combines FTS5 BM25 and gte-modernbert-base embeddings,
 then by default runs a bundled cross-encoder re-ranker
 (ms-marco-MiniLM-L-6-v2) over `[retrieval] rerank_candidate_pool`
 candidates, chosen as described under "Re-rank pool" below, before
@@ -763,7 +763,7 @@ Both modes are first-class; the install prompt asks you to pick one.
 | What it catches | Exact terms, stemmed variants | Exact + paraphrases (`"compile a release"` → `release_build` fact) |
 | Per-write cost | 0 ms | ~50 ms eager-embed inside the source-write transaction |
 | Per-recall cost | <10 ms | About 240 ms (brute-force cosine + a re-ranker that scores each pool passage on its own); about 380 ms with variants. Medians of the live-set A/B at pool 20 on one machine |
-| Disk footprint | None beyond source rows | ~1.5 KB per row (384-dim f32 vector) |
+| Disk footprint | None beyond source rows | ~3 KB per row (768-dim f32 vector) |
 | Network | Never | Never. Model is bundled. |
 | Best for | Small projects, scripted use | Multi-month projects where you forget exact wording |
 

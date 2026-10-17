@@ -29,8 +29,8 @@ memhub is one offline binary and one SQLite file next to your code. Claude Code,
 - **Skills**: the short instruction files, such as `/wrap-up` and `/recall`, that memhub installs for each agent.
 - **FTS5**: SQLite's built-in full-text search. It finds rows by the words they contain.
 - **BM25**: the formula FTS5 uses to rank rows by how well their words match a query.
-- **BGE-small**: the small embedding model bundled in the binary. It turns text into a list of numbers, so rows with similar meaning end up close together.
-- **Hybrid recall**: a recall that blends keyword search (FTS5 with BM25) and meaning-based search (BGE-small), then re-ranks the best candidates. The alternative, FTS-only recall, uses keyword search alone.
+- **gte-modernbert-base**: the embedding model bundled in the binary. It turns text into a list of numbers, so rows with similar meaning end up close together.
+- **Hybrid recall**: a recall that blends keyword search (FTS5 with BM25) and meaning-based search (gte-modernbert-base), then re-ranks the best candidates. The alternative, FTS-only recall, uses keyword search alone.
 - **Re-ranker**: a second small model that reads the query together with one candidate row and scores how well the row answers it. The bundled one is ms-marco-MiniLM-L-6-v2, called **ms-marco** below.
 - **Rerank floor**: the lowest re-ranker score a row can have and still count as a confident answer.
 - **Named rows**: a decision, task, or fact you name by number in a query, such as "decision 201". Recall returns it first, and it skips the rerank floor.
@@ -60,7 +60,7 @@ Please install memhub for me, then turn on hybrid recall.
    (1.87+) is missing.
 2. Run `cargo install --path ~/src/memhub --force` so `memhub` ends up on
    PATH (~/.cargo/bin must be on PATH; warn me if it isn't). First build
-   takes a couple of minutes — it downloads and bundles ~150 MB of
+   takes a couple of minutes — it downloads and bundles ~170 MB of
    model files (embedding model and re-ranker) into the binary.
 3. Run `memhub --version` to verify.
 4. Register memhub as an MCP server so Claude Code can call it as a
@@ -151,7 +151,7 @@ Please install memhub for me, then turn on hybrid recall.
    (1.87+) is missing.
 2. Run `cargo install --path ~/src/memhub --force` so `memhub` ends up on
    PATH (~/.cargo/bin must be on PATH; warn me if it isn't). First build
-   takes a couple of minutes — it downloads and bundles ~150 MB of
+   takes a couple of minutes — it downloads and bundles ~170 MB of
    model files (embedding model and re-ranker) into the binary.
 3. Run `memhub --version` to verify.
 4. Register memhub as an MCP server so you can call it as a structured
@@ -253,7 +253,7 @@ Please install memhub for me, then turn on hybrid recall.
    (1.87+) is missing.
 2. Run `cargo install --path ~/src/memhub --force` so `memhub` ends up on
    PATH (~/.cargo/bin must be on PATH; warn me if it isn't). First build
-   takes a couple of minutes — it downloads and bundles ~150 MB of
+   takes a couple of minutes — it downloads and bundles ~170 MB of
    model files (embedding model and re-ranker) into the binary.
 3. Run `memhub --version` to verify.
 4. Register memhub as an MCP server so you can call it as a structured
@@ -354,7 +354,7 @@ this repo, in my home directory; that is expected).
 <summary><b>Install by hand</b></summary>
 
 ```bash
-# 1. Build and install the binary (the first build is slow: it bundles ~150 MB of model files)
+# 1. Build and install the binary (the first build is slow: it bundles ~170 MB of model files)
 git clone https://github.com/kninetimmy/memhub.git ~/src/memhub
 cargo install --path ~/src/memhub --force
 
@@ -457,7 +457,7 @@ Opt a repo in, and your machines share its memory through a folder that already 
   <img src="docs/images/hybrid-recall-motion.gif" alt="how hybrid recall works" width="920"/>
 </p>
 
-A recall runs two searches at once. Keyword search (FTS5) finds the exact words. BGE-small embeddings find the meaning, so "compile settings" still finds the fact filed under `release_build`. The scores blend, and the re-ranker re-orders the top candidates. The agent gets back a small, cited bundle with stale rows flagged, instead of a wall of markdown. Both models are compiled into the binary, so nothing downloads at runtime and nothing leaves your machine.
+A recall runs two searches at once. Keyword search (FTS5) finds the exact words. gte-modernbert-base embeddings find the meaning, so "compile settings" still finds the fact filed under `release_build`. The scores blend, and the re-ranker re-orders the top candidates. The agent gets back a small, cited bundle with stale rows flagged, instead of a wall of markdown. Both models are compiled into the binary, so nothing downloads at runtime and nothing leaves your machine.
 
 ---
 
@@ -801,7 +801,7 @@ Run any command with `--help` for flags. The `--global` flags are explained unde
 
 ### Retrieval modes
 
-memhub has two retrieval modes, and the install prompt asks you to pick one. Set `mode` under `[retrieval]` in `.memhub/config.toml`. The default, `fts`, is keyword search only: fast, free per write, and enough for small projects. The recommended `hybrid` adds meaning-based search and the re-ranker, so it also catches paraphrases ("compile a release" finds the `release_build` fact). It costs about 50 ms per write, about 240 ms per recall, and about 1.5 KB of vectors per row. Switching is non-destructive: `fts → hybrid` needs one `memhub index rebuild`, and `hybrid → fts` just stops consulting embeddings. Neither mode touches the network. Weights, floors and the other keys are in the [operations reference](docs/reference/operations.md#retrieval-modes-and-configuration).
+memhub has two retrieval modes, and the install prompt asks you to pick one. Set `mode` under `[retrieval]` in `.memhub/config.toml`. The default, `fts`, is keyword search only: fast, free per write, and enough for small projects. The recommended `hybrid` adds meaning-based search and the re-ranker, so it also catches paraphrases ("compile a release" finds the `release_build` fact). It costs about 50 ms per write, about 240 ms per recall, and about 3 KB of vectors per row. Switching is non-destructive: `fts → hybrid` needs one `memhub index rebuild`, and `hybrid → fts` just stops consulting embeddings. Neither mode touches the network. Weights, floors and the other keys are in the [operations reference](docs/reference/operations.md#retrieval-modes-and-configuration).
 
 ### Compatibility
 
@@ -909,7 +909,7 @@ The command `memhub eval retrieval` scores recall against a golden set of querie
 
 A single Rust binary over an embedded-migration SQLite database. Migrations apply automatically on open. The MCP server reuses the same command layer. The embedding model is bundled at build time via `build.rs` (downloaded from Hugging Face, SHA256-pinned), so there is no model download at runtime.
 
-> **Offline is a runtime guarantee, not a build-time one.** The default binary never touches the network. *Building from source* downloads ~150 MB of SHA256-pinned model files (the embedding model and the re-ranker), and `cargo clean` discards the cache. Airgapped source builds are unsupported today.
+> **Offline is a runtime guarantee, not a build-time one.** The default binary never touches the network. *Building from source* downloads ~170 MB of SHA256-pinned model files (the embedding model and the re-ranker), and `cargo clean` discards the cache. Airgapped source builds are unsupported today.
 
 ```text
 memhub CLI / MCP
@@ -917,13 +917,13 @@ memhub CLI / MCP
    ├── src/db/          path discovery, migrations, audit log
    ├── src/config/      per-repo TOML (incl. [retrieval] and [metrics] blocks)
    ├── src/mcp/         stdio MCP server, client identity normalization
-   ├── src/retrieval/   BGE-small embeddings + ms-marco re-ranker, hybrid recall
+   ├── src/retrieval/   gte-modernbert-base embeddings + ms-marco re-ranker, hybrid recall
    ├── src/code_index/  tree-sitter chunker + walker + `locate` over the sibling code index
    ├── src/metrics/     hibernated token accounting (`metrics` feature)
    ├── src/render/      PROJECT.md and PROJECT_LEDGER.md emit
    └── src/export/      v1 portable JSON
        │
-       ├── SQLite (.memhub/project.sqlite) + bundled BGE-small + ms-marco ONNX
+       ├── SQLite (.memhub/project.sqlite) + bundled gte-modernbert-base + ms-marco ONNX
        └── SQLite (.memhub/code_index.sqlite)  ← sibling code index, locate-only
 ```
 

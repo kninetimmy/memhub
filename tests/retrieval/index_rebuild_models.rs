@@ -149,3 +149,38 @@ fn rebuild_does_not_create_the_global_store_for_an_opted_in_repo() {
     assert!(out["global"].is_null(), "no global counts: {out}");
     assert!(!f.global_db().exists(), "rebuild must not create the store");
 }
+
+/// A DB whose vectors were written by the previous bundled embedder
+/// (bge-small-en-v1.5, 384-dim) is flagged stale by a hybrid recall, and one
+/// `index rebuild` leaves only vectors from the current model.
+#[test]
+fn hybrid_recall_flags_old_embedder_vectors_until_rebuild() {
+    let f = Fixture::new();
+    Connection::open(f.repo_db())
+        .expect("open db")
+        .execute(
+            "INSERT INTO embeddings(project_id, source_type, source_id, model_name, \
+             dimension, vector, content_hash) \
+             VALUES (1, 'fact', 1, 'bge-small-en-v1.5', 384, zeroblob(384 * 4), 'old')",
+            [],
+        )
+        .expect("plant old-embedder vector");
+    let stale_warnings = || -> usize {
+        let json: Value = serde_json::from_str(
+            f.ok(&["recall", "repo key", "--mode", "hybrid", "--json"])
+                .trim(),
+        )
+        .expect("recall json");
+        json["warnings"]
+            .as_array()
+            .expect("warnings")
+            .iter()
+            .filter(|w| w["kind"] == "stale_embeddings")
+            .count()
+    };
+
+    assert_eq!(stale_warnings(), 1, "old-model vectors must read as stale");
+    f.rebuild();
+    assert_eq!(stale_warnings(), 0, "rebuild must clear the warning");
+    assert_eq!(vector_counts(&f.repo_db()), (0, 1));
+}

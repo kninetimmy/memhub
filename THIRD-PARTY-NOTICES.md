@@ -19,16 +19,17 @@ produced with `cargo about` / `cargo deny` and is not hand-maintained here.
 
 ## Machine-learning models (embedded via `include_bytes!`)
 
-### BGE-small-en-v1.5
+### gte-modernbert-base (int8-quantized ONNX export)
 
-- **Source:** https://huggingface.co/BAAI/bge-small-en-v1.5
-  (commit `5c38ec7c405ec4b44b94cc5a9bb96e735b38267a`)
-- **Files embedded:** `onnx/model.onnx`, `tokenizer.json`, `config.json`,
-  `special_tokens_map.json`, `tokenizer_config.json`
-- **License:** MIT — FlagEmbedding / BAAI. The model card states: "FlagEmbedding
-  is licensed under the MIT License. The released models can be used for
-  commercial purposes free of charge."
-- **Use in memhub:** bi-encoder for the hybrid recall path.
+- **Source:** https://huggingface.co/Alibaba-NLP/gte-modernbert-base
+  (commit `e7f32e3c00f91d699e8c43b53106206bcc72bb22`)
+- **Files embedded:** `onnx/model_int8.onnx` (int8-quantized, staged locally as
+  `model.onnx`), `tokenizer.json`, `config.json`, `special_tokens_map.json`,
+  `tokenizer_config.json`
+- **License:** Apache License 2.0, as declared on the upstream model card
+  (`license: apache-2.0`); the ONNX export is published in the same repository
+  and inherits it. See the full Apache License 2.0 text below.
+- **Use in memhub:** bi-encoder for the hybrid recall path and the code index.
 
 ### ms-marco-MiniLM-L-6-v2 (int8-quantized ONNX export)
 
@@ -72,7 +73,7 @@ text below).
 
 ## MIT License
 
-Applies to the MIT-licensed components above (BGE-small-en-v1.5, the tree-sitter
+Applies to the MIT-licensed components above (the tree-sitter
 core and grammars, and the tiktoken/tiktoken-rs data). Copyright is held
 by the respective authors of each component named above.
 
@@ -100,7 +101,7 @@ SOFTWARE.
 
 ## Apache License 2.0
 
-Applies to the ms-marco-MiniLM-L-6-v2 re-ranker model weights.
+Applies to the gte-modernbert-base embedding model and ms-marco-MiniLM-L-6-v2 re-ranker model weights.
 
 ```
                                  Apache License
