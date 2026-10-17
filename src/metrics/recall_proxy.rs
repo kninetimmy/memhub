@@ -111,14 +111,20 @@ fn try_log_recall(
 
 fn bundle_token_estimate(response: &RecallResponse) -> usize {
     // Sum tokens over what the agent actually reads from each hit:
-    // the title and body. Per-hit metadata (score, source, ts) is
+    // the title and its compact text (decision 235). Per-hit metadata (score, source, ts) is
     // small constant overhead that doesn't move the ratio against
-    // ledger_tokens; counting only title+body keeps the proxy stable
+    // ledger_tokens; counting only title+text keeps the proxy stable
     // even if RecallHit grows new metadata fields later.
     response
         .results
         .iter()
-        .map(|hit| tokens_of(&format!("{}\n{}", hit.title, hit.body)))
+        .map(|hit| {
+            tokens_of(&format!(
+                "{}\n{}",
+                hit.title,
+                crate::retrieval::hit_text(&hit.body)
+            ))
+        })
         .sum()
 }
 

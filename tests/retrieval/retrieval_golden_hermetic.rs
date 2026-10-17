@@ -284,8 +284,8 @@ fn seed_hermetic_corpus(root: &Path) {
     // operations.md this is one of the "four jargon-titled decisions"
     // whose summary backfill lifted the real Recall@3 from 76.5% to 100%,
     // and it is load-bearing here too: without it the cross-encoder logit
-    // for this paraphrase falls below `[retrieval.scoring]
-    // min_rerank_score` and the query returns zero hits.)
+    // for this paraphrase falls far enough that the row no longer ranks
+    // first.)
     decision::add_with_decided_at(
         root,
         "content_hash drift detection per embedding",
@@ -303,8 +303,8 @@ fn seed_hermetic_corpus(root: &Path) {
     .expect("decision content-hash-drift");
 
     // (semantic-decision-agent-trust — decision 17; no summary backfilled
-    // in production, so the real title+rationale text alone must clear
-    // the rerank floor.)
+    // in production, so the real title+rationale text alone must rank
+    // it first.)
     decision::add(
         root,
         "MCP tool trust split: direct writes for intent, staged writes for claims",
@@ -436,9 +436,10 @@ fn seed_hermetic_corpus(root: &Path) {
     doc::add(root, &doc_file, None, "cli:user").expect("ingest code style doc");
 
     // Deliberately nothing here mentions "zxqv" or similar gibberish — the
-    // shipped golden's `kind: empty` probes (the gibberish
-    // `negative-nonsense-tokens` and the `near-*` adjacent-topic ones) must
-    // find no hit that clears the relevance floor against this corpus.
+    // shipped golden's gibberish `negative-nonsense-tokens` probe must find
+    // no hit that clears the rerank cutoff against this corpus. The `near-*`
+    // adjacent-topic probes are reported apart: a related row may clear the
+    // cutoff for them, and the calling agent judges it (decision 235).
 }
 
 /// Flip `[global] enabled` on the fixture repo so recall merges the
@@ -516,6 +517,8 @@ struct EvalCliTotals {
     empty_queries: usize,
     match_passes: usize,
     empty_passes: usize,
+    near_queries: usize,
+    near_passes: usize,
     safety_failures: usize,
 }
 
@@ -525,7 +528,6 @@ struct EvalCliOutcome {
     #[allow(dead_code)]
     kind: String,
     passed: bool,
-    matched_low_confidence: bool,
     failure_reason: Option<String>,
 }
 
@@ -586,9 +588,10 @@ fn run_cli_eval_with(root: &Path, home: &Path, flags: &[&str]) -> EvalCliResult 
 
 // --- Tests -------------------------------------------------------------
 
-/// The `--mode`, `--no-rerank` and `--min-rerank-score` flags must be what
-/// the real `--json` output records under `settings`, and `recall_at_1`
-/// must reach that output (the struct requires both, so absence fails).
+/// The `--mode`, `--no-rerank` and `--rerank-cutoff` flags (and the
+/// `--min-rerank-score` alias) must be what the real `--json` output records
+/// under `settings`, and `recall_at_1` must reach that output (the struct
+/// requires both, so absence fails).
 #[test]
 fn eval_cli_json_records_run_settings_and_recall_at_1() {
     let temp = tempdir().expect("tempdir");
@@ -600,21 +603,15 @@ fn eval_cli_json_records_run_settings_and_recall_at_1() {
     let hybrid = run_cli_eval_with(
         temp.path(),
         home.path(),
-        &[
-            "--mode",
-            "hybrid",
-            "--no-rerank",
-            "--min-rerank-score",
-            "0.25",
-        ],
+        &["--mode", "hybrid", "--no-rerank", "--rerank-cutoff", "0.25"],
     );
     assert_eq!(hybrid.settings.mode, RetrievalMode::Hybrid);
     assert!(!hybrid.settings.reranker, "--no-rerank must record off");
-    assert_eq!(hybrid.settings.min_rerank_score, 0.25);
+    assert_eq!(hybrid.settings.rerank_cutoff, 0.25);
     assert!((0.0..=1.0).contains(&hybrid.recall_at_1));
 
-    // fts never runs the re-ranker regardless of config; the floor override
-    // is still recorded verbatim.
+    // fts never runs the re-ranker regardless of config; the cutoff override
+    // (here through the old flag name) is still recorded verbatim.
     let fts = run_cli_eval_with(
         temp.path(),
         home.path(),
@@ -622,7 +619,7 @@ fn eval_cli_json_records_run_settings_and_recall_at_1() {
     );
     assert_eq!(fts.settings.mode, RetrievalMode::Fts);
     assert!(!fts.settings.reranker);
-    assert_eq!(fts.settings.min_rerank_score, 0.75);
+    assert_eq!(fts.settings.rerank_cutoff, 0.75);
     assert!((0.0..=1.0).contains(&fts.recall_at_1));
 }
 
@@ -679,45 +676,25 @@ fn hermetic_retrieval_recall_at_3_matches_baseline() {
     // tests/m8_retrieval_eval.rs, but against a live run, not just parsing).
     // 36 = the original 18 (issue #44) + 4 doc-/global- queries (issue #74)
     // + 10 kw- keyword-bag match queries and 4 near- related-but-no-answer
-    // empty probes (issue #225).
+    // empty probes (issue #225), which are reported apart from the one
+    // gibberish safety probe (decision 235).
     assert_eq!(result.totals.queries, 36, "golden query count drifted");
     assert_eq!(result.totals.match_queries, 31);
-    assert_eq!(result.totals.empty_queries, 5);
+    assert_eq!(result.totals.empty_queries, 1);
+    assert_eq!(result.totals.near_queries, 4);
 
-    let misses: Vec<String> = result
-        .outcomes
-        .iter()
-        .filter(|o| !o.passed)
-        .map(|o| format!("{}: {}", o.id, o.failure_reason.clone().unwrap_or_default()))
-        .collect();
+    let misses = misses_outside_near_probes(&result);
     assert!(
         misses.is_empty(),
         "hermetic fixture should reproduce the recorded baseline; misses:\n{}",
         misses.join("\n"),
     );
     assert_eq!(result.totals.match_passes, 31);
-    assert_eq!(result.totals.empty_passes, 5);
+    assert_eq!(result.totals.empty_passes, 1);
     assert!(
         (result.recall_at_k - 1.0).abs() < 1e-9,
         "expected Recall@3 = 100% on the curated fixture, got {}",
         result.recall_at_k,
-    );
-    // These keyword bags rerank below the 2.0 floor, so they pass only via
-    // the low-confidence fill; every other match clears its floor.
-    let mut low_confidence_matches: Vec<&str> = result
-        .outcomes
-        .iter()
-        .filter(|o| o.matched_low_confidence)
-        .map(|o| o.id.as_str())
-        .collect();
-    low_confidence_matches.sort_unstable();
-    assert_eq!(
-        low_confidence_matches,
-        [
-            "kw-decision-agent-trust",
-            "kw-decision-recall-readonly-audit",
-            "kw-fact-build-command",
-        ],
     );
     // Report-only metric (issue #74) — proves it reaches the CLI JSON
     // shape end to end, without asserting any threshold on it.
@@ -742,12 +719,26 @@ fn hermetic_retrieval_safety_probe_never_leaks() {
 
     let result = run_cli_eval(temp.path(), home.path());
 
-    assert_eq!(result.totals.empty_queries, 5);
+    assert_eq!(result.totals.empty_queries, 1);
     assert_eq!(
         result.totals.safety_failures, 0,
-        "gibberish or near-topic probe returned a hit that cleared the floor"
+        "the gibberish probe returned a hit that cleared the rerank cutoff"
     );
-    assert_eq!(result.totals.empty_passes, 5);
+    assert_eq!(result.totals.empty_passes, 1);
+    // Near-topic probes are reported, never safety failures.
+    assert_eq!(result.totals.near_queries, 4);
+    assert!(result.totals.near_passes <= result.totals.near_queries);
+}
+
+/// Every failed outcome except the near-topic probes, which eval reports
+/// apart and never counts as a failure (decision 235).
+fn misses_outside_near_probes(result: &EvalCliResult) -> Vec<String> {
+    result
+        .outcomes
+        .iter()
+        .filter(|o| !o.passed && !o.id.starts_with("near-"))
+        .map(|o| format!("{}: {}", o.id, o.failure_reason.clone().unwrap_or_default()))
+        .collect()
 }
 
 /// Wave 3 L6 eval sweep, ON case. With `age_half_life_days = 30` enabled on
@@ -772,12 +763,7 @@ fn hermetic_retrieval_age_decay_on_holds_baseline_on_fresh_corpus() {
     let result = run_cli_eval(temp.path(), home.path());
 
     assert_eq!(result.totals.queries, 36, "golden query count drifted");
-    let misses: Vec<String> = result
-        .outcomes
-        .iter()
-        .filter(|o| !o.passed)
-        .map(|o| format!("{}: {}", o.id, o.failure_reason.clone().unwrap_or_default()))
-        .collect();
+    let misses = misses_outside_near_probes(&result);
     assert!(
         misses.is_empty(),
         "age_half_life_days=30 must not regress the fresh golden corpus; misses:\n{}",
@@ -799,7 +785,7 @@ fn hermetic_retrieval_age_decay_on_holds_baseline_on_fresh_corpus() {
 /// and the rerank pool was picked by cosine alone — the trust-split decision
 /// fell outside the default 20-row pool and never reached the cross-encoder.
 /// Partial-token FTS must lift it into the pool and on to the top 3. The
-/// floor is disabled so the assertion isolates pool membership.
+/// cutoff is disabled so the assertion isolates pool membership.
 #[test]
 fn hermetic_partial_token_fts_lifts_keyword_bag_target_into_the_pool() {
     let temp = tempdir().expect("tempdir");
@@ -816,7 +802,7 @@ fn hermetic_partial_token_fts_lifts_keyword_bag_target_into_the_pool() {
             include_stale: None,
             accepted_only: None,
             use_reranker: None,
-            min_rerank_score: Some(-1000.0),
+            rerank_cutoff: Some(-1000.0),
             log_metrics: false,
             variants: Vec::new(),
             surface: None,
@@ -841,10 +827,6 @@ fn hermetic_partial_token_fts_lifts_keyword_bag_target_into_the_pool() {
             .iter()
             .map(|h| h.title.clone())
             .collect::<Vec<_>>(),
-    );
-    assert!(
-        response.results.iter().all(|h| !h.low_confidence),
-        "hits that clear the (disabled) floor are never low-confidence"
     );
 }
 

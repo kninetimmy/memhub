@@ -113,7 +113,7 @@ fn default_init_is_hybrid_embeds_writes_and_reranks() {
             include_stale: None,
             accepted_only: None,
             use_reranker: None,
-            min_rerank_score: None,
+            rerank_cutoff: None,
             log_metrics: false,
             variants: Vec::new(),
             surface: None,

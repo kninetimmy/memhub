@@ -255,7 +255,9 @@ fn recall_mode_label(mode: RetrievalMode) -> &'static str {
     }
 }
 
-pub(crate) fn recall_response_to_json(response: &RecallResponse) -> serde_json::Value {
+/// `full` adds each hit's whole stored text as `body` beside the compact
+/// `text` (decision 235).
+pub(crate) fn recall_response_to_json(response: &RecallResponse, full: bool) -> serde_json::Value {
     let results = response
         .results
         .iter()
@@ -266,7 +268,7 @@ pub(crate) fn recall_response_to_json(response: &RecallResponse) -> serde_json::
                 "scope": hit.scope,
                 "source_id": hit.source_id,
                 "title": hit.title,
-                "body": hit.body,
+                "text": crate::retrieval::hit_text(&hit.body),
                 "score": hit.score,
                 "fts_score": hit.fts_score,
                 "vector_score": hit.vector_score,
@@ -285,11 +287,12 @@ pub(crate) fn recall_response_to_json(response: &RecallResponse) -> serde_json::
             if let Some(kind) = &hit.kind {
                 hit_json["kind"] = json!(kind);
             }
-            // Issues #225, #323: present (true) only on floor-cut fill
-            // hits, omitted otherwise, same as `kind` above -- a recall
-            // with none keeps its pre-#225 JSON shape.
-            if hit.low_confidence {
-                hit_json["low_confidence"] = json!(true);
+            // Task-only, omitted for every other row type like `kind`.
+            if let Some(status) = &hit.status {
+                hit_json["status"] = json!(status);
+            }
+            if full {
+                hit_json["body"] = json!(hit.body);
             }
             hit_json
         })
@@ -322,6 +325,55 @@ pub(crate) fn recall_response_to_json(response: &RecallResponse) -> serde_json::
     })
 }
 
+pub(crate) fn stored_row_to_json(row: &crate::retrieval::StoredRow) -> serde_json::Value {
+    let mut value = json!({
+        "source_type": row.source_type,
+        "scope": row.scope,
+        "source_id": row.source_id,
+        "title": row.title,
+        "body": row.body,
+        "created_at": row.created_at,
+        "stale": row.stale,
+        "superseded_by": row.superseded_by,
+        "source": row.source,
+    });
+    if let Some(status) = &row.status {
+        value["status"] = json!(status);
+    }
+    if let Some(kind) = &row.kind {
+        value["kind"] = json!(kind);
+    }
+    value
+}
+
+pub(crate) fn print_stored_row_human(row: &crate::retrieval::StoredRow) {
+    let mut tags = String::new();
+    if row.scope == "global" {
+        tags.push_str(" [global]");
+    }
+    if let Some(status) = &row.status {
+        tags.push_str(&format!(" [{status}]"));
+    }
+    if row.stale {
+        tags.push_str(" [stale]");
+    }
+    if let Some(new_id) = row.superseded_by {
+        tags.push_str(&format!(" [superseded by #{new_id}]"));
+    }
+    if let Some(kind) = &row.kind {
+        tags.push_str(&format!(" [kind:{kind}]"));
+    }
+    println!(
+        "[{}:{}] {}{tags}  {}",
+        row.source_type, row.source_id, row.title, row.created_at
+    );
+    if !row.source.is_empty() {
+        println!("source: {}", row.source);
+    }
+    println!();
+    println!("{}", row.body);
+}
+
 /// The "ingested doc chunks" note. `explain.docs_not_searched` is the true
 /// not-searched count; a non-zero `available_docs` with none unsearched means
 /// the chunks were searched (default inclusion) but did not make the bundle.
@@ -341,7 +393,8 @@ fn doc_chunks_note(response: &RecallResponse) -> Option<String> {
     }
 }
 
-pub(crate) fn print_recall_human(response: &RecallResponse) {
+/// `full` prints each hit's whole stored text instead of its compact text.
+pub(crate) fn print_recall_human(response: &RecallResponse, full: bool) {
     println!(
         "Query: {}  (mode: {}, matcher: {}, elapsed: {} ms)",
         response.query,
@@ -382,11 +435,13 @@ pub(crate) fn print_recall_human(response: &RecallResponse) {
                 Some(k) => format!(" [kind:{k}]"),
                 None => String::new(),
             };
-            // Issues #225, #323: a floor-cut fill hit, shown but not vouched for.
-            let low_confidence_tag = if hit.low_confidence {
-                " [low-confidence]"
-            } else {
-                ""
+            let status_tag = match &hit.status {
+                Some(s) => format!(" [{s}]"),
+                None => String::new(),
+            };
+            let rerank_label = match hit.rerank_score {
+                Some(r) => format!(" rerank={r:.3}"),
+                None => String::new(),
             };
             let source_label = if hit.source.is_empty() {
                 String::new()
@@ -394,23 +449,30 @@ pub(crate) fn print_recall_human(response: &RecallResponse) {
                 format!(" source={}", hit.source)
             };
             println!(
-                "#{rank} [{stype}:{sid}] {title}{scope}{stale}{superseded}{kind}{low}  score={score:.3} (fts={fts:.3}, vec={vec:.3}){src}",
+                "#{rank} [{stype}:{sid}] {title}{scope}{status}{stale}{superseded}{kind}{rerank}  score={score:.3} (fts={fts:.3}, vec={vec:.3}) {date}{src}",
                 rank = hit.rank,
                 stype = hit.source_type,
                 sid = hit.source_id,
                 scope = scope_tag,
                 title = hit.title,
+                status = status_tag,
                 stale = stale_tag,
                 superseded = superseded_tag,
                 kind = kind_tag,
-                low = low_confidence_tag,
+                rerank = rerank_label,
                 score = hit.score,
                 fts = hit.fts_score,
                 vec = hit.vector_score,
+                date = hit.created_at,
                 src = source_label,
             );
-            if !hit.body.is_empty() {
-                println!("    {}", hit.body);
+            let text = if full {
+                hit.body.clone()
+            } else {
+                crate::retrieval::hit_text(&hit.body)
+            };
+            if !text.is_empty() {
+                println!("    {text}");
             }
         }
     }
@@ -438,8 +500,7 @@ pub(crate) fn print_recall_explain(e: &crate::retrieval::RecallExplain) {
     println!();
     println!("Explain:");
     println!("  re-ranker ran: {}", yes_no(e.reranker_ran));
-    println!("  dropped by relevance floor: {}", e.dropped_by_floor);
-    println!("  dropped by doc floor: {}", e.dropped_by_doc_floor);
+    println!("  dropped by re-ranker cutoff: {}", e.dropped_by_cutoff);
     println!("  excluded by accepted-only: {}", e.accepted_only_excluded);
     println!("  superseded rows demoted: {}", e.superseded_demoted);
     println!(
@@ -473,7 +534,6 @@ pub(crate) fn eval_summary_to_json(summary: &commands::eval::EvalSummary) -> ser
                 "passed": o.passed,
                 "matched_rank": o.matched_rank,
                 "matched_score": o.matched_score,
-                "matched_low_confidence": o.matched_low_confidence,
                 "returned_count": o.returned_count,
                 "failure_reason": o.failure_reason,
             })
@@ -490,6 +550,8 @@ pub(crate) fn eval_summary_to_json(summary: &commands::eval::EvalSummary) -> ser
             "match_passes": summary.match_passes,
             "match_passes_at_1": summary.match_passes_at_1,
             "empty_passes": summary.empty_passes,
+            "near_queries": summary.near_queries,
+            "near_passes": summary.near_passes,
             "safety_failures": summary.safety_failures,
         },
         "settings": summary.settings,
@@ -553,24 +615,30 @@ pub(crate) fn print_eval_summary(summary: &commands::eval::EvalSummary) {
             },
         );
     }
+    if summary.near_queries > 0 {
+        println!(
+            "Near-topic: {pass}/{total} near- probes returned no results (reported only, not safety failures)",
+            pass = summary.near_passes,
+            total = summary.near_queries,
+        );
+    }
     println!();
     println!("Per-query outcomes:");
     for outcome in &summary.outcomes {
-        let glyph = if outcome.passed { "PASS" } else { "FAIL" };
+        let glyph = match outcome.passed {
+            true => "PASS",
+            false if commands::eval::is_near_probe(&outcome.id) => "NEAR",
+            false => "FAIL",
+        };
         let kind = match outcome.kind {
             commands::eval::GoldenKind::Match => "match",
             commands::eval::GoldenKind::Empty => "empty",
         };
         let detail = match outcome.matched_rank {
             Some(rank) => format!(
-                "rank {rank}, score {score:.3}{low}",
+                "rank {rank}, score {score:.3}",
                 rank = rank,
                 score = outcome.matched_score.unwrap_or(0.0),
-                low = if outcome.matched_low_confidence {
-                    " (low-confidence)"
-                } else {
-                    ""
-                },
             ),
             None => match outcome.kind {
                 commands::eval::GoldenKind::Empty => {
@@ -593,12 +661,12 @@ fn format_run_settings(
     settings: Option<&commands::eval::RunSettings>,
 ) -> String {
     match settings {
-        // Floor and pool only take effect when the re-ranker runs, so omit
+        // Cutoff and pool only take effect when the re-ranker runs, so omit
         // them for reranker-off runs (the --json output still records them).
         Some(s) if s.reranker => format!(
-            "mode {}, reranker on, rerank floor {}, rerank pool {}{}, variants {}",
+            "mode {}, reranker on, rerank cutoff {}, rerank pool {}{}, variants {}",
             recall_mode_label(s.mode),
-            s.min_rerank_score,
+            s.rerank_cutoff,
             s.rerank_candidate_pool,
             // Absent from runs saved before the cap was recorded.
             s.rerank_doc_cap
@@ -1532,7 +1600,7 @@ mod tests {
         commands::eval::RunSettings {
             mode,
             reranker,
-            min_rerank_score: 0.5,
+            rerank_cutoff: 0.5,
             rerank_candidate_pool: 20,
             rerank_doc_cap: Some(5),
             variants: false,
@@ -1540,19 +1608,19 @@ mod tests {
     }
 
     #[test]
-    fn run_settings_line_shows_floor_and_pool_only_when_reranker_on() {
+    fn run_settings_line_shows_cutoff_and_pool_only_when_reranker_on() {
         let on = format_run_settings(
             RetrievalMode::Hybrid,
             Some(&settings(RetrievalMode::Hybrid, true)),
         );
         assert!(on.contains("reranker on"), "{on}");
-        assert!(on.contains("rerank floor 0.5"), "{on}");
+        assert!(on.contains("rerank cutoff 0.5"), "{on}");
         assert!(on.contains("rerank pool 20"), "{on}");
         assert!(on.contains("rerank doc cap 5"), "{on}");
         for mode in [RetrievalMode::Hybrid, RetrievalMode::Fts] {
             let off = format_run_settings(mode, Some(&settings(mode, false)));
             assert!(off.contains("reranker off"), "{off}");
-            assert!(!off.contains("floor") && !off.contains("pool"), "{off}");
+            assert!(!off.contains("cutoff") && !off.contains("pool"), "{off}");
         }
     }
 
@@ -1622,10 +1690,10 @@ mod tests {
             vector_score: 0.0,
             stale: false,
             superseded_by: None,
+            status: None,
             source: "user".to_string(),
             created_at: "2026-01-01".to_string(),
             rerank_score: None,
-            low_confidence: false,
             kind: None,
         }
     }
@@ -1675,7 +1743,7 @@ mod tests {
     #[test]
     fn recall_json_omits_kind_key_when_absent() {
         let response = response_with(untagged_hit());
-        let json = recall_response_to_json(&response);
+        let json = recall_response_to_json(&response, false);
         let hit_json = &json["results"][0];
 
         assert!(
@@ -1688,7 +1756,7 @@ mod tests {
             "scope": "repo",
             "source_id": 1,
             "title": "build-command",
-            "body": "cargo build",
+            "text": "cargo build",
             "score": 0.5,
             "fts_score": 0.5,
             "vector_score": 0.0,
@@ -1705,14 +1773,22 @@ mod tests {
     }
 
     #[test]
-    fn recall_json_marks_low_confidence_only_when_set() {
+    fn recall_json_carries_compact_text_status_and_body_only_when_full() {
         let mut hit = untagged_hit();
-        let json = recall_response_to_json(&response_with(hit.clone()));
-        assert!(json["results"][0].get("low_confidence").is_none());
+        hit.source_type = "task".to_string();
+        hit.status = Some("open".to_string());
+        hit.body = "x".repeat(400);
+        let compact = recall_response_to_json(&response_with(hit.clone()), false);
+        let compact = &compact["results"][0];
+        assert_eq!(compact["status"], "open");
+        let text = compact["text"].as_str().expect("text");
+        assert_eq!(text.chars().count(), crate::retrieval::HIT_TEXT_MAX_CHARS);
+        assert!(text.ends_with('…'), "{text}");
+        assert!(compact.get("body").is_none(), "{compact}");
+        assert!(compact.get("low_confidence").is_none(), "{compact}");
 
-        hit.low_confidence = true;
-        let json = recall_response_to_json(&response_with(hit));
-        assert_eq!(json["results"][0]["low_confidence"], true);
+        let full = recall_response_to_json(&response_with(hit.clone()), true);
+        assert_eq!(full["results"][0]["body"], hit.body);
     }
 
     #[test]
@@ -1721,7 +1797,7 @@ mod tests {
         hit.kind = Some("gotcha".to_string());
         let response = response_with(hit);
 
-        let json = recall_response_to_json(&response);
+        let json = recall_response_to_json(&response, false);
         assert_eq!(json["results"][0]["kind"], "gotcha");
     }
 

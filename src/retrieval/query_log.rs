@@ -58,7 +58,6 @@ fn try_log_recall(
                 "scope": h.scope,
                 "title": h.title,
                 "rerank_score": h.rerank_score,
-                "low_confidence": h.low_confidence,
             })
         })
         .collect();

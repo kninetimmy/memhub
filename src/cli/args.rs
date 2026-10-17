@@ -228,23 +228,46 @@ pub enum TopLevelCommand {
         /// forces the re-ranker off without touching config.
         #[arg(long)]
         no_rerank: bool,
-        /// Override `[retrieval.scoring] min_rerank_score` for this
-        /// call. Ignored in fts mode and when the re-ranker is off.
-        /// Negative values disable the floor; positive values tighten
-        /// nonsense rejection.
-        #[arg(long, value_name = "F", allow_negative_numbers = true)]
-        min_rerank_score: Option<f32>,
+        /// Override `[retrieval.scoring] rerank_cutoff` for this call: rows
+        /// whose re-ranker score is below it are not returned. Ignored in
+        /// fts mode and when the re-ranker is off. `--min-rerank-score` is
+        /// an accepted alias.
+        #[arg(
+            long,
+            value_name = "F",
+            allow_negative_numbers = true,
+            alias = "min-rerank-score"
+        )]
+        rerank_cutoff: Option<f32>,
         /// An extra phrasing of the same question (repeatable, at most 4,
         /// none blank), for example a keyword form or an answer-shaped
         /// sentence. Rows any phrasing finds join the candidate pool; the
-        /// re-ranker and relevance floor score each row against QUERY or,
-        /// for a two-question query, its best part, never a variant.
+        /// re-ranker and the cutoff score each row against QUERY or, for a
+        /// two-question query, its best part, never a variant.
         #[arg(long, value_name = "TEXT")]
         variant: Vec<String>,
         /// Report how many candidate rows were dropped, demoted or cut,
         /// per reason, to diagnose an empty or thin result.
         #[arg(long)]
         explain: bool,
+        /// Include each hit's full stored text (`body` in JSON) instead of
+        /// only its first 300 characters.
+        #[arg(long)]
+        full: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print one row's full stored text, by the source type, id and scope a
+    /// recall hit reports (for example `memhub get-row decision 12`).
+    /// Read-only.
+    GetRow {
+        /// fact, decision, task, doc_chunk (or doc), note, or arch_section
+        /// (or arch).
+        source_type: String,
+        id: i64,
+        /// `repo` (default) or `global`.
+        #[arg(long, default_value = "repo")]
+        scope: String,
         #[arg(long)]
         json: bool,
     },
@@ -412,14 +435,17 @@ pub enum EvalCommand {
         /// eval run. Use for A/B comparisons against the rerank-on baseline.
         #[arg(long)]
         no_rerank: bool,
-        /// Override `[retrieval.scoring] min_rerank_score` for every
-        /// query in this eval run. Used to sweep the cross-encoder
-        /// score floor (decisions 70, 71). Ignored when mode resolves
-        /// to fts or when the re-ranker is disabled. Negative values
-        /// disable the floor; positive values tighten nonsense
-        /// rejection at the cost of recall on borderline matches.
-        #[arg(long, value_name = "F", allow_negative_numbers = true)]
-        min_rerank_score: Option<f32>,
+        /// Override `[retrieval.scoring] rerank_cutoff` for every query in
+        /// this eval run, to sweep the cutoff. Ignored when mode resolves
+        /// to fts or when the re-ranker is disabled. `--min-rerank-score`
+        /// is an accepted alias.
+        #[arg(
+            long,
+            value_name = "F",
+            allow_negative_numbers = true,
+            alias = "min-rerank-score"
+        )]
+        rerank_cutoff: Option<f32>,
         /// Ignore the `variants` a golden-set query carries and run its main
         /// query alone. Use for the A/B baseline against a with-variants run.
         #[arg(long)]
@@ -1139,15 +1165,10 @@ mod tests {
             .expect("args should parse")
             .command
         {
-            TopLevelCommand::Recall {
-                min_rerank_score, ..
-            } => min_rerank_score,
+            TopLevelCommand::Recall { rerank_cutoff, .. } => rerank_cutoff,
             TopLevelCommand::Eval {
-                command:
-                    EvalCommand::Retrieval {
-                        min_rerank_score, ..
-                    },
-            } => min_rerank_score,
+                command: EvalCommand::Retrieval { rerank_cutoff, .. },
+            } => rerank_cutoff,
             TopLevelCommand::Eval {
                 command:
                     EvalCommand::Locate {
@@ -1159,16 +1180,19 @@ mod tests {
     }
 
     #[test]
-    fn min_rerank_score_accepts_space_separated_negative_value() {
-        for cmd in [
-            &["recall", "x"][..],
-            &["eval", "retrieval"][..],
-            &["eval", "locate"][..],
+    fn cutoff_flags_accept_space_separated_negative_value() {
+        for (cmd, flag) in [
+            (&["recall", "x"][..], "--rerank-cutoff"),
+            (&["recall", "x"][..], "--min-rerank-score"),
+            (&["eval", "retrieval"][..], "--rerank-cutoff"),
+            (&["eval", "retrieval"][..], "--min-rerank-score"),
+            (&["eval", "locate"][..], "--min-rerank-score"),
         ] {
-            let spaced = [cmd, &["--min-rerank-score", "-1000"]].concat();
-            let equals = [cmd, &["--min-rerank-score=-1000"]].concat();
-            assert_eq!(floor(&spaced), Some(-1000.0), "{cmd:?}");
-            assert_eq!(floor(&spaced), floor(&equals), "{cmd:?}");
+            let spaced = [cmd, &[flag, "-1000"]].concat();
+            let equals_arg = format!("{flag}=-1000");
+            let equals = [cmd, &[equals_arg.as_str()]].concat();
+            assert_eq!(floor(&spaced), Some(-1000.0), "{cmd:?} {flag}");
+            assert_eq!(floor(&spaced), floor(&equals), "{cmd:?} {flag}");
         }
     }
 }

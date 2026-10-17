@@ -34,8 +34,8 @@ pub const DONE_TASK_STALE_DAYS: i64 = 30;
 /// 3 L5, issue #48). Calibrated against the bundled ms-marco-MiniLM reranker:
 /// a genuine near-duplicate / same-subject row scores ~+5.6 (facts) to ~+9.0
 /// (decisions), while merely-related or unrelated rows sit near −10, so 2.0 —
-/// the same relevance floor `[retrieval.scoring] min_rerank_score` already
-/// uses — lands in that wide gap with margin on both sides. Because the model
+/// the value recall's since-retired relevance floor used — lands in that
+/// wide gap with margin on both sides. Because the model
 /// scores lexical+semantic *overlap*, this reliably catches restatements and
 /// near-duplicates; it is not a general contradiction classifier (a rephrased
 /// conflict that shares few tokens will not trip it). A plain constant, not a
