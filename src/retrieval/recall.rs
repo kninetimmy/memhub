@@ -3383,7 +3383,7 @@ mod tests {
         ] {
             ctx.conn
                 .execute(
-                    "INSERT INTO embeddings(project_id, source_type, source_id, model_name,                      dimension, vector, content_hash) VALUES (1, ?1, ?2, ?3, ?4, ?5, 'h')",
+                    "INSERT INTO embeddings(project_id, source_type, source_id, model_name, dimension, vector, content_hash) VALUES (1, ?1, ?2, ?3, ?4, ?5, 'h')",
                     params![
                         source_type,
                         id,
