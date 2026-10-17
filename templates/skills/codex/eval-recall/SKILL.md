@@ -8,8 +8,8 @@ last_updated: 2026-07-06
 
 Run the M8 retrieval acceptance gate. Drives `memhub eval retrieval`
 under the hood. Returns a Recall@K number plus per-query pass/fail
-detail, surfaces safety failures (empty-probe queries that leaked
-floor-clearing hits), and never writes to durable tables or `writes_log`.
+detail, surfaces safety failures (empty-probe queries that returned any
+row), and never writes to durable tables or `writes_log`.
 
 This is the Codex counterpart to the Claude Code `/eval-recall` skill.
 Both call into the same `memhub eval retrieval` CLI; they differ only
@@ -49,7 +49,8 @@ Flags:
   config. Use only when explicitly comparing modes.
 - `--no-rerank`: skip the cross-encoder re-ranker (A/B against the
   rerank-on baseline).
-- `--min-rerank-score <F>`: override the cross-encoder score floor.
+- `--rerank-cutoff <F>`: override the re-ranker cutoff
+  (`[retrieval.scoring] rerank_cutoff`).
 - `--json`: structured output (default markdown).
 
 ## Interpreting the response
@@ -64,16 +65,18 @@ JSON shape (the values below are illustrative, not a recorded baseline):
   "totals": {
     "queries": 36,
     "match_queries": 31,
-    "empty_queries": 5,
+    "empty_queries": 1,
     "match_passes": 31,
     "match_passes_at_1": 29,
-    "empty_passes": 5,
+    "empty_passes": 1,
+    "near_queries": 4,
+    "near_passes": 3,
     "safety_failures": 0
   },
   "settings": {
     "mode": "hybrid",
     "reranker": true,
-    "min_rerank_score": 2.0,
+    "rerank_cutoff": -5.0,
     "rerank_candidate_pool": 20,
     "rerank_doc_cap": 3
   },
@@ -89,7 +92,6 @@ JSON shape (the values below are illustrative, not a recorded baseline):
       "passed": true,
       "matched_rank": 1,
       "matched_score": 0.5,
-      "matched_low_confidence": false,
       "returned_count": 1,
       "failure_reason": null
     }
@@ -104,15 +106,20 @@ Headline numbers to report:
   set. `recall_at_1` (with `totals.match_passes_at_1`) is the same
   measure at rank 1, and `settings` records what the run actually
   used (mode, whether the re-ranker was enabled for the run, the rerank
-  score floor, the candidate pool size and the doc cap; the pool is
+  cutoff, the candidate pool size and the doc cap; the pool is
   filled from the vector and FTS rankings in turn, with at most
   `rerank_doc_cap` default-included doc chunks, not cut by blended score).
-- **Safety**. `safety_failures` MUST be zero. A non-zero count means
-  a `kind: empty` probe returned a hit that cleared the relevance
-  floor — recall is surfacing false-positives that the golden set
-  treats as forbidden. An `empty` probe passes when no returned hit
-  clears the floor; low-confidence hits (`low_confidence: true`,
-  floor-cut rows returned to fill the bundle) do not fail it.
+- **Safety**. `safety_failures` MUST be zero. An `empty` probe passes
+  only when recall returns no rows at all, so a non-zero count means a
+  nonsense probe returned a row that cleared the re-ranker cutoff.
+  Probes whose id starts with `near-` (a related topic with no stored
+  answer) are reported apart as `near_queries` / `near_passes` and
+  never count as safety failures: recall hands related rows to the
+  calling agent to judge (decision 235). Report the near-topic count,
+  but do not treat a near-topic hit as a regression.
+- **Match needles**. A `match` query's `title_contains` /
+  `body_contains` needles are checked against each hit's full stored
+  text, not the 300-character text recall shows.
 - **Failing queries**. List by `id` with `failure_reason`. Don't
   paraphrase; quote the reason string so the user can map it to
   the matchers in the golden file.
@@ -170,14 +177,14 @@ the database during its run, and an older binary then refuses to open it.
 Save the files with a redirect that writes UTF-8 (Git Bash, zsh, bash,
 or PowerShell 7 and later). Windows PowerShell 5.1's `>` writes UTF-16,
 which `eval compare` rejects. For a settings-only change, one binary
-with a flag such as `--no-rerank` or `--min-rerank-score` works for
+with a flag such as `--no-rerank` or `--rerank-cutoff` works for
 run B. Report both commits, the settings and the counts, and say the
 numbers come from this machine's database.
 
 `tests/retrieval_golden_holdout.json` is the held-out slice of that set
 (about one query in six of each id prefix, every 6th query sorted by id
 starting at the 4th, in the same format). While tuning (pool sizes,
-weights, floors, model swaps), compare and inspect per-query results on
+weights, the cutoff, model swaps), compare and inspect per-query results on
 `tests/retrieval_golden_live.json` only. Score the held-out file once at
 the end, with the same two commands, and report its totals; never tune
 against its per-query outcomes. The first baseline and the

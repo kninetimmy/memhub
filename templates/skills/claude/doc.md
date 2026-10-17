@@ -13,9 +13,9 @@ as an external reference document. The file is chunked by heading
 retrievable through the same SQL+RAG hybrid recall as facts, decisions,
 and tasks. The first successful ingest in a repo auto-enables
 `[retrieval] include_docs_in_default` (decision 90), so afterward a
-plain recall call can surface a doc chunk directly — gated by the
-`[retrieval.scoring] doc_min_rerank_score` relevance floor, so
-off-topic docs stay silent.
+plain recall call can surface a doc chunk directly, ranked with every
+other row; off-topic chunks score low or under the
+`[retrieval.scoring] rerank_cutoff` and stay out of the way.
 
 Use this when the user wants to "pull bits and pieces" of a long doc
 across a working session instead of pasting the whole thing into
@@ -81,8 +81,9 @@ just run it again.
 ## Retrieving from the doc
 
 Plain recall already surfaces ingested doc chunks once this repo's
-first `doc add` has run (decision 90) — a chunk surfaces when it
-clears the `[retrieval.scoring] doc_min_rerank_score` relevance floor.
+first `doc add` has run (decision 90) — chunks are ranked with every
+other row, and only those under `[retrieval.scoring] rerank_cutoff`
+are dropped.
 To restrict a query to docs alone, scope explicitly:
 
 ```
