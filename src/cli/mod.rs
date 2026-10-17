@@ -1452,7 +1452,7 @@ pub fn run(cli: Cli) -> Result<()> {
                     );
                     let print_store = |label: &str, s: &commands::index::StoreRebuild| {
                         println!(
-                            "  {label}: facts: {}  decisions: {}  tasks: {}  doc chunks: {}                               arch sections: {}  (deleted {})",
+                            "  {label}: facts: {}  decisions: {}  tasks: {}  doc chunks: {}  arch sections: {}  (deleted {})",
                             s.facts, s.decisions, s.tasks, s.doc_chunks, s.arch_sections, s.deleted,
                         );
                     };
