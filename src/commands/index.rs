@@ -20,8 +20,8 @@ use crate::config::RetrievalMode;
 use crate::db::{self, ProjectContext};
 use crate::retrieval::embeddings::{EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME, embed_batch};
 use crate::retrieval::persist::{
-    SourceType, arch_section_embed_text, decision_embed_text, doc_chunk_embed_text,
-    fact_embed_text, note_embed_text, task_embed_text,
+    SourceType, arch_section_embed_text, count_lacking_embeddings, decision_embed_text,
+    doc_chunk_embed_text, fact_embed_text, note_embed_text, task_embed_text,
 };
 use crate::retrieval::util::{sha256_hex, vector_to_le_bytes};
 
@@ -42,7 +42,10 @@ pub struct IndexStatusSummary {
     pub arch_sections_total: i64,
     pub arch_sections_embedded: i64,
     pub total_embeddings: i64,
+    /// Rows lacking or holding a stale active-model vector.
     pub missing_count: i64,
+    /// The part of `missing_count` with no active-model vector at all.
+    pub lacking_count: i64,
     pub stale_ratio: f64,
 }
 
@@ -109,6 +112,7 @@ pub fn status(start: &Path) -> Result<IndexStatusSummary> {
         + notes_embedded
         + arch_sections_embedded;
     let missing_count = (source_rows - current_rows).max(0);
+    let lacking_count = count_lacking_embeddings(conn)?.0 as i64;
     let stale_ratio = if source_rows == 0 {
         0.0
     } else {
@@ -132,6 +136,7 @@ pub fn status(start: &Path) -> Result<IndexStatusSummary> {
         arch_sections_embedded,
         total_embeddings,
         missing_count,
+        lacking_count,
         stale_ratio,
     })
 }

@@ -370,6 +370,23 @@ pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
     let mut per_phrasing = repo.per_phrasing;
     let mut candidate_count = repo.candidate_count;
     let mut warnings = repo.warnings;
+    // Store-wide, unlike `stale_embeddings` (candidates only): a row with no
+    // vector can never be a vector candidate, so only this count reveals it.
+    if resolved.mode == RetrievalMode::Hybrid {
+        let (lacking, total) = crate::retrieval::persist::count_lacking_embeddings(&ctx.conn)?;
+        if lacking > 0 {
+            warnings.push(RecallWarning {
+                kind: "missing_embeddings".to_string(),
+                stale_count: lacking,
+                total_count: total,
+                reason: format!(
+                    "{lacking} of {total} row(s) in this repo have no {EMBEDDING_MODEL_NAME} \
+                     embedding, so only keyword matching can find them"
+                ),
+                fix: "Run `memhub index rebuild` (or /reindex) to embed them.".to_string(),
+            });
+        }
+    }
     let mut doc_chunk_total = repo.doc_chunk_total;
     let mut demoted_stale_count = repo.demoted_stale_count;
     let mut explain = repo.explain;
@@ -3247,7 +3264,8 @@ mod tests {
     fn hybrid_mode_returns_warning_for_pre_existing_unindexed_facts() {
         // Insert under fts mode → no embeddings written; then recall in
         // hybrid mode should still rank the row via FTS and surface a
-        // stale_embeddings warning for the missing vector.
+        // stale_embeddings warning for the missing vector, plus (issue
+        // #382) the store-wide missing_embeddings count.
         let temp = tempdir().expect("tempdir");
         init::run(temp.path()).expect("init");
         let cfg_path = temp.path().join(".memhub").join("config.toml");
@@ -3305,6 +3323,47 @@ mod tests {
             .find(|w| w.kind == "stale_embeddings")
             .expect("warning present");
         assert!(warn.stale_count >= 1);
+        let missing = response
+            .warnings
+            .iter()
+            .find(|w| w.kind == "missing_embeddings")
+            .expect("missing_embeddings warning present");
+        assert_eq!(
+            (missing.stale_count, missing.total_count),
+            (2, 2),
+            "the task outside the candidate set counts too"
+        );
+        assert!(
+            missing.reason.contains("2 of 2 row(s)"),
+            "{}",
+            missing.reason
+        );
+        assert!(
+            missing.fix.contains("memhub index rebuild"),
+            "{}",
+            missing.fix
+        );
+
+        // fts recall in the same repo never reports it (criterion 2).
+        let fts = recall(
+            temp.path(),
+            RecallOptions {
+                query: "cargo build".to_string(),
+                mode: None,
+                max_results: 5,
+                source_types: vec![SourceType::Fact],
+                include_stale: None,
+                accepted_only: None,
+                use_reranker: None,
+                min_rerank_score: None,
+                log_metrics: false,
+                variants: Vec::new(),
+                surface: None,
+                explain: false,
+            },
+        )
+        .expect("fts recall");
+        assert!(fts.warnings.iter().all(|w| w.kind != "missing_embeddings"));
     }
 
     #[test]
