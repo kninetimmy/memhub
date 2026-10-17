@@ -149,3 +149,32 @@ fn rebuild_does_not_create_the_global_store_for_an_opted_in_repo() {
     assert!(out["global"].is_null(), "no global counts: {out}");
     assert!(!f.global_db().exists(), "rebuild must not create the store");
 }
+
+#[test]
+fn rebuild_clears_the_stale_warning_for_vectors_written_by_the_previous_bundled_model() {
+    let f = Fixture::new();
+    f.rebuild();
+    // Relabel the fact's vector as the previously bundled bge-small (384-dim).
+    Connection::open(f.repo_db())
+        .expect("open db")
+        .execute(
+            "UPDATE embeddings SET model_name = 'bge-small-en-v1.5', dimension = 384, \
+             vector = zeroblob(1536)",
+            [],
+        )
+        .expect("relabel to the previous model");
+    let stale_warning = |f: &Fixture| -> bool {
+        let out = f.ok(&["recall", "repo key", "--mode", "hybrid", "--json"]);
+        let v: Value = serde_json::from_str(out.trim()).unwrap_or_else(|e| panic!("{e}: {out}"));
+        v["warnings"]
+            .as_array()
+            .expect("warnings array")
+            .iter()
+            .any(|w| w["kind"] == "stale_embeddings")
+    };
+
+    assert!(stale_warning(&f), "old-model vectors must read as stale");
+    f.rebuild();
+    assert!(!stale_warning(&f), "rebuild must clear the warning");
+    assert_eq!(vector_counts(&f.repo_db()), (0, 1));
+}
