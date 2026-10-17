@@ -21,6 +21,7 @@ pub mod pending_write;
 pub mod render;
 pub mod review;
 pub mod search;
+pub mod self_check;
 pub mod session_note;
 pub mod stats;
 pub mod status;
