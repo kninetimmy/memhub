@@ -480,7 +480,7 @@ impl MemhubServer {
                 include_stale: params.include_stale,
                 accepted_only: params.accepted_only,
                 use_reranker: None,
-                min_rerank_score: None,
+                rerank_cutoff: None,
                 log_metrics: true,
                 variants: params.variants.unwrap_or_default(),
                 surface: Some(RecallSurface::Mcp),
@@ -492,6 +492,35 @@ impl MemhubServer {
         let mut out = RecallToolResponse::from(response);
         out.explain = explain;
         Ok(Json(out))
+    }
+
+    async fn get_row_impl(
+        &self,
+        Parameters(params): Parameters<GetRowParams>,
+    ) -> std::result::Result<Json<GetRowToolResponse>, McpError> {
+        let row = retrieval::get_row(
+            &self.start,
+            &params.source_type,
+            params.source_id,
+            params
+                .scope
+                .as_deref()
+                .unwrap_or(retrieval::recall::SCOPE_REPO),
+        )
+        .map_err(map_tool_error)?;
+        Ok(Json(GetRowToolResponse {
+            source_type: row.source_type,
+            scope: row.scope,
+            source_id: row.source_id,
+            title: row.title,
+            body: row.body,
+            created_at: row.created_at,
+            status: row.status,
+            stale: row.stale,
+            superseded_by: row.superseded_by,
+            source: row.source,
+            kind: row.kind,
+        }))
     }
 
     async fn locate_impl(
@@ -791,7 +820,7 @@ impl MemhubServer {
 
     #[tool(
         name = "doc_add",
-        description = "Ingest (or re-ingest) a local markdown file as an external reference document, chunked and RAG-searchable. Direct write: a doc is a user-pointed artifact, not an agent claim, so no review gate. Docs are OPT-IN to recall — query them with recall(source_types=[\"doc\"]) to scope to docs alone; after a repo's first doc add they also join the default recall bundle when a chunk clears the relevance floor (decision 90). Unchanged content (same hash) is a no-op; changed content replaces every chunk. The path must canonicalize under the repo root or a configured [doc] allowed_dirs entry and must not match the deny-list; otherwise this refuses with a clear error (Wave-0 F11)."
+        description = "Ingest (or re-ingest) a local markdown file as an external reference document, chunked and RAG-searchable. Direct write: a doc is a user-pointed artifact, not an agent claim, so no review gate. Docs are OPT-IN to recall — query them with recall(source_types=[\"doc\"]) to scope to docs alone; after a repo's first doc add they also join the default recall bundle, ranked with every other row (decision 90). Unchanged content (same hash) is a no-op; changed content replaces every chunk. The path must canonicalize under the repo root or a configured [doc] allowed_dirs entry and must not match the deny-list; otherwise this refuses with a clear error (Wave-0 F11)."
     )]
     async fn doc_add(
         &self,
@@ -840,13 +869,24 @@ impl MemhubServer {
 
     #[tool(
         name = "recall",
-        description = "Retrieve relevant facts, decisions, tasks, and architecture sections via SQL+RAG hybrid recall (FTS5 + brute-force cosine when hybrid mode is configured). Read-only; prefer this over reading PROJECT_LEDGER.md mid-session. Phrase `query` as a natural-language question (\"are task writes reviewed or direct writes?\"), not a keyword list — the cross-encoder scores question phrasings several logits higher, so a keyword bag can miss the relevance floor. When the first call comes back empty or thin, or the answer likely uses different words than your question, retry with `variants`: up to 4 extra phrasings of the same question, such as a keyword form and a sentence worded like the answer. Variants only widen which rows are considered; every row is still scored against `query` (or, when `query` asks two things joined by \"and\" plus a question word, its best part), never a variant, so keep `query` the best natural-language question. A decision, task or fact named in `query` by number (\"decision 201\", \"task #99\", \"fact 7\") is returned first, ahead of every other hit and never flagged low_confidence, when that row exists in the repo store and the filters allow it; it takes one of the `max_results` slots. A hit with `low_confidence: true` did not clear the floor; it fills the remaining result slots after every hit that did clear it (up to `max_results`, with a `rerank_floor_dropped_all` warning when nothing cleared the floor and no row named by number in the query is returned) and is a weak lead to verify before relying on it. Default-included doc chunks under their floor are never returned as low-confidence hits. Sections of the latest architecture narrative (`memhub arch set`, split by heading; source_type `arch_section`, titled `Architecture — <heading path>`) are part of the default bundle with the same floor and low-confidence fill as facts, decisions, and tasks; source_types=[\"arch\"] scopes a query to them alone. Ingested reference docs are opt-in (add one with doc_add); once added they join the default bundle when a chunk clears the relevance floor (decision 90), and source_types=[\"doc\"] scopes a query to docs alone. The response's `available_docs` counts ingested doc chunks that did NOT surface this call — when it is non-zero and the question is design/spec/architecture-flavored, consider a follow-up recall scoped to docs (use judgment; not every turn). Session notes (log_session_note) are write-only scratch and never join the default bundle at all — source_types=[\"note\"] is the only way to retrieve one."
+        description = "Retrieve relevant facts, decisions, tasks, and architecture sections via SQL+RAG hybrid recall (FTS5 + brute-force cosine when hybrid mode is configured). Read-only; prefer this over reading PROJECT_LEDGER.md mid-session. Hits are compact: each carries source_type, source_id, scope, title, rerank_score, created_at, status (tasks only), stale, superseded_by and `text`, at most 300 characters of the row's text (ending in … when cut). Call get_row with a hit's source_type, source_id and scope to read its full text before relying on a cut text. Hits come in strict re-ranker score order, highest first, and recall does not decide which of them answer the question: you judge relevance from the titles, text and scores. A lower score is a weaker match, not a rejected one; the right row is often not the first. Only rows scoring below a low nonsense cutoff ([retrieval.scoring] rerank_cutoff, default -5.0) are dropped; when no row clears it the results are empty and a `rerank_cutoff_dropped_all` warning says so. Without the re-ranker (fts mode, or the re-ranker disabled) rerank_score is null, hits follow the blended FTS/vector score and no cutoff applies. Phrase `query` as a natural-language question (\"are task writes reviewed or direct writes?\"), not a keyword list — the cross-encoder scores question phrasings several logits higher. When the first call comes back empty or thin, or the answer likely uses different words than your question, retry with `variants`: up to 4 extra phrasings of the same question, such as a keyword form and a sentence worded like the answer. Variants only widen which rows are considered; every row is still scored against `query` (or, when `query` asks two things joined by \"and\" plus a question word, its best part), never a variant, so keep `query` the best natural-language question. A decision, task or fact named in `query` by number (\"decision 201\", \"task #99\", \"fact 7\") is an explicit lookup: it is returned first, ahead of every other hit and exempt from the cutoff, when that row exists in the repo store and the filters allow it; it takes one of the `max_results` slots. Sections of the latest architecture narrative (`memhub arch set`, split by heading; source_type `arch_section`, titled `Architecture — <heading path>`) are part of the default bundle and ranked like facts, decisions, and tasks; source_types=[\"arch\"] scopes a query to them alone. Ingested reference docs are opt-in (add one with doc_add); once added their chunks join the default bundle and are ranked with every other row (decision 90), and source_types=[\"doc\"] scopes a query to docs alone. The response's `available_docs` counts ingested doc chunks that did NOT surface this call — when it is non-zero and the question is design/spec/architecture-flavored, consider a follow-up recall scoped to docs (use judgment; not every turn). Session notes (log_session_note) are write-only scratch and never join the default bundle at all — source_types=[\"note\"] is the only way to retrieve one."
     )]
     async fn recall(
         &self,
         params: Parameters<RecallParams>,
     ) -> std::result::Result<Json<RecallToolResponse>, McpError> {
         self.recall_impl(params).await
+    }
+
+    #[tool(
+        name = "get_row",
+        description = "Return one row's full stored text by the source_type, source_id and scope a recall hit reports (recall hits carry at most 300 characters of text). Works for repo rows and, in a repo that enabled machine-global memory, global rows. Read-only."
+    )]
+    async fn get_row(
+        &self,
+        params: Parameters<GetRowParams>,
+    ) -> std::result::Result<Json<GetRowToolResponse>, McpError> {
+        self.get_row_impl(params).await
     }
 
     #[tool(
@@ -949,7 +989,8 @@ impl ServerHandler for MemhubServer {
                 r#"memhub: local-first per-repo project memory. Routing rules below are ABSOLUTE when user intent matches.
 
 INTENT → TOOL (always start here; do not fall through to Grep/Read/manual scan):
-• past decisions, status of work, architecture, "is there a fact/task about X" → recall (default recall includes sections of the current architecture narrative; recall(source_types=["arch"]) scopes to them alone)
+• past decisions, status of work, architecture, "is there a fact/task about X" → recall (default recall includes sections of the current architecture narrative; recall(source_types=["arch"]) scopes to them alone). Hits are compact (at most 300 characters of text each) in strict re-ranker score order, and you judge which ones answer the question; the best answer is not always first.
+• full text of a recall hit → get_row(source_type, source_id, scope)
 • find code by what it does, "where is X", "I want to change Y" → locate
 • ingest a markdown spec/design doc as searchable reference → doc_add
 • new task / mark task done → task_add / task_done
@@ -1498,19 +1539,49 @@ struct RecallParams {
     /// `query` wording misses: a keyword form ("task review writes"), or a
     /// sentence worded the way the answer would be ("Task writes go through
     /// review before they are accepted"). Rows found by any phrasing join the
-    /// candidate pool, but ranking and the relevance floor still score
-    /// against `query` (or, for a two-question query, its best part), never
-    /// a variant. Send them when a plain call returned nothing useful; no
+    /// candidate pool, but ranking and the cutoff still score against
+    /// `query` (or, for a two-question query, its best part), never a
+    /// variant. Send them when a plain call returned nothing useful; no
     /// blank entries. Omit for the normal call.
     variants: Option<Vec<String>>,
     /// When true, the response also carries an `explain` object counting
     /// the candidate rows this call dropped, demoted or cut, per reason
-    /// (relevance floor, doc floor, accepted-only exclusion,
+    /// (re-ranker cutoff, accepted-only exclusion,
     /// superseded demotion, rerank pool and result-limit cuts, doc
     /// chunks dropped without the re-ranker or not searched), plus whether
     /// the re-ranker ran and whether an unsearched global store exists.
     /// Use it to diagnose an empty or thin result. Omit for the normal response.
     explain: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct GetRowParams {
+    /// The hit's `source_type`: fact, decision, task, doc_chunk, note or
+    /// arch_section (`doc` and `arch` are accepted too).
+    source_type: String,
+    /// The hit's `source_id`.
+    source_id: i64,
+    /// The hit's `scope`: "repo" (the default) or "global".
+    scope: Option<String>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct GetRowToolResponse {
+    source_type: String,
+    scope: String,
+    source_id: i64,
+    title: String,
+    /// The row's full stored text.
+    body: String,
+    created_at: String,
+    /// Task status; omitted for other rows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<String>,
+    stale: bool,
+    superseded_by: Option<i64>,
+    source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<String>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -1524,7 +1595,7 @@ struct RecallToolResponse {
     /// call did not scope to `doc`. Non-zero is a cue to consider a
     /// follow-up `recall(..., source_types=["doc"])` when the question is
     /// design/spec/architecture-flavored. After a repo's first doc add,
-    /// doc chunks join the default bundle when they clear the floor (decision 90).
+    /// doc chunks join the default bundle (decision 90).
     available_docs: i64,
     warnings: Vec<RecallToolWarning>,
     provenance: RecallToolProvenance,
@@ -1542,7 +1613,12 @@ struct RecallToolHit {
     scope: String,
     source_id: i64,
     title: String,
-    body: String,
+    /// At most 300 characters of the row's text, ending in `…` when cut.
+    /// `get_row` returns the full text.
+    text: String,
+    /// Task status (`open`, `done`, `blocked`); omitted for other rows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<String>,
     stale: bool,
     /// `Some(new_id)` when this row was superseded by another of the same
     /// source type (Wave 3 L3). The hit is demoted, not dropped — repo
@@ -1557,14 +1633,6 @@ struct RecallToolHit {
     /// fusion/FTS/vector scores are diagnostic-only and not surfaced here
     /// (issue #72; see `memhub recall --json` for the full breakdown).
     rerank_score: Option<f32>,
-    /// `true` only on a fill hit (issues #225, #323): the candidate fell
-    /// below the relevance floor and is returned anyway, after every hit
-    /// that cleared it, to fill the bundle up to `max_results` (with a
-    /// `rerank_floor_dropped_all` warning when nothing cleared the floor and
-    /// no row named by number in the query is returned).
-    /// Treat as a lead, not an answer. Omitted when false.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    low_confidence: bool,
     /// Fact-only optional tag (issue #97). Present only when the
     /// underlying fact was tagged; omitted from the JSON payload
     /// otherwise so an untagged corpus's MCP recall bundle stays
@@ -1594,14 +1662,14 @@ impl From<RecallHit> for RecallToolHit {
             source_type: value.source_type,
             scope: value.scope,
             source_id: value.source_id,
+            text: crate::retrieval::hit_text(&value.body),
             title: value.title,
-            body: value.body,
+            status: value.status,
             stale: value.stale,
             superseded_by: value.superseded_by,
             source: value.source,
             created_at: value.created_at,
             rerank_score: value.rerank_score,
-            low_confidence: value.low_confidence,
             kind: value.kind,
         }
     }
@@ -3443,29 +3511,61 @@ mod tests {
     }
 
     #[test]
-    fn mcp_recall_hit_marks_low_confidence_only_when_set() {
-        let hit = |low_confidence| RecallHit {
+    fn mcp_recall_hit_is_compact() {
+        let hit = RecallHit {
             rank: 1,
-            source_type: "fact".to_string(),
+            source_type: "task".to_string(),
             scope: "repo".to_string(),
             source_id: 1,
             title: "t".to_string(),
-            body: "b".to_string(),
+            body: "b".repeat(500),
             score: 0.5,
             fts_score: 0.0,
             vector_score: 0.5,
             stale: false,
             superseded_by: None,
-            source: "user".to_string(),
+            status: Some("open".to_string()),
+            source: String::new(),
             created_at: "2026-01-01".to_string(),
             rerank_score: Some(-1.0),
-            low_confidence,
             kind: None,
         };
-        let normal = serde_json::to_value(RecallToolHit::from(hit(false))).expect("json");
-        assert!(normal.get("low_confidence").is_none());
-        let flagged = serde_json::to_value(RecallToolHit::from(hit(true))).expect("json");
-        assert_eq!(flagged["low_confidence"], true);
+        let json = serde_json::to_value(RecallToolHit::from(hit)).expect("json");
+        assert_eq!(json["status"], "open");
+        assert_eq!(json["rerank_score"], -1.0);
+        assert_eq!(json["created_at"], "2026-01-01");
+        assert_eq!(
+            json["text"].as_str().expect("text").chars().count(),
+            crate::retrieval::HIT_TEXT_MAX_CHARS
+        );
+        assert!(json.get("body").is_none(), "{json}");
+        assert!(json.get("low_confidence").is_none(), "{json}");
+    }
+
+    #[test]
+    fn mcp_get_row_returns_full_text_for_repo_rows_and_refuses_unknown_ones() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let long = format!("{} the end", "word ".repeat(100));
+        let task_id = crate::commands::task::add(temp.path(), "long task", Some(&long), "cli:user")
+            .expect("task");
+        let server = MemhubServer::new(temp.path().to_path_buf());
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let call = |source_type: &str, id: i64, scope: Option<&str>| {
+            rt.block_on(server.get_row_impl(Parameters(GetRowParams {
+                source_type: source_type.to_string(),
+                source_id: id,
+                scope: scope.map(str::to_string),
+            })))
+        };
+        let row = call("task", task_id, None).expect("get_row").0;
+        assert_eq!(row.body, long);
+        assert_eq!(row.status.as_deref(), Some("open"));
+        assert_eq!(row.scope, "repo");
+        assert!(call("task", task_id + 1, None).is_err());
+        assert!(call("widget", task_id, None).is_err());
+        // Global rows need the repo's opt-in, as in recall.
+        assert!(call("task", task_id, Some("global")).is_err());
     }
 
     #[test]

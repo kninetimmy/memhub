@@ -85,7 +85,7 @@ fn assert_line_fields(line: &Value, surface: &str) {
     assert!(ts.ends_with('Z') && ts.contains('T'), "UTC ts: {ts}");
     let results = line["results"].as_array().expect("results array");
     assert_eq!(results.len(), 1, "exactly the seeded fact: {line}");
-    // FTS mode runs no re-ranker, so the score is null and nothing is flagged.
+    // FTS mode runs no re-ranker, so the score is null.
     assert_eq!(
         results[0],
         json!({
@@ -94,7 +94,6 @@ fn assert_line_fields(line: &Value, surface: &str) {
             "scope": "repo",
             "title": "build",
             "rerank_score": null,
-            "low_confidence": false,
         }),
         "{line}"
     );
@@ -170,11 +169,11 @@ fn mcp_recall_appends_one_line_per_call() {
 #[test]
 fn hybrid_recall_logs_a_numeric_rerank_score_and_the_effective_max_results() {
     let temp = seeded_repo_in_mode(true, RetrievalMode::Hybrid);
-    // A floor no logit can fall below keeps `low_confidence` deterministic
-    // (false) whatever score the model gives the seeded fact.
+    // A cutoff no logit can fall below keeps the seeded fact in the result
+    // whatever score the model gives it.
     let cfg_path = temp.path().join(".memhub/config.toml");
     let mut cfg = ProjectConfig::load(&cfg_path).expect("load cfg");
-    cfg.retrieval.scoring.min_rerank_score = -1000.0;
+    cfg.retrieval.scoring.rerank_cutoff = -1000.0;
     cfg.save(&cfg_path).expect("save cfg");
     // No --max-results: the log holds the resolved config default.
     let out = run_cli(
@@ -192,7 +191,7 @@ fn hybrid_recall_logs_a_numeric_rerank_score_and_the_effective_max_results() {
     let row = &lines[0]["results"][0];
     assert_eq!(row["source_id"], FACT_ID);
     assert_eq!(row["title"], "build");
-    assert_eq!(row["low_confidence"], false, "{}", lines[0]);
+    assert!(row.get("low_confidence").is_none(), "{}", lines[0]);
     assert!(row["rerank_score"].is_number(), "{}", lines[0]);
 }
 

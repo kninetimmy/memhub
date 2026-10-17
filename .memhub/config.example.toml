@@ -147,7 +147,7 @@ rerank_candidate_pool = 20
 # source types, including doc, is not capped.
 rerank_doc_cap = 3
 # Make ingested doc chunks eligible for the *default* recall bundle
-# (no --source-type needed), gated by scoring.doc_min_rerank_score.
+# (no --source-type needed), gated by scoring.rerank_cutoff.
 # Canonical baseline is false (decision 86: docs are opt-in). The
 # first successful `memhub doc add` in a repo flips the LOCAL
 # config.toml to true so the user-pointed write that establishes
@@ -158,7 +158,7 @@ include_docs_in_default = false
 # Opt-in query log, OFF by default. When true, every agent-facing recall
 # (CLI `memhub recall` and the MCP recall tool) appends one JSON line --
 # timestamp, surface, query, variants, requested source types/max_results,
-# each returned row's type/id/scope/title/rerank score/low_confidence flag,
+# each returned row's type/id/scope/title/rerank score,
 # and warning kinds -- to .memhub/recall_queries.jsonl. Queries are stored
 # in PLAINTEXT. It is a plain file beside the database (git-ignored), never
 # part of the DB, so Drive sync and export never carry it. It is never
@@ -186,21 +186,17 @@ superseded_penalty = 0.4
 # candidates enter the rerank pool, not the final reranked order. Kept at 0
 # in this baseline so the canonical install stays byte-identical.
 age_half_life_days = 0
-# Cross-encoder relevance floor (replaces the legacy min_vector_score
-# cosine floor — see decisions 70, 71). Calibrated empirically against
-# memhub's golden set: gibberish probe scores ~+1.25, next legitimate
-# match drops out at +2.5; 2.0 sits in the middle of the safe band.
-# Only applied when re-ranker runs (hybrid + use_reranker).
-min_rerank_score = 2.0
-# Floor for doc chunks that entered via include_docs_in_default.
-# Calibrated empirically (recall.rs
-# doc_default_recall_floor_routes_by_task_relevance): an on-topic doc
-# chunk reranks ~+1.6, off-topic ~−11, so 0.0 (the MiniLM
-# relevant/irrelevant sign boundary) routes by task with wide margin.
-# Deliberately *below* min_rerank_score — doc chunks rerank in a
-# lower band than facts/decisions, so a higher floor would wrongly
-# filter relevant docs. Ignored for explicit --source-type doc.
-doc_min_rerank_score = 0.0
+# Cross-encoder cutoff (decision 235). Recall returns hits in strict
+# re-ranker score order and the calling agent judges which are relevant;
+# this one cutoff only drops nonsense. A row whose re-ranker score is below
+# it is not returned, for every row type. On 344 blind questions across six
+# repositories -5.0 kept 257 of the 265 judged answers while every off-topic
+# probe on memhub's live set returned nothing. Only applied when the
+# re-ranker runs (hybrid + use_reranker); a row the query names by number
+# ("decision 12") is exempt. The retired min_rerank_score and
+# doc_min_rerank_score keys still load but are ignored (memhub doctor
+# names them).
+rerank_cutoff = -5.0
 
 # Code locator (memhub locate) scoring, over the separate sibling DB
 # .memhub/code_index.sqlite — split from retrieval.scoring.fts_weight /

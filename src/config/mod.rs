@@ -49,35 +49,15 @@ pub const DEFAULT_SUPERSEDED_PENALTY: f64 = 0.4;
 /// shifts which candidates enter the rerank pool, not the final reranked
 /// order (see `recall::finalize`).
 pub const DEFAULT_AGE_HALF_LIFE_DAYS: i64 = 0;
-/// Default cross-encoder score floor for hybrid-mode candidates after
-/// re-ranking. Calibrated empirically against memhub's own golden set
-/// (decision 71, task #22): the gibberish safety probe rerank-scores at
-/// ~+1.25; the next legitimate match drops out at 2.5. 2.0 sits in the
-/// middle of the safe band [1.5, 2.4]. Gives parity with the retired
-/// `min_vector_score = 0.7` floor on R@3 and safety probe pass.
-/// Re-verified under the int8-quantized reranker (issue #75 / Q18): on
-/// the hermetic golden set the lowest legit match shifted 2.46 -> 2.33
-/// (still clears 2.0) and the gibberish ceiling -8.65 -> -8.82, so 2.0
-/// stays inside the safe band and Recall@3 holds at 100%. Left unchanged.
-pub const DEFAULT_MIN_RERANK_SCORE: f32 = 2.0;
-/// Cross-encoder floor a doc chunk must clear to enter the *default*
-/// recall bundle when `include_docs_in_default` is on (decision
-/// extending 86). Calibrated empirically (recall.rs
-/// `doc_default_recall_floor_routes_by_task_relevance`): an on-topic
-/// doc chunk reranks around +1.6 while off-topic chunks sit near
-/// −11, so 0.0 — the ms-marco-MiniLM relevant/irrelevant sign
-/// boundary — cleanly routes by task with wide margin both ways.
-/// Note this is *below* `DEFAULT_MIN_RERANK_SCORE` (2.0): doc chunks
-/// rerank in a lower band than facts/decisions, so a "stricter =
-/// higher" floor would wrongly filter genuinely relevant docs.
-/// Anti-displacement comes from the deeply negative off-topic
-/// scores, not a high threshold. Only consulted for chunks that
-/// entered via the default-inclusion path; explicit
-/// `--source-type doc` keeps the normal `min_rerank_score`.
-/// Re-verified under the int8-quantized reranker (issue #75): the
-/// on-topic semantic doc reranked 1.20 -> 1.61 and off-topic chunks
-/// stayed near −11, so 0.0 holds with even more headroom. Unchanged.
-pub const DEFAULT_DOC_MIN_RERANK_SCORE: f32 = 0.0;
+/// Default cross-encoder cutoff (`[retrieval.scoring] rerank_cutoff`,
+/// decision 235). Recall returns hits in strict re-ranker score order for
+/// the calling agent to judge; this one low cutoff only drops nonsense, for
+/// every row type. On 344 blind questions across six repositories -5.0 kept
+/// 257 of the 265 judged answers while every off-topic probe on memhub's
+/// live set returned nothing. It replaces the retired relevance floors
+/// `min_rerank_score` (2.0) and `doc_min_rerank_score` (0.0), which every
+/// existing config pins, hence a key of its own.
+pub const DEFAULT_RERANK_CUTOFF: f32 = -5.0;
 pub const DEFAULT_ACCEPTED_ONLY: bool = false;
 /// Retired: recall always returns stale facts, flagged `stale: true` and
 /// ranked like fresh ones (decision 236). `[retrieval]
@@ -200,22 +180,18 @@ pub struct RetrievalScoringConfig {
     /// (Q2 / decision 145). See `DEFAULT_AGE_HALF_LIFE_DAYS`.
     #[serde(default = "default_age_half_life_days")]
     pub age_half_life_days: i64,
-    /// Minimum cross-encoder relevance score for a candidate to survive
-    /// the re-rank pass. MiniLM gives positive logits to relevant docs
-    /// and negative logits to nonsense; a floor near 0 cleanly separates
-    /// the two without the cosine-band overlap that doomed the legacy
-    /// `min_vector_score` knob (decisions 70, 71). Ignored in fts mode
-    /// and when `use_reranker = false`.
-    #[serde(default = "default_min_rerank_score")]
+    /// Cross-encoder cutoff: a candidate whose re-ranker score is below it
+    /// is not returned, whatever its row type (decision 235). Ignored in fts
+    /// mode and when `use_reranker = false`. See `DEFAULT_RERANK_CUTOFF`.
+    #[serde(default = "default_rerank_cutoff")]
+    pub rerank_cutoff: f32,
+    /// Ignored (decision 235); replaced by `rerank_cutoff`. Parsed so
+    /// configs that pin it keep loading, never written back.
+    #[serde(default, skip_serializing)]
     pub min_rerank_score: f32,
-    /// Cross-encoder floor a doc chunk must clear to survive into the
-    /// *default* bundle when `[retrieval] include_docs_in_default` is
-    /// on. Defaults to 0.0 — the cross-encoder's own relevance sign
-    /// boundary — which routes on-topic docs in and off-topic docs
-    /// out by a wide margin (see DEFAULT_DOC_MIN_RERANK_SCORE).
-    /// Ignored for explicit `--source-type doc` scopes (those use the
-    /// normal floor) and whenever the re-ranker does not run.
-    #[serde(default = "default_doc_min_rerank_score")]
+    /// Ignored (decision 235); replaced by `rerank_cutoff`. Parsed so
+    /// configs that pin it keep loading, never written back.
+    #[serde(default, skip_serializing)]
     pub doc_min_rerank_score: f32,
 }
 
@@ -227,8 +203,9 @@ impl Default for RetrievalScoringConfig {
             stale_penalty: DEFAULT_STALE_PENALTY,
             superseded_penalty: DEFAULT_SUPERSEDED_PENALTY,
             age_half_life_days: DEFAULT_AGE_HALF_LIFE_DAYS,
-            min_rerank_score: DEFAULT_MIN_RERANK_SCORE,
-            doc_min_rerank_score: DEFAULT_DOC_MIN_RERANK_SCORE,
+            rerank_cutoff: DEFAULT_RERANK_CUTOFF,
+            min_rerank_score: 0.0,
+            doc_min_rerank_score: 0.0,
         }
     }
 }
@@ -248,11 +225,8 @@ fn default_superseded_penalty() -> f64 {
 fn default_age_half_life_days() -> i64 {
     DEFAULT_AGE_HALF_LIFE_DAYS
 }
-fn default_min_rerank_score() -> f32 {
-    DEFAULT_MIN_RERANK_SCORE
-}
-fn default_doc_min_rerank_score() -> f32 {
-    DEFAULT_DOC_MIN_RERANK_SCORE
+fn default_rerank_cutoff() -> f32 {
+    DEFAULT_RERANK_CUTOFF
 }
 fn default_include_docs_in_default() -> bool {
     DEFAULT_INCLUDE_DOCS_IN_DEFAULT
@@ -357,7 +331,7 @@ pub struct RetrievalConfig {
     pub rerank_doc_cap: usize,
     /// When true, plain `memhub recall` (no `--source-type`) makes
     /// ingested doc chunks eligible for the default bundle, gated by
-    /// `scoring.doc_min_rerank_score`. Off by default (decision 86);
+    /// `scoring.rerank_cutoff` like every other row. Off by default (decision 86);
     /// the first successful `memhub doc add` in a project flips this
     /// to true in that repo's `.memhub/config.toml`. Explicit
     /// `--source-type doc` recall is unaffected by this flag.

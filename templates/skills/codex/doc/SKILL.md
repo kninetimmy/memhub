@@ -12,8 +12,9 @@ as an external reference document, chunked by heading and embedded so
 it is retrievable through the same SQL+RAG hybrid recall as facts,
 decisions, and tasks. The first successful ingest in a repo
 auto-enables `[retrieval] include_docs_in_default` (decision 90), so
-afterward a plain recall call can surface a doc chunk directly — gated
-by the `[retrieval.scoring] doc_min_rerank_score` relevance floor.
+afterward a plain recall call can surface a doc chunk directly, ranked
+with every other row (only rows under `[retrieval.scoring]
+rerank_cutoff` are dropped).
 
 This is the Codex counterpart to the Claude Code `/doc` skill. Both
 call into the same `memhub doc` CLI and `memhub.doc_add` MCP tool;

@@ -453,6 +453,28 @@ recorded):
   never returned (decision 189), and a single-row candidate pool is now
   re-ranked so the floor applies to it.
 
+Decision 235 replaced the relevance floor and the low-confidence results
+(the decision 186 and issue #323 text above is kept as recorded):
+
+- Before: a fixed relevance floor (`min_rerank_score` 2.0, and
+  `doc_min_rerank_score` 0.0 for default-included doc chunks) decided which
+  hits counted, every floor-clearing hit came before every flagged
+  `low_confidence` hit, and each hit carried its full stored `body`.
+- After: hits come in strict re-ranker score order, highest first, for every
+  row type (rows the query names by number still come first, exempt from any
+  cutoff), and the calling agent judges relevance. One low cutoff,
+  `[retrieval.scoring] rerank_cutoff` (default -5.0), drops only nonsense for
+  every row type; when no row clears it the response is empty and carries a
+  `rerank_cutoff_dropped_all` warning. No hit carries `low_confidence`. Each
+  hit is compact: type, id, scope, title, re-ranker score, date, status
+  (task status, `stale`, `superseded_by`) and at most 300 characters of the
+  row's text as `text` in place of `body`; the read-only `get_row` MCP tool
+  (CLI `memhub get-row`) returns a row's full stored text. The two floor keys
+  still load from existing configs but have no effect, and `memhub doctor`
+  names them as ignored settings. Without the re-ranker (fts mode or
+  `use_reranker = false`) hits keep the blended-score order and no cutoff
+  applies.
+
 MCP write tools are unchanged in M8. Agent-originated facts and
 decisions continue to stage through `pending_writes` and require
 review (PRD §11.3); `recall` is read-only.

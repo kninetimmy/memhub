@@ -102,7 +102,7 @@ fn run_retrieval_returns_full_recall_on_seeded_db() {
             k: 3,
             mode: None,
             use_reranker: None,
-            min_rerank_score: None,
+            rerank_cutoff: None,
             no_variants: false,
         },
     )
@@ -150,7 +150,7 @@ fn golden_variants_are_sent_and_no_variants_turns_them_off() {
                 k: 3,
                 mode: Some(RetrievalMode::Fts),
                 use_reranker: None,
-                min_rerank_score: None,
+                rerank_cutoff: None,
                 no_variants,
             },
         )
@@ -171,8 +171,8 @@ fn empty_query_with_matching_results_is_safety_failure() {
     seed_demo_project(temp.path());
     // The "empty" probe uses a real keyword that exists in the seed,
     // so recall WILL return something — that must register as a
-    // safety failure, not a silent pass. Keyword-only, so the re-ranker's
-    // floor in the hybrid default cannot empty the result.
+    // safety failure, not a silent pass. FTS mode, so no re-ranker cutoff
+    // can empty the result.
     let golden = write_golden(
         temp.path(),
         r#"{
@@ -194,7 +194,7 @@ fn empty_query_with_matching_results_is_safety_failure() {
             k: 3,
             mode: Some(RetrievalMode::Fts),
             use_reranker: None,
-            min_rerank_score: None,
+            rerank_cutoff: None,
             no_variants: false,
         },
     )
@@ -208,7 +208,7 @@ fn empty_query_with_matching_results_is_safety_failure() {
     assert!(!outcome.passed);
     assert!(outcome.kind == GoldenKind::Empty);
     let reason = outcome.failure_reason.clone().expect("reason");
-    assert!(reason.contains("expected empty"), "{reason}");
+    assert!(reason.contains("expected an empty bundle"), "{reason}");
 }
 
 #[test]
@@ -245,7 +245,7 @@ fn unmatched_query_drives_recall_below_one() {
             k: 3,
             mode: None,
             use_reranker: None,
-            min_rerank_score: None,
+            rerank_cutoff: None,
             no_variants: false,
         },
     )
@@ -276,7 +276,7 @@ fn missing_golden_path_returns_invalid_input_error() {
             k: 3,
             mode: None,
             use_reranker: None,
-            min_rerank_score: None,
+            rerank_cutoff: None,
             no_variants: false,
         },
     )
@@ -296,7 +296,7 @@ fn k_must_be_positive() {
             k: 0,
             mode: None,
             use_reranker: None,
-            min_rerank_score: None,
+            rerank_cutoff: None,
             no_variants: false,
         },
     )

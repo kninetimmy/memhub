@@ -374,6 +374,7 @@ const KNOWN_LEAVES: &[&str] = &[
     "retrieval.scoring.stale_penalty",
     "retrieval.scoring.superseded_penalty",
     "retrieval.scoring.age_half_life_days",
+    "retrieval.scoring.rerank_cutoff",
     "retrieval.scoring.min_rerank_score",
     "retrieval.scoring.doc_min_rerank_score",
     "code_index.fts_weight",
@@ -410,6 +411,9 @@ const IGNORED_LEAVES: &[&str] = &[
     // Staleness is informational in recall (decision 236).
     "retrieval.include_stale_by_default",
     "retrieval.scoring.stale_penalty",
+    // One re-ranker cutoff replaced the relevance floors (decision 235).
+    "retrieval.scoring.min_rerank_score",
+    "retrieval.scoring.doc_min_rerank_score",
 ];
 
 /// Intermediate table paths (never themselves reported as unknown; a
@@ -611,19 +615,11 @@ fn check_config_types(raw: &str) -> Check {
             problems.push(format!("{label}={v} out of range [0,1]"));
         }
     }
-    for (label, v) in [
-        (
-            "retrieval.scoring.min_rerank_score",
-            cfg.retrieval.scoring.min_rerank_score,
-        ),
-        (
-            "retrieval.scoring.doc_min_rerank_score",
-            cfg.retrieval.scoring.doc_min_rerank_score,
-        ),
-    ] {
-        if !v.is_finite() {
-            problems.push(format!("{label}={v} is not a finite number"));
-        }
+    let cutoff = cfg.retrieval.scoring.rerank_cutoff;
+    if !cutoff.is_finite() {
+        problems.push(format!(
+            "retrieval.scoring.rerank_cutoff={cutoff} is not a finite number"
+        ));
     }
 
     // The staleness horizon must be a positive day count — 0 or negative
@@ -712,8 +708,7 @@ const BASELINE_FIELDS: &[&str] = &[
     "retrieval.scoring.vector_weight",
     "retrieval.scoring.superseded_penalty",
     "retrieval.scoring.age_half_life_days",
-    "retrieval.scoring.min_rerank_score",
-    "retrieval.scoring.doc_min_rerank_score",
+    "retrieval.scoring.rerank_cutoff",
     "code_index.fts_weight",
     "code_index.vector_weight",
     "code_index.test_path_penalty",
@@ -1833,6 +1828,9 @@ include_stale_by_default = false
 
 [retrieval.scoring]
 stale_penalty = 0.3
+min_rerank_score = 2.0
+doc_min_rerank_score = 0.0
+rerank_cutoff = -5.0
 "#,
         )
         .expect("parse");
@@ -1842,6 +1840,9 @@ stale_penalty = 0.3
         let detail = check.detail.unwrap_or_default();
         assert!(detail.contains("retrieval.include_stale_by_default"));
         assert!(detail.contains("retrieval.scoring.stale_penalty"));
+        assert!(detail.contains("retrieval.scoring.min_rerank_score"));
+        assert!(detail.contains("retrieval.scoring.doc_min_rerank_score"));
+        assert!(!detail.contains("rerank_cutoff"), "{detail}");
         assert_eq!(check_unknown_keys(&value).status, Status::Ok);
 
         let clean: toml::Value = toml::from_str(
@@ -1864,6 +1865,29 @@ stale_penalty = 5.0
 "#;
         let check = check_config_types(raw);
         assert_eq!(check.status, Status::Ok, "detail: {:?}", check.detail);
+    }
+
+    /// The retired floors still load (every repo pins them) and have no
+    /// effect on recall, which reads `rerank_cutoff` alone.
+    #[test]
+    fn retired_floor_keys_load_and_the_cutoff_defaults() {
+        let raw = r#"
+project_name = "x"
+log_level = "info"
+
+[retrieval.scoring]
+min_rerank_score = 2.0
+doc_min_rerank_score = 0.0
+"#;
+        assert_eq!(check_config_types(raw).status, Status::Ok);
+        let cfg: crate::config::ProjectConfig = toml::from_str(raw).expect("loads");
+        assert_eq!(
+            cfg.retrieval.scoring.rerank_cutoff,
+            crate::config::DEFAULT_RERANK_CUTOFF
+        );
+        let saved = toml::to_string(&cfg).expect("serialize");
+        assert!(!saved.contains("min_rerank_score"), "{saved}");
+        assert!(saved.contains("rerank_cutoff = -5.0"), "{saved}");
     }
 
     #[test]

@@ -45,14 +45,15 @@ memhub.recall(query="<one-line natural-language question>")
 Phrase the query as a natural-language question ("are task writes
 reviewed or direct writes?"), not a keyword list ("task writes ungated
 review require_review"). The cross-encoder scores question phrasings
-several logits higher, so a keyword bag can miss the relevance floor
-even when the row exists.
+several logits higher, so a keyword bag can push the row you want down
+the list, or under the nonsense cutoff, even when the row exists.
 
 A decision, task or fact you name by number in the query ("what does
 decision 201 say about X", "task #99", "fact 7") is returned first,
-ahead of every other hit and never flagged `low_confidence`, when that
-row exists and the filters allow it (`accepted_only` drops a task); it
-takes one of the `max_results` slots, and the other hits fill the rest.
+ahead of every other hit and exempt from the cutoff (it is an explicit
+lookup, not ranking), when that row exists and the filters allow it
+(`accepted_only` drops a task); it takes one of the `max_results`
+slots, and the other hits fill the rest.
 Shorthand such as `D17` and a number after any other word (`issue 290`,
 `PR #328`) is not treated as a row id.
 
@@ -106,10 +107,13 @@ The `memhub.recall` MCP bundle has the shape:
   "results": [
     {
       "source_type": "decision",
+      "scope": "repo",
       "source_id": 17,
       "title": "...",
-      "body": "...",
+      "text": "at most 300 characters of the row's text…",
+      "created_at": "2026-05-13T10:00:00Z",
       "stale": false,
+      "superseded_by": null,
       "source": "user+agent:codex",
       "rerank_score": 2.31,
       ...
@@ -123,30 +127,32 @@ The `memhub.recall` MCP bundle has the shape:
 }
 ```
 
-The CLI's `memhub recall --json` keeps the fuller diagnostic shape
-(`rank`, `score`, `fts_score`, `vector_score`, plus `rerank_score`) for
-debugging and calibration; the MCP bundle above is trimmed to what you
-need day to day (issue #72) — no `rank`/`score`/`fts_score`/
-`vector_score`, and no `confidence` field either way.
+A task hit also carries `status` (`open`, `done` or `blocked`). The
+CLI's `memhub recall --json` carries the same compact hits plus the
+diagnostic `rank`, `score`, `fts_score` and `vector_score`; add
+`--full` to get each hit's whole stored text as `body`. The MCP bundle
+above is trimmed to what you need day to day (issue #72).
 
-- Use `title` and `body` directly — they are pulled from the durable
-  source tables, not paraphrases.
+- Hits are compact: `title` and `text` come from the durable source
+  tables, not paraphrases, but `text` is at most 300 characters of the
+  row's text and ends in `…` when it was cut. Before you quote or rely
+  on a cut hit, fetch its full text with
+  `memhub.get_row(source_type="decision", source_id=17, scope="repo")`
+  (CLI: `memhub get-row decision 17`, add `--scope global` for a
+  global hit). `get_row` is read-only.
+- You judge relevance. Hits come in strict re-ranker score order,
+  highest first, after any row named by number; recall does not mark
+  any hit as an answer or a non-answer, and the best answer is not
+  always first. Read the titles and text and pick the hits that answer
+  the question; say so when none do.
 - `rerank_score` is the cross-encoder logit that decided this hit's
   place in `results` — array order is the final rank, there is no
-  separate `rank` field on this path. `null` when the re-ranker didn't
-  run for this call (fts mode, or hybrid with the re-ranker off);
-  positive means relevant, and nonsense candidates are dropped by the
-  `min_rerank_score` floor — but the best dropped ones come back after
-  the floor-clearing hits, flagged `low_confidence` (below).
-- `low_confidence: true` (CLI text: `[low-confidence]`) marks a hit
-  that did NOT clear the floor. It fills the result slots left after
-  every floor-clearing hit, up to `max_results` (with a
-  `rerank_floor_dropped_all` warning when nothing cleared the floor and no
-  row named by number in the query is returned),
-  as a weak lead: verify it against the source before relying on it,
-  and say it is low-confidence when you cite it. Flagged hits always
-  come after the unflagged ones, and a hit that cleared the floor is
-  never flagged.
+  separate `rank` field on this path. Higher is a closer match. Only
+  rows under a low nonsense cutoff (`[retrieval.scoring] rerank_cutoff`,
+  default -5.0) are dropped, so a low or negative score is a weaker
+  match, not a rejected one. `null` when the re-ranker didn't run for
+  this call (fts mode, or hybrid with the re-ranker off): hits then
+  follow the blended FTS/vector score and no cutoff applies.
 - `stale = true` means a fact past the verification window or a
   decision marked superseded/draft or a task marked done. Surface
   staleness when it matters; don't quote a stale fact as current.
@@ -161,8 +167,8 @@ need day to day (issue #72) — no `rank`/`score`/`fts_score`/
 
 After the first `memhub doc add` in a repo, `[retrieval]
 include_docs_in_default` auto-enables (decision 90): plain recall
-already surfaces a relevant doc chunk whenever it clears the
-`[retrieval.scoring] doc_min_rerank_score` relevance floor — no
+already ranks doc chunks with facts, decisions and tasks (at most
+`[retrieval] rerank_doc_cap` chunks are re-ranked per call) — no
 scoping needed. The `available_docs` count is chunks that did **not**
 surface this call. When it is **> 0** and the question is
 design/spec/architecture/style-flavored, a doc-scoped follow-up can
@@ -179,9 +185,9 @@ title; cite the document and section.
 
 ## Empty results
 
-When `results` is empty (nothing matched at all, or the only
-candidates were default-included doc chunks that missed their own floor —
-those are never returned as low-confidence leads):
+When `results` is empty (nothing matched at all, or every candidate
+scored below the nonsense cutoff, which a `rerank_cutoff_dropped_all`
+warning reports):
 
 1. State that recall returned nothing for the query and quote the
    exact query you ran.

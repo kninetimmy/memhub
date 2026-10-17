@@ -3,7 +3,12 @@
 //! Loads a golden-query JSON file, runs each query through the same
 //! `retrieval::recall` engine the CLI and MCP tools use, and reports
 //! how many `match` queries placed the expected row in the top K and
-//! how many `empty` queries kept their result bundle empty.
+//! how many `empty` queries kept their result bundle empty. A match
+//! query's needles are checked against each hit's full stored text, not
+//! the compact text recall shows. Empty probes whose id starts with
+//! `near-` (related topic, no stored answer) are reported apart and never
+//! count as safety failures: rows that clear the nonsense cutoff for them
+//! are for the calling agent to judge (decision 235).
 //!
 //! Read-only: never mutates durable state or `writes_log`.
 
@@ -83,11 +88,10 @@ pub struct EvalOptions {
     /// config; Some(false) forces the re-ranker off for the run; Some(true)
     /// forces it on regardless of config. Used for A/B harness runs.
     pub use_reranker: Option<bool>,
-    /// Optional override of `[retrieval.scoring] min_rerank_score`. None
-    /// = use project config. Ignored when mode resolves to fts or when
-    /// the re-ranker is disabled. Used for cross-encoder floor
-    /// calibration sweeps (decisions 70, 71).
-    pub min_rerank_score: Option<f32>,
+    /// Optional override of `[retrieval.scoring] rerank_cutoff`. None =
+    /// use project config. Ignored when mode resolves to fts or when the
+    /// re-ranker is disabled. Used for cutoff sweeps.
+    pub rerank_cutoff: Option<f32>,
     /// Ignore each golden query's `variants` and run its main query alone,
     /// so one golden file can be A/B-measured with and without variants.
     pub no_variants: bool,
@@ -103,10 +107,6 @@ pub struct QueryOutcome {
     pub matched_rank: Option<usize>,
     /// Score of the matched hit, if any.
     pub matched_score: Option<f64>,
-    /// The matched hit was a low-confidence fill (it fell below the
-    /// relevance floor and was returned to fill the bundle), not a hit that
-    /// cleared its floor.
-    pub matched_low_confidence: bool,
     /// Total returned by recall for this query.
     pub returned_count: usize,
     /// Optional reason string for failed outcomes (debug aid in markdown output).
@@ -122,7 +122,10 @@ pub struct RunSettings {
     /// and `use_reranker`); a trivially short candidate set can still skip
     /// it per query.
     pub reranker: bool,
-    pub min_rerank_score: f32,
+    /// The re-ranker cutoff the run used. Runs saved before the cutoff
+    /// recorded the retired relevance floor under `min_rerank_score`.
+    #[serde(alias = "min_rerank_score")]
+    pub rerank_cutoff: f32,
     pub rerank_candidate_pool: usize,
     /// `[retrieval] rerank_doc_cap` the run used. Absent from runs saved
     /// before the cap existed, which read as `None` (not recorded).
@@ -147,6 +150,11 @@ pub struct EvalSummary {
     /// Match queries whose first matching hit was ranked first.
     pub match_passes_at_1: usize,
     pub empty_passes: usize,
+    /// Empty probes whose id starts with `near-`, reported apart from
+    /// `empty_queries` and never counted in `safety_failures`.
+    pub near_queries: usize,
+    /// Near-topic probes that returned no rows.
+    pub near_passes: usize,
     pub recall_at_k: f64,
     pub recall_at_1: f64,
     pub safety_failures: usize,
@@ -197,7 +205,7 @@ pub fn run_retrieval(start: &Path, opts: EvalOptions) -> Result<EvalSummary> {
                 include_stale: None,
                 accepted_only: None,
                 use_reranker: opts.use_reranker,
-                min_rerank_score: opts.min_rerank_score,
+                rerank_cutoff: opts.rerank_cutoff,
                 log_metrics: false,
                 variants: Vec::new(),
                 surface: None,
@@ -221,7 +229,7 @@ pub fn run_retrieval(start: &Path, opts: EvalOptions) -> Result<EvalSummary> {
             include_stale: None,
             accepted_only: None,
             use_reranker: opts.use_reranker,
-            min_rerank_score: opts.min_rerank_score,
+            rerank_cutoff: opts.rerank_cutoff,
             // Calibration sweeps are not "real usage" — keep them out
             // of recall_metrics so the metrics numbers reflect
             // actual agent + user activity.
@@ -256,9 +264,7 @@ pub fn run_retrieval(start: &Path, opts: EvalOptions) -> Result<EvalSummary> {
     let settings = RunSettings {
         mode,
         reranker: mode == RetrievalMode::Hybrid && opts.use_reranker.unwrap_or(cfg.use_reranker),
-        min_rerank_score: opts
-            .min_rerank_score
-            .unwrap_or(cfg.scoring.min_rerank_score),
+        rerank_cutoff: opts.rerank_cutoff.unwrap_or(cfg.scoring.rerank_cutoff),
         rerank_candidate_pool: cfg.rerank_candidate_pool.max(opts.k),
         rerank_doc_cap: Some(cfg.rerank_doc_cap),
         variants: !opts.no_variants && golden.queries.iter().any(|q| !q.variants.is_empty()),
@@ -423,42 +429,29 @@ pub fn evaluate_query(query: &GoldenQuery, response: &RecallResponse, k: usize) 
     let returned_count = response.results.len();
     match query.kind {
         GoldenKind::Empty => {
-            // Low-confidence fill hits (issues #225, #323) are allowed: they
-            // are flagged, not vouched for. Only a hit that cleared its
-            // relevance floor leaks.
-            let vouched = response.results.iter().filter(|hit| !hit.low_confidence);
-            if vouched.clone().next().is_none() {
-                QueryOutcome {
-                    id: query.id.clone(),
-                    query: query.query.clone(),
-                    kind: GoldenKind::Empty,
-                    passed: true,
-                    matched_rank: None,
-                    matched_score: None,
-                    matched_low_confidence: false,
-                    returned_count,
-                    failure_reason: None,
-                }
-            } else {
-                let leaked: Vec<String> = vouched
+            // Passes only when recall returned no rows at all.
+            let failure_reason = (returned_count > 0).then(|| {
+                let leaked: Vec<String> = response
+                    .results
+                    .iter()
                     .take(k.min(3))
                     .map(|hit| format!("{}#{}", hit.source_type, hit.source_id))
                     .collect();
-                QueryOutcome {
-                    id: query.id.clone(),
-                    query: query.query.clone(),
-                    kind: GoldenKind::Empty,
-                    passed: false,
-                    matched_rank: None,
-                    matched_score: None,
-                    matched_low_confidence: false,
+                format!(
+                    "expected an empty bundle but recall returned {} hit(s): {}",
                     returned_count,
-                    failure_reason: Some(format!(
-                        "expected empty bundle (no hit clearing the relevance floor) but recall returned {} hit(s): {}",
-                        returned_count,
-                        leaked.join(", "),
-                    )),
-                }
+                    leaked.join(", "),
+                )
+            });
+            QueryOutcome {
+                id: query.id.clone(),
+                query: query.query.clone(),
+                kind: GoldenKind::Empty,
+                passed: failure_reason.is_none(),
+                matched_rank: None,
+                matched_score: None,
+                returned_count,
+                failure_reason,
             }
         }
         GoldenKind::Match => {
@@ -472,7 +465,6 @@ pub fn evaluate_query(query: &GoldenQuery, response: &RecallResponse, k: usize) 
                         passed: true,
                         matched_rank: Some(hit.rank),
                         matched_score: Some(hit.score),
-                        matched_low_confidence: hit.low_confidence,
                         returned_count,
                         failure_reason: None,
                     };
@@ -508,7 +500,6 @@ pub fn evaluate_query(query: &GoldenQuery, response: &RecallResponse, k: usize) 
                 passed: false,
                 matched_rank: None,
                 matched_score: None,
-                matched_low_confidence: false,
                 returned_count,
                 failure_reason: Some(reason),
             }
@@ -568,6 +559,12 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
+/// A near-topic empty probe: a related question with no stored answer,
+/// reported apart from the safety probes (decision 235).
+pub fn is_near_probe(id: &str) -> bool {
+    id.starts_with("near-")
+}
+
 fn summarize(
     golden: &GoldenFile,
     k: usize,
@@ -584,6 +581,8 @@ fn summarize(
     let mut match_passes_at_1 = 0usize;
     let mut empty_passes = 0usize;
     let mut safety_failures = 0usize;
+    let mut near_queries = 0usize;
+    let mut near_passes = 0usize;
     for outcome in &outcomes {
         match outcome.kind {
             GoldenKind::Match => {
@@ -594,6 +593,10 @@ fn summarize(
                 if outcome.matched_rank == Some(1) {
                     match_passes_at_1 += 1;
                 }
+            }
+            GoldenKind::Empty if is_near_probe(&outcome.id) => {
+                near_queries += 1;
+                near_passes += usize::from(outcome.passed);
             }
             GoldenKind::Empty => {
                 empty_queries += 1;
@@ -618,6 +621,8 @@ fn summarize(
         match_passes,
         match_passes_at_1,
         empty_passes,
+        near_queries,
+        near_passes,
         recall_at_k,
         recall_at_1,
         safety_failures,
@@ -1273,10 +1278,10 @@ mod tests {
             vector_score: 0.0,
             stale: false,
             superseded_by: None,
+            status: None,
             source: "user".to_string(),
             created_at: "2026-05-13".to_string(),
             rerank_score: None,
-            low_confidence: false,
             kind: None,
         }
     }
@@ -1380,58 +1385,23 @@ mod tests {
     }
 
     #[test]
-    fn empty_probe_allows_low_confidence_hits_but_not_floor_clearing_ones() {
+    fn match_needles_check_the_full_stored_text_not_the_compact_text() {
         let q = GoldenQuery {
-            id: "near".into(),
-            query: "adjacent topic".into(),
-            kind: GoldenKind::Empty,
-            source_type: None,
-            title_contains: vec![],
-            body_contains: vec![],
-            also_accept: vec![],
-            notes: String::new(),
-            variants: vec![],
-        };
-        let mut low = hit(1, "fact", 1, "build-command", "cargo build");
-        low.low_confidence = true;
-        let only_low = fake_response("adjacent topic", vec![low.clone()]);
-        let outcome = evaluate_query(&q, &only_low, 3);
-        assert!(outcome.passed, "{:?}", outcome.failure_reason);
-
-        let cleared = hit(2, "fact", 2, "test-command", "cargo test");
-        let mixed = fake_response("adjacent topic", vec![low, cleared]);
-        let outcome = evaluate_query(&q, &mixed, 3);
-        assert!(!outcome.passed);
-        let reason = outcome.failure_reason.unwrap();
-        assert!(
-            reason.contains("fact#2") && !reason.contains("fact#1"),
-            "{reason}"
-        );
-    }
-
-    #[test]
-    fn match_outcome_records_whether_the_matched_hit_was_low_confidence() {
-        let q = GoldenQuery {
-            id: "kw".into(),
-            query: "cargo compile command".into(),
+            id: "deep".into(),
+            query: "where is the needle".into(),
             kind: GoldenKind::Match,
-            source_type: Some("fact".into()),
-            title_contains: vec!["build".into()],
-            body_contains: vec![],
+            source_type: Some("decision".into()),
+            title_contains: vec![],
+            body_contains: vec!["needle-past-the-excerpt".into()],
             also_accept: vec![],
             notes: String::new(),
             variants: vec![],
         };
-        let mut h = hit(1, "fact", 1, "build-command", "cargo build");
-        h.low_confidence = true;
-        let outcome = evaluate_query(&q, &fake_response("q", vec![h]), 3);
-        assert!(outcome.passed);
-        assert!(outcome.matched_low_confidence);
-
-        let h = hit(1, "fact", 1, "build-command", "cargo build");
-        let outcome = evaluate_query(&q, &fake_response("q", vec![h]), 3);
-        assert!(outcome.passed);
-        assert!(!outcome.matched_low_confidence);
+        let body = format!("{} needle-past-the-excerpt", "x".repeat(400));
+        assert!(!crate::retrieval::hit_text(&body).contains("needle"));
+        let resp = fake_response("q", vec![hit(1, "decision", 7, "t", &body)]);
+        let outcome = evaluate_query(&q, &resp, 3);
+        assert!(outcome.passed, "{:?}", outcome.failure_reason);
     }
 
     #[test]
@@ -1473,7 +1443,7 @@ mod tests {
         let outcome = evaluate_query(&q, &resp, 3);
         assert!(!outcome.passed);
         let reason = outcome.failure_reason.expect("reason");
-        assert!(reason.contains("expected empty"), "{reason}");
+        assert!(reason.contains("expected an empty bundle"), "{reason}");
         assert!(reason.contains("fact#1"), "{reason}");
     }
 
@@ -1529,7 +1499,6 @@ mod tests {
                 passed: true,
                 matched_rank: Some(1),
                 matched_score: Some(0.9),
-                matched_low_confidence: false,
                 returned_count: 1,
                 failure_reason: None,
             },
@@ -1540,7 +1509,6 @@ mod tests {
                 passed: false,
                 matched_rank: None,
                 matched_score: None,
-                matched_low_confidence: false,
                 returned_count: 0,
                 failure_reason: Some("no hit".into()),
             },
@@ -1551,8 +1519,17 @@ mod tests {
                 passed: false,
                 matched_rank: None,
                 matched_score: None,
-                matched_low_confidence: false,
                 returned_count: 2,
+                failure_reason: Some("leaked".into()),
+            },
+            QueryOutcome {
+                id: "near-topic".into(),
+                query: "q".into(),
+                kind: GoldenKind::Empty,
+                passed: false,
+                matched_rank: None,
+                matched_score: None,
+                returned_count: 1,
                 failure_reason: Some("leaked".into()),
             },
         ];
@@ -1593,6 +1570,17 @@ mod tests {
                     notes: String::new(),
                     variants: vec![],
                 },
+                GoldenQuery {
+                    id: "near-topic".into(),
+                    query: "q".into(),
+                    kind: GoldenKind::Empty,
+                    source_type: None,
+                    title_contains: vec![],
+                    body_contains: vec![],
+                    also_accept: vec![],
+                    notes: String::new(),
+                    variants: vec![],
+                },
             ],
         };
         let summary = summarize(
@@ -1601,7 +1589,7 @@ mod tests {
             RunSettings {
                 mode: RetrievalMode::Fts,
                 reranker: false,
-                min_rerank_score: -1.0,
+                rerank_cutoff: -1.0,
                 rerank_candidate_pool: 20,
                 rerank_doc_cap: Some(5),
                 variants: false,
@@ -1611,12 +1599,15 @@ mod tests {
             Instant::now(),
             12.5,
         );
-        assert_eq!(summary.total_queries, 3);
+        assert_eq!(summary.total_queries, 4);
         assert_eq!(summary.match_queries, 2);
         assert_eq!(summary.empty_queries, 1);
         assert_eq!(summary.match_passes, 1);
         assert_eq!(summary.empty_passes, 0);
+        // The leaking near- probe is reported apart, never as a safety failure.
         assert_eq!(summary.safety_failures, 1);
+        assert_eq!(summary.near_queries, 1);
+        assert_eq!(summary.near_passes, 0);
         assert!((summary.recall_at_k - 0.5).abs() < 1e-9);
         assert!((summary.warm_latency_p50_ms - 12.5).abs() < 1e-9);
     }
@@ -1996,7 +1987,6 @@ mod tests {
             passed: rank.is_some(),
             matched_rank: rank,
             matched_score: None,
-            matched_low_confidence: false,
             returned_count: 3,
             failure_reason: None,
         };
@@ -2011,7 +2001,7 @@ mod tests {
             RunSettings {
                 mode: RetrievalMode::Hybrid,
                 reranker: true,
-                min_rerank_score: -2.0,
+                rerank_cutoff: -2.0,
                 rerank_candidate_pool: 20,
                 rerank_doc_cap: Some(5),
                 variants: false,
@@ -2142,6 +2132,7 @@ mod tests {
         let c = compare_runs(&old, &old).expect("compare");
         let s = c.a.settings.expect("settings recorded");
         assert!(!s.variants, "a pre-variants run reads as variants off");
+        assert_eq!(s.rerank_cutoff, -1.0, "a pre-cutoff run's floor reads back");
         assert_eq!(
             s.rerank_doc_cap, None,
             "a pre-doc-cap run reads as not recorded"

@@ -284,18 +284,45 @@ flag) — turning it off in config skips the inference cost but doesn't
 strip the model from disk. FTS-only mode bypasses the re-ranker
 entirely.
 
-Candidates whose cross-encoder logit falls below `[retrieval.scoring]
-min_rerank_score` (default 2.0) are dropped after re-ranking, primarily to keep
-gibberish queries from surfacing as answers (see the low-confidence fill below
-for what a recall returns in place of the dropped candidates). A candidate's
-logit is its score against the query or, for a two-question query, its best
-part (see "Two-question queries" below). This replaces the legacy
-`min_vector_score` cosine floor (decisions 70, 71) — the cosine band of
-nonsense overlapped borderline semantic queries, so a vector-path floor had no
-safe sweet spot. The rerank-score band is similarly noisy on memhub's own
-corpus, so 2.0 is a parity calibration rather than an improvement; override
-with `memhub recall --min-rerank-score <F>` or `memhub eval retrieval
---min-rerank-score <F>` (a negative value disables the floor).
+**Compact hits in score order (decision 235).** After re-ranking, recall
+returns hits in strict re-ranker score order, highest first, for every row
+type, after any row named by number (below). Recall does not judge relevance:
+the calling agent reads the hits and decides which ones answer the question.
+One low cutoff, `[retrieval.scoring] rerank_cutoff` (default -5.0), drops only
+nonsense: a row whose re-ranker score is below it is not returned, whatever
+its type. A candidate's score is its score against the query or, for a
+two-question query, its best part (see "Two-question queries" below). When
+candidates existed but none cleared the cutoff and no named row is returned,
+the response is empty and carries a `rerank_cutoff_dropped_all` warning that
+names the cutoff and the highest score seen. Override the cutoff per call with
+`memhub recall --rerank-cutoff <F>` or `memhub eval retrieval --rerank-cutoff
+<F>`. Calibration: on 344 blind questions across six repositories the top
+result answered the question 77% of the time and an answer was in the top 3
+88% of the time, but the scores of right and wrong rows overlap, so no fixed
+threshold separates them; -5.0 kept 257 of the 265 judged answers while every
+off-topic probe on memhub's live set returned nothing. Without the re-ranker
+(FTS-only mode, `--no-rerank`, `use_reranker = false`) there is no re-ranker
+score: `rerank_score` is null, hits keep the blended FTS/vector order and no
+cutoff applies (default-included doc chunks are still left out then, since
+nothing vetted them). `rerank_cutoff` is a key of its own because every
+existing config pins the retired recall-scoring keys it replaces; those keys
+still load, have no effect, and `memhub doctor` names them under
+`config_ignored_settings`.
+
+Each hit is compact: `source_type`, `source_id`, `scope`, `title`,
+`rerank_score`, `created_at`, `status` (tasks only: `open`, `done` or
+`blocked`), `stale`, `superseded_by` and `text`, at most 300 characters of the
+row's text (ending in `…` when cut) in place of its full body; a tagged fact
+also carries `kind`. `memhub recall --json` adds the diagnostic `rank`,
+`score`, `fts_score` and `vector_score`, and `memhub recall --full` adds each
+hit's whole stored text as `body` (the text output prints it in place of the
+cut text). The full text of any hit is one read-only lookup away: the MCP
+`get_row` tool (`source_type`, `source_id`, and `scope`, default `repo`) or
+`memhub get-row <source_type> <id> [--scope global] [--json]`. It reads repo
+rows, and global rows when the repo enabled machine-global memory, and writes
+no `writes_log` row, metrics row or query-log line (decision 51). The token
+proxy (`recall_metrics`) counts each hit's title and compact text, what the
+agent actually receives.
 
 **Partial-token FTS (issue #225).** The recall FTS path first requires every
 query token to match one row (a quoted FTS5 `AND`). When no row in the corpus
@@ -310,36 +337,23 @@ normalized over the hits, so the best partial hit would otherwise blend as if
 it matched every token (about 0.82 against about 0.36 for a vector-only row)
 and crowd the pool; partial-token FTS scores are therefore multiplied by 0.5
 (`PARTIAL_FTS_FACTOR`). The code locator (`memhub locate`) is unchanged and
-still requires every token. `min_rerank_score`, `doc_min_rerank_score` and
-`rerank_candidate_pool` defaults are unchanged, and superseded rows
-are still demoted rather than excluded (decision 145).
+still requires every token. The `rerank_candidate_pool` default is unchanged,
+and superseded rows are still demoted rather than excluded (decision 145).
 
-**Low-confidence fallback (issue #225).** Since issue #323 this is a fill:
-candidates under the relevance floor are not discarded outright. Recall returns every candidate that cleared
-its floor first, in rerank order, and then fills the remaining result slots,
-up to `max_results`, with the highest-reranked floor-cut candidates, each marked
-`low_confidence` (`"low_confidence": true` in `memhub recall --json` and the MCP
-recall hit, omitted otherwise; a `[low-confidence]` tag in the CLI text) and
-carrying its `rerank_score`. Treat them as leads, not answers. A hit that clears
-its floor is never marked, and marked hits always come after unmarked ones. When
-no candidate clears the floor, recall returns up to `max_results` marked rows
-and emits the `rerank_floor_dropped_all` warning, whose text states how many
-marked rows were returned; a recall in which any candidate clears the floor, or
-that returns a row named by number in the query (below), carries no such
-warning. Doc chunks that joined the default bundle and missed
-`doc_min_rerank_score` are never returned, marked or not (decisions 90/91, 189);
-doc chunks in a recall scoped to doc chunks (`--source-type doc`) are not
-default-included, so they take the normal floor and fill like every other row.
-A candidate pool of a single row is re-ranked too, so the floor applies to it
-(with or without variants) and a lone row under the floor is returned marked.
-History: a recall whose candidates were all dropped by the floor first returned
-an empty bundle (decision 33); issue #225 (decision 186) changed that to the top
-3 marked candidates, and only when the floor dropped every candidate; issue #323
-fills the bundle after the floor-clearing hits up to `max_results` instead. In
-the eval harness an `empty` probe passes when it returns no hit that cleared the
-floor (low-confidence hits allowed), and each match outcome reports
-`matched_low_confidence`. The golden set carries `kw-` keyword-bag variants and
-`near-` related-but-no-answer probes for this.
+**History of the empty and thin result.** A recall whose candidates all fell
+under a fixed relevance threshold first returned an empty bundle (decision
+33); issues #225 (decision 186) and #323 then returned the best cut candidates
+marked as weak leads after every candidate that cleared the threshold, and
+default-included doc chunks had a threshold of their own (decisions 90/91,
+189). Decision 235 replaced that with the strict score order and the single
+cutoff above, after the blind-question measurement showed the marking hid
+answers: only 175 of the 265 correctly answered questions came back unmarked.
+In the eval harness an `empty` probe now passes only when recall returns no
+rows at all; probes whose id starts with `near-` (a related topic with no
+stored answer) are reported apart as `near_queries` / `near_passes` and never
+count as safety failures; and match needles are checked against each hit's
+full stored text, not the cut text. The golden set carries `kw-` keyword-bag
+variants and `near-` related-but-no-answer probes for this.
 
 **Explaining an empty or thin result (issue #318).** `memhub recall <query>
 --explain` (and `explain: true` on the MCP `recall` tool, an optional boolean)
@@ -354,24 +368,18 @@ store, plus the machine-global store when this repo opted in). The reasons, by
 JSON key:
 
 - `reranker_ran` (bool): whether the cross-encoder re-ranker ran (hybrid mode,
-  `use_reranker` on, at least one candidate). No relevance floor applies when
-  it did not.
-- `dropped_by_floor`: rows whose rerank score was under `min_rerank_score`
-  (every row except default-included doc chunks). Low-confidence fill hits
-  are among these rows, since the floor dropped them before the fill
-  returned them.
-- `dropped_by_doc_floor`: default-included doc chunks under
-  `doc_min_rerank_score`.
+  `use_reranker` on, at least one candidate). No cutoff applies when it did
+  not.
+- `dropped_by_cutoff`: re-ranked rows of any type whose score was under
+  `rerank_cutoff`.
 - `accepted_only_excluded`: rows excluded by accepted-only.
 - `superseded_demoted`: superseded rows kept but demoted by
   `superseded_penalty`.
 - `rerank_pool_cut`: candidates not sent to the re-ranker: rows beyond
   `rerank_candidate_pool` in the by-retriever fill, and default-included doc
   chunks over `rerank_doc_cap`.
-- `result_limit_cut`: rows beyond `max_results` cut from the final bundle. It
-  counts only rows that cleared the relevance floor; floor-cut rows that the
-  result limit trimmed from the low-confidence fill are counted only in
-  `dropped_by_floor`.
+- `result_limit_cut`: rows beyond `max_results` cut from the final bundle. Rows
+  under the cutoff are counted only in `dropped_by_cutoff`.
 - `docs_dropped_no_rerank`: default-included doc chunks dropped because the
   re-ranker did not run to vet them.
 - `docs_not_searched`: ingested doc chunks this call did not search: the full
@@ -393,8 +401,8 @@ returns that row first. Only the main query is read, not the variants. The row
 must exist in the repo store and pass the call's source-type and
 accepted-only filters (accepted-only excludes a task, since tasks carry no `source`); a
 superseded row is kept, as in ranked results. Named rows come in the order the
-query names them, once each, ahead of every other hit, are never flagged
-`low_confidence` and skip the relevance floor, and they count toward
+query names them, once each, ahead of every other hit, are exempt from the
+cutoff (a named row is an explicit lookup, not ranking), and they count toward
 `max_results` (named rows past the limit are dropped, last named first); the
 remaining slots are filled by the normal ranking, which does not see them. When
 the re-ranker ran, a named row carries its `rerank_score`. Rows of the
@@ -410,7 +418,7 @@ the routing loaded is counted as if a retriever had found it: in
 `candidate_count`, in the superseded counter, and in the accepted-only
 exclusion; named rows cut by `max_results`
 count in the `--explain` result-limit cut. A returned named row also keeps the
-`rerank_floor_dropped_all` warning off the response.
+`rerank_cutoff_dropped_all` warning off the response.
 
 **Query variants (issue #319).** The calling agent can send extra phrasings of
 one question so rows the main wording misses can still enter the candidate
@@ -433,12 +441,11 @@ row (scope, source type, id), and one re-rank pass then runs over that union. A
 row found by several phrasings keeps the hit from its best-scoring phrasing, so
 its blended `score`, `fts_score` and `vector_score` come from that phrasing,
 while `rerank_score` is never scored against a variant. The re-ranker and the
-`min_rerank_score` / `doc_min_rerank_score` floors score every candidate
-against the **main query** (and, for a two-question query, each of its parts,
+cutoff score every candidate against the **main query** (and, for a two-question query, each of its parts,
 taking the highest: see below), never a variant, so each returned hit's
 `rerank_score` is its score against the main query (or its best part) and the
-floor keeps its meaning (a gibberish main query clears no floor whatever the
-variants say, so its rows come back only flagged `low_confidence`). The main
+cutoff keeps its meaning (a gibberish main query's rows stay under it
+whatever the variants say). The main
 query's own pool is always a subset of the union, so a variant can never push
 out a row the main query would have re-ranked. Cost: the union has up to (1 +
 variants + parts) x `rerank_candidate_pool` rows, so re-rank time grows with
@@ -474,7 +481,7 @@ matches can reach the re-ranker; parts do not count toward the 4-variant limit
 and are not crossed with variants. The re-ranker then scores every pooled row
 (a row named by number included) against the whole query and against each part
 and keeps the highest, and that score is the row's `rerank_score`, used by the
-floors, the `low_confidence` flag and the order. A caller variant is still
+cutoff and the order. A caller variant is still
 never scored against. Cost: one more re-ranker pass over the union per part,
 plus per part the extra embedding and gather a variant costs. A query with no
 split point, and any recall in FTS-only mode or with the re-ranker off, runs
@@ -486,9 +493,8 @@ parts are not logged.
 `memhub doc add` uses, into a derived `arch_sections` table (migration 0025),
 and each section is a recall hit of source type `arch_section`, titled
 `Architecture — <heading path>`. Sections are part of the default recall
-bundle alongside facts, decisions, and tasks, with the same `min_rerank_score`
-floor and the same low-confidence fill eligibility; no config flag gates
-them, unlike docs. Scope a recall to them alone with `memhub recall <query>
+bundle alongside facts, decisions, and tasks, ranked and cut the same way; no
+config flag gates them, unlike docs. Scope a recall to them alone with `memhub recall <query>
 --source-type arch` (CLI) or `memhub.recall(query=..., source_types=["arch"])`
 (MCP). Before this change the architecture narrative never entered recall; it
 was only rendered into `PROJECT.md`. Only the latest body is searchable: every
@@ -565,7 +571,7 @@ For A/B testing in any repo: `memhub eval retrieval` vs
 retrieval --json` reports the rank-1 pass count (`totals.match_passes_at_1`,
 `recall_at_1`) alongside Recall@K, and records the settings the run used
 under `settings`: retrieval `mode`, whether the `reranker` was enabled
-for the run, the `min_rerank_score` floor, the
+for the run, the `rerank_cutoff`, the
 `rerank_candidate_pool` size, the `rerank_doc_cap`, and whether `variants` were
 sent (a saved run from before the variants setting existed reads as `false`,
 and one from before the doc cap existed reads as not recorded).
@@ -616,11 +622,15 @@ shipped `tests/retrieval_golden.json`. That is the same pattern
 seeded fresh per run, independent of live `.memhub` state — applied to the
 retrieval golden.
 
-Baseline (hybrid mode, default rerank floor 2.0): the golden set is 36
-queries (31 match, 5 empty) and the code scores Recall@3 = 31/31 match and
-5/5 empty probes (0 safety failures), three of the keyword-bag matches via
-the low-confidence fill. First recorded 2026-07-06 (issue #44) as 100% on
-the then-smaller set, extended by issue #225. This is the reference other
+Baseline (hybrid mode, default rerank cutoff -5.0): the golden set is 36
+queries (31 match, 1 gibberish empty probe and 4 `near-` probes) and the code
+scores Recall@3 = 31/31 match, all 31 at rank 1; the gibberish probe returns
+nothing (0 safety failures), and 3 of the 4 near-topic probes return nothing
+(`near-embedding-quantization` returns one related decision, which eval
+reports rather than fails). First recorded 2026-07-06 (issue #44) as 100% on
+the then-smaller set, extended by issue #225, and re-recorded 2026-10-17 for
+decision 235 (before it, all 5 empty-kind probes passed, three keyword-bag
+matches only as weak leads after the rows that cleared the old threshold). This is the reference other
 Wave 3 lifecycle PRs (L2 staleness, L3 supersession, L6 age decay) compare
 their own hermetic re-run against. There is no persisted fixture DB to
 regenerate — the corpus is defined entirely by the `fact::add` /
@@ -664,7 +674,7 @@ the main file on 2026-10-11 (38 queries, 35 match and 3 empty; the main file
 keeps 194). It has the same format, matching rules and id prefixes as the
 main file. It exists to check that a setting tuned on the main file holds on
 queries the tuning never looked at. Use rule: while tuning (pool sizes,
-weights, floors, model swaps), compare and inspect per-query results on the
+weights, the cutoff, model swaps), compare and inspect per-query results on the
 main file only; score the held-out file once at the end, with the same
 `eval retrieval` and `eval compare` procedure below, and report its totals.
 Never tune against its per-query outcomes, and do not score it repeatedly
@@ -673,7 +683,8 @@ results steer the tuning.
 
 First baseline, recorded 2026-10-10 with a debug build of main at 7e17fff
 against this machine's database (live config: hybrid mode, re-ranker on,
-`rerank_candidate_pool` 20, `min_rerank_score` 2.0; K = 5):
+`rerank_candidate_pool` 20, the re-ranker threshold of 2.0 that decision 235
+later retired; K = 5):
 
 | Run | Rank-1 | Found@5 | Empty probes passed |
 |---|---|---|---|
@@ -682,7 +693,7 @@ against this machine's database (live config: hybrid mode, re-ranker on,
 
 For the 36 `vm-` queries alone, the default run found 16 within the top
 5 (14 at rank 1) and the `--no-rerank` run 15 (9 at rank 1). With the
-re-ranker off no relevance floor applies, so every empty probe returns hits;
+re-ranker off no threshold applies, so every empty probe returns hits;
 that is why the second row fails all 18. `memhub eval compare` with A =
 default and B = `--no-rerank` reports, for rank-1, 43 queries that only A
 passed and 7 that only B passed (exact McNemar p = 2.1e-07), and for
@@ -707,11 +718,11 @@ Queries are stored in **plaintext**. A line holds `ts` (UTC, ISO 8601),
 `surface`, `query`, `variants`, `source_types` (as requested; empty means the
 default bundle), `max_results` (the effective value, so an omitted
 `max_results` and an explicit default are logged the same), `results` (per
-returned row: `source_type`, `source_id`, `scope`, `title`, `rerank_score`,
-`low_confidence`) and `warnings` (the warning kinds):
+returned row: `source_type`, `source_id`, `scope`, `title`, `rerank_score`)
+and `warnings` (the warning kinds):
 
 ```json
-{"ts":"2026-10-11T17:40:02Z","surface":"cli","query":"cargo build","variants":["compile command"],"source_types":["fact"],"max_results":3,"results":[{"source_type":"fact","source_id":1,"scope":"repo","title":"build","rerank_score":null,"low_confidence":false}],"warnings":[]}
+{"ts":"2026-10-11T17:40:02Z","surface":"cli","query":"cargo build","variants":["compile command"],"source_types":["fact"],"max_results":3,"results":[{"source_type":"fact","source_id":1,"scope":"repo","title":"build","rerank_score":null}],"warnings":[]}
 ```
 
 Each line is written with a single append. A failure to create or write the
@@ -839,6 +850,7 @@ fact_stale_after_days = 90       # facts older than this are flagged stale
 [retrieval.scoring]
 fts_weight = 0.5
 vector_weight = 0.5
+rerank_cutoff = -5.0             # rows re-ranked below this are not returned
 
 [global]
 enabled = false                  # opt-in via `memhub global enable`
@@ -977,17 +989,16 @@ same SQL+RAG hybrid recall as facts, decisions, and tasks.
 opt-in by default; the first successful `memhub doc add` in a repo
 flips `[retrieval] include_docs_in_default` on in that repo's local
 config, so the user-pointed write that establishes docs also wires up
-retrieval. After that, plain `memhub recall` surfaces a doc chunk only
-when it clears the cross-encoder relevance boundary
-(`[retrieval.scoring] doc_min_rerank_score`, default 0.0) — strong
-topical matches in, off-topic docs out, so a UI style guide stays
-silent on a backend query while a code style guide surfaces. The
-doc floor is deliberately *below* `min_rerank_score`: doc chunks
-rerank in a lower band than facts/decisions (an on-topic doc ≈ +1.6,
-off-topic ≈ −11), so a higher floor would filter relevant docs.
-Scope to docs alone with `memhub recall <query> --source-type doc`
-(CLI) or `memhub.recall(query=..., source_types=["doc"])` (MCP);
-explicit scoping keeps the normal floor and is unaffected by the
+retrieval. After that, plain `memhub recall` ranks doc chunks with facts,
+decisions and tasks in one score order (decision 235): at most `[retrieval]
+rerank_doc_cap` chunks (default 3) are re-ranked per call, and a chunk is
+dropped only when it scores under `[retrieval.scoring] rerank_cutoff` like
+any other row. Off-topic chunks score far below it (about −11 against about
++1.6 for an on-topic chunk), so a UI style guide stays silent on a backend
+query while a code style guide surfaces. Scope to docs alone with `memhub
+recall <query> --source-type doc` (CLI) or `memhub.recall(query=...,
+source_types=["doc"])` (MCP); explicit scoping is not capped by
+`rerank_doc_cap` and is unaffected by the
 flag. Plain recall still returns `available_docs` — now the count of
 ingested chunks that did *not* surface this call — so a doc-scoped
 follow-up for the long tail stays a judgment call. Set
@@ -1093,7 +1104,7 @@ tables used to be one struct, so tuning recall's blend silently retuned
 locate's too (and vice versa); they are now separate, defaulting to the
 same numeric values (0.5 / 0.5 / 0.90) so an untouched install's ranking
 is unaffected. `[retrieval.scoring]`'s `superseded_penalty` (and
-`age_half_life_days`, `min_rerank_score`) have no
+`age_half_life_days`, `rerank_cutoff`) have no
 `[code_index]` counterpart at all — the code index has no staleness or
 supersession concept, and `--rerank` here has no score floor.
 

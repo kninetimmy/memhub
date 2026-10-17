@@ -1093,7 +1093,7 @@ fn export_omits_arch_sections_and_import_rederives_them() {
             include_stale: None,
             accepted_only: None,
             use_reranker: None,
-            min_rerank_score: None,
+            rerank_cutoff: None,
             log_metrics: false,
             variants: Vec::new(),
             surface: None,

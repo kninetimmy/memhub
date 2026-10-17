@@ -22,9 +22,9 @@ use output::{
     print_init_result, print_locate, print_locate_eval_summary, print_not_carried_checklist,
     print_overwritten_writes_log_warning, print_recall_explain, print_recall_human,
     print_retained_docs_hint, print_review_stale_report_human, print_stats_human, print_stats_json,
-    print_status_checks_human, print_wrapup_policy_human, recall_response_to_json,
-    review_stale_report_to_json, status_checks_to_json, status_summary_to_json,
-    wrapup_policy_report_to_json,
+    print_status_checks_human, print_stored_row_human, print_wrapup_policy_human,
+    recall_response_to_json, review_stale_report_to_json, status_checks_to_json,
+    status_summary_to_json, stored_row_to_json, wrapup_policy_report_to_json,
 };
 #[cfg(feature = "metrics")]
 use output::{metrics_status_to_json, print_metrics_status_human};
@@ -2014,9 +2014,10 @@ pub fn run(cli: Cli) -> Result<()> {
             include_stale,
             accepted_only,
             no_rerank,
-            min_rerank_score,
+            rerank_cutoff,
             variant,
             explain,
+            full,
             json: as_json,
         } => {
             let opts = RecallOptions {
@@ -2030,7 +2031,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 include_stale: if include_stale { Some(true) } else { None },
                 accepted_only: if accepted_only { Some(true) } else { None },
                 use_reranker: if no_rerank { Some(false) } else { None },
-                min_rerank_score,
+                rerank_cutoff,
                 log_metrics: true,
                 variants: variant,
                 surface: Some(RecallSurface::Cli),
@@ -2038,16 +2039,29 @@ pub fn run(cli: Cli) -> Result<()> {
             };
             let response = retrieval::recall(&cwd, opts)?;
             if as_json {
-                let mut value = recall_response_to_json(&response);
+                let mut value = recall_response_to_json(&response, full);
                 if explain {
                     value["explain"] = serde_json::to_value(&response.explain)?;
                 }
                 println!("{value}");
             } else {
-                print_recall_human(&response);
+                print_recall_human(&response, full);
                 if explain {
                     print_recall_explain(&response.explain);
                 }
+            }
+        }
+        TopLevelCommand::GetRow {
+            source_type,
+            id,
+            scope,
+            json: as_json,
+        } => {
+            let row = retrieval::get_row(&cwd, &source_type, id, &scope)?;
+            if as_json {
+                println!("{}", stored_row_to_json(&row));
+            } else {
+                print_stored_row_human(&row);
             }
         }
         TopLevelCommand::Eval { command } => match command {
@@ -2056,7 +2070,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 k,
                 mode,
                 no_rerank,
-                min_rerank_score,
+                rerank_cutoff,
                 no_variants,
                 json: as_json,
             } => {
@@ -2067,7 +2081,7 @@ pub fn run(cli: Cli) -> Result<()> {
                     k,
                     mode: mode.map(|m| m.to_mode()),
                     use_reranker: if no_rerank { Some(false) } else { None },
-                    min_rerank_score,
+                    rerank_cutoff,
                     no_variants,
                 };
                 let summary = commands::eval::run_retrieval(&cwd, opts)?;

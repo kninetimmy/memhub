@@ -32,7 +32,7 @@ fn fts_recall(path: &std::path::Path, query: &str) -> RecallResponse {
             include_stale: None,
             accepted_only: None,
             use_reranker: None,
-            min_rerank_score: None,
+            rerank_cutoff: None,
             log_metrics: false,
             variants: Vec::new(),
             surface: None,
