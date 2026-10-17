@@ -1491,6 +1491,8 @@ struct RecallParams {
     /// Tasks, architecture sections and session notes carry no such
     /// source, so they are never returned when this is true.
     accepted_only: Option<bool>,
+    /// Accepted and ignored: stale facts are always returned, flagged
+    /// `stale: true`.
     include_stale: Option<bool>,
     /// Up to 4 extra phrasings of the same question, to catch rows the main
     /// `query` wording misses: a keyword form ("task review writes"), or a
@@ -1503,8 +1505,8 @@ struct RecallParams {
     variants: Option<Vec<String>>,
     /// When true, the response also carries an `explain` object counting
     /// the candidate rows this call dropped, demoted or cut, per reason
-    /// (relevance floor, doc floor, stale/accepted-only exclusion,
-    /// superseded/stale demotion, rerank pool and result-limit cuts, doc
+    /// (relevance floor, doc floor, accepted-only exclusion,
+    /// superseded demotion, rerank pool and result-limit cuts, doc
     /// chunks dropped without the re-ranker or not searched), plus whether
     /// the re-ranker ran and whether an unsearched global store exists.
     /// Use it to diagnose an empty or thin result. Omit for the normal response.
