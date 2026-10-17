@@ -126,6 +126,7 @@ fn rebuild_leaves_the_global_store_alone_when_the_repo_is_not_opted_in() {
     f.ok(&["global", "disable"]);
     plant_foreign_vector(&f.repo_db());
     plant_foreign_vector(&f.global_db());
+    let global_before = vector_counts(&f.global_db());
 
     let out = f.rebuild();
 
@@ -133,7 +134,7 @@ fn rebuild_leaves_the_global_store_alone_when_the_repo_is_not_opted_in() {
     assert_eq!(vector_counts(&f.repo_db()), (0, 1));
     assert_eq!(
         vector_counts(&f.global_db()),
-        (1, 0),
+        global_before,
         "the global store must be untouched"
     );
 }

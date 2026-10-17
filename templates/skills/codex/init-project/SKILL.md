@@ -136,22 +136,24 @@ sets a different `[render].output_dir`. Surface the paths to the user.
 
 ## Runtime toggles
 
-memhub ships several opt-in toggles off by default. Offer each one at
-a time now, while the repo is fresh — skip any the user waves off.
+memhub ships several runtime toggles, all off by default except the
+retrieval mode (on since issue #382). Offer each one at a time now,
+while the repo is fresh — skip any the user waves off.
 
-1. **Retrieval mode.** Ask whether to turn on hybrid recall (semantic
-   + keyword, recommended) or stay on the default FTS-only (lighter,
-   keyword-only search).
-   - Hybrid: set `mode = "hybrid"` under the existing `[retrieval]`
-     table in `.memhub/config.toml` (memhub init already wrote that
-     table), then run `memhub index rebuild --actor
-     codex:init-project` to backfill embeddings for existing rows.
-     Note that switching between `fts` and `hybrid` later always
-     needs a rebuild to bring rows in sync — a config edit alone
-     isn't enough. Hybrid mode already runs a bundled cross-encoder
-     re-ranker over the blended results by default, nothing extra to
-     turn on.
-   - FTS: nothing to do; it's already the default.
+1. **Retrieval mode.** Hybrid recall (semantic + keyword, with a
+   bundled cross-encoder re-ranker) is the default: `memhub init`
+   writes `mode = "hybrid"` under `[retrieval]` in
+   `.memhub/config.toml`, unless the repo tracks a
+   `.memhub/config.example.toml`, which init copies as is. Before
+   issue #382 the default was FTS-only and this step offered to turn
+   hybrid on; now it offers the FTS opt-out. Ask whether to keep
+   hybrid (recommended) or opt out to FTS-only (lighter, keyword-only
+   search, no embedding model loads).
+   - Hybrid: nothing to do; rows are embedded as they are written.
+   - FTS: set `mode = "fts"` under the existing `[retrieval]` table.
+     Switching back to `hybrid` later needs `memhub index rebuild
+     --actor codex:init-project` to embed the rows written meanwhile
+     — a config edit alone isn't enough.
 2. **Code index.** Offer to run `memhub code index` now so
    `memhub locate` (and the `/locate` skill) can answer "where is X"
    with ranked file:line breadcrumbs right away instead of on first

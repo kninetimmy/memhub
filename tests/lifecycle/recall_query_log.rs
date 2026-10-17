@@ -213,7 +213,11 @@ fn warning_kinds_are_logged() {
     );
     assert!(out.status.success(), "{out:?}");
     let lines = log_lines(temp.path());
-    assert_eq!(lines[0]["warnings"], json!(["stale_embeddings"]));
+    // The candidate-scoped kind and (issue #382) the repo-wide count.
+    assert_eq!(
+        lines[0]["warnings"],
+        json!(["stale_embeddings", "missing_embeddings"])
+    );
 }
 
 #[test]

@@ -1029,9 +1029,12 @@ pub(crate) fn check_embeddings_freshness(start: &Path, config: &ProjectConfig) -
             Group::RetrievalMetrics,
             Status::Warn,
             format!(
-                "{} row(s) missing/stale embeddings ({:.0}%) — run `memhub index rebuild`",
+                "{} row(s) missing/stale embeddings ({:.0}%; {} lack an embedding for model {}) \
+                 — run `memhub index rebuild`",
                 summary.missing_count,
-                summary.stale_ratio * 100.0
+                summary.stale_ratio * 100.0,
+                summary.lacking_count,
+                summary.model
             ),
         ),
         Err(e) => Check::new(
@@ -2129,22 +2132,35 @@ transcript_retention_days = 99999999
     fn embeddings_freshness_skipped_in_fts_mode() {
         let temp = healthy_repo();
         let ctx = db::open_project(temp.path()).expect("open");
-        let check = check_embeddings_freshness(temp.path(), &ctx.config);
+        let mut cfg = ctx.config.clone();
+        cfg.retrieval.mode = RetrievalMode::Fts;
+        let check = check_embeddings_freshness(temp.path(), &cfg);
         assert_eq!(check.status, Status::Skipped);
     }
 
+    /// Issue #382 criterion 6: the warning states how many rows lack an
+    /// embedding for the active model.
     #[test]
     fn embeddings_freshness_warns_on_missing_coverage_in_hybrid_mode() {
         let temp = healthy_repo();
-        fact::add(temp.path(), "k", "v", "user", "cli:user").expect("fact");
-
         let ctx = db::open_project(temp.path()).expect("open");
         let mut cfg = ctx.config.clone();
+        cfg.retrieval.mode = RetrievalMode::Fts;
+        cfg.save(&ctx.paths.config_path).expect("save config");
+        fact::add(temp.path(), "k", "v", "user", "cli:user").expect("fact");
+
         cfg.retrieval.mode = RetrievalMode::Hybrid;
         cfg.save(&ctx.paths.config_path).expect("save config");
 
         let check = check_embeddings_freshness(temp.path(), &cfg);
         assert_eq!(check.status, Status::Warn);
+        assert!(
+            check
+                .message
+                .contains("1 lack an embedding for model bge-small-en-v1.5"),
+            "{}",
+            check.message
+        );
     }
 
     #[test]

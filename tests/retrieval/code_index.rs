@@ -73,6 +73,12 @@ fn repo_with_files(files: &[(&str, &str)]) -> tempfile::TempDir {
         fs::write(&abs, body).expect("write file");
     }
     init::run(root).expect("memhub init");
+    // Indexing tests pin fts (the default before issue #382); the hybrid
+    // ones switch with `set_hybrid`.
+    let config_path = root.join(".memhub").join("config.toml");
+    let mut config = ProjectConfig::load(&config_path).expect("load config");
+    config.retrieval.mode = RetrievalMode::Fts;
+    config.save(&config_path).expect("save config");
     git(root, &["add", "-A"]);
     temp
 }
@@ -282,7 +288,7 @@ fn hybrid_mode_embeds_every_chunk() {
     let root = temp.path();
     let db = code_index_db_path(root);
 
-    // Default (fts) mode: no embeddings.
+    // Pinned fts mode: no embeddings.
     code_index::refresh(root).expect("fts refresh");
     assert_eq!(
         count(&db, "SELECT COUNT(*) FROM code_embeddings"),

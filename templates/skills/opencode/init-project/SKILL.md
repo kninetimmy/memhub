@@ -17,7 +17,7 @@ Workflow:
 - Run `memhub init --json`, then write approved bodies with `memhub state set --from-file ... --actor opencode:init-project --json` and `memhub arch set --from-file ... --actor opencode:init-project --json`.
 - Run `memhub render` and report generated paths.
 - Offer the runtime toggles one at a time, skipping any the user waves off:
-  - Retrieval mode: hybrid recall (`mode = "hybrid"` under `[retrieval]` in `.memhub/config.toml`, then `memhub index rebuild --actor opencode:init-project` to backfill embeddings — a rebuild is required whenever this mode changes, not just the config edit) vs. the FTS-only default (nothing to do).
+  - Retrieval mode: hybrid recall is the default (`memhub init` writes `mode = "hybrid"` under `[retrieval]` in `.memhub/config.toml` unless the repo tracks a `.memhub/config.example.toml`; nothing to do) vs. the FTS-only opt-out (`mode = "fts"`; switching back to hybrid later needs `memhub index rebuild --actor opencode:init-project` to embed the rows written meanwhile, not just the config edit). Before issue #382 FTS-only was the default and this toggle offered hybrid instead.
   - Code index: `memhub code index` to warm up `memhub locate`/`/locate` now instead of on first use.
   - Machine-global memory: off by default, per-repo opt-in via `memhub global enable` for the shared `~/.memhub/global.sqlite` store.
   - Doc ingestion: `memhub doc add "<path>" --json` to make a reference doc's chunks surface in plain recall.

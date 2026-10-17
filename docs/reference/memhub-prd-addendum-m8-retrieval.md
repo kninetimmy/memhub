@@ -63,6 +63,16 @@ it ships in M8 as an opt-in. The conservative framing carries forward
 as the default: FTS-only is the safe path; hybrid is the
 performance-curious path.
 
+**Update (issue #382, 2026-10-17): the default is reversed.** A fresh
+`memhub init` now writes `mode = "hybrid"`, and a config with no `mode`
+key resolves to hybrid; FTS-only stays a fully supported, first-class
+mode as the opt-out (`mode = "fts"`). The statements above that
+semantic search is "never a default" and that the install-time flag
+defaults to `fts` describe memhub before that change. The other bullets
+still hold: the vector index is derived state, export/import carries no
+embeddings (an import into a hybrid repo now re-derives them), and every
+query that works under hybrid also works under FTS-only.
+
 ## 2. Install-time retrieval mode toggle
 
 Added to `.memhub/config.toml`:

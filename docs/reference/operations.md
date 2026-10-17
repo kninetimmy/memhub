@@ -43,10 +43,15 @@ memhub import ~/transfer/memhub-<repo>-<date>.json --force  # overwrite
 memhub init --from-backup ~/transfer/memhub-<repo>-<date>.json
 ```
 
-After import, the target's embeddings are not yet built (only the
-rows). Run `memhub index` to populate them — the import output
-prints this hint. Until then, recall falls back to FTS-only and may
-miss vector-similar matches.
+Before issue #382, after import the target's embeddings were not yet
+built (only the rows). You ran `memhub index` to populate them — the
+import output printed this hint — and until then recall fell back to
+FTS-only and could miss vector-similar matches. Now an import into a
+hybrid-mode target (the default) embeds every imported row once the
+import commits and reports the count; an fts-mode target still writes
+no embeddings. If embedding fails after the commit, the import exits
+with an error, the rows stay imported, and `memhub index rebuild`
+embeds them.
 
 If recall later surfaces a `stale_embeddings` warning (most likely
 after an embedding-model upgrade on either machine), follow the same
@@ -491,7 +496,9 @@ was only rendered into `PROJECT.md`. Only the latest body is searchable: every
 transaction, embedding them eagerly in hybrid mode. A DB whose latest body was
 stored before migration 0025 gets its sections on the next open, FTS-only
 (open never loads the embedding model); in hybrid mode `memhub index rebuild`
-embeds them, and `memhub index status` counts them. A lone wrapper heading is
+embeds them, and `memhub index status` counts them. Before issue #382 nothing
+else embedded them; now `memhub upgrade` embeds them in every hybrid-mode repo,
+as does `memhub import` into one. A lone wrapper heading is
 left out of section titles: when the body's first heading has nothing before
 it and every other heading, of which there is at least one, is nested under it
 (for example one `# memhub architecture` over the whole body), the wrapper is
@@ -797,8 +804,14 @@ default sample is up to 100 recalls. Test:
 ### Retrieval modes and configuration
 
 Both modes are first-class; the install prompt asks you to pick one.
+Since issue #382 hybrid is the default: a fresh `memhub init` writes
+`mode = "hybrid"` (unless the repo tracks a
+`.memhub/config.example.toml`, which is copied as is), and a config with
+no `mode` key resolves to hybrid. Before it, `fts` was the default and
+init wrote `mode = "fts"`. Set `mode = "fts"` under `[retrieval]` to opt
+out to keyword-only recall; an fts repo writes no embeddings.
 
-| | **`fts`** (default) | **`hybrid`** (recommended) |
+| | **`fts`** (opt-out; the default before issue #382) | **`hybrid`** (default, recommended) |
 |---|---|---|
 | Scoring | FTS5 BM25 over title + body | 0.5 × FTS + 0.5 × cosine, then re-ranked |
 | What it catches | Exact terms, stemmed variants | Exact + paraphrases (`"compile a release"` → `release_build` fact) |
@@ -809,6 +822,8 @@ Both modes are first-class; the install prompt asks you to pick one.
 | Best for | Small projects, scripted use | Multi-month projects where you forget exact wording |
 
 **Switching modes is non-destructive.** `fts → hybrid` needs one `memhub index rebuild`; `hybrid → fts` just stops consulting embeddings.
+
+**Rows without a vector are reported (issue #382).** Opening a DB never loads the embedding model, so rows can exist with no vector for the active model: architecture sections derived by migration 0025, rows written while the repo was in fts mode, or global-store rows written from an fts repo. Hybrid recall adds a `missing_embeddings` warning stating how many of the repo's rows lack one and naming `memhub index rebuild`; it counts the whole repo store, while `stale_embeddings` (unchanged) counts only the candidates of that recall, so a recall can carry both. `memhub doctor`'s `embeddings_freshness` check states the same count. `memhub upgrade` fills these rows (see "Machine-wide upgrade"). Before this change nothing reported a row that had no vector unless it happened to be an FTS candidate.
 
 `memhub index rebuild` leaves each store holding vectors only for the bundled model: it re-embeds every row and deletes vectors written under any other model name. In a repo opted in to machine-global memory it does the same to the global store (the output reports both stores' counts); in a repo not opted in the global store is not touched. The code index does the same on its next hybrid refresh: chunks whose only vector is from another model or dimension are re-embedded and the foreign vectors removed.
 
@@ -1217,6 +1232,17 @@ would-add hook entries) and changes nothing. Before issue #286 the flow
 wrote no agent-CLI config file at all; it now merges one hook entry into
 `~/.claude/settings.json` and `~/.codex/hooks.json` (MCP registration is
 still manual, and `memhub doctor` still only reads agent-CLI config).
+
+Embedding fill (issue #382): after each instance's migrate and recall
+smoke, the pass embeds, for the active model, every row that has no
+current vector (none, or one whose text changed) — in each hybrid-mode
+repo DB, and in the global store whatever mode wrote its rows. It never
+re-embeds a current row or deletes another model's vectors (that is
+`memhub index rebuild`), and it loads no model when nothing is missing.
+The table's `EMBEDDED` column (`embedded` in `--json`) reports how many
+rows it embedded in each instance; `-` (null) means no fill ran: an
+fts-mode repo, or a skipped or failed instance. A fill failure marks the
+instance `ERROR`. Before this change the pass wrote no embeddings.
 
 Skill resync (decision 97; resolves task 50, internalizes the fact-10
 manual `cp`): the same `memhub upgrade` also refreshes the installed

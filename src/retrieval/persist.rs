@@ -15,7 +15,7 @@
 //! a one-shot backfill (`memhub index rebuild` — not yet shipped) before
 //! the embeddings table is fully populated.
 
-use rusqlite::{OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::config::RetrievalMode;
 use crate::retrieval::embeddings::{
@@ -101,6 +101,40 @@ pub fn arch_section_embed_text(heading_path: &str, body: &str) -> String {
 /// way `source` does. The body is embedded verbatim.
 pub fn note_embed_text(text: &str) -> String {
     text.to_string()
+}
+
+/// Every source table an embedding can point at, by `SourceType::as_str`.
+const EMBEDDABLE_TABLES: [(&str, &str); 6] = [
+    ("fact", "facts"),
+    ("decision", "decisions"),
+    ("task", "tasks"),
+    ("doc_chunk", "doc_chunks"),
+    ("note", "session_notes"),
+    ("arch_section", "arch_sections"),
+];
+
+/// `(lacking, total)`: how many embeddable rows in this store have no
+/// embedding at all for the active model, out of how many embeddable rows.
+/// SQL-only (no text hashing), so it is cheap enough to run on every recall;
+/// a vector whose `content_hash` drifted counts as present here.
+pub fn count_lacking_embeddings(conn: &Connection) -> Result<(usize, usize)> {
+    let (mut lacking, mut total) = (0usize, 0usize);
+    for (source_type, table) in EMBEDDABLE_TABLES {
+        let (l, t): (i64, i64) = conn.query_row(
+            &format!(
+                "SELECT COALESCE(SUM(NOT EXISTS (
+                     SELECT 1 FROM embeddings e
+                     WHERE e.source_type = ?1 AND e.source_id = s.id AND e.model_name = ?2
+                 )), 0), COUNT(*)
+                 FROM {table} s"
+            ),
+            params![source_type, EMBEDDING_MODEL_NAME],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        lacking += l as usize;
+        total += t as usize;
+    }
+    Ok((lacking, total))
 }
 
 /// Eager-embed entry point. No-op when mode != Hybrid.
