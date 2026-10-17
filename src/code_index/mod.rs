@@ -457,8 +457,8 @@ pub fn remove_index(start: &Path) -> Result<RemoveOutcome> {
     Ok(RemoveOutcome { db_path, removed })
 }
 
-/// Embed every `code_chunks` row that has no `code_embeddings` row yet and
-/// persist the vectors. Reuses the shared BGE model ([`embed_batch`]).
+/// Embed every `code_chunks` row that has no current-model `code_embeddings`
+/// row and persist the vectors. Reuses the shared BGE model ([`embed_batch`]).
 ///
 /// An in-run cache keyed by the `embed_text` hash means a chunk whose text
 /// matches one already embedded — duplicated code, or an unchanged sibling
@@ -466,6 +466,14 @@ pub fn remove_index(start: &Path) -> Result<RemoveOutcome> {
 /// re-running the model. Cache misses are gathered into a single batched
 /// inference. Returns the number of chunks given an embedding row.
 fn embed_missing(conn: &mut Connection) -> Result<usize> {
+    // Vectors from another model or dimension are neither searchable (locate
+    // scans only the current model) nor reusable, so drop them: their chunks
+    // then count as missing below, and the cache is seeded from current-model
+    // rows only.
+    conn.execute(
+        "DELETE FROM code_embeddings WHERE model_name <> ?1 OR dimension <> ?2",
+        params![EMBEDDING_MODEL_NAME, EMBEDDING_DIMENSION as i64],
+    )?;
     // Chunks still missing a vector (new this pass, or a prior embed blip).
     // Queried FIRST so a warm `locate` — where nothing is missing — returns
     // before decoding the entire `code_embeddings` table into the cache.
