@@ -91,14 +91,57 @@ fn finish(home: &Path, also: &[&Path], json: bool) -> String {
     ok(work.path(), home, &args)
 }
 
-fn row(body: &Value, label: &str) -> Value {
+/// Whether an upgrade instance label names `repo`. Upgrade labels a repo
+/// with the path the registry recorded, which is canonicalized: on Windows
+/// `\\?\C:\Users\runneradmin\...` for a tempdir spelled
+/// `C:\Users\RUNNER~1\...`, on macOS `/private/var/...` for `/var/...`.
+/// Only the tempdir's own (unique) last component is the same in every form.
+fn names(label: &str, repo: &Path) -> bool {
+    Path::new(label).file_name() == repo.file_name()
+}
+
+/// The JSON instance row for `repo`, or for the `<global store>` when `None`.
+fn row(body: &Value, repo: Option<&Path>) -> Value {
     body["instances"]
         .as_array()
         .expect("instances")
         .iter()
-        .find(|r| r["label"] == label)
-        .unwrap_or_else(|| panic!("no {label} row: {body}"))
+        .find(|r| {
+            let label = r["label"].as_str().expect("label");
+            match repo {
+                Some(p) => names(label, p),
+                None => label == "<global store>",
+            }
+        })
+        .unwrap_or_else(|| panic!("no {repo:?} row: {body}"))
         .clone()
+}
+
+/// The EMBEDDED cell of the text table's row for `repo` (or the global
+/// store when `None`). Columns: INSTANCE, SCHEMA (one token once at head),
+/// EMBEDDED, STATUS. The global label `<global store>` holds a space; repo
+/// labels (tempdir paths) do not.
+fn embedded_cell(text: &str, repo: Option<&Path>) -> String {
+    let rest: Vec<&str> = text
+        .lines()
+        .find_map(|l| {
+            let l = l.trim_start();
+            match repo {
+                None => l
+                    .strip_prefix("<global store>")
+                    .map(|r| r.split_whitespace().collect()),
+                Some(p) => {
+                    let mut w = l.split_whitespace();
+                    w.next()
+                        .filter(|label| names(label, p))
+                        .map(|_| w.collect())
+                }
+            }
+        })
+        .unwrap_or_else(|| panic!("no {repo:?} line: {text}"));
+    rest.get(1)
+        .unwrap_or_else(|| panic!("short {repo:?} line: {text}"))
+        .to_string()
 }
 
 #[test]
@@ -124,12 +167,12 @@ fn upgrade_embeds_missing_rows_in_hybrid_repos_and_the_global_store() {
     let stdout = finish(home.path(), &[hybrid.path(), fts.path()], true);
     let body: Value = serde_json::from_str(stdout.lines().next().expect("json line"))
         .unwrap_or_else(|e| panic!("{e}: {stdout}"));
-    let h = row(&body, &hybrid.path().display().to_string());
+    let h = row(&body, Some(hybrid.path()));
     // One fact + two architecture sections.
     assert_eq!(h["embedded"], 3, "{h}");
-    let g = row(&body, "<global store>");
+    let g = row(&body, None);
     assert_eq!(g["embedded"], 1, "{g}");
-    let f = row(&body, &fts.path().display().to_string());
+    let f = row(&body, Some(fts.path()));
     assert!(f["embedded"].is_null(), "fts repo is not filled: {f}");
 
     assert_eq!(vectors(&hybrid_db), 3);
@@ -140,20 +183,12 @@ fn upgrade_embeds_missing_rows_in_hybrid_repos_and_the_global_store() {
             .expect("index status json");
     assert_eq!(status["missing_count"], 0, "{status}");
 
-    // Nothing left to embed: the text table reports 0 for both.
+    // Nothing left to embed: the hybrid repo's and the global store's
+    // EMBEDDED cells read 0; the fts repo's reads `-` (no fill ran).
     let text = finish(home.path(), &[hybrid.path(), fts.path()], false);
     assert!(text.contains("EMBEDDED"), "{text}");
-    let line = |label: &str| {
-        text.lines()
-            .find(|l| l.trim_start().starts_with(label))
-            .unwrap_or_else(|| panic!("no {label} line: {text}"))
-            .to_string()
-    };
-    let hl = line(&hybrid.path().display().to_string());
-    assert!(hl.split_whitespace().any(|w| w == "0"), "{hl}");
-    let gl = line("<global store>");
-    assert!(gl.split_whitespace().any(|w| w == "0"), "{gl}");
-    let fl = line(&fts.path().display().to_string());
-    assert!(fl.split_whitespace().any(|w| w == "-"), "{fl}");
+    assert_eq!(embedded_cell(&text, Some(hybrid.path())), "0", "{text}");
+    assert_eq!(embedded_cell(&text, None), "0", "{text}");
+    assert_eq!(embedded_cell(&text, Some(fts.path())), "-", "{text}");
     assert_eq!(vectors(&hybrid_db), 3);
 }
