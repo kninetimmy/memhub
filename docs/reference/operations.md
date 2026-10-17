@@ -753,6 +753,54 @@ on the same database, compared with `memhub eval compare`:
    counts in the task or pull request, and say they come from this
    machine's database.
 
+### Checking recall in any repository (`memhub eval self-check`)
+
+The golden sets belong to memhub's own database, so they cannot say whether
+recall works in a repository memhub was dropped into. `memhub eval
+self-check [--sample N] [--json]` needs no golden set: after `memhub init`
+(and `memhub index rebuild` in hybrid mode) it samples this repository's own
+rows of each type — fact, decision, task, doc chunk and architecture section —
+and asks recall for each one twice:
+
+- the **title** query is the row's own title (a fact's key, a doc chunk's or
+  section's heading path; a doc chunk with no heading uses its document title);
+- the **passage** query is a 12-word span from the middle of the row's own
+  text. A row with no text (a task without notes) has no passage query and is
+  not counted for that form.
+
+Each query is a plain `memhub recall` with an agent's defaults (default source
+types, stale handling and result count; the project's retrieval mode), and a
+row "comes back" when the returned hits include that repository row.
+`--sample` sets the rows sampled per type (default 10). The sample is spread
+evenly across the rows ordered by id, so an unchanged database draws the same
+sample on every run.
+
+Reading the report: per type it shows the repository's row count, how many
+were sampled, and per query form `first/top3 of queried` — how many sampled
+rows came back at rank 1, how many within the top 3, out of the rows that
+form could query. Below the table it lists every miss: each sampled row and
+query form that did not come back within the top 3, with the query used and
+either the rank it had (when it came back below the top 3) or "not returned".
+`--json` carries the same counts per type (`title` and `passage` objects with
+`queried`, `first`, `top3`) and the `misses` array (`source_type`,
+`source_id`, `title`, `form`, `query`, `rank`, null when not returned).
+
+A type with zero rows reports zero everywhere. A form that finds almost
+nothing for a whole type points at a recall problem rather than at single
+rows: for example every fact missing because stale facts are excluded
+(`include_stale_by_default = false`) or never re-verified, doc chunks missing
+because `include_docs_in_default` is off, or architecture sections missing
+because they were never embedded. Passage misses on long, generic text are
+less alarming than title misses on distinctive titles.
+
+The command is read-only, like `eval retrieval` (decision 51): it adds,
+changes or deletes no fact, decision, task, session note, document,
+architecture section or `writes_log` entry, and, since it calls recall with
+metrics logging off, appends nothing to `recall_metrics` or the
+`recall_queries.jsonl` query log. It runs two recalls per sampled row, so the
+default sample is up to 100 recalls. Test:
+`tests/retrieval/self_check.rs`.
+
 ### Retrieval modes and configuration
 
 Both modes are first-class; the install prompt asks you to pick one.

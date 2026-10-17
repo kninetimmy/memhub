@@ -24,3 +24,5 @@ mod m8_retrieval_eval;
 mod m8_retrieval_schema;
 #[path = "retrieval/retrieval_golden_hermetic.rs"]
 mod retrieval_golden_hermetic;
+#[path = "retrieval/self_check.rs"]
+mod self_check;

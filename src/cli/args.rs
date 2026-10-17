@@ -462,6 +462,18 @@ pub enum EvalCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Check that recall finds this repository's own rows: samples facts,
+    /// decisions, tasks, doc chunks and architecture sections, queries
+    /// recall with each row's title and a passage of its own text, and
+    /// reports how many came back first and within the top 3, plus the
+    /// misses. Read-only; the same database draws the same sample.
+    SelfCheck {
+        /// Rows sampled per type.
+        #[arg(long, default_value_t = commands::self_check::DEFAULT_SAMPLE)]
+        sample: usize,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[cfg(feature = "metrics")]
