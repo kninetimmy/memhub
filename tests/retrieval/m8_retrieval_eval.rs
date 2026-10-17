@@ -171,7 +171,8 @@ fn empty_query_with_matching_results_is_safety_failure() {
     seed_demo_project(temp.path());
     // The "empty" probe uses a real keyword that exists in the seed,
     // so recall WILL return something — that must register as a
-    // safety failure, not a silent pass.
+    // safety failure, not a silent pass. Keyword-only, so the re-ranker's
+    // floor in the hybrid default cannot empty the result.
     let golden = write_golden(
         temp.path(),
         r#"{
@@ -191,7 +192,7 @@ fn empty_query_with_matching_results_is_safety_failure() {
         EvalOptions {
             golden_path: golden,
             k: 3,
-            mode: None,
+            mode: Some(RetrievalMode::Fts),
             use_reranker: None,
             min_rerank_score: None,
             no_variants: false,

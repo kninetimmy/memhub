@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Transaction, params};
 
-use crate::commands::{narrative, search};
+use crate::commands::{index, narrative, search};
 use crate::config::RetrievalMode;
 use crate::db;
 use crate::export::{EXPORT_VERSION, Export, v1};
@@ -44,6 +44,10 @@ pub struct ImportSummary {
     /// just overwritten, `--force` or not, and the CLI surfaces it
     /// unconditionally rather than letting it vanish with no signal at all.
     pub overwritten_writes_log: usize,
+    /// Rows embedded after the import committed, in a hybrid-mode target
+    /// (every imported row lacks a vector: export carries none). `None` in
+    /// an fts-mode target, which writes no embeddings.
+    pub embedded: Option<usize>,
 }
 
 pub fn run(start: &Path, source: &Path, force: bool) -> Result<ImportSummary> {
@@ -87,6 +91,7 @@ pub fn run(start: &Path, source: &Path, force: bool) -> Result<ImportSummary> {
         payload.project_arch.len(),
     );
 
+    let mode = ctx.config.retrieval.mode;
     let tx = ctx.conn.transaction()?;
     tx.execute_batch("PRAGMA defer_foreign_keys = ON")?;
 
@@ -101,8 +106,8 @@ pub fn run(start: &Path, source: &Path, force: bool) -> Result<ImportSummary> {
     insert_narrative(&tx, "project_state", &payload.project_state)?;
     insert_narrative(&tx, "project_arch", &payload.project_arch)?;
     // Sections are export-excluded derived data: rebuild them from the
-    // imported latest body. FTS-only like every other imported row;
-    // hybrid vectors come from `memhub index rebuild`.
+    // imported latest body. FTS-only inside this transaction like every
+    // other imported row; a hybrid target embeds them all after the commit.
     narrative::rederive_arch_sections(&tx, RetrievalMode::Fts)?;
 
     search::sync_decision_chunks(&tx)?;
@@ -115,6 +120,21 @@ pub fn run(start: &Path, source: &Path, force: bool) -> Result<ImportSummary> {
     db::log_write(&tx, "cli:user", "import", None, "import", &reason)?;
 
     tx.commit()?;
+
+    // Outside the import transaction so the model load and embedding do not
+    // hold the write lock (same reason `index rebuild` embeds before writing).
+    let embedded = if mode == RetrievalMode::Hybrid {
+        Some(
+            index::fill_missing(|| db::open_project(start), "cli:user").map_err(|e| {
+                MemhubError::Embedding(format!(
+                    "import committed, but embedding its rows failed: {e}; \
+                     run `memhub index rebuild` to embed them"
+                ))
+            })?,
+        )
+    } else {
+        None
+    };
 
     Ok(ImportSummary {
         source: source.to_path_buf(),
@@ -131,6 +151,7 @@ pub fn run(start: &Path, source: &Path, force: bool) -> Result<ImportSummary> {
         project_arch: summary_counts.8,
         retained_doc_chunks,
         overwritten_writes_log,
+        embedded,
     })
 }
 

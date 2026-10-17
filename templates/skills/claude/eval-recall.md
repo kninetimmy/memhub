@@ -228,8 +228,8 @@ plausible target.
 - Default mode comes from `[retrieval] mode` in `.memhub/config.toml`.
   Repos in `fts` mode get FTS-only scoring; `--mode hybrid` requires
   `memhub index rebuild` to have backfilled embeddings first
-  (otherwise expect `stale_embeddings` warnings in recall, but eval
-  itself still runs).
+  (otherwise expect `stale_embeddings` and `missing_embeddings`
+  warnings in recall, but eval itself still runs).
 - **In the memhub source repo specifically**, this invocation scores
   against *this machine's* live `.memhub/project.sqlite` (the golden
   set is self-referential — its queries target memhub's own real

@@ -209,6 +209,11 @@ proposal a human accepts.*
   `CLAUDE.md` / `AGENTS.md`) documents two **explicit** toggles:
   - **Hybrid retrieval** (`[retrieval] mode = fts|hybrid`) — explicit
     choice (today defaults to `fts`).
+    **Before/After (issue #382, 2026-10-17):** before, the default was
+    `fts` as stated above; after, a fresh `memhub init` writes `mode =
+    "hybrid"` and a config without a `mode` key resolves to hybrid, with
+    `fts` as the explicit opt-out. It stays an explicit, documented
+    toggle.
   - **Global store** (`memhub global enable`) — explicit choice.
 - Two **auto-followers**, documented as such with a manual override:
   - **Reranker** (`[retrieval] use_reranker`) — auto-on with hybrid

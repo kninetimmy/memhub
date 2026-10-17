@@ -65,6 +65,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::commands::hook::{self, HookInstall};
+use crate::commands::index;
 use crate::commands::install_manifest::{self, InstallManifest};
 use crate::config::RetrievalMode;
 use crate::db;
@@ -889,6 +890,9 @@ struct InstanceReport {
     before: Option<String>,
     after: Option<String>,
     status: InstanceStatus,
+    /// Rows this run embedded (issue #382): `Some` for a hybrid-mode repo
+    /// and the global store once their fill ran, `None` otherwise.
+    embedded: Option<usize>,
 }
 
 /// Enumerate the machine-global registry's known roots, **degrading a
@@ -1157,18 +1161,23 @@ fn verify_repo(root: &Path) -> InstanceReport {
             status: InstanceStatus::Skipped(
                 "no memhub project (path gone or never initialized)".to_string(),
             ),
+            embedded: None,
         };
     }
     let before = db::probe_schema_version(&db_path).ok().flatten();
     // open_project auto-applies migrations to head.
-    if let Err(e) = db::open_project(root) {
-        return InstanceReport {
-            label,
-            before,
-            after: None,
-            status: InstanceStatus::Error(format!("open failed: {e}")),
-        };
-    }
+    let hybrid = match db::open_project(root) {
+        Ok(ctx) => ctx.config.retrieval.mode == RetrievalMode::Hybrid,
+        Err(e) => {
+            return InstanceReport {
+                label,
+                before,
+                after: None,
+                status: InstanceStatus::Error(format!("open failed: {e}")),
+                embedded: None,
+            };
+        }
+    };
     let after = db::latest_schema_version().to_string();
     // Tiny recall smoke. Force FTS so we exercise the query path
     // without paying the embedding/re-ranker model load per instance.
@@ -1182,11 +1191,34 @@ fn verify_repo(root: &Path) -> InstanceReport {
         }
         Err(e) => InstanceStatus::Error(format!("recall smoke failed: {e}")),
     };
+    // Migration 0025 and older builds' writes leave rows with no vector
+    // (opening a DB never loads the model), so the fill happens here.
+    let (status, embedded) = match status {
+        InstanceStatus::Error(_) => (status, None),
+        _ if !hybrid => (status, None),
+        _ => fill_or_error(status, || db::open_project(root)),
+    };
     InstanceReport {
         label,
         before,
         after: Some(after),
         status,
+        embedded,
+    }
+}
+
+/// Embed the store's rows that lack an active-model vector; a failure turns
+/// the instance's status into an error.
+fn fill_or_error(
+    status: InstanceStatus,
+    open: impl Fn() -> Result<db::ProjectContext>,
+) -> (InstanceStatus, Option<usize>) {
+    match index::fill_missing(open, "cli:user") {
+        Ok(n) => (status, Some(n)),
+        Err(e) => (
+            InstanceStatus::Error(format!("embedding fill failed: {e}")),
+            None,
+        ),
     }
 }
 
@@ -1205,6 +1237,7 @@ fn verify_global() -> InstanceReport {
             before: None,
             after: None,
             status: InstanceStatus::Error(e.to_string()),
+            embedded: None,
         };
     }
     let exists = db::global_store_exists().unwrap_or(false);
@@ -1216,6 +1249,7 @@ fn verify_global() -> InstanceReport {
             status: InstanceStatus::Skipped(
                 "absent — opt in with `memhub global enable` in a repo".to_string(),
             ),
+            embedded: None,
         };
     }
     let before = global_ledger_schema();
@@ -1225,6 +1259,7 @@ fn verify_global() -> InstanceReport {
             before,
             after: None,
             status: InstanceStatus::Error(format!("open failed: {e}")),
+            embedded: None,
         };
     }
     let after = db::latest_schema_version().to_string();
@@ -1233,11 +1268,15 @@ fn verify_global() -> InstanceReport {
     } else {
         InstanceStatus::Migrated
     };
+    // Every embeddable row, whatever mode the repos that wrote it use: the
+    // store has no mode of its own and any hybrid repo may read it.
+    let (status, embedded) = fill_or_error(status, db::open_global);
     InstanceReport {
         label: "<global store>".to_string(),
         before,
         after: Some(after),
         status,
+        embedded,
     }
 }
 
@@ -1691,6 +1730,9 @@ fn emit(
                         "after": r.after,
                         "status": status_word(&r.status),
                         "detail": status_detail(&r.status),
+                        // Rows embedded this run; null where no fill ran
+                        // (fts-mode repo, skipped or failed instance).
+                        "embedded": r.embedded,
                     }))
                     .collect::<Vec<_>>(),
                 "ready": ready,
@@ -1732,7 +1774,10 @@ fn emit(
     }
 
     println!("memhub upgrade");
-    println!("  {:<40} {:<16} STATUS", "INSTANCE", "SCHEMA");
+    println!(
+        "  {:<40} {:<16} {:<9} STATUS",
+        "INSTANCE", "SCHEMA", "EMBEDDED"
+    );
     for r in reports {
         let schema = match (&r.before, &r.after) {
             (Some(b), Some(a)) if b != a => format!("{b} -> {a}"),
@@ -1746,7 +1791,12 @@ fn emit(
             InstanceStatus::Skipped(why) => format!("skipped ({why})"),
             InstanceStatus::Error(why) => format!("ERROR ({why})"),
         };
-        println!("  {:<40} {:<16} {}", r.label, schema, status);
+        // `-`: no fill ran (fts-mode repo, skipped or failed instance).
+        let embedded = r.embedded.map_or("-".to_string(), |n| n.to_string());
+        println!(
+            "  {:<40} {:<16} {:<9} {}",
+            r.label, schema, embedded, status
+        );
     }
     println!();
     if pruned > 0 {

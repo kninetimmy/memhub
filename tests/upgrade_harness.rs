@@ -30,6 +30,8 @@ mod skill_parity;
 mod upgrade_audit_nag;
 #[path = "upgrade/upgrade_degrade.rs"]
 mod upgrade_degrade;
+#[path = "upgrade/upgrade_embedding_fill.rs"]
+mod upgrade_embedding_fill;
 #[path = "upgrade/upgrade_manifest.rs"]
 mod upgrade_manifest;
 #[path = "upgrade/upgrade_registry.rs"]

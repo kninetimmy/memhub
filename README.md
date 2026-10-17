@@ -94,7 +94,11 @@ Please install memhub for me, then turn on hybrid recall.
        that hybrid mode already runs a bundled cross-encoder re-ranker
        over the blended FTS+vector results by default — nothing extra
        to turn on.
-     - If I say FTS: nothing to do; the default is already FTS.
+     - If I say FTS: set `mode = "fts"` under the existing `[retrieval]`
+       table in .memhub/config.toml. (Before issue #382 FTS was the
+       default and this step needed nothing; `memhub init` now writes
+       `mode = "hybrid"`, so hybrid needs no edit and the rebuild above
+       just reports the rows are already embedded.)
 9. Run `memhub recall "<some keyword from my project>" --max-results 3`
    so I can see the recall surface working end-to-end.
 10. Tell me about the optional machine-global memory: a second SQLite at
@@ -195,7 +199,11 @@ Please install memhub for me, then turn on hybrid recall.
        hybrid mode already runs a bundled cross-encoder re-ranker over
        the blended FTS+vector results by default — nothing extra to
        turn on.
-     - If I say FTS: nothing to do; the default is already FTS.
+     - If I say FTS: set `mode = "fts"` under the existing `[retrieval]`
+       table in .memhub/config.toml. (Before issue #382 FTS was the
+       default and this step needed nothing; `memhub init` now writes
+       `mode = "hybrid"`, so hybrid needs no edit and the rebuild above
+       just reports the rows are already embedded.)
 9. Run `memhub recall "<some keyword from my project>" --max-results 3`
    so I can see the recall surface working end-to-end.
 10. Tell me about the optional machine-global memory: a second SQLite at
@@ -305,7 +313,11 @@ Please install memhub for me, then turn on hybrid recall.
        hybrid mode already runs a bundled cross-encoder re-ranker over
        the blended FTS+vector results by default — nothing extra to
        turn on.
-     - If I say FTS: nothing to do; the default is already FTS.
+     - If I say FTS: set `mode = "fts"` under the existing `[retrieval]`
+       table in .memhub/config.toml. (Before issue #382 FTS was the
+       default and this step needed nothing; `memhub init` now writes
+       `mode = "hybrid"`, so hybrid needs no edit and the rebuild above
+       just reports the rows are already embedded.)
 10. Run `memhub recall "<some keyword from my project>" --max-results 3`
     so I can see the recall surface working end-to-end.
 11. Tell me about the optional machine-global memory: a second SQLite at
@@ -801,7 +813,7 @@ Run any command with `--help` for flags. The `--global` flags are explained unde
 
 ### Retrieval modes
 
-memhub has two retrieval modes, and the install prompt asks you to pick one. Set `mode` under `[retrieval]` in `.memhub/config.toml`. The default, `fts`, is keyword search only: fast, free per write, and enough for small projects. The recommended `hybrid` adds meaning-based search and the re-ranker, so it also catches paraphrases ("compile a release" finds the `release_build` fact). It costs about 50 ms per write, about 240 ms per recall, and about 1.5 KB of vectors per row. Switching is non-destructive: `fts → hybrid` needs one `memhub index rebuild`, and `hybrid → fts` just stops consulting embeddings. Neither mode touches the network. Weights, floors and the other keys are in the [operations reference](docs/reference/operations.md#retrieval-modes-and-configuration).
+memhub has two retrieval modes, and the install prompt asks you to pick one. Set `mode` under `[retrieval]` in `.memhub/config.toml`. Before issue #382 the default was `fts`; it is now `hybrid`, and `fts` is the opt-out. `fts` is keyword search only: fast, free per write, and enough for small projects. The recommended `hybrid` adds meaning-based search and the re-ranker, so it also catches paraphrases ("compile a release" finds the `release_build` fact). It costs about 50 ms per write, about 240 ms per recall, and about 1.5 KB of vectors per row. Switching is non-destructive: `fts → hybrid` needs one `memhub index rebuild`, and `hybrid → fts` just stops consulting embeddings. Neither mode touches the network. Weights, floors and the other keys are in the [operations reference](docs/reference/operations.md#retrieval-modes-and-configuration).
 
 ### Compatibility
 

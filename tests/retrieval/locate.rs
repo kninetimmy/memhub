@@ -42,6 +42,12 @@ fn repo_with_files(files: &[(&str, &str)]) -> tempfile::TempDir {
         fs::write(&abs, body).expect("write file");
     }
     init::run(root).expect("memhub init");
+    // Indexing tests pin fts (the default before issue #382); the hybrid
+    // ones switch with `set_hybrid`.
+    let config_path = root.join(".memhub").join("config.toml");
+    let mut config = ProjectConfig::load(&config_path).expect("load config");
+    config.retrieval.mode = RetrievalMode::Fts;
+    config.save(&config_path).expect("save config");
     git(root, &["add", "-A"]);
     git(
         root,
@@ -80,7 +86,11 @@ fn locate_finds_symbol_by_name_fts() {
     )
     .expect("locate");
 
-    assert_eq!(response.mode, RetrievalMode::Fts, "default config is fts");
+    assert_eq!(
+        response.mode,
+        RetrievalMode::Fts,
+        "repo_with_files pins fts"
+    );
     assert!(!response.results.is_empty(), "should find the symbol");
     let top = &response.results[0];
     assert_eq!(top.path, "src/parser.rs");

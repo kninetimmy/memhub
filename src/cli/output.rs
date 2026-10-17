@@ -1101,6 +1101,8 @@ pub(crate) fn import_summary_to_json(summary: &ImportSummary) -> serde_json::Val
         "project_arch": summary.project_arch,
         "retained_doc_chunks": summary.retained_doc_chunks,
         "overwritten_writes_log": summary.overwritten_writes_log,
+        // null in an fts-mode target (no embeddings written).
+        "embedded": summary.embedded,
     })
 }
 
@@ -1599,6 +1601,7 @@ mod tests {
             arch_sections_embedded: 0,
             total_embeddings: 0,
             missing_count: 1,
+            lacking_count: 1,
             stale_ratio: 0.0,
         };
         let v = index_status_to_json(&s);

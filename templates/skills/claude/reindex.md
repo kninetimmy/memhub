@@ -1,6 +1,6 @@
 ---
 name: reindex
-description: Rebuild memhub embeddings for the active model. Use after a model upgrade or when memhub.recall surfaces a stale_embeddings warning. Always ask before running.
+description: Rebuild memhub embeddings for the active model. Use after a model upgrade or when memhub.recall surfaces a stale_embeddings or missing_embeddings warning. Always ask before running.
 framework: memhub
 framework_version: 1.0.0
 last_updated: 2026-05-13
@@ -17,8 +17,10 @@ user before mutating.
 Reindex is appropriate when:
 
 1. `memhub.recall` returns a `warnings[].kind == "stale_embeddings"`
-   entry. The bundle is still usable, but hybrid scoring is
-   undercounting some rows.
+   or `"missing_embeddings"` entry. The bundle is still usable, but
+   hybrid scoring is undercounting some rows. (`missing_embeddings`
+   joined this trigger in issue #382; it counts the repo's rows with
+   no embedding for the active model.)
 2. The repo was running on `mode = fts` (no eager-embed on writes),
    and the user has just switched `[retrieval] mode` to `hybrid` in
    `.memhub/config.toml`. Pre-existing rows have no embedding;

@@ -186,9 +186,13 @@ fn note_list_cli_human_output_smoke() {
 fn index_status_cli_plain_text_reports_note_embedded_and_total_counts() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
+    let config_path = temp.path().join(".memhub").join("config.toml");
+    let mut cfg = memhub::config::ProjectConfig::load(&config_path).expect("load config");
+    cfg.retrieval.mode = memhub::config::RetrievalMode::Fts;
+    cfg.save(&config_path).expect("save config");
     session_note::add(temp.path(), "first note", "cli:user", "cli:user").expect("add");
     index::rebuild(temp.path(), "cli:user").expect("rebuild");
-    // Default keyword mode skips eager embedding, so this one stays unembedded.
+    // fts mode skips eager embedding, so this one stays unembedded.
     session_note::add(temp.path(), "second note", "cli:user", "cli:user").expect("add");
 
     let output = run_cli(temp.path(), &["index", "status"]);

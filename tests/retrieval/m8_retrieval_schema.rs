@@ -213,10 +213,19 @@ fn fts_rebuild_repopulates_after_index_wipe() {
     }
 }
 
+fn pin_fts(root: &std::path::Path) {
+    let path = root.join(".memhub").join("config.toml");
+    let mut cfg = memhub::config::ProjectConfig::load(&path).expect("load config");
+    cfg.retrieval.mode = memhub::config::RetrievalMode::Fts;
+    cfg.save(&path).expect("save config");
+}
+
 #[test]
 fn embeddings_blob_round_trips() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
+    // fts so the fact add below writes no vector of its own.
+    pin_fts(temp.path());
 
     fact::add(
         temp.path(),
@@ -273,6 +282,8 @@ fn embeddings_blob_round_trips() {
 fn embeddings_unique_constraint_blocks_duplicate() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
+    // fts so the fact add below writes no vector of its own.
+    pin_fts(temp.path());
 
     fact::add(temp.path(), "k", "v", "user", "cli:user").expect("add fact");
 

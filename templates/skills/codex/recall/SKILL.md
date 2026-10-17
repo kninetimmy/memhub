@@ -202,10 +202,18 @@ When `warnings` is non-empty, the most common entry is:
   "fix": "Run /reindex ..." }
 ```
 
-Surface the warning to the user and **ask before invoking `/reindex`**.
-Reindex is a one-time, multi-second operation; the user decides
-whether to run it. Recall results are still usable in the meantime —
-the warning just means hybrid scoring may be undercounting some rows.
+In a hybrid repo you may also see `missing_embeddings` (issue #382):
+`stale_count` is how many of the repo's rows have no embedding for the
+active model, out of `total_count` rows, and `fix` names
+`memhub index rebuild`. `stale_embeddings` counts only this recall's
+candidates; `missing_embeddings` counts the whole repo, so both can
+appear together.
+
+For either kind, surface the warning to the user and **ask before
+invoking `/reindex`**. Reindex is a one-time, multi-second operation;
+the user decides whether to run it. Recall results are still usable in
+the meantime — the warning just means hybrid scoring may be
+undercounting some rows.
 
 ## When not to use recall
 
@@ -225,7 +233,8 @@ the warning just means hybrid scoring may be undercounting some rows.
 - Read-only. Recall never writes to durable tables, never stages a
   pending write, never logs to `writes_log`.
 - Default mode comes from `[retrieval] mode` in `.memhub/config.toml`.
-  Repos in `fts` mode (the install default) get FTS-only scoring;
+  Repos in `fts` mode (the install default before issue #382; now
+  the opt-out, with `hybrid` the default) get FTS-only scoring;
   switching to `hybrid` requires `memhub index rebuild` to backfill
   embeddings for pre-existing rows.
 - Recall is the **mid-session** read. Session-start context lives in
