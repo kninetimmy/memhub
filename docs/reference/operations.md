@@ -763,7 +763,7 @@ and asks recall for each one twice:
   not counted for that form.
 
 Each query is a plain `memhub recall` with an agent's defaults (default source
-types, stale handling and result count; the project's retrieval mode), and a
+types and result count; the project's retrieval mode), and a
 row "comes back" when the returned hits include that repository row.
 `--sample` sets the rows sampled per type (default 10). The sample is spread
 evenly across the rows ordered by id, so an unchanged database draws the same
@@ -781,8 +781,7 @@ either the rank it had (when it came back below the top 3) or "not returned".
 
 A type with zero rows reports zero everywhere. A form that finds almost
 nothing for a whole type points at a recall problem rather than at single
-rows: for example every fact missing because stale facts are excluded
-(`include_stale_by_default = false`) or never re-verified, doc chunks missing
+rows: for example doc chunks missing
 because `include_docs_in_default` is off, or architecture sections missing
 because they were never embedded. Passage misses on long, generic text are
 less alarming than title misses on distinctive titles.
