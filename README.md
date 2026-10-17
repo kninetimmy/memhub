@@ -37,7 +37,7 @@ memhub is one offline binary and one SQLite file next to your code. Claude Code,
 - **Low-confidence rows**: rows that score under the rerank floor. Recall still returns them to fill the result, after every row that cleared the floor, and marks them `low_confidence`. Treat them as leads to verify. If no row clears the floor and no named row is returned, recall also adds a `rerank_floor_dropped_all` warning.
 - **Pending writes**: agent proposals (`pending_writes` in the database) that wait for your review. Each becomes a fact or decision only when you accept it.
 - **PROJECT_LEDGER.md**: a markdown file written by `memhub render` that lists decisions, the task backlog, facts, and recent write activity. Agents use recall instead of reading it.
-- **Hibernated**: fully written but compiled out of normal builds, so a default binary has no commands or other surface for it. Its database tables and config keys remain.
+- **Hibernated**: fully written but compiled out of normal builds, so a default binary has no commands for it. Its database tables and config keys remain. A default build still shows two traces of hibernated metrics: a skipped `metrics_health` check in `memhub doctor`, and `memhub upgrade` reporting already-installed metrics skill wrappers as orphans.
 
 </details>
 
@@ -397,7 +397,7 @@ Then continue with the steps you need:
 claude mcp add memhub -- memhub serve
 
 # Codex: append this once (it also needs this repo trusted; see below)
-grep -qs 'mcp_servers.memhub' ~/.codex/config.toml || cat >> ~/.codex/config.toml <<'EOF'
+grep -qsE '^[[:space:]]*\[mcp_servers\.memhub\][[:space:]]*(#.*)?$' ~/.codex/config.toml || cat >> ~/.codex/config.toml <<'EOF'
 [mcp_servers.memhub]
 command = "memhub"
 args = ["serve"]
@@ -677,7 +677,7 @@ memhub decision promote 8 --global
 
 **Recall merges, then you arbitrate.** Machine-global hits blend with repo hits in one re-ranked pool. Every hit carries a `scope` of `"repo"` or `"global"`, and the agent applies **repo-overrides-global**, exactly as a repo `CLAUDE.md` overrides the global one. The file inherits the active repo's `[retrieval]` config, including `include_docs_in_default`, which alone decides whether machine-global docs join that repo's default recall. It is per-machine and is not part of `memhub export`. `/global` wraps all of this.
 
-**Reads never migrate it.** If the file's schema differs from the binary's, recall skips it, returns the repo's rows, and warns. Run `memhub upgrade` to bring it up to date. Only `upgrade` and the global write commands migrate it.
+**Reads never migrate it.** If the file's schema differs from the binary's, recall skips it, returns the repo's rows, and warns. A file at an older schema is brought up to date by `memhub upgrade`. A file at a newer schema than the binary needs a newer `memhub` binary, installed by upgrading from an up-to-date source checkout. Only `upgrade` and the global write commands migrate it.
 
 Details: [operations reference](docs/reference/operations.md#machine-global-memory).
 
@@ -931,7 +931,7 @@ memhub CLI / MCP
 
 ## Hibernated token metrics
 
-Token metrics is fully implemented but hibernated. A default build compiles out the `memhub metrics` commands, the MCP `metrics` tool, the `/metrics` skill, token accounting and transcript scraping. The metrics database tables and `[metrics]` config keys stay, along with any stored rows. Reactivate it with `cargo build --features metrics`. That build adds per-recall bundle-size accounting and real token totals scraped from Claude Code and Codex transcripts. In it, `memhub metrics calibrate` is the one command that touches the network: it sends a fixed built-in corpus (never your project's content) to Anthropic's `count_tokens` endpoint. It is opt-in, needs `ANTHROPIC_API_KEY`, and refuses cleanly without it. Details: [operations reference](docs/reference/operations.md#token-accounting).
+Token metrics is fully implemented but hibernated. A default build compiles out the `memhub metrics` commands, the MCP `metrics` tool, token accounting and transcript scraping. The `/metrics` skill is a template file that a default `memhub upgrade` does not install. The metrics database tables and `[metrics]` config keys stay, along with any stored rows. Reactivate it with `cargo build --features metrics`. That build adds per-recall bundle-size accounting and real token totals scraped from Claude Code and Codex transcripts. In it, `memhub metrics calibrate` is the one command that touches the network: it sends a fixed built-in corpus (never your project's content) to Anthropic's `count_tokens` endpoint. It is opt-in, needs `ANTHROPIC_API_KEY`, and refuses cleanly without it. Details: [operations reference](docs/reference/operations.md#token-accounting).
 
 ---
 
