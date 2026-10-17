@@ -684,10 +684,19 @@ mod tests {
         cfg.save(&config_path).expect("save config");
     }
 
+    /// Pin a repo to fts, the default before issue #382.
+    fn switch_to_fts(repo_root: &std::path::Path) {
+        let config_path = repo_root.join(".memhub").join("config.toml");
+        let mut cfg = ProjectConfig::load(&config_path).expect("load config");
+        cfg.retrieval.mode = RetrievalMode::Fts;
+        cfg.save(&config_path).expect("save config");
+    }
+
     #[test]
     fn status_reports_zero_coverage_under_fts_mode() {
         let temp = tempdir().expect("tempdir");
         init::run(temp.path()).expect("init");
+        switch_to_fts(temp.path());
         fact::add(
             temp.path(),
             "build-command",
@@ -760,7 +769,8 @@ mod tests {
     fn rebuild_backfills_missing_note_embedding() {
         let temp = tempdir().expect("tempdir");
         init::run(temp.path()).expect("init");
-        // Logged under the default fts mode: no eager embedding is written.
+        switch_to_fts(temp.path());
+        // Logged under fts mode: no eager embedding is written.
         session_note::add(
             temp.path(),
             "Pre-hybrid scratch note with no embedding yet.",
@@ -846,6 +856,7 @@ mod tests {
     fn status_counts_and_rebuild_embeds_arch_sections() {
         let temp = tempdir().expect("tempdir");
         init::run(temp.path()).expect("init");
+        switch_to_fts(temp.path());
         crate::commands::narrative::set(
             temp.path(),
             crate::models::NarrativeKind::Arch,

@@ -225,7 +225,8 @@ the warning just means hybrid scoring may be undercounting some rows.
 - Read-only. Recall never writes to durable tables, never stages a
   pending write, never logs to `writes_log`.
 - Default mode comes from `[retrieval] mode` in `.memhub/config.toml`.
-  Repos in `fts` mode (the install default) get FTS-only scoring;
+  Repos in `fts` mode (the install default before issue #382; now
+  the opt-out, with `hybrid` the default) get FTS-only scoring;
   switching to `hybrid` requires `memhub index rebuild` to backfill
   embeddings for pre-existing rows.
 - Recall is the **mid-session** read. Session-start context lives in

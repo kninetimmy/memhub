@@ -173,9 +173,11 @@ pub const MAX_WRAP_UP_TRANSCRIPT_RETENTION_DAYS: u32 = 36_500;
 #[serde(rename_all = "lowercase")]
 pub enum RetrievalMode {
     /// FTS5-only recall. Embeddings table is not populated on writes.
-    #[default]
+    /// The opt-out; it was the default before issue #382.
     Fts,
-    /// Hybrid SQL+RAG recall. Writes eagerly embed source rows.
+    /// Hybrid SQL+RAG recall. Writes eagerly embed source rows. The
+    /// default for a config that omits `mode` (issue #382).
+    #[default]
     Hybrid,
 }
 

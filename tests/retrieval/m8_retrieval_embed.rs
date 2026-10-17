@@ -1,8 +1,8 @@
 //! Eager-embed write-path tests for M8 PR3.
 //!
 //! Verifies that fact/decision/task writers populate the embeddings table
-//! when [retrieval] mode = "hybrid" and skip it entirely when mode = "fts"
-//! (the default). Session notes (`SourceType::Note`, Wave 6 W5 / issue
+//! when [retrieval] mode = "hybrid" (the default since issue #382; before
+//! it, fts was) and skip it entirely when mode = "fts". Session notes (`SourceType::Note`, Wave 6 W5 / issue
 //! #98) joined this same eager-embed path later and are covered below
 //! alongside the original three.
 
@@ -29,6 +29,13 @@ fn switch_to_hybrid(repo_root: &std::path::Path) {
     );
 }
 
+fn switch_to_fts(repo_root: &std::path::Path) {
+    let config_path = repo_root.join(".memhub").join("config.toml");
+    let mut cfg = ProjectConfig::load(&config_path).expect("load config");
+    cfg.retrieval.mode = memhub::config::RetrievalMode::Fts;
+    cfg.save(&config_path).expect("save config");
+}
+
 fn embedding_count(conn: &rusqlite::Connection, source_type: &str, source_id: i64) -> i64 {
     conn.query_row(
         "SELECT COUNT(*) FROM embeddings WHERE source_type = ?1 AND source_id = ?2",
@@ -53,10 +60,84 @@ fn embedding_metadata(
     .expect("fetch embedding metadata")
 }
 
+/// Issue #382 criterion 1: `memhub init` and nothing else gives hybrid
+/// retrieval — later fact/decision/task writes are embedded for the active
+/// model and recall re-ranks.
 #[test]
-fn fts_mode_default_skips_embedding_writes() {
+fn default_init_is_hybrid_embeds_writes_and_reranks() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
+    let (fact_id, _) = fact::add(
+        temp.path(),
+        "build-command",
+        "cargo nextest run",
+        "user",
+        "cli:user",
+    )
+    .expect("add fact");
+    let decision_id = decision::add(
+        temp.path(),
+        "Adopt parquet",
+        "Cold storage analytics need columnar files.",
+        "user",
+        "cli:user",
+    )
+    .expect("add decision");
+    let task_id = task::add(temp.path(), "Wire shard rebalancer", None, "cli:user").expect("task");
+
+    let ctx = db::open_project(temp.path()).expect("open project");
+    assert_eq!(
+        ctx.config.retrieval.mode,
+        memhub::config::RetrievalMode::Hybrid
+    );
+    for (st, id) in [
+        ("fact", fact_id),
+        ("decision", decision_id),
+        ("task", task_id),
+    ] {
+        assert_eq!(
+            embedding_metadata(&ctx.conn, st, id).0,
+            EMBEDDING_DIMENSION as i64,
+            "{st} {id} must carry an active-model embedding"
+        );
+    }
+    drop(ctx);
+
+    let response = memhub::retrieval::recall(
+        temp.path(),
+        memhub::retrieval::RecallOptions {
+            query: "which test runner do we use".to_string(),
+            mode: None,
+            max_results: 3,
+            source_types: vec![],
+            include_stale: None,
+            accepted_only: None,
+            use_reranker: None,
+            min_rerank_score: None,
+            log_metrics: false,
+            variants: Vec::new(),
+            surface: None,
+            explain: true,
+        },
+    )
+    .expect("recall");
+    assert_eq!(response.mode, memhub::config::RetrievalMode::Hybrid);
+    assert!(response.explain.reranker_ran, "default recall must re-rank");
+    assert!(
+        response
+            .warnings
+            .iter()
+            .all(|w| w.kind != "missing_embeddings"),
+        "every row is embedded: {:?}",
+        response.warnings
+    );
+}
+
+#[test]
+fn fts_mode_skips_embedding_writes() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+    switch_to_fts(temp.path());
 
     fact::add(
         temp.path(),
@@ -89,7 +170,7 @@ fn fts_mode_default_skips_embedding_writes() {
         .expect("count embeddings");
     assert_eq!(
         total, 0,
-        "default fts mode must not write embedding rows; got {total}"
+        "fts mode must not write embedding rows; got {total}"
     );
 }
 
@@ -538,5 +619,5 @@ fn config_round_trip_preserves_retrieval_section() {
     );
 
     let cfg = ProjectConfig::load(&config_path).expect("load");
-    assert_eq!(cfg.retrieval.mode, memhub::config::RetrievalMode::Fts);
+    assert_eq!(cfg.retrieval.mode, memhub::config::RetrievalMode::Hybrid);
 }

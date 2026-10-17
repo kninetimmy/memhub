@@ -2044,17 +2044,21 @@ transcript_retention_days = 99999999
     fn embeddings_freshness_skipped_in_fts_mode() {
         let temp = healthy_repo();
         let ctx = db::open_project(temp.path()).expect("open");
-        let check = check_embeddings_freshness(temp.path(), &ctx.config);
+        let mut cfg = ctx.config.clone();
+        cfg.retrieval.mode = RetrievalMode::Fts;
+        let check = check_embeddings_freshness(temp.path(), &cfg);
         assert_eq!(check.status, Status::Skipped);
     }
 
     #[test]
     fn embeddings_freshness_warns_on_missing_coverage_in_hybrid_mode() {
         let temp = healthy_repo();
-        fact::add(temp.path(), "k", "v", "user", "cli:user").expect("fact");
-
         let ctx = db::open_project(temp.path()).expect("open");
         let mut cfg = ctx.config.clone();
+        cfg.retrieval.mode = RetrievalMode::Fts;
+        cfg.save(&ctx.paths.config_path).expect("save config");
+        fact::add(temp.path(), "k", "v", "user", "cli:user").expect("fact");
+
         cfg.retrieval.mode = RetrievalMode::Hybrid;
         cfg.save(&ctx.paths.config_path).expect("save config");
 

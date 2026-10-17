@@ -3250,6 +3250,17 @@ mod tests {
         // stale_embeddings warning for the missing vector.
         let temp = tempdir().expect("tempdir");
         init::run(temp.path()).expect("init");
+        let cfg_path = temp.path().join(".memhub").join("config.toml");
+        let mut cfg = crate::config::ProjectConfig::load(&cfg_path).expect("load config");
+        cfg.retrieval.mode = RetrievalMode::Fts;
+        cfg.save(&cfg_path).expect("save config");
+        task::add(
+            temp.path(),
+            "Unrelated row outside the candidates",
+            None,
+            "cli:user",
+        )
+        .expect("seed task");
         fact::add(
             temp.path(),
             "build-command",

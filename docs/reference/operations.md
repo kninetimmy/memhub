@@ -756,8 +756,14 @@ on the same database, compared with `memhub eval compare`:
 ### Retrieval modes and configuration
 
 Both modes are first-class; the install prompt asks you to pick one.
+Since issue #382 hybrid is the default: a fresh `memhub init` writes
+`mode = "hybrid"` (unless the repo tracks a
+`.memhub/config.example.toml`, which is copied as is), and a config with
+no `mode` key resolves to hybrid. Before it, `fts` was the default and
+init wrote `mode = "fts"`. Set `mode = "fts"` under `[retrieval]` to opt
+out to keyword-only recall; an fts repo writes no embeddings.
 
-| | **`fts`** (default) | **`hybrid`** (recommended) |
+| | **`fts`** (opt-out; the default before issue #382) | **`hybrid`** (default, recommended) |
 |---|---|---|
 | Scoring | FTS5 BM25 over title + body | 0.5 × FTS + 0.5 × cosine − 0.3 × stale_penalty, then re-ranked |
 | What it catches | Exact terms, stemmed variants | Exact + paraphrases (`"compile a release"` → `release_build` fact) |
