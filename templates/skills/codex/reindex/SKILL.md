@@ -56,7 +56,7 @@ Do **not** invoke reindex:
    - `decisions.total` / `decisions.embedded`
    - `tasks.total` / `tasks.embedded`
    This tells the user roughly how long the rebuild will take
-   (~10-50 ms per row on the bundled BGE-small model).
+   (~20-50 ms per row on the bundled nomic-embed-text-v1.5 model).
 3. **Ask for confirmation.** "Rebuild N embeddings for model
    `<model>`? This is a few seconds and won't touch durable facts,
    decisions, or tasks." Wait for explicit yes.

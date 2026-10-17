@@ -458,7 +458,7 @@ pub fn remove_index(start: &Path) -> Result<RemoveOutcome> {
 }
 
 /// Embed every `code_chunks` row that has no current-model `code_embeddings`
-/// row and persist the vectors. Reuses the shared BGE model ([`embed_batch`]).
+/// row and persist the vectors. Reuses the shared embedding model ([`embed_batch`]).
 ///
 /// An in-run cache keyed by the `embed_text` hash means a chunk whose text
 /// matches one already embedded — duplicated code, or an unchanged sibling

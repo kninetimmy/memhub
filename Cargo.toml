@@ -66,8 +66,8 @@ zstd = "0.13"
 default = []
 metrics = ["dep:ureq"]
 
-# Dev/test artifacts are enormous here because the bge-small + MiniLM
-# ONNX models are `include_bytes!`'d into every binary (~250 MB of real
+# Dev/test artifacts are enormous here because the nomic-embed + MiniLM
+# ONNX models are `include_bytes!`'d into every binary (~160 MB of real
 # payload) and full DWARF then ~4xs that. `line-tables-only` keeps
 # readable panic / `cargo test` backtraces (file:line) while dropping
 # the heavy variable/type debug info — cutting each debug artifact
