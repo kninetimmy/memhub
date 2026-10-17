@@ -6,9 +6,11 @@ framework_version: 1.0.0
 last_updated: 2026-05-13
 ---
 
-Wipe and rebuild the `embeddings` table for the bundled embedding
-model. Runs `memhub index rebuild` under the hood. Local-only,
-multi-second operation. Asks the user before mutating.
+Rebuild the `embeddings` table for the bundled embedding model. In a
+repo opted into the machine-global store, the same command also
+rewrites the global store's embeddings. Runs `memhub index rebuild`
+under the hood. Local-only, multi-minute on a large store. Asks the
+user before mutating.
 
 ## When to invoke
 
@@ -53,10 +55,12 @@ Do **not** invoke reindex:
    - `decisions.total` / `decisions.embedded`
    - `tasks.total` / `tasks.embedded`
    This tells the user roughly how long the rebuild will take
-   (~10-50 ms per row on the bundled BGE-small model).
+   (about 50 ms per row on the bundled BGE-small model). In a repo
+   opted into the machine-global store, the global store's rows
+   count too.
 3. **Ask for confirmation.** "Rebuild N embeddings for model
-   `<model>`? This is a few seconds and won't touch durable facts,
-   decisions, or tasks." Wait for explicit yes.
+   `<model>`? This takes about N x 50 ms and won't touch durable
+   facts, decisions, or tasks." Wait for explicit yes.
 4. **Run rebuild.**
 
    ```bash
@@ -67,7 +71,12 @@ Do **not** invoke reindex:
    (e.g. `claude-code:reindex`) for the writes_log audit row.
 
 5. **Report.** Echo the JSON summary fields: `facts`, `decisions`,
-   `tasks`, `deleted`, `elapsed_ms`. One short line each.
+   `tasks`, `doc_chunks`, `arch_sections`, `deleted`,
+   `elapsed_ms`, and `global` (the same counts for the machine-global
+   store, or `null` when the repo is not opted in or the store does
+   not exist). One short line each. If `global_error` is set, the
+   global rebuild failed after the repo rebuild committed and the
+   command exits non-zero; surface the error to the user.
 
 6. **Confirm.** Re-run `memhub index status` and confirm
    `missing_count == 0`. If anything is still missing, surface the
@@ -75,8 +84,10 @@ Do **not** invoke reindex:
 
 ## Notes
 
-- Reindex deletes all `embeddings` rows for the active model in one
-  transaction, then re-inserts from current source bodies. No
+- Reindex deletes `embeddings` rows that belong to other models, plus
+  orphaned rows whose source row is gone, then upserts the active
+  model's vectors from current source bodies, all in one transaction
+  per store. No
   durable facts, decisions, or tasks are touched. The `writes_log`
   gets one summary entry attributed to the actor you passed.
 - The rebuild ignores `[retrieval] mode`. Even in `fts` mode, the
