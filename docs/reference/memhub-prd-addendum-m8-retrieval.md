@@ -94,6 +94,14 @@ stale_penalty = 0.3
 model = "bge-small-en-v1.5"      # bundled in binary; informational
 ```
 
+Decision 236 changed the two stale keys above, `include_stale_by_default` and
+`stale_penalty` (see the note in §4):
+
+- Before: `include_stale_by_default = false` hid stale facts, and
+  `stale_penalty` demoted them when they were shown.
+- After: both keys still load but are ignored. A stale fact is always returned,
+  ranked like a fresh one, and flagged `stale: true`.
+
 The `mode` flag is the only required key. The rest have defaults
 suitable for hobby-project memhub use; tuning is a PR4 concern, not a
 user-facing concern by default.
@@ -260,6 +268,22 @@ Filters apply before scoring, not after:
 - `source_type` allowlist
 - deny-list path filters
 
+Decision 236 changed staleness (the `include_stale_by_default` and
+`stale_penalty` keys, the `- stale_penalty * ...` term of the formula above,
+the `include_stale` filter, the `--include-stale` flag and the MCP
+`include_stale` input stay here as recorded):
+
+- Before: a stale fact (never verified, or last verified more than
+  `fact_stale_after_days` ago) was excluded from recall when
+  `include_stale_by_default` was false, and otherwise demoted by
+  `stale_penalty`, with a `stale_facts_demoted` warning.
+- After: staleness is informational. A stale fact is always returned, ranks
+  exactly like a fresh one and carries `stale: true`; recall reports no
+  stale-demotion warning. `include_stale_by_default`, `stale_penalty`,
+  `--include-stale` and the MCP `include_stale` input are still accepted but
+  change nothing, and `memhub doctor` names the two config keys as ignored
+  settings.
+
 ## 5. Eager-embed write path (decisions 27 + 28)
 
 Fact, decision, and task `add` handlers re-embed the affected row
@@ -342,6 +366,12 @@ memhub eval retrieval
     [--json]                                 # JSON output for skill consumption
 ```
 
+Decision 236 changed `--include-stale` above (see the note in §4):
+
+- Before: `--include-stale` opted in to stale facts, which were otherwise hidden.
+- After: the flag is still accepted and changes nothing; stale facts are always
+  returned, flagged `stale: true`.
+
 `recall` is the primary surface. `index` and `eval` are admin /
 maintenance surfaces. All three commands accept `--actor NAME` for
 audit attribution consistency with the rest of the CLI.
@@ -360,6 +390,12 @@ memhub.recall
     accepted_only   boolean (optional, defaults to config)
     include_stale   boolean (optional, defaults to config)
 ```
+
+Decision 236 changed `include_stale` above (see the note in §4):
+
+- Before: it overrode the config default for whether stale facts were returned.
+- After: the parameter is still accepted and changes nothing; stale facts are
+  always returned, flagged `stale: true`.
 
 Output shape (cited evidence bundle):
 

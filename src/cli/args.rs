@@ -214,6 +214,8 @@ pub enum TopLevelCommand {
         max_results: Option<usize>,
         #[arg(long, value_enum)]
         mode: Option<RecallModeArg>,
+        /// Accepted and ignored: stale facts are always returned, flagged
+        /// `stale`.
         #[arg(long)]
         include_stale: bool,
         /// Keep only rows whose source is `user` or `user+agent:<id>`.
@@ -459,6 +461,18 @@ pub enum EvalCommand {
         /// Sweep it to decide whether locate needs a nonsense-rejection floor.
         #[arg(long, value_name = "F", allow_negative_numbers = true)]
         min_rerank_score: Option<f32>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Check that recall finds this repository's own rows: samples facts,
+    /// decisions, tasks, doc chunks and architecture sections, queries
+    /// recall with each row's title and a passage of its own text, and
+    /// reports how many came back first and within the top 3, plus the
+    /// misses. Read-only; the same database draws the same sample.
+    SelfCheck {
+        /// Rows sampled per type.
+        #[arg(long, default_value_t = commands::self_check::DEFAULT_SAMPLE)]
+        sample: usize,
         #[arg(long)]
         json: bool,
     },

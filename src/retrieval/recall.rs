@@ -109,7 +109,8 @@ pub struct RecallOptions {
     /// architecture sections, plus doc chunks when the repo includes docs
     /// in default recall. Never session notes; scope to `Note` explicitly.
     pub source_types: Vec<SourceType>,
-    /// Override of `include_stale_by_default`.
+    /// Accepted for compatibility and ignored: stale facts are always
+    /// returned, flagged `stale: true` and ranked like fresh ones.
     pub include_stale: Option<bool>,
     /// Override of `accepted_only_by_default`.
     pub accepted_only: Option<bool>,
@@ -255,17 +256,10 @@ pub struct RecallExplain {
     pub dropped_by_floor: usize,
     /// Default-included doc chunks under `doc_min_rerank_score`.
     pub dropped_by_doc_floor: usize,
-    /// Stale rows excluded because stale rows were excluded
-    /// (`include_stale` off). A row that is both stale and not accepted
-    /// counts here once, not also under `accepted_only_excluded`.
-    pub stale_excluded: usize,
-    /// Non-stale rows excluded by accepted-only (a stale row already
-    /// excluded by `include_stale` off is counted under `stale_excluded`).
+    /// Rows excluded by accepted-only.
     pub accepted_only_excluded: usize,
     /// Superseded rows kept but demoted by `superseded_penalty`.
     pub superseded_demoted: usize,
-    /// Stale rows kept but demoted by `stale_penalty`.
-    pub stale_demoted: usize,
     /// Candidates never sent to the re-ranker: those left outside the
     /// by-retriever fill of `rerank_candidate_pool` rows, and default-included
     /// doc chunks over `rerank_doc_cap`.
@@ -388,7 +382,6 @@ pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
         }
     }
     let mut doc_chunk_total = repo.doc_chunk_total;
-    let mut demoted_stale_count = repo.demoted_stale_count;
     let mut explain = repo.explain;
     let repo_excluded = repo.excluded;
 
@@ -419,8 +412,6 @@ pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
         candidate_count += g.candidate_count;
         warnings.extend(g.warnings);
         doc_chunk_total += g.doc_chunk_total;
-        demoted_stale_count += g.demoted_stale_count;
-        explain.stale_excluded += g.explain.stale_excluded;
         explain.accepted_only_excluded += g.explain.accepted_only_excluded;
         explain.superseded_demoted += g.explain.superseded_demoted;
     } else if options.explain {
@@ -430,8 +421,8 @@ pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
     }
 
     // A decision, task or fact the query names by number goes first and out
-    // of the ranked pool (see `named_rows`). Done before the stale counters
-    // and warning below so a row only the routing loaded is counted in them.
+    // of the ranked pool (see `named_rows`). Done before the counters below
+    // so a row only the routing loaded is counted in them.
     let named = take_named_rows(
         &ctx.conn,
         &resolved,
@@ -439,31 +430,8 @@ pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
         &mut per_phrasing,
         &repo_excluded,
         &mut candidate_count,
-        &mut demoted_stale_count,
         &mut explain,
     )?;
-    explain.stale_demoted = demoted_stale_count;
-
-    // Un-silence staleness (Q1 / decision 145): when stale facts were kept
-    // and demoted rather than excluded, tell the caller how many. This is
-    // the demoted-count that replaced the old silent drop — a peer of the
-    // `stale_embeddings` warning, surfaced identically in CLI/JSON/MCP.
-    if demoted_stale_count > 0 {
-        warnings.push(RecallWarning {
-            kind: "stale_facts_demoted".to_string(),
-            stale_count: demoted_stale_count,
-            total_count: candidate_count,
-            reason: format!(
-                "{demoted_stale_count} stale fact(s) past the {}-day \
-                 fact_stale_after_days horizon were kept but demoted \
-                 (stale: true) instead of excluded",
-                resolved.fact_stale_after_days,
-            ),
-            fix: "Re-verify current facts (`memhub fact verify <key>`), or set \
-                  [retrieval] include_stale_by_default = false to exclude stale facts."
-                .to_string(),
-        });
-    }
 
     // Re-sort each phrasing's unified pool by blended score. Without the
     // re-ranker this is the final order; with it, `select_rerank_pool` uses
@@ -532,10 +500,9 @@ struct ResolvedOptions {
     mode: RetrievalMode,
     max_results: usize,
     source_types: Vec<SourceType>,
-    include_stale: bool,
     /// Fact-staleness horizon in days (`[retrieval] fact_stale_after_days`).
     /// A fact never verified, or last verified more than this many days ago,
-    /// is stale — kept and demoted when `include_stale`, else excluded.
+    /// is stale: flagged `stale: true`, never excluded or demoted.
     fact_stale_after_days: i64,
     accepted_only: bool,
     /// Effective rerank toggle; honored only when mode = hybrid.
@@ -628,7 +595,6 @@ impl ResolvedOptions {
             mode,
             max_results,
             source_types,
-            include_stale: opts.include_stale.unwrap_or(cfg.include_stale_by_default),
             fact_stale_after_days: cfg.fact_stale_after_days,
             accepted_only: opts.accepted_only.unwrap_or(cfg.accepted_only_by_default),
             use_reranker,
@@ -706,20 +672,15 @@ struct GatherResult {
     /// them.
     candidate_count: usize,
     warnings: Vec<RecallWarning>,
-    /// Stale facts that survived the filter (i.e. were kept and demoted
-    /// rather than excluded) in this corpus. Summed across corpora by the
-    /// orchestrator to surface the `stale_facts_demoted` warning. Always 0
-    /// when `include_stale` is off, since stale rows are filtered out then.
-    demoted_stale_count: usize,
     /// `COUNT(*)` of `doc_chunks` in this corpus, summed across corpora by
     /// the orchestrator. It feeds both `available_docs` and
     /// `RecallExplain::docs_not_searched`.
     doc_chunk_total: i64,
-    /// Rows a retriever found that the stale / accepted-only filters then
-    /// excluded; already counted in `explain`.
+    /// Rows a retriever found that the accepted-only filter then excluded;
+    /// already counted in `explain`.
     excluded: HashSet<(SourceType, i64)>,
-    /// Only the per-store counters (`stale_excluded`,
-    /// `accepted_only_excluded`, `superseded_demoted`) are filled here.
+    /// Only the per-store counters (`accepted_only_excluded`,
+    /// `superseded_demoted`) are filled here.
     explain: RecallExplain,
 }
 
@@ -788,21 +749,15 @@ fn gather_scored(
     hydrate_sources(conn, &mut candidates, opts.fact_stale_after_days)?;
 
     // Apply filters (per §4 of the addendum, filters apply before scoring).
-    // Stale handling is the Q1 currency ruling (decision 145): by default
-    // (`include_stale`) keep aged facts and let `score()` demote them
-    // (`stale_penalty`) with `stale: true`, rather than silently dropping
-    // them. `include_stale = false` restores the old hard exclusion.
+    // Staleness is informational (decision 236): stale facts are never
+    // filtered or demoted, only flagged `stale: true`.
     let mut explain = RecallExplain::default();
     let mut excluded = HashSet::new();
     let surviving: Vec<CandidateRow> = candidates
         .into_values()
         .filter(|c| c.has_source_row())
         .filter(|c| {
-            if !opts.include_stale && c.is_stale {
-                explain.stale_excluded += 1;
-                excluded.insert((c.source_type, c.source_id));
-                false
-            } else if opts.accepted_only && !is_accepted_source(&c.source) {
+            if opts.accepted_only && !is_accepted_source(&c.source) {
                 explain.accepted_only_excluded += 1;
                 excluded.insert((c.source_type, c.source_id));
                 false
@@ -817,9 +772,6 @@ fn gather_scored(
         .count();
 
     let candidate_count = surviving.len();
-    // Stale survivors are the demoted rows (only nonzero when include_stale
-    // kept them). Reported to the caller as `stale_facts_demoted`.
-    let demoted_stale_count = surviving.iter().filter(|c| c.is_stale).count();
 
     // Each phrasing is scored over the surviving rows it found, with its own
     // FTS/vector signals (the bm25 min-max is per phrasing).
@@ -876,7 +828,6 @@ fn gather_scored(
         per_phrasing,
         candidate_count,
         warnings,
-        demoted_stale_count,
         doc_chunk_total,
         excluded,
         explain,
@@ -1181,11 +1132,10 @@ fn named_rows(query: &str) -> Vec<(SourceType, i64)> {
 /// A row the retrievers already found keeps its blended hit and the counts the
 /// ranked gather gave it. Any other row is loaded and counted as the gather
 /// would have counted it had a retriever found it: in `candidate_count`, the
-/// stale and superseded counters, or the stale / accepted-only exclusions.
+/// superseded counter, or the accepted-only exclusion.
 /// A row a retriever found but a filter excluded (`excluded`) is already
 /// counted by the gather and is skipped without counting it again.
 /// Named rows past `max_results` are added to `explain.result_limit_cut`.
-#[allow(clippy::too_many_arguments)]
 fn take_named_rows(
     conn: &Connection,
     opts: &ResolvedOptions,
@@ -1193,7 +1143,6 @@ fn take_named_rows(
     per_phrasing: &mut [Vec<ScoredHit>],
     excluded: &HashSet<(SourceType, i64)>,
     candidate_count: &mut usize,
-    demoted_stale_count: &mut usize,
     explain: &mut RecallExplain,
 ) -> Result<Vec<ScoredHit>> {
     let mut named = Vec::new();
@@ -1221,16 +1170,11 @@ fn take_named_rows(
                 if !row.has_source_row() {
                     continue;
                 }
-                if !opts.include_stale && row.is_stale {
-                    explain.stale_excluded += 1;
-                    continue;
-                }
                 if opts.accepted_only && !is_accepted_source(&row.source) {
                     explain.accepted_only_excluded += 1;
                     continue;
                 }
                 *candidate_count += 1;
-                *demoted_stale_count += usize::from(row.is_stale);
                 explain.superseded_demoted += usize::from(row.superseded_by.is_some());
                 let mut hit = score(&[row], scoring).remove(0);
                 hit.scope = SCOPE_REPO.to_string();
@@ -2269,15 +2213,10 @@ fn score(rows: &[CandidateRow], scoring: &RetrievalScoringConfig) -> Vec<ScoredH
                 None => 0.0,
             };
             let vector_score = c.vector_score.unwrap_or(0.0).clamp(0.0, 1.0);
-            let stale_penalty = if c.is_stale {
-                scoring.stale_penalty
-            } else {
-                0.0
-            };
-            // Second, independent demotion signal (Wave 3 L3): a superseded
-            // row is kept and tagged but pushed down. Stacks additively with
-            // the stale penalty — a row that is both aged and replaced sinks
-            // furthest — and never excludes (demote-with-link, decision 145).
+            // Demotion signal (Wave 3 L3): a superseded row is kept and
+            // tagged but pushed down, never excluded (demote-with-link,
+            // decision 145). Staleness is deliberately not a ranking input
+            // (decision 236): `stale` is only a flag on the hit.
             let superseded_penalty = if c.superseded_by.is_some() {
                 scoring.superseded_penalty
             } else {
@@ -2298,15 +2237,14 @@ fn score(rows: &[CandidateRow], scoring: &RetrievalScoringConfig) -> Vec<ScoredH
             // (`finalize`).
             let age_decay = age_decay_multiplier(c.age_days, scoring.age_half_life_days);
             let relevance = scoring.fts_weight * fts_score + scoring.vector_weight * vector_score;
-            let score = relevance * age_decay - stale_penalty - superseded_penalty;
+            let score = relevance * age_decay - superseded_penalty;
             // Pool rankings (`select_rerank_pool`) adjust one unweighted
             // component, which carries only its `fts_weight` / `vector_weight`
             // (0.5 by default) of the blended relevance. A penalty therefore
             // moves a row about half as far in a pool ranking as in `score`.
             // Intended: the pool is a wide net the re-ranker then judges, so
             // the penalties only need to order rows within a ranking.
-            let adjusted =
-                |component: f64| component * age_decay - stale_penalty - superseded_penalty;
+            let adjusted = |component: f64| component * age_decay - superseded_penalty;
             ScoredHit {
                 source_type: c.source_type,
                 scope: String::new(),
@@ -2711,67 +2649,120 @@ mod tests {
             .expect("age fact verified_at");
     }
 
-    // Q1 / decision 145 — un-silence staleness. The default posture is
-    // demote + flag, NOT silent exclusion: an aged fact stays in the bundle
-    // (demoted, `stale: true`) and recall reports a `stale_facts_demoted`
-    // count instead of the row vanishing.
-    #[test]
-    fn stale_fact_is_demoted_and_flagged_not_excluded_by_default() {
-        let temp = tempdir().expect("tempdir");
-        init::run(temp.path()).expect("init");
-        let (fact_id, _) = fact::add(
-            temp.path(),
-            "deploy-command",
-            "kubectl apply staleflagprobe",
-            "user",
-            "cli:user",
-        )
-        .expect("fact");
-        // 200 days > the default 90-day horizon → stale.
-        age_fact(temp.path(), fact_id, 200);
-
-        let response = recall(
-            temp.path(),
-            RecallOptions {
-                query: "staleflagprobe".to_string(),
-                mode: Some(RetrievalMode::Fts),
-                max_results: 5,
-                source_types: vec![SourceType::Fact],
-                include_stale: None, // default → keep + demote + flag
-                accepted_only: None,
-                use_reranker: None,
-                min_rerank_score: None,
-                log_metrics: false,
-                variants: Vec::new(),
-                surface: None,
-                explain: false,
-            },
-        )
-        .expect("recall");
-
-        let hit = response
-            .results
-            .iter()
-            .find(|h| h.source_id == fact_id)
-            .expect("stale fact must surface demoted, not vanish");
-        assert!(hit.stale, "stale fact must carry stale: true");
-
-        let warn = response
-            .warnings
-            .iter()
-            .find(|w| w.kind == "stale_facts_demoted")
-            .expect("recall must report the demoted-stale count");
-        assert!(warn.stale_count >= 1, "demoted count should be >= 1");
+    /// Pins the retired stale settings into `config.toml` as raw TOML, the
+    /// way an old config carries them (`ProjectConfig` no longer writes
+    /// them).
+    fn pin_retired_stale_settings(temp: &std::path::Path, include: bool, penalty: f64) {
+        let path = temp.join(".memhub/config.toml");
+        let mut doc: toml::Table =
+            toml::from_str(&std::fs::read_to_string(&path).expect("read cfg")).expect("parse cfg");
+        let retrieval = doc
+            .get_mut("retrieval")
+            .and_then(toml::Value::as_table_mut)
+            .expect("retrieval table");
+        retrieval.insert(
+            "include_stale_by_default".to_string(),
+            toml::Value::Boolean(include),
+        );
+        retrieval
+            .get_mut("scoring")
+            .and_then(toml::Value::as_table_mut)
+            .expect("scoring table")
+            .insert("stale_penalty".to_string(), toml::Value::Float(penalty));
+        std::fs::write(&path, toml::to_string(&doc).expect("serialize cfg")).expect("write cfg");
     }
 
-    // The escape hatch survives: an explicit `include_stale = false` (or the
-    // config toggle) still hard-excludes stale facts and emits no demoted
-    // warning, so operators who want the old behavior keep it.
+    fn stale_probe_opts(query: &str, include_stale: Option<bool>) -> RecallOptions {
+        RecallOptions {
+            query: query.to_string(),
+            mode: Some(RetrievalMode::Fts),
+            max_results: 5,
+            source_types: vec![SourceType::Fact],
+            include_stale,
+            accepted_only: None,
+            use_reranker: None,
+            min_rerank_score: None,
+            log_metrics: false,
+            variants: Vec::new(),
+            surface: None,
+            explain: false,
+        }
+    }
+
+    // Decision 236: staleness is informational. A stale fact ranks exactly
+    // like the same fact freshly verified (same position, same score) and
+    // carries `stale: true`; recall reports nothing about demotion.
     #[test]
-    fn include_stale_false_restores_hard_exclusion() {
+    fn stale_fact_ranks_like_a_fresh_one_and_is_flagged() {
         let temp = tempdir().expect("tempdir");
         init::run(temp.path()).expect("init");
-        let (fact_id, _) = fact::add(
+        let (target, _) = fact::add(
+            temp.path(),
+            "deploy-command",
+            "kubectl apply staleflagprobe rollout",
+            "user",
+            "cli:user",
+        )
+        .expect("fact");
+        for (i, body) in [
+            "staleflagprobe alone",
+            "staleflagprobe mentioned twice staleflagprobe here",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            fact::add(
+                temp.path(),
+                &format!("filler-{i}"),
+                body,
+                "user",
+                "cli:user",
+            )
+            .expect("filler");
+        }
+        let observe = || {
+            let response =
+                recall(temp.path(), stale_probe_opts("staleflagprobe", None)).expect("recall");
+            let rank = response
+                .results
+                .iter()
+                .position(|h| h.source_id == target)
+                .expect("target fact must surface");
+            let hit = &response.results[rank];
+            let order: Vec<i64> = response.results.iter().map(|h| h.source_id).collect();
+            (rank, hit.score, hit.stale, order, response.warnings.len())
+        };
+
+        let fresh = observe();
+        assert!(!fresh.2, "a freshly verified fact is not stale");
+
+        // 200 days old and never verified are both stale (horizon 90 days).
+        age_fact(temp.path(), target, 200);
+        let aged = observe();
+        let ctx = crate::db::open_project(temp.path()).expect("open");
+        ctx.conn
+            .execute(
+                "UPDATE facts SET verified_at = NULL WHERE id = ?1",
+                [target],
+            )
+            .expect("clear verified_at");
+        let unverified = observe();
+        for stale in [aged, unverified] {
+            assert!(stale.2, "stale fact must carry stale: true");
+            assert_eq!(stale.0, fresh.0, "same rank as when fresh");
+            assert_eq!(stale.1, fresh.1, "same score as when fresh");
+            assert_eq!(stale.3, fresh.3, "same result order as when fresh");
+            assert_eq!(stale.4, 0, "no stale warning");
+        }
+    }
+
+    // The include-stale override and the retired config settings are still
+    // accepted, but none of them changes which rows come back or their order.
+    #[test]
+    fn include_stale_and_retired_stale_settings_change_nothing() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let (stale_id, _) = fact::add(
             temp.path(),
             "deploy-command",
             "kubectl apply staleflagprobe",
@@ -2779,38 +2770,47 @@ mod tests {
             "cli:user",
         )
         .expect("fact");
-        age_fact(temp.path(), fact_id, 200);
-
-        let response = recall(
+        fact::add(
             temp.path(),
-            RecallOptions {
-                query: "staleflagprobe".to_string(),
-                mode: Some(RetrievalMode::Fts),
-                max_results: 5,
-                source_types: vec![SourceType::Fact],
-                include_stale: Some(false), // explicit opt-out → exclude
-                accepted_only: None,
-                use_reranker: None,
-                min_rerank_score: None,
-                log_metrics: false,
-                variants: Vec::new(),
-                surface: None,
-                explain: false,
-            },
+            "other-command",
+            "helm install staleflagprobe",
+            "user",
+            "cli:user",
         )
-        .expect("recall");
+        .expect("fact");
+        age_fact(temp.path(), stale_id, 200);
 
-        assert!(
-            !response.results.iter().any(|h| h.source_id == fact_id),
-            "include_stale = false must still hard-exclude stale facts"
-        );
-        assert!(
-            !response
-                .warnings
+        let observe = |include_stale| {
+            let response = recall(
+                temp.path(),
+                stale_probe_opts("staleflagprobe", include_stale),
+            )
+            .expect("recall");
+            let rows: Vec<(i64, bool, f64)> = response
+                .results
                 .iter()
-                .any(|w| w.kind == "stale_facts_demoted"),
-            "no demoted-count warning when stale facts are excluded"
-        );
+                .map(|h| (h.source_id, h.stale, h.score))
+                .collect();
+            assert!(
+                rows.iter().any(|r| r.0 == stale_id && r.1),
+                "stale fact must surface flagged: {rows:?}"
+            );
+            rows
+        };
+        let baseline = observe(None);
+        assert_eq!(observe(Some(true)), baseline);
+        assert_eq!(observe(Some(false)), baseline);
+
+        for (include, penalty) in [(false, 0.9), (true, 0.0), (false, 7.5)] {
+            pin_retired_stale_settings(temp.path(), include, penalty);
+            ProjectConfig::load(&temp.path().join(".memhub/config.toml"))
+                .expect("config with retired keys still loads");
+            assert_eq!(
+                observe(None),
+                baseline,
+                "include={include} penalty={penalty}"
+            );
+        }
     }
 
     // Wave 6 W4 (issue #97): a tagged fact's `kind` rides all the way
@@ -2928,13 +2928,6 @@ mod tests {
         assert!(
             !hit.stale,
             "120d-old fact must be fresh once the horizon widens to 365d"
-        );
-        assert!(
-            !after
-                .warnings
-                .iter()
-                .any(|w| w.kind == "stale_facts_demoted"),
-            "no demoted-count warning once the fact is within the horizon"
         );
     }
 
@@ -4196,41 +4189,6 @@ mod tests {
     }
 
     #[test]
-    fn explain_counts_stale_rows_excluded_and_demoted() {
-        let temp = tempdir().expect("tempdir");
-        init::run(temp.path()).expect("init");
-        let (fact_id, _) = fact::add(
-            temp.path(),
-            "deploy-command",
-            "kubectl apply explainstaleprobe",
-            "user",
-            "cli:user",
-        )
-        .expect("fact");
-        age_fact(temp.path(), fact_id, 200);
-        let query = "explainstaleprobe";
-
-        let kept = recall(
-            temp.path(),
-            explain_opts(query, RetrievalMode::Fts, 5, vec![SourceType::Fact]),
-        )
-        .expect("recall");
-        assert_eq!(kept.explain.stale_demoted, 1);
-        assert_eq!(kept.explain.stale_excluded, 0);
-
-        let excluded = recall(
-            temp.path(),
-            RecallOptions {
-                include_stale: Some(false),
-                ..explain_opts(query, RetrievalMode::Fts, 5, vec![SourceType::Fact])
-            },
-        )
-        .expect("recall");
-        assert_eq!(excluded.explain.stale_excluded, 1);
-        assert_eq!(excluded.explain.stale_demoted, 0);
-    }
-
-    #[test]
     fn explain_counts_rows_excluded_by_accepted_only() {
         let temp = tempdir().expect("tempdir");
         seed(temp.path()); // `lint-command` is agent-sourced
@@ -4243,7 +4201,6 @@ mod tests {
         )
         .expect("recall");
         assert_eq!(response.explain.accepted_only_excluded, 1);
-        assert_eq!(response.explain.stale_excluded, 0);
     }
 
     #[test]
@@ -4568,25 +4525,6 @@ explainscopeprobe second.
         .expect("fact");
         age_fact(temp.path(), fact_id, 200);
 
-        let response = recall(
-            temp.path(),
-            RecallOptions {
-                include_stale: Some(false),
-                ..variant_opts(
-                    "variantdedupeprobe",
-                    &[
-                        "variantdedupeprobe shared",
-                        "shared value variantdedupeprobe",
-                    ],
-                    RetrievalMode::Fts,
-                )
-            },
-        )
-        .expect("recall");
-        // Excluded as stale by all three phrasings' gathers, counted once.
-        assert!(response.results.is_empty());
-        assert_eq!(response.explain.stale_excluded, 1);
-
         let kept = recall(
             temp.path(),
             variant_opts(
@@ -4601,7 +4539,7 @@ explainscopeprobe second.
         .expect("recall");
         assert_eq!(kept.results.len(), 1);
         assert_eq!(kept.candidate_count, 1);
-        assert_eq!(kept.explain.stale_demoted, 1);
+        assert!(kept.results[0].stale);
         assert_eq!(kept.results[0].source_id, fact_id);
     }
 
@@ -4854,7 +4792,7 @@ explainscopeprobe second.
     }
 
     #[test]
-    fn pool_ranks_apply_the_stale_superseded_and_age_decay_adjustments() {
+    fn pool_ranks_apply_the_superseded_and_age_decay_adjustments() {
         let scoring = RetrievalScoringConfig {
             age_half_life_days: 30,
             ..RetrievalScoringConfig::default()
@@ -4876,8 +4814,7 @@ explainscopeprobe second.
             c
         };
         type Adjust = fn(&mut CandidateRow);
-        let cases: [(&str, Adjust); 3] = [
-            ("stale", |c| c.is_stale = true),
+        let cases: [(&str, Adjust); 2] = [
             ("superseded", |c| c.superseded_by = Some(9)),
             ("aged", |c| c.age_days = Some(400.0)),
         ];
@@ -4898,6 +4835,32 @@ explainscopeprobe second.
                     "{ranking} ranking: the {label} row must not take the slot ahead of the current row"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn pool_ranks_ignore_staleness() {
+        let scoring = RetrievalScoringConfig::default();
+        for vector in [true, false] {
+            let row = |id: i64, signal: f64, stale: bool| {
+                let mut c = CandidateRow::empty(SourceType::Fact, id);
+                if vector {
+                    c.vector_score = Some(signal);
+                } else {
+                    c.fts_raw = Some(-signal); // BM25: lower raw is better
+                }
+                c.is_stale = stale;
+                c
+            };
+            let rows = vec![row(1, 0.9, true), row(2, 0.8, false), row(3, 0.2, false)];
+            let mut hits = score(&rows, &scoring);
+            hits.sort_by(cmp_merged);
+            let picked = select_rerank_pool(&pool_opts(1, 5, false), hits);
+            assert_eq!(
+                ids(&picked),
+                vec![1],
+                "the stale row with the strongest signal keeps the slot (vector={vector})"
+            );
         }
     }
 
@@ -6078,30 +6041,11 @@ explainscopeprobe second.
         .expect("agent fact");
         let ask = |id: i64| explain_opts(&format!("zxqv fact {id}"), RetrievalMode::Fts, 5, vec![]);
 
-        // Stale: kept and demoted, so counted in the counter and the warning.
+        // Stale: kept, flagged, and counted as a candidate like any other.
         let stale = recall(temp.path(), ask(stale_id)).expect("recall");
         assert_eq!(result_ids(&stale), vec![("fact".to_string(), stale_id)]);
         assert!(stale.results[0].stale);
-        assert_eq!(stale.explain.stale_demoted, 1);
-        let warning = stale
-            .warnings
-            .iter()
-            .find(|w| w.kind == "stale_facts_demoted")
-            .expect("stale warning");
-        assert_eq!(warning.stale_count, 1);
-        assert_eq!(warning.total_count, stale.candidate_count);
-
-        // Stale with include_stale off: excluded and counted as such.
-        let excluded = recall(
-            temp.path(),
-            RecallOptions {
-                include_stale: Some(false),
-                ..ask(stale_id)
-            },
-        )
-        .expect("recall");
-        assert!(excluded.results.is_empty());
-        assert_eq!(excluded.explain.stale_excluded, 1);
+        assert!(stale.candidate_count >= 1);
 
         // Superseded: kept with its link, counted as demoted.
         let superseded = recall(temp.path(), ask(old_id)).expect("recall");
@@ -6127,15 +6071,6 @@ explainscopeprobe second.
     fn named_row_found_then_excluded_is_counted_once() {
         let temp = tempdir().expect("tempdir");
         init::run(temp.path()).expect("init");
-        let (stale_id, _) = fact::add(
-            temp.path(),
-            "stale-zebra",
-            "the zebra crossing rule",
-            "user",
-            "cli:user",
-        )
-        .expect("stale fact");
-        age_fact(temp.path(), stale_id, 200);
         let (agent_id, _) = fact::add(
             temp.path(),
             "agent-zebra",
@@ -6147,33 +6082,15 @@ explainscopeprobe second.
 
         // Without the number the retriever finds the row; with it, the
         // routing sees the same row. The exclusion counter must agree.
-        for (with_number, plain) in [
-            (format!("zebra fact {stale_id}"), "zebra"),
-            (format!("zebra fact {agent_id}"), "zebra"),
-        ] {
-            let stale_case = with_number.ends_with(&stale_id.to_string());
-            let opts = |query: &str| RecallOptions {
-                include_stale: stale_case.then_some(false),
-                accepted_only: (!stale_case).then_some(true),
-                ..explain_opts(query, RetrievalMode::Fts, 5, vec![SourceType::Fact])
-            };
-            let counter = |r: &RecallResponse| {
-                if stale_case {
-                    r.explain.stale_excluded
-                } else {
-                    r.explain.accepted_only_excluded
-                }
-            };
-            let plain = recall(temp.path(), opts(plain)).expect("recall");
-            let named = recall(temp.path(), opts(&with_number)).expect("recall");
-            assert_eq!(counter(&plain), 1, "{with_number}");
-            assert_eq!(counter(&named), 1, "{with_number}");
-            let excluded_id = if stale_case { stale_id } else { agent_id };
-            assert!(
-                named.results.iter().all(|h| h.source_id != excluded_id),
-                "{with_number}"
-            );
-        }
+        let opts = |query: &str| RecallOptions {
+            accepted_only: Some(true),
+            ..explain_opts(query, RetrievalMode::Fts, 5, vec![SourceType::Fact])
+        };
+        let plain = recall(temp.path(), opts("zebra")).expect("recall");
+        let named = recall(temp.path(), opts(&format!("zebra fact {agent_id}"))).expect("recall");
+        assert_eq!(plain.explain.accepted_only_excluded, 1);
+        assert_eq!(named.explain.accepted_only_excluded, 1);
+        assert!(named.results.iter().all(|h| h.source_id != agent_id));
     }
 
     // Issue #348: named rows past `max_results` are counted in the limit cut.

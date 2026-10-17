@@ -53,7 +53,6 @@
 #   - log_level
 #   - retrieval.default_max_results
 #   - retrieval.accepted_only_by_default
-#   - retrieval.include_stale_by_default
 #   - retrieval.include_docs_in_default  (canonical baseline false
 #                                         here; auto-flips to true in
 #                                         the local config on first
@@ -121,24 +120,22 @@ output_dir = ".memhub/rendered"
 mode = "hybrid"
 default_max_results = 6
 accepted_only_by_default = false
-# Un-silence staleness (Q1 / decision 145): keep facts past
-# fact_stale_after_days in recall but DEMOTE them (scoring.stale_penalty)
-# and flag them stale:true, instead of silently excluding them. This is
-# the no-loss default — a bad default hides valid memories, demote is the
-# reversible posture. Set to false to restore hard exclusion.
-include_stale_by_default = true
+# Staleness is informational (decision 236): recall always returns facts
+# past fact_stale_after_days, ranked like fresh ones and flagged
+# stale:true; nothing excludes or demotes them. (The retired keys
+# include_stale_by_default and stale_penalty still load from older configs
+# but are ignored; `memhub doctor` names them.)
 # Fact-staleness horizon in days: a fact never verified, or last verified
-# more than this many days ago, is treated as stale (and demoted per the
-# flag above). Promotes the formerly hardcoded 90-day window to config
-# without changing its length.
+# more than this many days ago, is flagged stale. Promotes the formerly
+# hardcoded 90-day window to config without changing its length.
 fact_stale_after_days = 90
 # Cross-encoder re-ranker (ms-marco-MiniLM-L-6-v2). Latency grows with
 # the pool size; lifted Recall@1 by ~17pp on memhub's golden set in
 # the bake-off (decision 68). Ignored in fts mode.
 use_reranker = true
 # Rows sent to the re-ranker. They are taken from the vector-similarity
-# ranking and the FTS ranking in turn (each ranking applies the stale,
-# superseded and age-decay adjustments of the blended score), so every row
+# ranking and the FTS ranking in turn (each ranking applies the superseded
+# and age-decay adjustments of the blended score), so every row
 # in the top half of either ranking is re-ranked whatever its blended
 # score; when one ranking runs out the other fills the remaining slots.
 # Each passage is scored on its own, so a score does not depend on the pool.
@@ -172,17 +169,11 @@ log_queries = false
 [retrieval.scoring]
 fts_weight = 0.5
 vector_weight = 0.5
-# FACTS ONLY: demotion for a fact past fact_stale_after_days (see
-# include_stale_by_default above). Decisions, tasks, and doc chunks are
-# never marked stale and never pay this penalty; the code index
-# ([code_index], below) has no staleness concept at all.
-stale_penalty = 0.3
 # Blended-score demotion for a SUPERSEDED fact/decision (Wave 3 L3,
 # decision 145's demote-with-link ruling). A superseded row is never
 # excluded — it stays, is tagged superseded_by:N, and is pushed down.
-# Set above stale_penalty (0.3): supersession is an explicit "replaced"
-# signal, stronger than mere age, yet still a demotion, not a filter.
-# Stacks additively with stale_penalty.
+# Supersession is an explicit "replaced" signal, yet still a demotion,
+# not a filter.
 superseded_penalty = 0.4
 # Optional continuous age decay (Wave 3 L6). 0 = OFF (default): scoring is
 # byte-identical to pre-L6 memhub, no decay applied. When > 0, a candidate's

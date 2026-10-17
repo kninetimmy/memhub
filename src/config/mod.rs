@@ -23,23 +23,18 @@ pub const DEFAULT_FTS_WEIGHT: f64 = 0.5;
 /// Vector weight in recall's blended fusion score, hybrid mode only.
 /// Recall-only as of the R11 split — see `DEFAULT_CODE_INDEX_VECTOR_WEIGHT`.
 pub const DEFAULT_VECTOR_WEIGHT: f64 = 0.5;
-/// Blended-score demotion applied to a stale fact in recall
-/// (`include_stale_by_default` + `fact_stale_after_days`). **Facts
-/// only**: `is_stale` is computed solely from a fact's `verified_at`
-/// column (`recall::load_source_row`); decisions, tasks, and doc chunks
-/// always carry `is_stale = false` in recall and never pay this penalty.
-/// The code index (`memhub locate`, `[code_index]`) has no staleness
-/// concept at all — a chunk is either indexed or it isn't, never
-/// "decayed" — so this knob has no effect there either.
+/// Retired: recall no longer demotes stale facts (decision 236 —
+/// staleness is informational: a stale fact ranks like a fresh one and
+/// carries `stale: true`). `[retrieval.scoring] stale_penalty` still
+/// loads, because `memhub init` pinned it into every existing project
+/// config, but it is ignored and never written to new configs;
+/// `memhub doctor` reports it as an ignored setting.
 pub const DEFAULT_STALE_PENALTY: f64 = 0.3;
 /// Blended-score demotion applied to a superseded fact/decision in recall
 /// (Wave 3 L3, decision 145's demote-with-link ruling). A superseded row is
 /// never excluded — it is kept, tagged `superseded_by: N`, and pushed down.
-/// Set above `DEFAULT_STALE_PENALTY` (0.3) because supersession is an
-/// explicit "this was replaced" signal, stronger than mere age, yet still a
-/// demotion rather than a filter. It stacks additively with the stale
-/// penalty (a row that is both stale and superseded sinks furthest) and,
-/// like the stale penalty, is a peer, independent signal in `score()`.
+/// Supersession is an explicit "this was replaced" signal, stronger than
+/// mere age, yet still a demotion rather than a filter.
 pub const DEFAULT_SUPERSEDED_PENALTY: f64 = 0.4;
 /// Half-life in days for optional continuous age decay in recall scoring
 /// (Wave 3 L6). `0` is the default and means **OFF**: `score()` applies a
@@ -84,21 +79,19 @@ pub const DEFAULT_MIN_RERANK_SCORE: f32 = 2.0;
 /// stayed near −11, so 0.0 holds with even more headroom. Unchanged.
 pub const DEFAULT_DOC_MIN_RERANK_SCORE: f32 = 0.0;
 pub const DEFAULT_ACCEPTED_ONLY: bool = false;
-/// Default stale-fact handling in recall. `true` = keep aged facts in the
-/// result set but **demote** them (`scoring.stale_penalty`) and flag them
-/// `stale: true`, rather than silently dropping them. This is the Q1
-/// currency ruling (decision 145): "demote + flag, not silent exclusion —
-/// a bad default hides valid memories; demote is the no-loss posture."
-/// Set to `false` to restore hard exclusion of stale facts. The staleness
-/// horizon itself is `DEFAULT_FACT_STALE_AFTER_DAYS`.
+/// Retired: recall always returns stale facts, flagged `stale: true` and
+/// ranked like fresh ones (decision 236). `[retrieval]
+/// include_stale_by_default` still loads, because older configs pin it
+/// (often as `false`), but it is ignored and never written to new
+/// configs; `memhub doctor` reports it as an ignored setting. The
+/// staleness horizon itself is `DEFAULT_FACT_STALE_AFTER_DAYS`.
 pub const DEFAULT_INCLUDE_STALE: bool = true;
-/// Recall's fact-staleness horizon in days. A fact is stale (and therefore
-/// demoted, per `DEFAULT_INCLUDE_STALE`) when it has never been verified or
-/// was last verified more than this many days ago. Kept identical to the
-/// long-standing hardcoded window (`models::FACT_STALE_AFTER_DAYS`, which
-/// still drives the non-recall fact-hygiene surfaces — `fact list`, render,
-/// stats) so promoting it to `[retrieval] fact_stale_after_days` does not
-/// move the horizon, only how stale rows are handled.
+/// Recall's fact-staleness horizon in days. A fact is stale (flagged
+/// `stale: true` in recall, never excluded or demoted) when it has never
+/// been verified or was last verified more than this many days ago. Kept
+/// identical to the long-standing hardcoded window
+/// (`models::FACT_STALE_AFTER_DAYS`, which still drives the non-recall
+/// fact-hygiene surfaces — `fact list`, render, stats).
 pub const DEFAULT_FACT_STALE_AFTER_DAYS: i64 = crate::models::FACT_STALE_AFTER_DAYS;
 pub const DEFAULT_USE_RERANKER: bool = true;
 pub const DEFAULT_RERANK_CANDIDATE_POOL: usize = 20;
@@ -190,14 +183,12 @@ pub struct RetrievalScoringConfig {
     /// Recall-only; see `[code_index] vector_weight`.
     #[serde(default = "default_vector_weight")]
     pub vector_weight: f64,
-    /// Facts-only demotion — see the `DEFAULT_STALE_PENALTY` doc for why
-    /// decisions/tasks/doc chunks, and the code index entirely, never pay
-    /// it.
-    #[serde(default = "default_stale_penalty")]
+    /// Ignored (decision 236); see `DEFAULT_STALE_PENALTY`. Parsed so
+    /// configs that pin it keep loading, never written back.
+    #[serde(default = "default_stale_penalty", skip_serializing)]
     pub stale_penalty: f64,
     /// Blended-score demotion for a superseded fact/decision (Wave 3 L3).
-    /// A second, independent demotion signal alongside `stale_penalty`:
-    /// superseded rows are demoted (never excluded) and tagged
+    /// Superseded rows are demoted (never excluded) and tagged
     /// `superseded_by: N`. Defaults to `DEFAULT_SUPERSEDED_PENALTY`.
     #[serde(default = "default_superseded_penalty")]
     pub superseded_penalty: f64,
@@ -335,15 +326,15 @@ pub struct RetrievalConfig {
     pub default_max_results: usize,
     #[serde(default = "default_accepted_only")]
     pub accepted_only_by_default: bool,
-    #[serde(default = "default_include_stale")]
+    /// Ignored (decision 236); see `DEFAULT_INCLUDE_STALE`. Parsed so
+    /// configs that pin it keep loading, never written back.
+    #[serde(default = "default_include_stale", skip_serializing)]
     pub include_stale_by_default: bool,
     /// Age in days after which a fact is treated as stale by recall — never
     /// verified, or last verified more than this many days ago. Stale facts
-    /// are kept but demoted (`scoring.stale_penalty`) and flagged
-    /// `stale: true` when `include_stale_by_default` is on (the default),
-    /// or excluded when it is off. Defaults to the established 90-day window
-    /// (`DEFAULT_FACT_STALE_AFTER_DAYS`); this key promotes that formerly
-    /// hardcoded horizon to config without changing its length.
+    /// are returned and ranked like fresh ones, flagged `stale: true`.
+    /// Defaults to the established 90-day window
+    /// (`DEFAULT_FACT_STALE_AFTER_DAYS`).
     #[serde(default = "default_fact_stale_after_days")]
     pub fact_stale_after_days: i64,
     /// Apply the bundled cross-encoder re-ranker (ms-marco-MiniLM-L-6-v2)

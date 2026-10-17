@@ -903,7 +903,7 @@ Run `memhub doctor` (or `--json`) anytime to confirm registration status per CLI
 
 ### Staleness and confidence
 
-- **Facts** go stale after 90 days without re-verification. `memhub fact verify <id|key>` refreshes `verified_at` only, and `/wrap-up` offers a per-item re-verify step for the oldest facts. It is CLI only, because agent self-verification is exactly what the untrusted-writer guardrail forbids.
+- **Facts** go stale after 90 days without re-verification. Recall still returns a stale fact, ranked like a fresh one and flagged `stale`, so the agent can weigh it. `memhub fact verify <id|key>` refreshes `verified_at` only, and `/wrap-up` offers a per-item re-verify step for the oldest facts. It is CLI only, because agent self-verification is exactly what the untrusted-writer guardrail forbids.
 - **Commands** carry a derived confidence: `success_count / (success_count + fail_count)`.
 - **Embeddings** go stale when the source body changes or the bundled model changes. Recall surfaces a warning, and you decide whether to run `/reindex`.
 

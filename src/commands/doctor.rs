@@ -403,6 +403,15 @@ const KNOWN_LEAVES: &[&str] = &[
     "wrap_up.transcript_retention_days",
 ];
 
+/// Settings that still load but no longer do anything. Each must stay in
+/// `KNOWN_LEAVES` (so it is not also reported as unknown); add a retired
+/// key's dotted path here and `check_ignored_settings` names it.
+const IGNORED_LEAVES: &[&str] = &[
+    // Staleness is informational in recall (decision 236).
+    "retrieval.include_stale_by_default",
+    "retrieval.scoring.stale_penalty",
+];
+
 /// Intermediate table paths (never themselves reported as unknown; a
 /// key at one of these paths is walked one level deeper).
 const KNOWN_TABLES: &[&str] = &[
@@ -448,6 +457,7 @@ fn check_config(config_path: &Path, memhub_dir: &Path) -> Vec<Check> {
         "config.toml parses",
     )];
     out.push(check_unknown_keys(&generic));
+    out.push(check_ignored_settings(&generic));
     out.push(check_config_types(&raw));
     out.push(check_baseline_drift(&generic, memhub_dir));
     out
@@ -458,6 +468,12 @@ fn skipped_config_group(parse_message: String) -> Vec<Check> {
         Check::new("config_parse", Group::Config, Status::Error, parse_message),
         Check::new(
             "config_unknown_keys",
+            Group::Config,
+            Status::Skipped,
+            "skipped: config.toml did not parse",
+        ),
+        Check::new(
+            "config_ignored_settings",
             Group::Config,
             Status::Skipped,
             "skipped: config.toml did not parse",
@@ -499,6 +515,34 @@ fn check_unknown_keys(value: &toml::Value) -> Check {
             format!("{n} unknown key(s)"),
         )
         .with_detail(unknown.join(", "))
+    }
+}
+
+fn check_ignored_settings(value: &toml::Value) -> Check {
+    let ignored: Vec<&str> = IGNORED_LEAVES
+        .iter()
+        .copied()
+        .filter(|path| lookup_toml_path(value, path).is_some())
+        .collect();
+
+    if ignored.is_empty() {
+        Check::new(
+            "config_ignored_settings",
+            Group::Config,
+            Status::Ok,
+            "no ignored settings",
+        )
+    } else {
+        Check::new(
+            "config_ignored_settings",
+            Group::Config,
+            Status::Warn,
+            format!("{} ignored setting(s)", ignored.len()),
+        )
+        .with_detail(format!(
+            "{} (still load, but recall no longer reads them; safe to delete)",
+            ignored.join(", ")
+        ))
     }
 }
 
@@ -553,10 +597,6 @@ fn check_config_types(raw: &str) -> Check {
             cfg.retrieval.scoring.vector_weight,
         ),
         (
-            "retrieval.scoring.stale_penalty",
-            cfg.retrieval.scoring.stale_penalty,
-        ),
-        (
             "retrieval.scoring.superseded_penalty",
             cfg.retrieval.scoring.superseded_penalty,
         ),
@@ -587,7 +627,7 @@ fn check_config_types(raw: &str) -> Check {
     }
 
     // The staleness horizon must be a positive day count — 0 or negative
-    // would mark every fact stale, defeating the demote/exclude distinction.
+    // would flag every fact stale, making the flag meaningless.
     if cfg.retrieval.fact_stale_after_days < 1 {
         problems.push(format!(
             "retrieval.fact_stale_after_days={} must be >= 1",
@@ -670,7 +710,6 @@ const BASELINE_FIELDS: &[&str] = &[
     "retrieval.rerank_doc_cap",
     "retrieval.scoring.fts_weight",
     "retrieval.scoring.vector_weight",
-    "retrieval.scoring.stale_penalty",
     "retrieval.scoring.superseded_penalty",
     "retrieval.scoring.age_half_life_days",
     "retrieval.scoring.min_rerank_score",
@@ -1779,6 +1818,52 @@ made_up_nested_key = 1
         assert!(detail.contains("made_up_top_level_key"));
         assert!(detail.contains("retrieval.made_up_nested_key"));
         assert!(!detail.contains("retrieval.mode"));
+    }
+
+    #[test]
+    fn ignored_settings_are_named_and_not_reported_unknown() {
+        let value: toml::Value = toml::from_str(
+            r#"
+project_name = "x"
+auto_sync_md = false
+log_level = "info"
+
+[retrieval]
+include_stale_by_default = false
+
+[retrieval.scoring]
+stale_penalty = 0.3
+"#,
+        )
+        .expect("parse");
+
+        let check = check_ignored_settings(&value);
+        assert_eq!(check.status, Status::Warn);
+        let detail = check.detail.unwrap_or_default();
+        assert!(detail.contains("retrieval.include_stale_by_default"));
+        assert!(detail.contains("retrieval.scoring.stale_penalty"));
+        assert_eq!(check_unknown_keys(&value).status, Status::Ok);
+
+        let clean: toml::Value = toml::from_str(
+            "[retrieval]
+mode = \"fts\"
+",
+        )
+        .expect("parse");
+        assert_eq!(check_ignored_settings(&clean).status, Status::Ok);
+    }
+
+    #[test]
+    fn config_types_accepts_any_stale_penalty() {
+        let raw = r#"
+project_name = "x"
+log_level = "info"
+
+[retrieval.scoring]
+stale_penalty = 5.0
+"#;
+        let check = check_config_types(raw);
+        assert_eq!(check.status, Status::Ok, "detail: {:?}", check.detail);
     }
 
     #[test]
