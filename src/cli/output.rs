@@ -440,10 +440,8 @@ pub(crate) fn print_recall_explain(e: &crate::retrieval::RecallExplain) {
     println!("  re-ranker ran: {}", yes_no(e.reranker_ran));
     println!("  dropped by relevance floor: {}", e.dropped_by_floor);
     println!("  dropped by doc floor: {}", e.dropped_by_doc_floor);
-    println!("  stale rows excluded: {}", e.stale_excluded);
     println!("  excluded by accepted-only: {}", e.accepted_only_excluded);
     println!("  superseded rows demoted: {}", e.superseded_demoted);
-    println!("  stale rows demoted: {}", e.stale_demoted);
     println!(
         "  not sent to the re-ranker (pool / doc cap): {}",
         e.rerank_pool_cut

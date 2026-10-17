@@ -36,7 +36,7 @@
   <text x="602" y="208" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="10" fill="#a39787">finds the meaning, not the words</text>
   <rect x="330" y="296" width="300" height="60" rx="6" fill="#111111" stroke="#5a9e6f" stroke-width="1.5" data-graph-role="node"/>
   <text x="342" y="318" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="600" fill="#5a9e6f">score blend</text>
-  <text x="342" y="336" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="10" fill="#a39787">0.5 x fts + 0.5 x vec - 0.3 x stale</text>
+  <text x="342" y="336" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="10" fill="#a39787">0.5 x fts + 0.5 x vec - 0.4 x superseded</text>
   <rect x="330" y="388" width="300" height="60" rx="6" fill="#111111" stroke="#fbbf24" stroke-width="1.5" data-graph-role="node"/>
   <text x="342" y="410" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="13" font-weight="600" fill="#fbbf24">cross-encoder re-rank</text>
   <text x="342" y="428" font-family="-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="10" fill="#a39787">ms-marco-MiniLM - scores top 20 pairs</text>

@@ -61,7 +61,7 @@
   <!-- ─── Score Blender ──────────────────────────────────── -->
   <rect x="220" y="254" width="400" height="56" rx="10" fill="#201208" stroke="#ff8a1f" stroke-width="1"/>
   <text x="420" y="278" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" font-weight="600" fill="#ff8a1f">score blender</text>
-  <text x="420" y="298" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10.5" fill="#5a6480">0.5 × FTS  +  0.5 × vec  −  0.3 × stale_penalty</text>
+  <text x="420" y="298" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10.5" fill="#5a6480">0.5 × FTS  +  0.5 × vec  −  0.4 × superseded_penalty</text>
 
   <!-- Arrow down to re-ranker -->
   <line x1="420" y1="310" x2="420" y2="332" stroke="#1fe88a" stroke-width="1.5" marker-end="url(#ah-down-green)"/>

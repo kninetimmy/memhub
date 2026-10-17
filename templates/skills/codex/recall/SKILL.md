@@ -91,9 +91,9 @@ sections.
   `git`, or `observed` rows that would otherwise leak in. It also
   drops tasks, architecture sections, and session notes, which carry
   no such source.
-- `include_stale=true` / `--include-stale`: include facts past the
-  staleness window (90 days unverified). Off by default. Pass when
-  the user is explicitly asking about historical state.
+- `include_stale=true` / `--include-stale`: accepted and ignored. Stale
+  facts (past the 90-day verification window) are always returned,
+  ranked like fresh ones and flagged `stale = true`.
 
 ## Interpreting the response
 

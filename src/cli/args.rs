@@ -214,6 +214,8 @@ pub enum TopLevelCommand {
         max_results: Option<usize>,
         #[arg(long, value_enum)]
         mode: Option<RecallModeArg>,
+        /// Accepted and ignored: stale facts are always returned, flagged
+        /// `stale`.
         #[arg(long)]
         include_stale: bool,
         /// Keep only rows whose source is `user` or `user+agent:<id>`.

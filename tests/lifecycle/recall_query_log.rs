@@ -198,19 +198,22 @@ fn hybrid_recall_logs_a_numeric_rerank_score_and_the_effective_max_results() {
 
 #[test]
 fn warning_kinds_are_logged() {
-    let temp = seeded_repo(true);
+    let temp = seeded_repo_in_mode(true, RetrievalMode::Hybrid);
     let ctx = memhub::db::open_project(temp.path()).expect("open project");
     ctx.conn
         .execute(
-            "UPDATE facts SET verified_at = datetime('now', '-400 days') WHERE id = ?1",
+            "DELETE FROM embeddings WHERE source_type = 'fact' AND source_id = ?1",
             [FACT_ID],
         )
-        .expect("backdate fact");
+        .expect("drop the fact's embedding");
     drop(ctx);
-    let out = cli_recall(temp.path());
+    let out = run_cli(
+        temp.path(),
+        &["recall", "cargo build", "--source-type", "fact", "--json"],
+    );
     assert!(out.status.success(), "{out:?}");
     let lines = log_lines(temp.path());
-    assert_eq!(lines[0]["warnings"], json!(["stale_facts_demoted"]));
+    assert_eq!(lines[0]["warnings"], json!(["stale_embeddings"]));
 }
 
 #[test]
