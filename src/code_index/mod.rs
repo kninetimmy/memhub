@@ -470,10 +470,19 @@ fn embed_missing(conn: &mut Connection) -> Result<usize> {
     // scans only the current model) nor reusable, so drop them: their chunks
     // then count as missing below, and the cache is seeded from current-model
     // rows only.
-    conn.execute(
-        "DELETE FROM code_embeddings WHERE model_name <> ?1 OR dimension <> ?2",
+    // The probe is a read, so a warm refresh with nothing to drop takes no
+    // write lock.
+    let has_foreign: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM code_embeddings WHERE model_name <> ?1 OR dimension <> ?2)",
         params![EMBEDDING_MODEL_NAME, EMBEDDING_DIMENSION as i64],
+        |r| r.get(0),
     )?;
+    if has_foreign {
+        conn.execute(
+            "DELETE FROM code_embeddings WHERE model_name <> ?1 OR dimension <> ?2",
+            params![EMBEDDING_MODEL_NAME, EMBEDDING_DIMENSION as i64],
+        )?;
+    }
     // Chunks still missing a vector (new this pass, or a prior embed blip).
     // Queried FIRST so a warm `locate` — where nothing is missing — returns
     // before decoding the entire `code_embeddings` table into the cache.
