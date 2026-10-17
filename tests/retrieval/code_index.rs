@@ -307,7 +307,7 @@ fn hybrid_mode_embeds_every_chunk() {
         count(
             &db,
             &format!(
-                "SELECT COUNT(*) FROM code_embeddings                  WHERE model_name = '{EMBEDDING_MODEL_NAME}' AND dimension = {EMBEDDING_DIMENSION}                  AND LENGTH(vector) = {}",
+                "SELECT COUNT(*) FROM code_embeddings WHERE model_name = '{EMBEDDING_MODEL_NAME}' AND dimension = {EMBEDDING_DIMENSION} AND LENGTH(vector) = {}",
                 EMBEDDING_DIMENSION * 4
             )
         ),
@@ -341,7 +341,7 @@ pub fn beta() {}
     rusqlite::Connection::open(&db)
         .expect("open code_index")
         .execute(
-            "UPDATE code_embeddings              SET model_name = 'other-model', dimension = 8, vector = zeroblob(32)",
+            "UPDATE code_embeddings SET model_name = 'other-model', dimension = 8, vector = zeroblob(32)",
             [],
         )
         .expect("retag vectors");
@@ -359,7 +359,7 @@ pub fn beta() {}
     assert_eq!(
         count(
             &db,
-            "SELECT COUNT(*) FROM code_embeddings WHERE model_name = 'other-model'              OR dimension <> LENGTH(vector) / 4"
+            "SELECT COUNT(*) FROM code_embeddings WHERE model_name = 'other-model' OR dimension <> LENGTH(vector) / 4"
         ),
         0,
         "no foreign or wrong-length vector may survive or be reused"
@@ -368,7 +368,7 @@ pub fn beta() {}
         count(
             &db,
             &format!(
-                "SELECT COUNT(*) FROM code_embeddings                  WHERE model_name = '{EMBEDDING_MODEL_NAME}' AND dimension = {EMBEDDING_DIMENSION}"
+                "SELECT COUNT(*) FROM code_embeddings WHERE model_name = '{EMBEDDING_MODEL_NAME}' AND dimension = {EMBEDDING_DIMENSION}"
             )
         ),
         chunks

@@ -1444,6 +1444,8 @@ pub fn run(cli: Cli) -> Result<()> {
                     payload["model"] = json!(summary.model);
                     payload["elapsed_ms"] = json!(summary.elapsed_ms);
                     payload["global"] = json!(summary.global.as_ref().map(store));
+                    payload["global_error"] =
+                        json!(summary.global_error.as_ref().map(|e| e.to_string()));
                     println!("{payload}");
                 } else {
                     println!(
@@ -1460,6 +1462,12 @@ pub fn run(cli: Cli) -> Result<()> {
                     if let Some(global) = &summary.global {
                         print_store("global", global);
                     }
+                    if let Some(e) = &summary.global_error {
+                        println!("  global: rebuild failed: {e}");
+                    }
+                }
+                if let Some(e) = summary.global_error {
+                    return Err(e);
                 }
             }
         },
