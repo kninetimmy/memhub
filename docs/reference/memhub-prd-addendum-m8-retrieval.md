@@ -250,6 +250,22 @@ Filters apply before scoring, not after:
 - `source_type` allowlist
 - deny-list path filters
 
+Decision 236 changed staleness (the `include_stale_by_default` and
+`stale_penalty` keys, the `- stale_penalty * ...` term of the formula above,
+the `include_stale` filter, the `--include-stale` flag and the MCP
+`include_stale` input stay here as recorded):
+
+- Before: a stale fact (never verified, or last verified more than
+  `fact_stale_after_days` ago) was excluded from recall when
+  `include_stale_by_default` was false, and otherwise demoted by
+  `stale_penalty`, with a `stale_facts_demoted` warning.
+- After: staleness is informational. A stale fact is always returned, ranks
+  exactly like a fresh one and carries `stale: true`; recall reports no
+  stale-demotion warning. `include_stale_by_default`, `stale_penalty`,
+  `--include-stale` and the MCP `include_stale` input are still accepted but
+  change nothing, and `memhub doctor` names the two config keys as ignored
+  settings.
+
 ## 5. Eager-embed write path (decisions 27 + 28)
 
 Fact, decision, and task `add` handlers re-embed the affected row

@@ -253,12 +253,13 @@ and FTS second, each skipping rows already taken, until it holds
 `rerank_candidate_pool` distinct rows or both rankings run out; when one
 ranking runs out the other fills the remaining slots. Every row in the top
 half (rounded down) of either ranking therefore reaches the re-ranker
-whatever its blended score. Each ranking applies the same stale, superseded and
-age-decay adjustments as the blended score, so a stale or superseded row never
-takes a slot ahead of an otherwise-equal current row. The penalties come off
-one unweighted retriever component, which carries only its weight (0.5 by
-default) of the blended relevance, so in a pool ranking the stale and
-superseded penalties count for about half their strength in the blended score.
+whatever its blended score. Each ranking applies the same superseded and
+age-decay adjustments as the blended score, so a superseded row never
+takes a slot ahead of an otherwise-equal current row. Staleness is not an
+adjustment: a stale fact ranks exactly like a fresh one. The superseded penalty
+comes off one unweighted retriever component, which carries only its weight (0.5 by
+default) of the blended relevance, so in a pool ranking it counts for about half
+its strength in the blended score.
 This is intended: the pool is a wide net the re-ranker then judges, and the
 penalty arithmetic is unchanged. In a default recall that includes doc chunks
 (`include_docs_in_default`, no `--source-type`), `[retrieval] rerank_doc_cap`
@@ -305,7 +306,7 @@ it matched every token (about 0.82 against about 0.36 for a vector-only row)
 and crowd the pool; partial-token FTS scores are therefore multiplied by 0.5
 (`PARTIAL_FTS_FACTOR`). The code locator (`memhub locate`) is unchanged and
 still requires every token. `min_rerank_score`, `doc_min_rerank_score` and
-`rerank_candidate_pool` defaults are unchanged, and superseded or stale rows
+`rerank_candidate_pool` defaults are unchanged, and superseded rows
 are still demoted rather than excluded (decision 145).
 
 **Low-confidence fallback (issue #225).** Since issue #323 this is a fill:
@@ -356,16 +357,9 @@ JSON key:
   returned them.
 - `dropped_by_doc_floor`: default-included doc chunks under
   `doc_min_rerank_score`.
-- `stale_excluded`: stale rows excluded because stale rows were excluded
-  (`include_stale` off). A row that is both stale and excluded by
-  accepted-only is counted once, here, and not under
-  `accepted_only_excluded`.
-- `accepted_only_excluded`: rows excluded by accepted-only, other than those
-  already counted under `stale_excluded`.
+- `accepted_only_excluded`: rows excluded by accepted-only.
 - `superseded_demoted`: superseded rows kept but demoted by
   `superseded_penalty`.
-- `stale_demoted`: stale rows kept but demoted by `stale_penalty` (the count
-  behind the `stale_facts_demoted` warning).
 - `rerank_pool_cut`: candidates not sent to the re-ranker: rows beyond
   `rerank_candidate_pool` in the by-retriever fill, and default-included doc
   chunks over `rerank_doc_cap`.
@@ -391,8 +385,8 @@ JSON key:
 word `decision`, `task` or `fact` (any letter case, a whole word) followed by
 whitespace and/or `#` and a number (`decision 201`, `Task #99`, `fact 7`)
 returns that row first. Only the main query is read, not the variants. The row
-must exist in the repo store and pass the call's source-type, accepted-only and
-stale filters (accepted-only excludes a task, since tasks carry no `source`); a
+must exist in the repo store and pass the call's source-type and
+accepted-only filters (accepted-only excludes a task, since tasks carry no `source`); a
 superseded row is kept, as in ranked results. Named rows come in the order the
 query names them, once each, ahead of every other hit, are never flagged
 `low_confidence` and skip the relevance floor, and they count toward
@@ -408,8 +402,8 @@ documents use for their own numbering), a number after any other word
 number followed by `of them` (`task 3 of them`), a number hyphen-joined to a
 word (`decision 2-day`) and a number that matches no row do nothing. A row only
 the routing loaded is counted as if a retriever had found it: in
-`candidate_count`, in the stale and superseded counters and the stale warning,
-and in the stale or accepted-only exclusions; named rows cut by `max_results`
+`candidate_count`, in the superseded counter, and in the accepted-only
+exclusion; named rows cut by `max_results`
 count in the `--explain` result-limit cut. A returned named row also keeps the
 `rerank_floor_dropped_all` warning off the response.
 
@@ -759,7 +753,7 @@ Both modes are first-class; the install prompt asks you to pick one.
 
 | | **`fts`** (default) | **`hybrid`** (recommended) |
 |---|---|---|
-| Scoring | FTS5 BM25 over title + body | 0.5 × FTS + 0.5 × cosine − 0.3 × stale_penalty, then re-ranked |
+| Scoring | FTS5 BM25 over title + body | 0.5 × FTS + 0.5 × cosine, then re-ranked |
 | What it catches | Exact terms, stemmed variants | Exact + paraphrases (`"compile a release"` → `release_build` fact) |
 | Per-write cost | 0 ms | ~50 ms eager-embed inside the source-write transaction |
 | Per-recall cost | <10 ms | About 240 ms (brute-force cosine + a re-ranker that scores each pool passage on its own); about 380 ms with variants. Medians of the live-set A/B at pool 20 on one machine |
@@ -778,16 +772,27 @@ The `[retrieval]` block in `.memhub/config.toml`:
 mode = "hybrid"                  # "fts" | "hybrid"
 default_max_results = 6
 accepted_only_by_default = false # filter to source IN ('user', 'user+agent:%')
-include_stale_by_default = false # hide stale facts unless asked
+fact_stale_after_days = 90       # facts older than this are flagged stale
 
 [retrieval.scoring]
 fts_weight = 0.5
 vector_weight = 0.5
-stale_penalty = 0.3
 
 [global]
 enabled = false                  # opt-in via `memhub global enable`
 ```
+
+**Stale facts are returned and flagged, never excluded or demoted (decision
+236).** A fact never verified, or last verified more than
+`fact_stale_after_days` ago, ranks exactly like a freshly verified one and
+carries `stale: true` for the caller to weigh; recall emits no stale warning.
+`include_stale_by_default`, `[retrieval.scoring] stale_penalty`, the
+`--include-stale` flag and the MCP `include_stale` parameter are retired: older
+configs still load with them (every `memhub init` pinned both keys, some as
+`include_stale_by_default = false`), and the flag and parameter are still
+accepted, but none of them changes which rows come back or their order.
+`memhub doctor` names the two config keys as ignored settings; deleting them is
+safe. Optional age decay (`age_half_life_days`) is separate and unchanged.
 
 `[global] enabled` is managed by `memhub global enable` / `disable` — it's per-machine, so the tracked `.memhub/config.example.toml` baseline ships `false`. The machine-global store has no `[retrieval]` block of its own; it inherits the active repo's, including `[retrieval] include_docs_in_default`, which alone decides whether global docs join that repo's default recall.
 
@@ -1025,8 +1030,8 @@ fusion weights and the test-path down-weight live under their own
 tables used to be one struct, so tuning recall's blend silently retuned
 locate's too (and vice versa); they are now separate, defaulting to the
 same numeric values (0.5 / 0.5 / 0.90) so an untouched install's ranking
-is unaffected. `[retrieval.scoring]`'s `stale_penalty` (and
-`superseded_penalty`, `age_half_life_days`, `min_rerank_score`) have no
+is unaffected. `[retrieval.scoring]`'s `superseded_penalty` (and
+`age_half_life_days`, `min_rerank_score`) have no
 `[code_index]` counterpart at all — the code index has no staleness or
 supersession concept, and `--rerank` here has no score floor.
 
