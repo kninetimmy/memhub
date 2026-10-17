@@ -174,7 +174,7 @@ def build_svg(dots=None, fts_pulse=0.0, vec_pulse=0.0, blend_pulse=0.0,
 
     # blend node
     node(L, 330, 296, 300, 60, GREEN, "score blend",
-         ["0.5 x fts + 0.5 x vec - 0.3 x stale"])
+         ["0.5 x fts + 0.5 x vec - 0.4 x superseded"])
     if blend_pulse > 0:
         pulse_rect(L, 330, 296, 300, 60, MINT, 0.55 * blend_pulse)
 
