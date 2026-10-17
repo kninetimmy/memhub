@@ -35,7 +35,7 @@ use rusqlite::{Connection, params};
 use crate::Result;
 use crate::config::{CodeIndexConfig, ProjectConfig, RetrievalMode};
 use crate::db;
-use crate::retrieval::embeddings::{EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME, embed_one};
+use crate::retrieval::embeddings::{EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME, embed_query_one};
 use crate::retrieval::util::{build_fts_match, bytes_to_vector, cosine_similarity, normalize_fts};
 
 use super::{code_index_db_path, open_code_index, refresh};
@@ -342,7 +342,7 @@ fn gather_candidates(
     }
 
     if mode == RetrievalMode::Hybrid {
-        let query_vec = embed_one(query)?;
+        let query_vec = embed_query_one(query)?;
         if query_vec.len() == EMBEDDING_DIMENSION {
             let mut stmt = conn.prepare(
                 "SELECT e.chunk_id, e.vector, f.path \

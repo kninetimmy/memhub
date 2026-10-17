@@ -19,7 +19,7 @@ use rusqlite::{Connection, Row, params};
 use crate::config::{RetrievalMode, RetrievalScoringConfig};
 use crate::db;
 use crate::retrieval::embeddings::{
-    EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME, embed_batch, embed_one,
+    EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME, embed_query_batch, embed_query_one,
 };
 use crate::retrieval::persist::{
     SourceType, arch_section_embed_text, decision_embed_text, doc_chunk_embed_text,
@@ -328,9 +328,9 @@ pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
         .collect();
     let query_vecs: Option<Vec<Vec<f32>>> = if resolved.mode == RetrievalMode::Hybrid {
         let vecs = if texts.len() == 1 {
-            vec![embed_one(&resolved.query)?]
+            vec![embed_query_one(&resolved.query)?]
         } else {
-            embed_batch(&texts)?
+            embed_query_batch(&texts)?
         };
         if vecs.len() != texts.len() {
             return Err(MemhubError::Embedding(format!(

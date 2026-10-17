@@ -12,7 +12,10 @@ pub mod recall;
 pub mod rerank;
 pub mod util;
 
-pub use embeddings::{EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME, embed_batch, embed_one};
+pub use embeddings::{
+    EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME, embed_batch, embed_one, embed_query_batch,
+    embed_query_one,
+};
 pub use persist::{
     SourceType, arch_section_embed_text, decision_embed_text, doc_chunk_embed_text,
     eager_embed_batch_in_tx, eager_embed_in_tx, fact_embed_text, note_embed_text, task_embed_text,

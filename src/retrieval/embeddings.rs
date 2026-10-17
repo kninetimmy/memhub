@@ -1,4 +1,4 @@
-//! BGE-small-en-v1.5 embedding wrapper.
+//! nomic-embed-text-v1.5 (int8) embedding wrapper.
 //!
 //! The ONNX model and tokenizer files are bundled into the memhub binary at
 //! build time by `build.rs`. The first call to [`embed_one`] or
@@ -13,8 +13,14 @@ use fastembed::{
 
 use crate::{MemhubError, Result};
 
-pub const EMBEDDING_MODEL_NAME: &str = "bge-small-en-v1.5";
-pub const EMBEDDING_DIMENSION: usize = 384;
+pub const EMBEDDING_MODEL_NAME: &str = "nomic-embed-text-v1.5";
+pub const EMBEDDING_DIMENSION: usize = 768;
+
+/// nomic-embed-text-v1.5 needs a task prefix on every input (model card).
+/// The prefix is added here, not by callers, and is not part of any
+/// content hash: the model name already invalidates stored vectors.
+const QUERY_PREFIX: &str = "search_query: ";
+const DOCUMENT_PREFIX: &str = "search_document: ";
 
 /// Per-inference batch size handed to fastembed. fastembed's default (256)
 /// pads every chunk in a batch to the longest sequence and allocates the
@@ -28,20 +34,25 @@ pub const EMBEDDING_DIMENSION: usize = 384;
 /// forward pass, and fastembed preserves input order across batches.
 const EMBED_BATCH_SIZE: usize = 16;
 
-const MODEL_ONNX: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/bge-small-en-v1.5/model.onnx"));
+const MODEL_ONNX: &[u8] = include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/nomic-embed-text-v1.5/model.onnx"
+));
 const TOKENIZER_JSON: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
-    "/bge-small-en-v1.5/tokenizer.json"
+    "/nomic-embed-text-v1.5/tokenizer.json"
 ));
-const CONFIG_JSON: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/bge-small-en-v1.5/config.json"));
+const CONFIG_JSON: &[u8] = include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/nomic-embed-text-v1.5/config.json"
+));
 const SPECIAL_TOKENS_JSON: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
-    "/bge-small-en-v1.5/special_tokens_map.json"
+    "/nomic-embed-text-v1.5/special_tokens_map.json"
 ));
 const TOKENIZER_CONFIG_JSON: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
-    "/bge-small-en-v1.5/tokenizer_config.json"
+    "/nomic-embed-text-v1.5/tokenizer_config.json"
 ));
 
 static MODEL: OnceLock<Mutex<TextEmbedding>> = OnceLock::new();
@@ -57,7 +68,7 @@ fn shared() -> Result<&'static Mutex<TextEmbedding>> {
         tokenizer_config_file: TOKENIZER_CONFIG_JSON.to_vec(),
     };
     let user_model = UserDefinedEmbeddingModel::new(MODEL_ONNX.to_vec(), tokenizer_files)
-        .with_pooling(Pooling::Cls);
+        .with_pooling(Pooling::Mean);
     let model = TextEmbedding::try_new_from_user_defined(user_model, InitOptionsUserDefined::new())
         .map_err(|e| {
             MemhubError::Embedding(format!("failed to load {EMBEDDING_MODEL_NAME}: {e}"))
@@ -66,19 +77,38 @@ fn shared() -> Result<&'static Mutex<TextEmbedding>> {
     Ok(MODEL.get_or_init(|| Mutex::new(model)))
 }
 
-/// Embed a single text into a 384-dim vector.
+/// Embed a single stored text (`search_document: ` prefix) into a 768-dim
+/// vector. Query text must go through [`embed_query_one`] instead.
 pub fn embed_one(text: &str) -> Result<Vec<f32>> {
     let mut out = embed_batch(&[text])?;
     out.pop()
         .ok_or_else(|| MemhubError::Embedding("empty embedding output".to_string()))
 }
 
-/// Embed a batch of texts. Each output is a 384-dim vector in the same order.
+/// Embed a single query (`search_query: ` prefix) into a 768-dim vector.
+pub fn embed_query_one(text: &str) -> Result<Vec<f32>> {
+    let mut out = embed_query_batch(&[text])?;
+    out.pop()
+        .ok_or_else(|| MemhubError::Embedding("empty embedding output".to_string()))
+}
+
+/// Embed a batch of stored texts (`search_document: ` prefix). Each output is
+/// a 768-dim vector in the same order.
 ///
 /// Inference is split into [`EMBED_BATCH_SIZE`]-text passes to bound peak
 /// memory on small hosts; fastembed preserves input order across passes, so
 /// callers can pass an arbitrarily large slice without exhausting RAM.
 pub fn embed_batch<S: AsRef<str> + Send + Sync>(texts: &[S]) -> Result<Vec<Vec<f32>>> {
+    embed_prefixed(DOCUMENT_PREFIX, texts)
+}
+
+/// Embed a batch of queries (`search_query: ` prefix), same shape as
+/// [`embed_batch`].
+pub fn embed_query_batch<S: AsRef<str> + Send + Sync>(texts: &[S]) -> Result<Vec<Vec<f32>>> {
+    embed_prefixed(QUERY_PREFIX, texts)
+}
+
+fn embed_prefixed<S: AsRef<str> + Send + Sync>(prefix: &str, texts: &[S]) -> Result<Vec<Vec<f32>>> {
     if texts.is_empty() {
         return Ok(Vec::new());
     }
@@ -86,7 +116,10 @@ pub fn embed_batch<S: AsRef<str> + Send + Sync>(texts: &[S]) -> Result<Vec<Vec<f
     let mut model = cell
         .lock()
         .map_err(|e| MemhubError::Embedding(format!("model mutex poisoned: {e}")))?;
-    let documents: Vec<&str> = texts.iter().map(AsRef::as_ref).collect();
+    let documents: Vec<String> = texts
+        .iter()
+        .map(|t| format!("{prefix}{}", t.as_ref()))
+        .collect();
     model
         .embed(documents, Some(EMBED_BATCH_SIZE))
         .map_err(|e| MemhubError::Embedding(format!("embed failed: {e}")))
@@ -99,13 +132,13 @@ mod tests {
     #[test]
     fn smoke_embed_dimension_and_finite() {
         let v = embed_one("memhub local-first project memory").expect("embed_one");
-        assert_eq!(v.len(), EMBEDDING_DIMENSION, "expected 384-dim vector");
+        assert_eq!(v.len(), EMBEDDING_DIMENSION, "expected 768-dim vector");
         assert!(
             v.iter().all(|f| f.is_finite()),
             "embedding contained non-finite values"
         );
         let norm: f32 = v.iter().map(|f| f * f).sum::<f32>().sqrt();
-        // BGE outputs are L2-normalized by fastembed; allow some float slack.
+        // fastembed L2-normalizes the pooled output by fastembed; allow some float slack.
         assert!(
             (0.5..=1.5).contains(&norm),
             "embedding norm {norm} is unexpectedly far from 1.0"
@@ -128,25 +161,45 @@ mod tests {
         // forward passes; the result must still be one vector per input, in
         // input order, with no cross-pass shuffling. Guards the batch cap
         // (memory fix) against silently dropping or reordering rows.
+        const TOPICS: [&str; 3] = [
+            "sqlite full text search ranking",
+            "git worktree branch cleanup",
+            "tokenizer vocabulary padding",
+        ];
         let texts: Vec<String> = (0..EMBED_BATCH_SIZE * 2 + 3)
-            .map(|i| format!("distinct embedding probe number {i}"))
+            .map(|i| format!("{} probe {i}", TOPICS[i % TOPICS.len()]))
             .collect();
         let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
         let vecs = embed_batch(&refs).expect("embed_batch");
         assert_eq!(vecs.len(), refs.len());
         assert!(vecs.iter().all(|v| v.len() == EMBEDDING_DIMENSION));
-        // A single-text embed of one input must match its slot in the batch,
-        // proving order is preserved across the pass boundary.
+        // A single-text embed of one input must land on its own slot in the
+        // batch (not a neighbour's), proving order is preserved across the
+        // pass boundary. Cosine, not an element-wise bound: the int8 export
+        // is dynamic-quantized, so a vector shifts a little (cosine ~0.97 in
+        // the worst case seen) with whatever else shares its batch.
         let probe_idx = EMBED_BATCH_SIZE + 1;
         let solo = embed_one(refs[probe_idx]).expect("embed_one");
-        let max_delta = solo
-            .iter()
-            .zip(&vecs[probe_idx])
-            .map(|(a, b)| (a - b).abs())
-            .fold(0.0_f32, f32::max);
+        let cos = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
+        let own = cos(&solo, &vecs[probe_idx]);
+        let neighbour = cos(&solo, &vecs[probe_idx + 1]);
         assert!(
-            max_delta < 1e-3,
-            "batched vector diverged from solo embed (max delta {max_delta})"
+            own > 0.9 && own > neighbour,
+            "batched vector diverged from solo embed (own {own}, neighbour {neighbour})"
+        );
+    }
+
+    #[test]
+    fn query_and_document_sides_use_different_prefixes() {
+        let q = embed_query_one("memhub recall").expect("embed_query_one");
+        let d = embed_one("memhub recall").expect("embed_one");
+        assert!(q != d, "query and document embeddings must differ");
+        let q_manual = embed_prefixed("", &["search_query: memhub recall"]).unwrap();
+        assert_eq!(q_manual[0], q, "query side must prepend `search_query: `");
+        let d_manual = embed_prefixed("", &["search_document: memhub recall"]).unwrap();
+        assert_eq!(
+            d_manual[0], d,
+            "stored side must prepend `search_document: `"
         );
     }
 }
