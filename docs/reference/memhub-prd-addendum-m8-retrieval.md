@@ -84,6 +84,14 @@ stale_penalty = 0.3
 model = "bge-small-en-v1.5"      # bundled in binary; informational
 ```
 
+Decision 236 changed the two stale keys above, `include_stale_by_default` and
+`stale_penalty` (see the note in §4):
+
+- Before: `include_stale_by_default = false` hid stale facts, and
+  `stale_penalty` demoted them when they were shown.
+- After: both keys still load but are ignored. A stale fact is always returned,
+  ranked like a fresh one, and flagged `stale: true`.
+
 The `mode` flag is the only required key. The rest have defaults
 suitable for hobby-project memhub use; tuning is a PR4 concern, not a
 user-facing concern by default.
@@ -348,6 +356,12 @@ memhub eval retrieval
     [--json]                                 # JSON output for skill consumption
 ```
 
+Decision 236 changed `--include-stale` above (see the note in §4):
+
+- Before: `--include-stale` opted in to stale facts, which were otherwise hidden.
+- After: the flag is still accepted and changes nothing; stale facts are always
+  returned, flagged `stale: true`.
+
 `recall` is the primary surface. `index` and `eval` are admin /
 maintenance surfaces. All three commands accept `--actor NAME` for
 audit attribution consistency with the rest of the CLI.
@@ -366,6 +380,12 @@ memhub.recall
     accepted_only   boolean (optional, defaults to config)
     include_stale   boolean (optional, defaults to config)
 ```
+
+Decision 236 changed `include_stale` above (see the note in §4):
+
+- Before: it overrode the config default for whether stale facts were returned.
+- After: the parameter is still accepted and changes nothing; stale facts are
+  always returned, flagged `stale: true`.
 
 Output shape (cited evidence bundle):
 
