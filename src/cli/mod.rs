@@ -1430,30 +1430,36 @@ pub fn run(cli: Cli) -> Result<()> {
                 let actor = resolve_actor(actor.as_deref())?;
                 let summary = commands::index::rebuild(&cwd, &actor)?;
                 if as_json {
-                    let payload = json!({
-                        "model": summary.model,
-                        "facts": summary.facts,
-                        "decisions": summary.decisions,
-                        "tasks": summary.tasks,
-                        "doc_chunks": summary.doc_chunks,
-                        "arch_sections": summary.arch_sections,
-                        "deleted": summary.deleted,
-                        "elapsed_ms": summary.elapsed_ms,
-                    });
+                    let store = |s: &commands::index::StoreRebuild| {
+                        json!({
+                            "facts": s.facts,
+                            "decisions": s.decisions,
+                            "tasks": s.tasks,
+                            "doc_chunks": s.doc_chunks,
+                            "arch_sections": s.arch_sections,
+                            "deleted": s.deleted,
+                        })
+                    };
+                    let mut payload = store(&summary.repo);
+                    payload["model"] = json!(summary.model);
+                    payload["elapsed_ms"] = json!(summary.elapsed_ms);
+                    payload["global"] = json!(summary.global.as_ref().map(store));
                     println!("{payload}");
                 } else {
                     println!(
-                        "Rebuilt embeddings for model {} in {} ms (deleted {})",
-                        summary.model, summary.elapsed_ms, summary.deleted,
+                        "Rebuilt embeddings for model {} in {} ms",
+                        summary.model, summary.elapsed_ms,
                     );
-                    println!(
-                        "  facts: {}  decisions: {}  tasks: {}  doc chunks: {}  arch sections: {}",
-                        summary.facts,
-                        summary.decisions,
-                        summary.tasks,
-                        summary.doc_chunks,
-                        summary.arch_sections,
-                    );
+                    let print_store = |label: &str, s: &commands::index::StoreRebuild| {
+                        println!(
+                            "  {label}: facts: {}  decisions: {}  tasks: {}  doc chunks: {}                               arch sections: {}  (deleted {})",
+                            s.facts, s.decisions, s.tasks, s.doc_chunks, s.arch_sections, s.deleted,
+                        );
+                    };
+                    print_store("repo", &summary.repo);
+                    if let Some(global) = &summary.global {
+                        print_store("global", global);
+                    }
                 }
             }
         },

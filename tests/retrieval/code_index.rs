@@ -9,6 +9,7 @@ use std::process::Command;
 use memhub::code_index::{self, code_index_db_path};
 use memhub::commands::init;
 use memhub::config::{ProjectConfig, RetrievalMode};
+use memhub::retrieval::embeddings::{EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME};
 
 /// Run a git subcommand in `repo`, failing the test on a non-zero status.
 fn git(repo: &Path, args: &[&str]) {
@@ -301,11 +302,14 @@ fn hybrid_mode_embeds_every_chunk() {
     );
     assert_eq!(summary.embedded_chunks as i64, chunks);
 
-    // Stored vectors are the expected dimension (384 f32 => 1536 bytes).
+    // Stored vectors are the bundled model's, at its dimension (f32 => 4 bytes).
     assert_eq!(
         count(
             &db,
-            "SELECT COUNT(*) FROM code_embeddings WHERE LENGTH(vector) = 1536"
+            &format!(
+                "SELECT COUNT(*) FROM code_embeddings                  WHERE model_name = '{EMBEDDING_MODEL_NAME}' AND dimension = {EMBEDDING_DIMENSION}                  AND LENGTH(vector) = {}",
+                EMBEDDING_DIMENSION * 4
+            )
         ),
         chunks,
     );
@@ -313,6 +317,62 @@ fn hybrid_mode_embeds_every_chunk() {
     // A second refresh with no changes re-embeds nothing.
     let again = code_index::refresh(root).expect("third refresh");
     assert_eq!(again.embedded_chunks, 0, "unchanged tree re-embeds nothing");
+}
+
+/// A chunk whose only vector comes from another model or dimension is
+/// re-embedded with the bundled model on the next refresh, the foreign
+/// vector is removed, and it is never reused for the new row.
+#[test]
+fn refresh_replaces_vectors_from_another_model() {
+    let temp = repo_with_files(&[(
+        "src/a.rs",
+        "pub fn alpha() {}
+pub fn beta() {}
+",
+    )]);
+    let root = temp.path();
+    let db = code_index_db_path(root);
+    set_hybrid(root);
+    code_index::refresh(root).expect("first refresh");
+    let chunks = count(&db, "SELECT COUNT(*) FROM code_chunks");
+    assert!(chunks >= 2);
+
+    // Re-tag every vector as another model at another dimension.
+    rusqlite::Connection::open(&db)
+        .expect("open code_index")
+        .execute(
+            "UPDATE code_embeddings              SET model_name = 'other-model', dimension = 8, vector = zeroblob(32)",
+            [],
+        )
+        .expect("retag vectors");
+
+    let summary = code_index::refresh(root).expect("refresh after model change");
+    assert_eq!(summary.embedded_chunks as i64, chunks);
+    assert_eq!(
+        count(
+            &db,
+            "SELECT COUNT(*) FROM code_embeddings WHERE model_name <> 'other-model'"
+        ),
+        chunks,
+        "every chunk now has a bundled-model vector"
+    );
+    assert_eq!(
+        count(
+            &db,
+            "SELECT COUNT(*) FROM code_embeddings WHERE model_name = 'other-model'              OR dimension <> LENGTH(vector) / 4"
+        ),
+        0,
+        "no foreign or wrong-length vector may survive or be reused"
+    );
+    assert_eq!(
+        count(
+            &db,
+            &format!(
+                "SELECT COUNT(*) FROM code_embeddings                  WHERE model_name = '{EMBEDDING_MODEL_NAME}' AND dimension = {EMBEDDING_DIMENSION}"
+            )
+        ),
+        chunks
+    );
 }
 
 /// M11 review M1: nested enum/delegate inside a class must be emitted as

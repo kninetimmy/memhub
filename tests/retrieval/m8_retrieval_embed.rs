@@ -12,6 +12,7 @@ use memhub::commands::{decision, fact, init, review, session_note, task};
 use memhub::config::ProjectConfig;
 use memhub::db;
 use memhub::models::SessionNoteProvenance;
+use memhub::retrieval::embeddings::{EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME};
 use rusqlite::params;
 use tempfile::tempdir;
 
@@ -45,8 +46,8 @@ fn embedding_metadata(
     conn.query_row(
         "SELECT dimension, content_hash, vector
          FROM embeddings
-         WHERE source_type = ?1 AND source_id = ?2",
-        params![source_type, source_id],
+         WHERE source_type = ?1 AND source_id = ?2 AND model_name = ?3",
+        params![source_type, source_id, EMBEDDING_MODEL_NAME],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )
     .expect("fetch embedding metadata")
@@ -111,9 +112,13 @@ fn hybrid_mode_writes_fact_embedding_on_add() {
     assert_eq!(embedding_count(&ctx.conn, "fact", fact_id), 1);
 
     let (dim, hash, blob) = embedding_metadata(&ctx.conn, "fact", fact_id);
-    assert_eq!(dim, 384);
+    assert_eq!(dim, EMBEDDING_DIMENSION as i64);
     assert_eq!(hash.len(), 64, "expected hex sha256 string");
-    assert_eq!(blob.len(), 384 * 4, "expected 384 f32 little-endian floats");
+    assert_eq!(
+        blob.len(),
+        EMBEDDING_DIMENSION * 4,
+        "expected EMBEDDING_DIMENSION f32 little-endian floats"
+    );
 }
 
 #[test]
@@ -233,9 +238,9 @@ fn hybrid_mode_writes_decision_embedding() {
 
     let ctx = db::open_project(temp.path()).expect("open project");
     let (dim, hash, blob) = embedding_metadata(&ctx.conn, "decision", decision_id);
-    assert_eq!(dim, 384);
+    assert_eq!(dim, EMBEDDING_DIMENSION as i64);
     assert_eq!(hash.len(), 64);
-    assert_eq!(blob.len(), 384 * 4);
+    assert_eq!(blob.len(), EMBEDDING_DIMENSION * 4);
 }
 
 #[test]
@@ -260,8 +265,8 @@ fn hybrid_mode_writes_task_embedding_with_and_without_notes() {
 
     let (dim_a, _, blob_a) = embedding_metadata(&ctx.conn, "task", with_notes);
     let (dim_b, _, blob_b) = embedding_metadata(&ctx.conn, "task", no_notes);
-    assert_eq!(dim_a, 384);
-    assert_eq!(dim_b, 384);
+    assert_eq!(dim_a, EMBEDDING_DIMENSION as i64);
+    assert_eq!(dim_b, EMBEDDING_DIMENSION as i64);
     assert_ne!(
         blob_a, blob_b,
         "different content should produce different vectors"
@@ -305,9 +310,13 @@ fn hybrid_mode_writes_session_note_embedding() {
     let (dim, hash, blob) = embedding_metadata(&ctx.conn, "note", note.id);
     let (_, legacy_hash, legacy_blob) =
         embedding_metadata(&ctx.conn, "note", same_text_without_provenance.id);
-    assert_eq!(dim, 384);
+    assert_eq!(dim, EMBEDDING_DIMENSION as i64);
     assert_eq!(hash.len(), 64, "expected hex sha256 string");
-    assert_eq!(blob.len(), 384 * 4, "expected 384 f32 little-endian floats");
+    assert_eq!(
+        blob.len(),
+        EMBEDDING_DIMENSION * 4,
+        "expected EMBEDDING_DIMENSION f32 little-endian floats"
+    );
     assert_eq!(
         hash, legacy_hash,
         "provenance must not change note text hash"
@@ -410,7 +419,7 @@ fn review_accept_embeds_fact_in_hybrid_mode() {
 
     let ctx = db::open_project(temp.path()).expect("open project");
     let (dim, hash, _) = embedding_metadata(&ctx.conn, "fact", fact_id);
-    assert_eq!(dim, 384);
+    assert_eq!(dim, EMBEDDING_DIMENSION as i64);
     assert_eq!(hash.len(), 64);
 }
 

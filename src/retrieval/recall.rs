@@ -1699,21 +1699,27 @@ fn vector_lookup(
     source_types: &[SourceType],
     query_vec: &[f32],
 ) -> Result<VectorLookupResult> {
-    let mut stmt = conn.prepare(
+    // Filter the source types in SQL so the scan never fetches (or decodes)
+    // vectors of types this call does not search.
+    let allowed: Vec<&'static str> = source_types.iter().map(|st| st.as_str()).collect();
+    let placeholders = (0..allowed.len())
+        .map(|i| format!("?{}", i + 3))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut stmt = conn.prepare(&format!(
         "SELECT source_type, source_id, vector \
          FROM embeddings \
-         WHERE model_name = ?1 AND dimension = ?2",
-    )?;
-    let allowed: Vec<&'static str> = source_types.iter().map(|st| st.as_str()).collect();
-    let rows = stmt.query_map(
-        params![EMBEDDING_MODEL_NAME, EMBEDDING_DIMENSION as i64],
-        |row| {
-            let st: String = row.get(0)?;
-            let id: i64 = row.get(1)?;
-            let blob: Vec<u8> = row.get(2)?;
-            Ok((st, id, blob))
-        },
-    )?;
+         WHERE model_name = ?1 AND dimension = ?2 AND source_type IN ({placeholders})"
+    ))?;
+    let dimension = EMBEDDING_DIMENSION as i64;
+    let mut bound: Vec<&dyn rusqlite::ToSql> = vec![&EMBEDDING_MODEL_NAME, &dimension];
+    bound.extend(allowed.iter().map(|st| st as &dyn rusqlite::ToSql));
+    let rows = stmt.query_map(bound.as_slice(), |row| {
+        let st: String = row.get(0)?;
+        let id: i64 = row.get(1)?;
+        let blob: Vec<u8> = row.get(2)?;
+        Ok((st, id, blob))
+    })?;
 
     let mut out = Vec::new();
     // Rows whose stored vector blob is the wrong byte length for
@@ -1724,9 +1730,6 @@ fn vector_lookup(
     let mut corrupt = HashSet::new();
     for row in rows {
         let (st, id, blob) = row?;
-        if !allowed.contains(&st.as_str()) {
-            continue;
-        }
         let source_type = match parse_source_type(&st) {
             Some(t) => t,
             None => continue,
@@ -3365,6 +3368,54 @@ mod tests {
             "reason should surface the corrupt-length signal, got {:?}",
             warn.reason
         );
+    }
+
+    #[test]
+    fn vector_lookup_reads_only_the_searched_source_types() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let ctx = crate::db::open_project(temp.path()).expect("open");
+        let good = crate::retrieval::util::vector_to_le_bytes(&vec![1.0; EMBEDDING_DIMENSION]);
+        for (source_type, id, blob) in [
+            ("fact", 1, good.clone()),
+            ("decision", 2, good),
+            ("task", 3, vec![0u8; 4]),
+        ] {
+            ctx.conn
+                .execute(
+                    "INSERT INTO embeddings(project_id, source_type, source_id, model_name,                      dimension, vector, content_hash) VALUES (1, ?1, ?2, ?3, ?4, ?5, 'h')",
+                    params![
+                        source_type,
+                        id,
+                        EMBEDDING_MODEL_NAME,
+                        EMBEDDING_DIMENSION as i64,
+                        blob
+                    ],
+                )
+                .expect("seed embedding");
+        }
+        let query = vec![1.0; EMBEDDING_DIMENSION];
+
+        let (hits, corrupt) =
+            vector_lookup(&ctx.conn, &[SourceType::Fact], &query).expect("lookup facts");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(
+            (hits[0].source_type, hits[0].source_id),
+            (SourceType::Fact, 1)
+        );
+        assert!(
+            corrupt.is_empty(),
+            "an unsearched type's corrupt row is not reported"
+        );
+
+        let (hits, corrupt) =
+            vector_lookup(&ctx.conn, &[SourceType::Task, SourceType::Decision], &query)
+                .expect("lookup tasks and decisions");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(corrupt, HashSet::from([(SourceType::Task, 3)]));
+
+        let (hits, corrupt) = vector_lookup(&ctx.conn, &[], &query).expect("lookup nothing");
+        assert!(hits.is_empty() && corrupt.is_empty());
     }
 
     #[test]

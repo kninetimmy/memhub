@@ -10,6 +10,8 @@
 mod code_index;
 #[path = "retrieval/deny_list.rs"]
 mod deny_list;
+#[path = "retrieval/index_rebuild_models.rs"]
+mod index_rebuild_models;
 #[path = "retrieval/locate.rs"]
 mod locate;
 #[path = "retrieval/locate_polyglot.rs"]

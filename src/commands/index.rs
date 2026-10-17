@@ -1,10 +1,11 @@
 //! `memhub index` command surface (M8 PR5).
 //!
 //! `status` returns a counts/coverage snapshot of the embeddings table
-//! against the durable source tables. `rebuild` wipes embeddings for the
-//! active model and recomputes them from current source bodies, used
-//! after a model upgrade or to clear a `stale_embeddings` warning from
-//! `memhub recall`. Both operate locally; no network.
+//! against the durable source tables. `rebuild` recomputes the active
+//! model's embeddings from current source bodies and removes every other
+//! model's, in the repo DB and (for a repo opted in) the machine-global
+//! store; used after a model upgrade or to clear a `stale_embeddings`
+//! warning from `memhub recall`. Both operate locally; no network.
 
 use std::path::Path;
 use std::time::Instant;
@@ -13,7 +14,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::Result;
 use crate::config::RetrievalMode;
-use crate::db;
+use crate::db::{self, ProjectContext};
 use crate::retrieval::embeddings::{EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME, embed_batch};
 use crate::retrieval::persist::{
     SourceType, arch_section_embed_text, decision_embed_text, doc_chunk_embed_text,
@@ -42,9 +43,9 @@ pub struct IndexStatusSummary {
     pub stale_ratio: f64,
 }
 
+/// What one store's rebuild wrote and removed.
 #[derive(Debug)]
-pub struct RebuildSummary {
-    pub model: String,
+pub struct StoreRebuild {
     pub facts: usize,
     pub decisions: usize,
     pub tasks: usize,
@@ -52,6 +53,15 @@ pub struct RebuildSummary {
     pub notes: usize,
     pub arch_sections: usize,
     pub deleted: usize,
+}
+
+#[derive(Debug)]
+pub struct RebuildSummary {
+    pub model: String,
+    pub repo: StoreRebuild,
+    /// `None` unless the repo opted in to the machine-global store and the
+    /// store exists.
+    pub global: Option<StoreRebuild>,
     pub elapsed_ms: u128,
 }
 
@@ -122,11 +132,27 @@ pub fn status(start: &Path) -> Result<IndexStatusSummary> {
 
 pub fn rebuild(start: &Path, actor: &str) -> Result<RebuildSummary> {
     let started = Instant::now();
+    let repo = rebuild_store(|| db::open_project(start), actor)?;
+    // The global store is shared by every repo, so only a repo that opted in
+    // rebuilds it, and rebuilding never creates it.
+    let global = if db::open_project(start)?.config.global.enabled && db::global_store_exists()? {
+        Some(rebuild_store(db::open_global, actor)?)
+    } else {
+        None
+    };
+    Ok(RebuildSummary {
+        model: EMBEDDING_MODEL_NAME.to_string(),
+        repo,
+        global,
+        elapsed_ms: started.elapsed().as_millis(),
+    })
+}
 
+fn rebuild_store(open: impl Fn() -> Result<ProjectContext>, actor: &str) -> Result<StoreRebuild> {
     // Collect all source rows up front so we don't hold a transaction
     // open while the model warms up (~150 ms on first call).
     let rows = {
-        let ctx = db::open_project(start)?;
+        let ctx = open()?;
         collect_source_rows(&ctx.conn)?
     };
 
@@ -209,13 +235,16 @@ pub fn rebuild(start: &Path, actor: &str) -> Result<RebuildSummary> {
         }
     }
 
-    // Single transaction: prune orphaned active-model rows, then UPSERT
-    // vectors only when the source row still matches the snapshot that was
-    // embedded. This avoids overwriting fresher eager embeddings from
-    // concurrent writes.
-    let mut ctx = db::open_project(start)?;
+    // Single transaction: drop other models' vectors and orphaned
+    // active-model rows, then UPSERT vectors only when the source row still
+    // matches the snapshot that was embedded. This avoids overwriting
+    // fresher eager embeddings from concurrent writes.
+    let mut ctx = open()?;
     let tx = ctx.conn.transaction()?;
-    let deleted = delete_orphan_embeddings(&tx)?;
+    let deleted = tx.execute(
+        "DELETE FROM embeddings WHERE model_name <> ?1",
+        params![EMBEDDING_MODEL_NAME],
+    )? + delete_orphan_embeddings(&tx)?;
 
     let facts_written = upsert_batch(&tx, SourceType::Fact, &facts_vectors)?;
     let decisions_written = upsert_batch(&tx, SourceType::Decision, &decisions_vectors)?;
@@ -244,8 +273,7 @@ pub fn rebuild(start: &Path, actor: &str) -> Result<RebuildSummary> {
     )?;
     tx.commit()?;
 
-    Ok(RebuildSummary {
-        model: EMBEDDING_MODEL_NAME.to_string(),
+    Ok(StoreRebuild {
         facts: facts_written,
         decisions: decisions_written,
         tasks: tasks_written,
@@ -253,7 +281,6 @@ pub fn rebuild(start: &Path, actor: &str) -> Result<RebuildSummary> {
         notes: notes_written,
         arch_sections: arch_sections_written,
         deleted,
-        elapsed_ms: started.elapsed().as_millis(),
     })
 }
 
@@ -693,9 +720,9 @@ mod tests {
         task::add(temp.path(), "Ship recall", None, "cli:user").expect("task");
 
         let summary = rebuild(temp.path(), "cli:user").expect("rebuild");
-        assert_eq!(summary.facts, 1);
-        assert_eq!(summary.decisions, 1);
-        assert_eq!(summary.tasks, 1);
+        assert_eq!(summary.repo.facts, 1);
+        assert_eq!(summary.repo.decisions, 1);
+        assert_eq!(summary.repo.tasks, 1);
 
         let after = status(temp.path()).expect("status");
         assert_eq!(after.facts_embedded, 1);
@@ -732,7 +759,10 @@ mod tests {
         );
 
         let summary = rebuild(temp.path(), "cli:user").expect("rebuild");
-        assert_eq!(summary.notes, 1, "rebuild must backfill the missing note");
+        assert_eq!(
+            summary.repo.notes, 1,
+            "rebuild must backfill the missing note"
+        );
 
         let after = status(temp.path()).expect("status after rebuild");
         assert_eq!(after.notes_embedded, 1);
@@ -779,7 +809,7 @@ mod tests {
 
         let summary = rebuild(temp.path(), "cli:user").expect("rebuild");
         assert_eq!(
-            summary.notes, 1,
+            summary.repo.notes, 1,
             "rebuild re-confirms the still-current note embedding"
         );
         assert_eq!(
@@ -812,7 +842,7 @@ mod tests {
         assert_eq!(before.missing_count, 2);
 
         let summary = rebuild(temp.path(), "cli:user").expect("rebuild");
-        assert_eq!(summary.arch_sections, 2);
+        assert_eq!(summary.repo.arch_sections, 2);
 
         let after = status(temp.path()).expect("status after rebuild");
         assert_eq!(after.arch_sections_embedded, 2);
