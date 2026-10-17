@@ -149,3 +149,52 @@ fn rebuild_does_not_create_the_global_store_for_an_opted_in_repo() {
     assert!(out["global"].is_null(), "no global counts: {out}");
     assert!(!f.global_db().exists(), "rebuild must not create the store");
 }
+
+#[test]
+fn rebuild_reports_the_repo_result_when_the_global_store_refuses() {
+    let f = Fixture::new();
+    f.ok(&["global", "enable"]);
+    plant_foreign_vector(&f.repo_db());
+    // A store whose ledger is ahead of this binary is refused by open_global.
+    Connection::open(f.global_db())
+        .expect("open global")
+        .execute(
+            "INSERT INTO schema_migrations(version) VALUES ('9999_from_a_newer_memhub')",
+            [],
+        )
+        .expect("add future migration row");
+
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_memhub"))
+            .args(args)
+            .current_dir(f.repo.path())
+            .env("HOME", f.home.path())
+            .env("USERPROFILE", f.home.path())
+            .env("MEMHUB_LOG", "off")
+            .output()
+            .expect("spawn memhub")
+    };
+
+    let json = run(&["index", "rebuild", "--json"]);
+    assert!(!json.status.success(), "global failure must exit non-zero");
+    let stdout = String::from_utf8_lossy(&json.stdout);
+    let out: Value =
+        serde_json::from_str(stdout.trim()).unwrap_or_else(|e| panic!("{e}: {stdout}"));
+    assert_eq!(out["facts"], 1, "repo result still reported: {out}");
+    assert_eq!(out["deleted"], 1);
+    assert!(out["global"].is_null());
+    assert!(
+        out["global_error"].as_str().is_some_and(|e| !e.is_empty()),
+        "global error reported: {out}"
+    );
+    assert_eq!(vector_counts(&f.repo_db()), (0, 1), "repo store committed");
+
+    let human = run(&["index", "rebuild"]);
+    assert!(!human.status.success());
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    assert!(stdout.contains("repo:"), "repo line printed: {stdout}");
+    assert!(
+        stdout.contains("global: rebuild failed:"),
+        "global error printed: {stdout}"
+    );
+}

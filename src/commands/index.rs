@@ -7,6 +7,7 @@
 //! store; used after a model upgrade or to clear a `stale_embeddings`
 //! warning from `memhub recall`. Both operate locally; no network.
 
+use std::cell::Cell;
 use std::path::Path;
 use std::time::Instant;
 
@@ -62,6 +63,9 @@ pub struct RebuildSummary {
     /// `None` unless the repo opted in to the machine-global store and the
     /// store exists.
     pub global: Option<StoreRebuild>,
+    /// Why the global store's rebuild failed after the repo store's had
+    /// committed; callers must surface it and exit non-zero.
+    pub global_error: Option<crate::MemhubError>,
     pub elapsed_ms: u128,
 }
 
@@ -132,18 +136,34 @@ pub fn status(start: &Path) -> Result<IndexStatusSummary> {
 
 pub fn rebuild(start: &Path, actor: &str) -> Result<RebuildSummary> {
     let started = Instant::now();
-    let repo = rebuild_store(|| db::open_project(start), actor)?;
+    // Read the opt-in flag from the repo store's own open instead of opening
+    // the repo DB a third time just for it.
+    let opted_in = Cell::new(false);
+    let repo = rebuild_store(
+        || {
+            let ctx = db::open_project(start)?;
+            opted_in.set(ctx.config.global.enabled);
+            Ok(ctx)
+        },
+        actor,
+    )?;
     // The global store is shared by every repo, so only a repo that opted in
-    // rebuilds it, and rebuilding never creates it.
-    let global = if db::open_project(start)?.config.global.enabled && db::global_store_exists()? {
-        Some(rebuild_store(db::open_global, actor)?)
+    // rebuilds it, and rebuilding never creates it. The repo store is already
+    // committed here, so a global failure is reported next to its result
+    // rather than discarding it.
+    let (global, global_error) = if opted_in.get() && db::global_store_exists()? {
+        match rebuild_store(db::open_global, actor) {
+            Ok(g) => (Some(g), None),
+            Err(e) => (None, Some(e)),
+        }
     } else {
-        None
+        (None, None)
     };
     Ok(RebuildSummary {
         model: EMBEDDING_MODEL_NAME.to_string(),
         repo,
         global,
+        global_error,
         elapsed_ms: started.elapsed().as_millis(),
     })
 }
