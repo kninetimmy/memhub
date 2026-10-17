@@ -33,11 +33,11 @@ live in the memhub MCP server's own instructions (`src/mcp/mod.rs`)
 and are not duplicated here. (Re-rendering after mid-session DB writes
 is a `/wrap-up` step, not an MCP-instructions rule.)
 
-If recall returns a `warnings[].kind == "stale_embeddings"` entry,
-surface it and ask the user before invoking `/reindex`. Recall
-results stay usable in the meantime — the warning means hybrid
-scoring may be undercounting some rows, not that retrieval is
-broken.
+If recall returns a `warnings[].kind == "stale_embeddings"` or
+`"missing_embeddings"` entry, surface it and ask the user before
+invoking `/reindex`. Recall results stay usable in the meantime —
+the warning means hybrid scoring may be undercounting some rows,
+not that retrieval is broken.
 
 The K9 integration was removed entirely (task 123, PR #165,
 2026-07-18); nothing in memhub detects, reads, or configures K9
@@ -78,7 +78,7 @@ license is limited to executing the approved plan — it is not open season.
 
 Two agent-facing gates never move out of this file, because acting without them is destructive or misleading:
 
-- **`stale_embeddings` (recall) — kept in Session Continuity above.** If `memhub recall` returns a `warnings[].kind == "stale_embeddings"` entry, surface it and ask the user before invoking `/reindex`. Recall stays usable meanwhile; scoring may undercount some rows, retrieval is not broken.
+- **`stale_embeddings` / `missing_embeddings` (recall) — kept in Session Continuity above.** If `memhub recall` returns a `warnings[].kind == "stale_embeddings"` or `"missing_embeddings"` entry, surface it and ask the user before invoking `/reindex`. Recall stays usable meanwhile; scoring may undercount some rows, retrieval is not broken.
 - **`sync_adopt` (Drive sync).** The MCP `memhub.sync_adopt` tool overwrites the local DB — the one destructive sync op — so without `confirm=true` it returns the would-change verdict and refuses. Surface that verdict to the user and only re-call with `confirm=true` after they approve. Hard refusals regardless of confirm: project-id mismatch, a snapshot schema newer than this binary (run `memhub upgrade`), or a checksum that disagrees with the manifest. Full Drive-sync model and surfaces: [docs/reference/operations.md](docs/reference/operations.md).
 
 ## Project state

@@ -1,6 +1,6 @@
 ---
 name: reindex
-description: Rebuild memhub embeddings in OpenCode; use after stale-embedding warnings or embedding model changes.
+description: Rebuild memhub embeddings in OpenCode; use after `stale_embeddings` or `missing_embeddings` recall warnings or embedding model changes.
 compatibility: opencode
 ---
 

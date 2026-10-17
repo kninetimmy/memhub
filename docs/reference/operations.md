@@ -1,6 +1,6 @@
 # memhub — operations reference
 
-Operational detail for memhub's subsystems, moved out of the repo `CLAUDE.md` / `AGENTS.md` orientation files so those stay lean at session start (Wave 2 token diet, issue #30). Nothing here is load-bearing from turn one — the two orientation files keep the must-have-inline set (Session Continuity, Guardrails, Delegation, the `stale_embeddings` and `sync_adopt` safety gates, Build/Test/Run). Everything below is **memhub-recall-searchable**: this file is ingested with `memhub doc add`, so recall it on demand instead of loading it every session.
+Operational detail for memhub's subsystems, moved out of the repo `CLAUDE.md` / `AGENTS.md` orientation files so those stay lean at session start (Wave 2 token diet, issue #30). Nothing here is load-bearing from turn one — the two orientation files keep the must-have-inline set (Session Continuity, Guardrails, Delegation, the `stale_embeddings` / `missing_embeddings` and `sync_adopt` safety gates, Build/Test/Run). Everything below is **memhub-recall-searchable**: this file is ingested with `memhub doc add`, so recall it on demand instead of loading it every session.
 
 This document is content-preserving: the sections below are the full prose that used to live inline, verbatim, with every fact, decision number, and command name intact. When a subsystem changes, update it here and re-ingest.
 
@@ -54,9 +54,9 @@ with an error, the rows stay imported, and `memhub index rebuild`
 embeds them.
 
 If recall later surfaces a `stale_embeddings` warning (most likely
-after an embedding-model upgrade on either machine), follow the same
-rule as everywhere else: surface it and ask before invoking
-`/reindex`.
+after an embedding-model upgrade on either machine) or a
+`missing_embeddings` warning, follow the same rule as everywhere else:
+surface it and ask before invoking `/reindex`.
 
 The export format is JSON v1, additive: older exports import cleanly
 into newer builds via `#[serde(default)]` on later-added fields. The
@@ -823,7 +823,7 @@ out to keyword-only recall; an fts repo writes no embeddings.
 
 **Switching modes is non-destructive.** `fts → hybrid` needs one `memhub index rebuild`; `hybrid → fts` just stops consulting embeddings.
 
-**Rows without a vector are reported (issue #382).** Opening a DB never loads the embedding model, so rows can exist with no vector for the active model: architecture sections derived by migration 0025, rows written while the repo was in fts mode, or global-store rows written from an fts repo. Hybrid recall adds a `missing_embeddings` warning stating how many of the repo's rows lack one and naming `memhub index rebuild`; it counts the whole repo store, while `stale_embeddings` (unchanged) counts only the candidates of that recall, so a recall can carry both. `memhub doctor`'s `embeddings_freshness` check states the same count. `memhub upgrade` fills these rows (see "Machine-wide upgrade"). Before this change nothing reported a row that had no vector unless it happened to be an FTS candidate.
+**Rows without a vector are reported (issue #382).** Opening a DB never loads the embedding model, so rows can exist with no vector for the active model: architecture sections derived by migration 0025, rows written while the repo was in fts mode, or global-store rows written from an fts repo. Hybrid recall adds a `missing_embeddings` warning stating how many of the repo's rows lack one and naming `memhub index rebuild`; it counts the whole repo store, while `stale_embeddings` (unchanged) counts only the candidates of that recall, so a recall can carry both. `memhub doctor`'s `embeddings_freshness` check states the same count. `memhub upgrade` fills these rows (see "Machine-wide upgrade"). The `stale_embeddings` safety gate covers both kinds: an agent surfaces either warning and asks the user before invoking `/reindex` (before this change the gate named `stale_embeddings` alone). Before this change nothing reported a row that had no vector unless it happened to be an FTS candidate.
 
 `memhub index rebuild` leaves each store holding vectors only for the bundled model: it re-embeds every row and deletes vectors written under any other model name. In a repo opted in to machine-global memory it does the same to the global store (the output reports both stores' counts); in a repo not opted in the global store is not touched. The code index does the same on its next hybrid refresh: chunks whose only vector is from another model or dimension are re-embedded and the foreign vectors removed.
 
