@@ -1255,6 +1255,44 @@ rows it embedded in each instance; `-` (null) means no fill ran: an
 fts-mode repo, or a skipped or failed instance. A fill failure marks the
 instance `ERROR`. Before this change the pass wrote no embeddings.
 
+Retired settings (issue #393): for each known repo, before its migrate,
+the pass removes from `.memhub/config.toml` the settings `memhub doctor`
+reports as ignored (`config_ignored_settings`, one list in
+`src/commands/doctor.rs`: `[retrieval] include_stale_by_default` and
+`[retrieval.scoring] stale_penalty`, `min_rerank_score` and
+`doc_min_rerank_score`). It deletes only a line of the form `key = value`
+(any spacing, an optional trailing comment) under that key's own table
+header, line ending included; every other byte of the file, comments, blank
+lines, key order and CRLF endings included, stays as it was. A removal is
+kept only if the edited file parses to the old one minus that key. A key set
+any other way (a dotted key such as `scoring.stale_penalty = 0.3` under
+`[retrieval]`, an inline table, a quoted key, a value spanning lines) is
+left and reported, and a commented-out key is not set, so it is neither
+touched nor reported. A file that is not valid TOML, or cannot be read or
+rewritten, is left unchanged and reported. The rewrite is a temp file in the
+same directory renamed over the old one. A repo with no `config.toml` is
+skipped silently. Text output prints a `config: <repo>: removed retired
+setting(s) ...` line per repo (and `left ...` or the error); `--json`
+carries `retired_settings`, one `{label, removed, left, error}` entry per
+repo with something to report. After it, doctor reports `no ignored
+settings` in a repo whose keys were all removed. Before this change upgrade
+never read or wrote a repo's `config.toml`, so doctor kept warning about
+these keys until they were deleted by hand.
+
+`--dry-run` previews both. Before this change it listed each instance's
+schema and verdict only; it now also prints the `would remove` / `left`
+lines (`retired_settings` in `--json`, same shape) and, for each instance
+the fill would touch (a hybrid-mode repo, the global store whatever the
+mode), how many rows have no vector at all for the active model: `fill: N
+row(s) lack an embedding` after the verdict, `would_fill` and
+`lacking_embeddings` in `--json` (on each instance and on `global_store`).
+The count comes from a read-only connection and is taken only for an
+instance already at head schema; one behind head reads `counted after
+migrate` (`lacking_embeddings: null`), since its tables may not exist until
+migrate. A row whose vector is out of date (its text changed) is re-embedded
+by the fill but not counted here. The dry run still changes no config file
+and no database.
+
 Skill resync (decision 97; resolves task 50, internalizes the fact-10
 manual `cp`): the same `memhub upgrade` also refreshes the installed
 slash-command wrappers so they never lag the binary. For each agent
