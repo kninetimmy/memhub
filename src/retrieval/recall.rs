@@ -310,7 +310,13 @@ pub struct RecallExplain {
 /// asks two things (`split_query`), its best part. Each part gathers like a
 /// variant.
 pub fn recall(start: &Path, options: RecallOptions) -> Result<RecallResponse> {
-    let ctx = db::open_project(start)?;
+    recall_with(&db::open_project(start)?, options)
+}
+
+/// [`recall`] against an already-open project, so a caller issuing many
+/// queries (the self-check) opens the project, and so runs
+/// maintenance-on-open, once.
+pub fn recall_with(ctx: &db::ProjectContext, options: RecallOptions) -> Result<RecallResponse> {
     let resolved = ResolvedOptions::from(&options, &ctx.config.retrieval)?;
     let scoring = &ctx.config.retrieval.scoring;
     let started = Instant::now();
