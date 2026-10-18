@@ -52,12 +52,14 @@ pub const DEFAULT_AGE_HALF_LIFE_DAYS: i64 = 0;
 /// Default cross-encoder cutoff (`[retrieval.scoring] rerank_cutoff`,
 /// decision 235). Recall returns hits in strict re-ranker score order for
 /// the calling agent to judge; this one low cutoff only drops nonsense, for
-/// every row type. On 344 blind questions across six repositories -5.0 kept
-/// 257 of the 265 judged answers while every off-topic probe on memhub's
-/// live set returned nothing. It replaces the retired relevance floors
-/// `min_rerank_score` (2.0) and `doc_min_rerank_score` (0.0), which every
-/// existing config pins, hence a key of its own.
-pub const DEFAULT_RERANK_CUTOFF: f32 = -5.0;
+/// every row type. Re-measured 2026-10-17 on 344 blind questions across six
+/// repositories: at -7.0 only 5 questions came back empty and 313 (91%) had
+/// an answer in the top 3, against 19 and 297 (86%) at -5.0, while 46 of 54
+/// off-topic probes still returned nothing (49 at -5.0). It replaces the
+/// retired relevance floors `min_rerank_score` (2.0) and
+/// `doc_min_rerank_score` (0.0), which every existing config pins, hence a
+/// key of its own.
+pub const DEFAULT_RERANK_CUTOFF: f32 = -7.0;
 pub const DEFAULT_ACCEPTED_ONLY: bool = false;
 /// Retired: recall always returns stale facts, flagged `stale: true` and
 /// ranked like fresh ones (decision 236). `[retrieval]

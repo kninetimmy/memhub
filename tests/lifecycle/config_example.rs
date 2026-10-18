@@ -76,6 +76,10 @@ fn init_falls_back_to_code_defaults_when_no_example_present() {
         .expect("tempdir basename");
     assert_eq!(config.project_name, repo_name);
     assert_eq!(config.log_level, "info");
+    // The default rerank cutoff is recorded in the new project's config.
+    assert_eq!(config.retrieval.scoring.rerank_cutoff, -7.0);
+    let raw = fs::read_to_string(&local_config_path).expect("read local config");
+    assert!(raw.contains("rerank_cutoff = -7.0"), "{raw}");
 }
 
 /// A corrupt example file (invalid TOML, or TOML that doesn't match the

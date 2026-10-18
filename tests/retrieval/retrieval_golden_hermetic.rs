@@ -725,9 +725,23 @@ fn hermetic_retrieval_safety_probe_never_leaks() {
         "the gibberish probe returned a hit that cleared the rerank cutoff"
     );
     assert_eq!(result.totals.empty_passes, 1);
-    // Near-topic probes are reported, never safety failures.
+    // Near-topic probes are reported, never safety failures. At the default
+    // cutoff (-7.0) two of the four return rows: the quantization and
+    // mcp-auth probes, whose related rows score -4.91 and -5.51.
     assert_eq!(result.totals.near_queries, 4);
-    assert!(result.totals.near_passes <= result.totals.near_queries);
+    let mut near_with_rows: Vec<&str> = result
+        .outcomes
+        .iter()
+        .filter(|o| o.id.starts_with("near-") && !o.passed)
+        .map(|o| o.id.as_str())
+        .collect();
+    near_with_rows.sort_unstable();
+    assert_eq!(
+        near_with_rows,
+        ["near-embedding-quantization", "near-mcp-auth-tokens"],
+        "near-topic probes that returned rows at the default cutoff"
+    );
+    assert_eq!(result.totals.near_passes, 2);
 }
 
 /// Every failed outcome except the near-topic probes, which eval reports

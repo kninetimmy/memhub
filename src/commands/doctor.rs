@@ -1887,7 +1887,7 @@ doc_min_rerank_score = 0.0
         );
         let saved = toml::to_string(&cfg).expect("serialize");
         assert!(!saved.contains("min_rerank_score"), "{saved}");
-        assert!(saved.contains("rerank_cutoff = -5.0"), "{saved}");
+        assert!(saved.contains("rerank_cutoff = -7.0"), "{saved}");
     }
 
     #[test]

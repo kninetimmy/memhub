@@ -795,14 +795,14 @@
       "notes": "answer: arch_section 7; also: docs/reference/operations.md > Cross-machine Drive sync. category: architecture section"
     },
     {
-      "id": "empty-kubernetes-helm",
+      "id": "near-kubernetes-helm",
       "query": "Kubernetes helm chart values for deploying memhub to a cluster",
       "variants": [
         "Kubernetes helm chart values deploy cluster",
         "The Kubernetes helm chart values for deploying to a cluster are defined in a specific way."
       ],
       "kind": "empty",
-      "notes": "unrelated infrastructure topic"
+      "notes": "near-topic: names deploying memhub, a local CLI with no cluster deployment; no row covers a Kubernetes helm chart"
     },
     {
       "id": "empty-terraform-autoscaling",
