@@ -10,6 +10,8 @@
 mod code_index;
 #[path = "retrieval/deny_list.rs"]
 mod deny_list;
+#[path = "retrieval/get_row_global.rs"]
+mod get_row_global;
 #[path = "retrieval/index_rebuild_models.rs"]
 mod index_rebuild_models;
 #[path = "retrieval/locate.rs"]
