@@ -114,11 +114,11 @@
       "notes": "embed_one / embed_batch BGE-small."
     },
     {
-      "id": "hybrid-recall-stale-penalty",
-      "query": "blend keyword and vector scores and penalize stale facts during recall",
+      "id": "hybrid-recall-fusion",
+      "query": "blend keyword and vector scores and demote superseded rows during recall",
       "kind": "match",
       "path_contains": ["src/retrieval/recall.rs"],
-      "notes": "recall fusion with stale penalty (distinct from locate's no-decay fusion)."
+      "notes": "recall fusion blending keyword and vector scores and demoting superseded rows; staleness is only a flag (distinct from locate's no-decay fusion)."
     },
     {
       "id": "apply-db-migrations",

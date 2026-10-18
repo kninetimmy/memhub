@@ -745,7 +745,7 @@ on the same database, compared with `memhub eval compare`:
 2. Build the old and the new binary, for example with `cargo build
    --release` in the base commit's checkout and in the changed one, and note
    both paths. For a settings-only change, one binary plus a flag
-   (`--no-rerank`, `--min-rerank-score`, `--mode`) or a config edit is
+   (`--no-rerank`, `--rerank-cutoff`, `--mode`) or a config edit is
    enough.
 3. Run A with the old binary: `<old-memhub> eval retrieval --golden
    tests/retrieval_golden_live.json --k 5 --json > a.json`. Run the older
