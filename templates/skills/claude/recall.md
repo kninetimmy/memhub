@@ -143,7 +143,7 @@ above is trimmed to what you need day to day (issue #72).
   place in `results` — array order is the final rank, there is no
   separate `rank` field on this path. Higher is a closer match. Only
   rows under a low nonsense cutoff (`[retrieval.scoring] rerank_cutoff`,
-  default -5.0) are dropped, so a low or negative score is a weaker
+  default -7.0) are dropped, so a low or negative score is a weaker
   match, not a rejected one. `null` when the re-ranker didn't run for
   this call (fts mode, or hybrid with the re-ranker off): hits then
   follow the blended FTS/vector score and no cutoff applies.

@@ -288,7 +288,7 @@ entirely.
 returns hits in strict re-ranker score order, highest first, for every row
 type, after any row named by number (below). Recall does not judge relevance:
 the calling agent reads the hits and decides which ones answer the question.
-One low cutoff, `[retrieval.scoring] rerank_cutoff` (default -5.0), drops only
+One low cutoff, `[retrieval.scoring] rerank_cutoff` (default -7.0), drops only
 nonsense: a row whose re-ranker score is below it is not returned, whatever
 its type. A candidate's score is its score against the query or, for a
 two-question query, its best part (see "Two-question queries" below). When
@@ -296,11 +296,13 @@ candidates existed but none cleared the cutoff and no named row is returned,
 the response is empty and carries a `rerank_cutoff_dropped_all` warning that
 names the cutoff and the highest score seen. Override the cutoff per call with
 `memhub recall --rerank-cutoff <F>` or `memhub eval retrieval --rerank-cutoff
-<F>`. Calibration: on 344 blind questions across six repositories the top
-result answered the question 77% of the time and an answer was in the top 3
-88% of the time, but the scores of right and wrong rows overlap, so no fixed
-threshold separates them; -5.0 kept 257 of the 265 judged answers while every
-off-topic probe on memhub's live set returned nothing. Without the re-ranker
+<F>`. Calibration: the scores of right and wrong rows overlap, so no fixed
+threshold separates them. The default was re-measured 2026-10-17 on 344 blind
+questions across six repositories (questions written without the stored
+wording, judged for multiple acceptable answers, with 9 off-topic probes per
+repository): at -7.0 only 5 questions came back empty and 313 (91%) had an
+answer in the top 3, against 19 and 297 (86%) at -5.0, while 46 of 54
+off-topic probes still returned nothing (49 at -5.0). Without the re-ranker
 (FTS-only mode, `--no-rerank`, `use_reranker = false`) there is no re-ranker
 score: `rerank_score` is null, hits keep the blended FTS/vector order and no
 cutoff applies (default-included doc chunks are still left out then, since
@@ -622,12 +624,13 @@ shipped `tests/retrieval_golden.json`. That is the same pattern
 seeded fresh per run, independent of live `.memhub` state — applied to the
 retrieval golden.
 
-Baseline (hybrid mode, default rerank cutoff -5.0): the golden set is 36
+Baseline (hybrid mode, default rerank cutoff -7.0): the golden set is 36
 queries (31 match, 1 gibberish empty probe and 4 `near-` probes) and the code
 scores Recall@3 = 31/31 match, all 31 at rank 1; the gibberish probe returns
-nothing (0 safety failures), and 3 of the 4 near-topic probes return nothing
-(`near-embedding-quantization` returns one related decision, which eval
-reports rather than fails). First recorded 2026-07-06 (issue #44) as 100% on
+nothing (0 safety failures; its top re-ranker score is about -8.9), and 2 of
+the 4 near-topic probes return nothing (`near-embedding-quantization` and
+`near-mcp-auth-tokens` return related rows, topping out at -4.91 and -5.51,
+which eval reports rather than fails; the test pins both ids). First recorded 2026-07-06 (issue #44) as 100% on
 the then-smaller set, extended by issue #225, and re-recorded 2026-10-17 for
 decision 235 (before it, all 5 empty-kind probes passed, three keyword-bag
 matches only as weak leads after the rows that cleared the old threshold). This is the reference other
@@ -772,17 +775,34 @@ recall works in a repository memhub was dropped into. `memhub eval
 self-check [--sample N] [--json]` needs no golden set: after `memhub init`
 (and `memhub index rebuild` in hybrid mode) it samples this repository's own
 rows of each type — fact, decision, task, doc chunk and architecture section —
-and asks recall for each one twice:
+and asks recall for each one, in up to two forms:
 
-- the **title** query is the row's own title (a fact's key, a doc chunk's or
-  section's heading path; a doc chunk with no heading uses its document title);
+- the **title** query is the row's own title (a fact's key, a decision's or
+  task's title, an architecture section's heading path). Doc chunks have no
+  title query (see below);
 - the **passage** query is a 12-word span from the middle of the row's own
   text. A row with no text (a task without notes) has no passage query and is
   not counted for that form.
 
-Each query is a plain `memhub recall` with an agent's defaults (default source
-types and result count; the project's retrieval mode), and a
-row "comes back" when the returned hits include that repository row.
+Superseded facts and decisions are neither sampled nor counted in the per-type
+row totals: recall ranks them below their replacements on purpose, so failing
+to surface one would not be a recall fault. Done tasks are still sampled, as
+recall keeps them visible.
+
+A doc chunk is checked by the passage form only, because a heading-path query
+is not a fair known-item probe for one. A chunk's heading path starts with its
+document's top heading and shares its words with the parent and sibling
+sections of the same document. Only `rerank_doc_cap` (default 3)
+default-included doc chunks enter the re-rank pool, so those siblings take the
+slots and the target chunk never reaches the re-ranker, even though a worded
+question about its content finds it.
+
+Each query runs through the same recall code as `memhub recall`, with an
+agent's defaults (default source types and result count; the project's
+retrieval mode), against one open of the project for the whole run, so the
+rank reported for a row is the rank `memhub recall` returns for that query on
+the same database. A row "comes back" when the returned hits include that
+repository row.
 `--sample` sets the rows sampled per type (default 10). The sample is spread
 evenly across the rows ordered by id, so an unchanged database draws the same
 sample on every run.
@@ -800,16 +820,21 @@ either the rank it had (when it came back below the top 3) or "not returned".
 A type with zero rows reports zero everywhere. A form that finds almost
 nothing for a whole type points at a recall problem rather than at single
 rows: for example doc chunks missing
-because `include_docs_in_default` is off, or architecture sections missing
-because they were never embedded. Passage misses on long, generic text are
+because `include_docs_in_default` is off, or architecture sections that were
+never embedded. An architecture section without an embedding is still found
+by keyword matching on its exact title (it has a full-text index) and loses
+only meaning-based matching; recall warns `missing_embeddings` for it. Passage misses on long, generic text are
 less alarming than title misses on distinctive titles.
 
-The command is read-only, like `eval retrieval` (decision 51): it adds,
-changes or deletes no fact, decision, task, session note, document,
-architecture section or `writes_log` entry, and, since it calls recall with
-metrics logging off, appends nothing to `recall_metrics` or the
-`recall_queries.jsonl` query log. It runs two recalls per sampled row, so the
-default sample is up to 100 recalls. Test:
+Like `eval retrieval` (decision 51), the command adds or changes no fact,
+decision, task, session note, document, architecture section or `writes_log`
+entry, and, since it calls recall with metrics logging off, appends nothing to
+`recall_metrics` or the `recall_queries.jsonl` query log. It is not literally
+read-only: like every command it runs maintenance-on-open once (see
+"Maintenance-on-open contract" above), which can apply a pending migration,
+upsert the `projects` row and expire aged pending writes. It runs up to two
+recalls per sampled row (one for doc chunks), so the default sample is up to
+90 recalls. Test:
 `tests/retrieval/self_check.rs`.
 
 ### Retrieval modes and configuration
@@ -836,7 +861,7 @@ out to keyword-only recall; an fts repo writes no embeddings.
 
 **Rows without a vector are reported (issue #382).** Opening a DB never loads the embedding model, so rows can exist with no vector for the active model: architecture sections derived by migration 0025, rows written while the repo was in fts mode, or global-store rows written from an fts repo. Hybrid recall adds a `missing_embeddings` warning stating how many of the repo's rows lack one and naming `memhub index rebuild`; it counts the whole repo store, while `stale_embeddings` (unchanged) counts only the candidates of that recall, so a recall can carry both. `memhub doctor`'s `embeddings_freshness` check states the same count. `memhub upgrade` fills these rows (see "Machine-wide upgrade"). The `stale_embeddings` safety gate covers both kinds: an agent surfaces either warning and asks the user before invoking `/reindex` (before this change the gate named `stale_embeddings` alone). Before this change nothing reported a row that had no vector unless it happened to be an FTS candidate.
 
-`memhub index rebuild` leaves each store holding vectors only for the bundled model: it re-embeds every row and deletes vectors written under any other model name. In a repo opted in to machine-global memory it does the same to the global store (the output reports both stores' counts); in a repo not opted in the global store is not touched. The code index does the same on its next hybrid refresh: chunks whose only vector is from another model or dimension are re-embedded and the foreign vectors removed.
+`memhub index rebuild` leaves each store holding vectors only for the bundled model: it re-embeds every row and deletes vectors written under any other model name. In a repo opted in to machine-global memory it does the same to the global store (the output reports both stores' counts); in a repo not opted in the global store is not touched. If the global half fails for any reason (a store this binary refuses, a corrupt file, or an unresolvable home directory), the repo store, already committed, still has its counts reported: in `--json` `global` is null and `global_error` carries the message, the human output shows the message once, and the command exits non-zero. Re-running the rebuild retries both stores. The code index does the same on its next hybrid refresh: chunks whose only vector is from another model or dimension are re-embedded and the foreign vectors removed.
 
 The `[retrieval]` block in `.memhub/config.toml`:
 
@@ -850,7 +875,7 @@ fact_stale_after_days = 90       # facts older than this are flagged stale
 [retrieval.scoring]
 fts_weight = 0.5
 vector_weight = 0.5
-rerank_cutoff = -5.0             # rows re-ranked below this are not returned
+rerank_cutoff = -7.0             # rows re-ranked below this are not returned
 
 [global]
 enabled = false                  # opt-in via `memhub global enable`

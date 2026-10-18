@@ -93,6 +93,10 @@ Promotable to global — facts, decisions, and docs only:
   Decision 235 — Before: that doc floor kept the off-topic doc out.
   After: the single `[retrieval.scoring] rerank_cutoff` (default -5.0)
   does, since off-topic doc chunks score far below it.
+  The 2026-10-17 re-measurement moved that default (text above kept as
+  recorded) -
+  Before: `rerank_cutoff` defaulted to -5.0.
+  After: it defaults to -7.0; off-topic doc chunks still score below it.
 
 **Never global:** tasks (always repo work items), `project_state` /
 `project_arch` / `session_notes` (the repo's rendered view), and

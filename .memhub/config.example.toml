@@ -189,14 +189,15 @@ age_half_life_days = 0
 # Cross-encoder cutoff (decision 235). Recall returns hits in strict
 # re-ranker score order and the calling agent judges which are relevant;
 # this one cutoff only drops nonsense. A row whose re-ranker score is below
-# it is not returned, for every row type. On 344 blind questions across six
-# repositories -5.0 kept 257 of the 265 judged answers while every off-topic
-# probe on memhub's live set returned nothing. Only applied when the
-# re-ranker runs (hybrid + use_reranker); a row the query names by number
-# ("decision 12") is exempt. The retired min_rerank_score and
+# it is not returned, for every row type. Re-measured 2026-10-17 on 344 blind
+# questions across six repositories: at -7.0 only 5 came back empty and 313
+# (91%) had an answer in the top 3, against 19 and 297 (86%) at -5.0, while
+# 46 of 54 off-topic probes still returned nothing (49 at -5.0). Only applied
+# when the re-ranker runs (hybrid + use_reranker); a row the query names by
+# number ("decision 12") is exempt. The retired min_rerank_score and
 # doc_min_rerank_score keys still load but are ignored (memhub doctor
 # names them).
-rerank_cutoff = -5.0
+rerank_cutoff = -7.0
 
 # Code locator (memhub locate) scoring, over the separate sibling DB
 # .memhub/code_index.sqlite — split from retrieval.scoring.fts_weight /

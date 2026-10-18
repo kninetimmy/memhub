@@ -2775,7 +2775,18 @@
         "M10 cross-machine sync:"
       ],
       "body_contains": [],
-      "notes": "answer: decision 102. category: vocabulary mismatch"
+      "also_accept": [
+        {
+          "source_type": "doc_chunk",
+          "title_contains": [
+            "Why snapshot now, and what merge would cost"
+          ],
+          "body_contains": [
+            "databases cannot be unioned by ID"
+          ]
+        }
+      ],
+      "notes": "answer: decision 102; also: the M10 addendum chunk \"8. Why snapshot now, and what merge would cost (deferred to M11)\" (blind judge's call, confirmed on the chunk's full text). category: vocabulary mismatch"
     },
     {
       "id": "vm-scrub-credentials-from-logs",
@@ -3779,14 +3790,14 @@
       "notes": "unrelated mobile topic"
     },
     {
-      "id": "empty-lora-adapter",
+      "id": "near-lora-adapter",
       "query": "fine-tuning a LoRA adapter on the golden queries",
       "variants": [
         "fine-tuning LoRA adapter golden queries",
         "Fine-tuning a LoRA adapter on the golden queries is done in a specific way."
       ],
       "kind": "empty",
-      "notes": "unrelated model-training topic"
+      "notes": "near-topic: names memhub's golden queries, which exist as the retrieval eval set; no row covers fine-tuning a LoRA adapter on them"
     },
     {
       "id": "empty-unity-shader",
@@ -4212,14 +4223,14 @@
       "notes": "answer: decision 202; also: task 155, task 177, docs/reference/operations.md > Retrieval (\"PROJECT.md shape\"). category: seed, keyword"
     },
     {
-      "id": "seed-48",
+      "id": "near-seed-48",
       "query": "task status blocked reopen verbs",
       "variants": [
         "Which task status verbs cover blocked and reopen?",
         "Task status transitions such as blocked and reopen use specific verbs."
       ],
       "kind": "empty",
-      "notes": "no row covers blocked or reopened task statuses or verbs for them; adjacent: decision 187 (task done refuses an already-done task). category: seed, keyword, near"
+      "notes": "no row covers blocked or reopened task statuses or verbs for them; adjacent: decision 187 (task done refuses an already-done task). category: seed, keyword, near. near-topic: names memhub's task statuses"
     },
     {
       "id": "seed-49",

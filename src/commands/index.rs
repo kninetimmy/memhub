@@ -159,13 +159,20 @@ pub fn rebuild(start: &Path, actor: &str) -> Result<RebuildSummary> {
     // rebuilds it, and rebuilding never creates it. The repo store is already
     // committed here, so a global failure is reported next to its result
     // rather than discarding it.
-    let (global, global_error) = if opted_in.get() && db::global_store_exists()? {
-        match rebuild_store(db::open_global, actor, false) {
-            Ok(g) => (Some(g), None),
-            Err(e) => (None, Some(e)),
-        }
+    let attempt = if !opted_in.get() {
+        None
     } else {
-        (None, None)
+        // An unresolvable home directory is a global-half failure too.
+        match db::global_store_exists() {
+            Ok(true) => Some(rebuild_store(db::open_global, actor, false)),
+            Ok(false) => None,
+            Err(e) => Some(Err(e)),
+        }
+    };
+    let (global, global_error) = match attempt {
+        Some(Ok(g)) => (Some(g), None),
+        Some(Err(e)) => (None, Some(e)),
+        None => (None, None),
     };
     Ok(RebuildSummary {
         model: EMBEDDING_MODEL_NAME.to_string(),
@@ -365,29 +372,39 @@ fn rebuild_store(
     let notes_written = upsert_batch(&tx, SourceType::Note, &notes_vectors)?;
     let arch_sections_written = upsert_batch(&tx, SourceType::ArchSection, &arch_sections_vectors)?;
 
-    db::log_write(
-        &tx,
-        actor,
-        "embeddings",
-        None,
-        "rebuild",
-        &format!(
-            "{}: model={} facts={} decisions={} tasks={} doc_chunks={} notes={} \
-             arch_sections={}",
-            if only_missing {
-                "embedding fill"
-            } else {
-                "index rebuild"
-            },
-            EMBEDDING_MODEL_NAME,
-            facts_written,
-            decisions_written,
-            tasks_written,
-            doc_chunks_written,
-            notes_written,
-            arch_sections_written,
-        ),
-    )?;
+    // A fill whose every row went stale before the write changed nothing, so
+    // it logs nothing; a full rebuild always logs.
+    let written = facts_written
+        + decisions_written
+        + tasks_written
+        + doc_chunks_written
+        + notes_written
+        + arch_sections_written;
+    if !only_missing || written > 0 {
+        db::log_write(
+            &tx,
+            actor,
+            "embeddings",
+            None,
+            "rebuild",
+            &format!(
+                "{}: model={} facts={} decisions={} tasks={} doc_chunks={} notes={} \
+                 arch_sections={}",
+                if only_missing {
+                    "embedding fill"
+                } else {
+                    "index rebuild"
+                },
+                EMBEDDING_MODEL_NAME,
+                facts_written,
+                decisions_written,
+                tasks_written,
+                doc_chunks_written,
+                notes_written,
+                arch_sections_written,
+            ),
+        )?;
+    }
     tx.commit()?;
 
     Ok(StoreRebuild {
@@ -1086,6 +1103,47 @@ mod tests {
             log_before + 1,
             "no-op fill logs nothing"
         );
+    }
+
+    /// A fill whose every snapshot row changed before the write embeds
+    /// nothing, so it must not log a zero-count `writes_log` entry.
+    #[test]
+    fn fill_missing_logs_nothing_when_every_row_went_stale() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        switch_to_fts(temp.path());
+        fact::add(temp.path(), "k", "value-one", "user", "cli:user").expect("fact");
+        let count_log = || -> i64 {
+            db::open_project(temp.path())
+                .expect("open")
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM writes_log WHERE table_name = 'embeddings'",
+                    [],
+                    |r| r.get(0),
+                )
+                .expect("count writes_log")
+        };
+        let log_before = count_log();
+
+        let opens = Cell::new(0);
+        let n = fill_missing(
+            || {
+                let ctx = db::open_project(temp.path())?;
+                opens.set(opens.get() + 1);
+                if opens.get() == 2 {
+                    ctx.conn
+                        .execute("UPDATE facts SET value = 'value-two'", [])?;
+                }
+                Ok(ctx)
+            },
+            "cli:user",
+        )
+        .expect("fill");
+
+        assert_eq!(opens.get(), 2, "snapshot open, then write open");
+        assert_eq!(n, 0, "the changed row is skipped");
+        assert_eq!(count_log(), log_before, "an empty fill logs nothing");
     }
 
     #[test]

@@ -20,6 +20,6 @@ pub use persist::{
 pub use recall::{
     HIT_TEXT_MAX_CHARS, MAX_QUERY_VARIANTS, RecallExplain, RecallHit, RecallOptions,
     RecallResponse, RecallSurface, RecallWarning, StoredRow, get_row, hit_text, recall,
-    validate_variants,
+    recall_with, validate_variants,
 };
 pub use rerank::RERANKER_MODEL_NAME;

@@ -71,7 +71,7 @@ JSON shape (the values below are illustrative, not a recorded baseline):
   "settings": {
     "mode": "hybrid",
     "reranker": true,
-    "rerank_cutoff": -5.0,
+    "rerank_cutoff": -7.0,
     "rerank_candidate_pool": 20,
     "rerank_doc_cap": 3
   },

@@ -1470,10 +1470,8 @@ pub fn run(cli: Cli) -> Result<()> {
                     if let Some(global) = &summary.global {
                         print_store("global", global);
                     }
-                    if let Some(e) = &summary.global_error {
-                        println!("  global: rebuild failed: {e}");
-                    }
                 }
+                // main prints the error once; the repo counts above stay.
                 if let Some(e) = summary.global_error {
                     return Err(e);
                 }

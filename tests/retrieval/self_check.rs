@@ -1,6 +1,7 @@
 //! `memhub eval self-check` (issue #383): reports per row type and query
 //! form how many sampled rows come back first / in the top 3, lists the
-//! misses, draws a stable sample, and is read-only.
+//! misses, draws a stable sample, and adds or changes no rows (beyond the
+//! maintenance-on-open every command performs).
 //!
 //! Seeds a disposable hybrid-mode project (hybrid *before* seeding, so
 //! eager-embed fires) and drives the compiled binary with `--json`, the
@@ -17,18 +18,8 @@ use memhub::models::NarrativeKind;
 use serde_json::Value;
 use tempfile::tempdir;
 
-const TABLES: [&str; 10] = [
-    "facts",
-    "decisions",
-    "tasks",
-    "session_notes",
-    "documents",
-    "doc_chunks",
-    "project_arch",
-    "arch_sections",
-    "writes_log",
-    "recall_metrics",
-];
+/// Tables maintenance-on-open legitimately touches on every command.
+const MAINTAINED: [&str; 1] = ["projects"];
 
 fn seed(root: &Path) {
     init::run(root).expect("init");
@@ -80,8 +71,30 @@ fn seed(root: &Path) {
         "cli:user",
     )
     .expect("task 1");
+    // Superseded rows and a done task: the superseded ones are neither
+    // sampled nor counted, the done task still is.
+    fact::add(
+        root,
+        "ci.cache.legacy",
+        "Continuous integration used to cache nothing",
+        "user",
+        "cli:user",
+    )
+    .expect("old fact");
+    decision::add(
+        root,
+        "Use pessimistic locking for the ledger export",
+        "Exports took an exclusive lock for their whole duration before the version counter replaced it.",
+        "user",
+        "cli:user",
+    )
+    .expect("old decision");
+    fact::supersede(root, "ci.cache.legacy", "ci.cache.strategy", "cli:user")
+        .expect("supersede fact");
+    decision::supersede(root, 3, 1, "cli:user").expect("supersede decision");
     // No notes: has no passage query, so it must not be counted for one.
     task::add(root, "Rotate the staging signing keys", None, "cli:user").expect("task 2");
+    task::done(root, 2, "cli:user").expect("task done");
     session_note::add(
         root,
         "scratch note that recall never searches by default",
@@ -130,19 +143,44 @@ fn memhub(root: &Path, home: &Path, args: &[&str]) -> std::process::Output {
         .expect("spawn memhub")
 }
 
-fn counts(root: &Path) -> Vec<i64> {
+/// Every row of every user table, rendered to text and sorted, so any
+/// inserted, deleted or changed row (including `writes_log`) shows up.
+fn contents(root: &Path) -> Vec<(String, Vec<String>)> {
     let conn = rusqlite::Connection::open(root.join(".memhub").join("project.sqlite")).unwrap();
-    TABLES
-        .iter()
+    let tables: Vec<String> = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    tables
+        .into_iter()
+        .filter(|t| !MAINTAINED.contains(&t.as_str()))
         .map(|t| {
-            conn.query_row(&format!("SELECT COUNT(*) FROM {t}"), [], |r| r.get(0))
+            let mut stmt = conn.prepare(&format!("SELECT * FROM \"{t}\"")).unwrap();
+            let cols = stmt.column_count();
+            let mut rows: Vec<String> = stmt
+                .query_map([], |r| {
+                    (0..cols)
+                        .map(|i| {
+                            r.get::<_, rusqlite::types::Value>(i)
+                                .map(|v| format!("{v:?}"))
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                        .map(|v| v.join("|"))
+                })
                 .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            rows.sort();
+            (t, rows)
         })
         .collect()
 }
 
 #[test]
-fn self_check_reports_per_type_and_form_is_stable_and_read_only() {
+fn self_check_reports_per_type_and_form_is_stable_and_writes_nothing() {
     let temp = tempdir().expect("tempdir");
     let home = tempdir().expect("home tempdir");
     let (root, home) = (temp.path(), home.path());
@@ -159,7 +197,7 @@ fn self_check_reports_per_type_and_form_is_stable_and_read_only() {
     let log_path = root.join(".memhub").join("recall_queries.jsonl");
     let log_before =
         fs::read_to_string(&log_path).expect("recall must have logged the control query");
-    let counts_before = counts(root);
+    let contents_before = contents(root);
 
     let first = memhub(
         root,
@@ -181,10 +219,11 @@ fn self_check_reports_per_type_and_form_is_stable_and_read_only() {
     // Same database, same sample, same report.
     assert_eq!(first.stdout, second.stdout, "repeated runs must agree");
 
-    // Read-only: no row added or removed anywhere, no query-log line.
+    // No row added, removed or changed in any user table (writes_log
+    // included), no query-log line.
     assert_eq!(
-        counts(root),
-        counts_before,
+        contents(root),
+        contents_before,
         "self-check must not write rows"
     );
     assert_eq!(fs::read_to_string(&log_path).unwrap(), log_before);
@@ -221,6 +260,14 @@ fn self_check_reports_per_type_and_form_is_stable_and_read_only() {
     let decision = &types[1];
     assert_eq!(decision["title"]["top3"], 2, "{decision}");
     assert_eq!(decision["passage"]["top3"], 2, "{decision}");
+    // Superseded facts and decisions are not counted: two active rows each.
+    assert_eq!(types[0]["total_rows"], 2, "{}", types[0]);
+    assert_eq!(decision["total_rows"], 2, "{decision}");
+    // A done task is still sampled.
+    assert_eq!(types[2]["sampled"], 2);
+    // Doc chunks are checked by the passage form only.
+    assert_eq!(types[3]["title"]["queried"], 0, "{}", types[3]);
+    assert_eq!(types[3]["passage"]["queried"], 2, "{}", types[3]);
     // A task with no notes has no passage query, and so is not counted.
     assert_eq!(types[2]["title"]["queried"], 2);
     assert_eq!(types[2]["passage"]["queried"], 1);

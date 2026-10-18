@@ -325,6 +325,36 @@ fn hybrid_mode_embeds_every_chunk() {
     assert_eq!(again.embedded_chunks, 0, "unchanged tree re-embeds nothing");
 }
 
+/// A warm refresh with no vectors from another model must not delete any
+/// code embedding row: a trigger aborts every DELETE on the table.
+#[test]
+fn warm_refresh_deletes_no_embedding_rows_without_foreign_vectors() {
+    let temp = repo_with_files(&[(
+        "src/a.rs",
+        "pub fn alpha() {}
+pub fn beta() {}
+",
+    )]);
+    let root = temp.path();
+    let db = code_index_db_path(root);
+    set_hybrid(root);
+    code_index::refresh(root).expect("first refresh");
+    let rows = count(&db, "SELECT COUNT(*) FROM code_embeddings");
+    assert!(rows >= 2);
+
+    rusqlite::Connection::open(&db)
+        .expect("open code_index")
+        .execute_batch(
+            "CREATE TRIGGER no_embedding_deletes BEFORE DELETE ON code_embeddings
+             BEGIN SELECT RAISE(ABORT, 'code_embeddings delete attempted'); END;",
+        )
+        .expect("install trigger");
+
+    let again = code_index::refresh(root).expect("warm refresh must not delete");
+    assert_eq!(again.embedded_chunks, 0);
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM code_embeddings"), rows);
+}
+
 /// A chunk whose only vector comes from another model or dimension is
 /// re-embedded with the bundled model on the next refresh, the foreign
 /// vector is removed, and it is never reused for the new row.
