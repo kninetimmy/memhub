@@ -1301,8 +1301,10 @@ setting(s) ...` line per repo (and `left ...` or the error); `--json`
 carries `retired_settings`, one `{label, removed, left, error}` entry per
 repo with something to report. After it, doctor reports `no ignored
 settings` in a repo whose keys were all removed. Before this change upgrade
-never read or wrote a repo's `config.toml`, so doctor kept warning about
-these keys until they were deleted by hand.
+read each repo's `config.toml` (through `open_project`, which also created a
+missing one from `config.example.toml` or the defaults) but never edited an
+existing one, so doctor kept warning about these keys until they were deleted
+by hand.
 
 `--dry-run` previews both. Before this change it listed each instance's
 schema and verdict only; it now also prints the `would remove` / `left`
