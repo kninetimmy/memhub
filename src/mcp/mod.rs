@@ -3381,6 +3381,59 @@ mod tests {
         assert!(message.contains("turbo"), "unexpected error: {message}");
     }
 
+    /// `include_stale` is accepted and ignored: parsed from the tool's JSON
+    /// parameters as true, false and absent, recall returns the same stale,
+    /// flagged fact every time.
+    #[test]
+    fn mcp_recall_include_stale_parameter_changes_nothing() {
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let (fact_id, _) = crate::commands::fact::add(
+            temp.path(),
+            "stale-mcp",
+            "mcpstaleparamprobe",
+            "user",
+            "cli:user",
+        )
+        .expect("fact");
+        let ctx = db::open_project(temp.path()).expect("open");
+        ctx.conn
+            .execute(
+                "UPDATE facts SET verified_at = datetime('now', '-100000 days') WHERE id = ?1",
+                [fact_id],
+            )
+            .expect("age fact");
+        drop(ctx);
+        let server = MemhubServer::new(temp.path().to_path_buf());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let results = |extra: serde_json::Value| {
+            let mut args = serde_json::json!({ "query": "mcpstaleparamprobe", "mode": "fts" });
+            args.as_object_mut()
+                .expect("object")
+                .extend(extra.as_object().expect("object").clone());
+            let params: RecallParams = serde_json::from_value(args).expect("parse params");
+            let response = runtime
+                .block_on(server.recall_impl(Parameters(params)))
+                .expect("recall");
+            serde_json::to_value(&response.0.results).expect("results json")
+        };
+
+        let omitted = results(serde_json::json!({}));
+        assert_eq!(omitted.as_array().expect("array").len(), 1, "{omitted}");
+        assert_eq!(omitted[0]["stale"], true, "{omitted}");
+        assert_eq!(
+            results(serde_json::json!({ "include_stale": true })),
+            omitted
+        );
+        assert_eq!(
+            results(serde_json::json!({ "include_stale": false })),
+            omitted
+        );
+    }
+
     /// Issue #232: `source_types=["arch"]` scopes recall to architecture
     /// sections, and an unknown value still fails listing `arch`.
     #[test]

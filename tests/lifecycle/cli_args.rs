@@ -445,6 +445,20 @@ fn recall_variant_flag_repeats_and_eval_no_variants_parses() {
     assert!(!no_variants(&["eval", "retrieval"]));
 }
 
+/// `recall --include-stale` parses to true and is off when omitted. The flag
+/// is accepted and ignored: recall returns stale facts either way.
+#[test]
+fn recall_include_stale_flag_parses_and_defaults_off() {
+    match parse(&["recall", "q", "--include-stale"]) {
+        TopLevelCommand::Recall { include_stale, .. } => assert!(include_stale),
+        other => panic!("expected Recall, got {other:?}"),
+    }
+    match parse(&["recall", "q"]) {
+        TopLevelCommand::Recall { include_stale, .. } => assert!(!include_stale),
+        other => panic!("expected Recall, got {other:?}"),
+    }
+}
+
 /// Issue #318: `recall --explain` parses, and is off by default.
 #[test]
 fn recall_explain_flag_parses_and_defaults_off() {
