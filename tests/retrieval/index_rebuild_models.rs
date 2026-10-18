@@ -193,9 +193,53 @@ fn rebuild_reports_the_repo_result_when_the_global_store_refuses() {
     let human = run(&["index", "rebuild"]);
     assert!(!human.status.success());
     let stdout = String::from_utf8_lossy(&human.stdout);
+    let stderr = String::from_utf8_lossy(&human.stderr);
     assert!(stdout.contains("repo:"), "repo line printed: {stdout}");
+    let message = out["global_error"].as_str().expect("global_error");
+    assert_eq!(
+        format!("{stdout}{stderr}").matches(message).count(),
+        1,
+        "global error shown exactly once: {stdout}{stderr}"
+    );
+}
+
+#[test]
+fn rebuild_reports_the_repo_result_when_the_home_directory_is_unresolvable() {
+    let f = Fixture::new();
+    f.ok(&["global", "enable"]);
+    plant_foreign_vector(&f.repo_db());
+
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_memhub"))
+            .args(args)
+            .current_dir(f.repo.path())
+            .env_remove("HOME")
+            .env_remove("USERPROFILE")
+            .env("MEMHUB_LOG", "off")
+            .output()
+            .expect("spawn memhub")
+    };
+
+    let json = run(&["index", "rebuild", "--json"]);
+    assert!(!json.status.success(), "global failure must exit non-zero");
+    let stdout = String::from_utf8_lossy(&json.stdout);
+    let out: Value =
+        serde_json::from_str(stdout.trim()).unwrap_or_else(|e| panic!("{e}: {stdout}"));
+    assert_eq!(out["facts"], 1, "repo result still reported: {out}");
+    assert_eq!(out["deleted"], 1);
+    assert!(out["global"].is_null());
     assert!(
-        stdout.contains("global: rebuild failed:"),
-        "global error printed: {stdout}"
+        out["global_error"]
+            .as_str()
+            .is_some_and(|e| e.contains("home directory")),
+        "global error reported: {out}"
+    );
+    assert_eq!(vector_counts(&f.repo_db()), (0, 1), "repo store committed");
+
+    let human = run(&["index", "rebuild"]);
+    assert!(!human.status.success());
+    assert!(
+        String::from_utf8_lossy(&human.stdout).contains("repo:"),
+        "repo line printed"
     );
 }

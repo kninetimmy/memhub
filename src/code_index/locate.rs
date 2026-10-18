@@ -32,11 +32,11 @@ use std::time::Instant;
 
 use rusqlite::{Connection, params};
 
-use crate::Result;
 use crate::config::{CodeIndexConfig, ProjectConfig, RetrievalMode};
 use crate::db;
 use crate::retrieval::embeddings::{EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME, embed_one};
 use crate::retrieval::util::{build_fts_match, bytes_to_vector, cosine_similarity, normalize_fts};
+use crate::{MemhubError, Result};
 
 use super::{code_index_db_path, open_code_index, refresh};
 
@@ -129,6 +129,13 @@ pub struct LocateResponse {
 /// FTS + vector candidates and return the ranked breadcrumbs.
 pub fn locate(start: &Path, options: LocateOptions) -> Result<LocateResponse> {
     let started = Instant::now();
+
+    // Same rule as recall: a blank query would otherwise embed and match every chunk.
+    if options.query.trim().is_empty() {
+        return Err(MemhubError::InvalidInput(
+            "locate query cannot be empty".to_string(),
+        ));
+    }
 
     // Lazy freshness: bring the index in line with the tree first. Cheap
     // (stat-only, no embed) when nothing changed. `--no-refresh` skips this

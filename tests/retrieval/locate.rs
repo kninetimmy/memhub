@@ -100,6 +100,39 @@ fn locate_finds_symbol_by_name_fts() {
     assert!(top.start_line >= 1);
 }
 
+/// A blank query is rejected as recall rejects it, even in hybrid mode where
+/// it would otherwise embed and match every chunk.
+#[test]
+fn locate_rejects_an_empty_or_whitespace_query() {
+    let temp = repo_with_files(&[(
+        "src/a.rs",
+        "pub fn alpha() {}
+",
+    )]);
+    let root = temp.path();
+    set_hybrid(root);
+
+    for query in [
+        "", "   ", "	
+",
+    ] {
+        let err = locate(
+            root,
+            LocateOptions {
+                query: query.to_string(),
+                limit: 5,
+                use_reranker: false,
+                no_refresh: false,
+            },
+        )
+        .expect_err("blank query must be rejected");
+        assert!(
+            matches!(err, memhub::MemhubError::InvalidInput(_)),
+            "{query:?}: {err:?}"
+        );
+    }
+}
+
 #[test]
 fn locate_auto_refreshes_a_never_indexed_repo() {
     let temp = repo_with_files(&[("src/a.rs", "pub fn alpha() {}\n")]);
@@ -284,25 +317,6 @@ fn locate_hybrid_blends_vector_and_returns_scores() {
     assert_eq!(top.symbol.as_deref(), Some("compute_checksum"));
     // Hybrid: the vector side contributed a non-zero similarity.
     assert!(top.vector_score > 0.0, "vector score should be populated");
-}
-
-#[test]
-fn locate_empty_query_returns_no_matches() {
-    let temp = repo_with_files(&[("src/a.rs", "pub fn alpha() {}\n")]);
-    let root = temp.path();
-
-    let response = locate(
-        root,
-        LocateOptions {
-            query: "   ".to_string(),
-            limit: 5,
-            use_reranker: false,
-            no_refresh: false,
-        },
-    )
-    .expect("locate");
-    assert!(response.results.is_empty());
-    assert_eq!(response.candidate_count, 0);
 }
 
 #[test]
