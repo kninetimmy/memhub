@@ -3532,7 +3532,7 @@ mod tests {
         );
         assert!(
             cfg.retrieval.include_stale_by_default,
-            "Q1 default is demote+flag: stale facts are included by default"
+            "retired knob keeps its serde default; recall ignores it (decision 236)"
         );
         assert_eq!(
             cfg.retrieval.rerank_doc_cap,
@@ -3627,14 +3627,37 @@ mod tests {
         .expect("write doc");
         doc::add(temp.path(), &doc_file, None, "cli:user").expect("ingest doc");
 
-        // The retired floors are pinned impossibly high; the cutoff alone
-        // decides, so both rows come back, in score order.
+        // The retired floors are pinned impossibly high on disk; the cutoff
+        // alone decides, so both rows come back, in score order. They are
+        // written as raw TOML because a config save drops them (they are
+        // skip_serializing), so edit_config alone would never put them on disk.
         edit_config(temp.path(), |cfg| {
             cfg.retrieval.mode = RetrievalMode::Hybrid;
-            cfg.retrieval.scoring.min_rerank_score = 1000.0;
-            cfg.retrieval.scoring.doc_min_rerank_score = 1001.0;
             cfg.retrieval.scoring.rerank_cutoff = -1000.0;
         });
+        let cfg_path = temp.path().join(".memhub/config.toml");
+        let text = std::fs::read_to_string(&cfg_path).expect("read config");
+        assert!(text.contains("[retrieval.scoring]"), "{text}");
+        std::fs::write(
+            &cfg_path,
+            text.replacen(
+                "[retrieval.scoring]",
+                "[retrieval.scoring]
+min_rerank_score = 1000.0
+doc_min_rerank_score = 1001.0",
+                1,
+            ),
+        )
+        .expect("write config");
+        let on_disk = std::fs::read_to_string(&cfg_path).expect("reread config");
+        assert!(on_disk.contains("min_rerank_score = 1000.0"), "{on_disk}");
+        assert!(
+            on_disk.contains("doc_min_rerank_score = 1001.0"),
+            "{on_disk}"
+        );
+        let loaded = ProjectConfig::load(&cfg_path).expect("load config");
+        assert_eq!(loaded.retrieval.scoring.min_rerank_score, 1000.0);
+        assert_eq!(loaded.retrieval.scoring.doc_min_rerank_score, 1001.0);
         let kept = recall(
             temp.path(),
             explain_opts("cutoffprobe", RetrievalMode::Hybrid, 5, vec![]),
