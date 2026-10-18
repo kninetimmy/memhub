@@ -288,7 +288,7 @@ entirely.
 returns hits in strict re-ranker score order, highest first, for every row
 type, after any row named by number (below). Recall does not judge relevance:
 the calling agent reads the hits and decides which ones answer the question.
-One low cutoff, `[retrieval.scoring] rerank_cutoff` (default -5.0), drops only
+One low cutoff, `[retrieval.scoring] rerank_cutoff` (default -7.0), drops only
 nonsense: a row whose re-ranker score is below it is not returned, whatever
 its type. A candidate's score is its score against the query or, for a
 two-question query, its best part (see "Two-question queries" below). When
@@ -296,11 +296,13 @@ candidates existed but none cleared the cutoff and no named row is returned,
 the response is empty and carries a `rerank_cutoff_dropped_all` warning that
 names the cutoff and the highest score seen. Override the cutoff per call with
 `memhub recall --rerank-cutoff <F>` or `memhub eval retrieval --rerank-cutoff
-<F>`. Calibration: on 344 blind questions across six repositories the top
-result answered the question 77% of the time and an answer was in the top 3
-88% of the time, but the scores of right and wrong rows overlap, so no fixed
-threshold separates them; -5.0 kept 257 of the 265 judged answers while every
-off-topic probe on memhub's live set returned nothing. Without the re-ranker
+<F>`. Calibration: the scores of right and wrong rows overlap, so no fixed
+threshold separates them. The default was re-measured 2026-10-17 on 344 blind
+questions across six repositories (questions written without the stored
+wording, judged for multiple acceptable answers, with 9 off-topic probes per
+repository): at -7.0 only 5 questions came back empty and 313 (91%) had an
+answer in the top 3, against 19 and 297 (86%) at -5.0, while 46 of 54
+off-topic probes still returned nothing (49 at -5.0). Without the re-ranker
 (FTS-only mode, `--no-rerank`, `use_reranker = false`) there is no re-ranker
 score: `rerank_score` is null, hits keep the blended FTS/vector order and no
 cutoff applies (default-included doc chunks are still left out then, since
@@ -622,12 +624,13 @@ shipped `tests/retrieval_golden.json`. That is the same pattern
 seeded fresh per run, independent of live `.memhub` state — applied to the
 retrieval golden.
 
-Baseline (hybrid mode, default rerank cutoff -5.0): the golden set is 36
+Baseline (hybrid mode, default rerank cutoff -7.0): the golden set is 36
 queries (31 match, 1 gibberish empty probe and 4 `near-` probes) and the code
 scores Recall@3 = 31/31 match, all 31 at rank 1; the gibberish probe returns
-nothing (0 safety failures), and 3 of the 4 near-topic probes return nothing
-(`near-embedding-quantization` returns one related decision, which eval
-reports rather than fails). First recorded 2026-07-06 (issue #44) as 100% on
+nothing (0 safety failures; its top re-ranker score is about -8.9), and 2 of
+the 4 near-topic probes return nothing (`near-embedding-quantization` and
+`near-mcp-auth-tokens` return related rows, topping out at -4.91 and -5.51,
+which eval reports rather than fails; the test pins both ids). First recorded 2026-07-06 (issue #44) as 100% on
 the then-smaller set, extended by issue #225, and re-recorded 2026-10-17 for
 decision 235 (before it, all 5 empty-kind probes passed, three keyword-bag
 matches only as weak leads after the rows that cleared the old threshold). This is the reference other
@@ -850,7 +853,7 @@ fact_stale_after_days = 90       # facts older than this are flagged stale
 [retrieval.scoring]
 fts_weight = 0.5
 vector_weight = 0.5
-rerank_cutoff = -5.0             # rows re-ranked below this are not returned
+rerank_cutoff = -7.0             # rows re-ranked below this are not returned
 
 [global]
 enabled = false                  # opt-in via `memhub global enable`

@@ -475,6 +475,16 @@ Decision 235 replaced the relevance floor and the low-confidence results
   `use_reranker = false`) hits keep the blended-score order and no cutoff
   applies.
 
+The re-measurement of 2026-10-17 changed that default (the decision 235 text
+above is kept as recorded):
+
+- Before: `rerank_cutoff` defaulted to -5.0, which returned nothing at all for
+  19 of 344 blind questions (answer in the top 3 for 297, 86%).
+- After: `rerank_cutoff` defaults to -7.0: only 5 of the 344 questions come
+  back empty and 313 (91%) have an answer in the top 3, while 46 of 54
+  off-topic probes still return nothing (49 at -5.0). A config that sets
+  `rerank_cutoff` keeps its value.
+
 MCP write tools are unchanged in M8. Agent-originated facts and
 decisions continue to stage through `pending_writes` and require
 review (PRD §11.3); `recall` is read-only.
