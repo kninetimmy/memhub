@@ -452,7 +452,7 @@ fn runs_memhub_command(command: &str) -> bool {
 /// its target so the link survives, and the original's permissions carry
 /// over. On Unix the directory is synced after the rename so the rename
 /// itself is durable.
-fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let real: PathBuf = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let original = std::fs::metadata(&real).ok();
     if original.is_some() {

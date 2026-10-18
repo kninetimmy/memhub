@@ -406,8 +406,9 @@ const KNOWN_LEAVES: &[&str] = &[
 
 /// Settings that still load but no longer do anything. Each must stay in
 /// `KNOWN_LEAVES` (so it is not also reported as unknown); add a retired
-/// key's dotted path here and `check_ignored_settings` names it.
-const IGNORED_LEAVES: &[&str] = &[
+/// key's dotted path here and `check_ignored_settings` names it and
+/// `memhub upgrade` removes it from each repo's config.toml (issue #393).
+pub(crate) const IGNORED_LEAVES: &[&str] = &[
     // Staleness is informational in recall (decision 236).
     "retrieval.include_stale_by_default",
     "retrieval.scoring.stale_penalty",
@@ -776,7 +777,10 @@ fn check_baseline_drift(local: &toml::Value, memhub_dir: &Path) -> Check {
     }
 }
 
-fn lookup_toml_path<'a>(value: &'a toml::Value, dotted: &str) -> Option<&'a toml::Value> {
+pub(crate) fn lookup_toml_path<'a>(
+    value: &'a toml::Value,
+    dotted: &str,
+) -> Option<&'a toml::Value> {
     let mut cur = value;
     for part in dotted.split('.') {
         cur = cur.as_table()?.get(part)?;
