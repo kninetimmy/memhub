@@ -282,10 +282,9 @@ fn seed_hermetic_corpus(root: &Path) {
     // distinct from the hand-written stale_embeddings UX decision seeded
     // above. Carries decision 28's real backfilled `summary` — per
     // operations.md this is one of the "four jargon-titled decisions"
-    // whose summary backfill lifted the real Recall@3 from 76.5% to 100%,
-    // and it is load-bearing here too: without it the cross-encoder logit
-    // for this paraphrase falls far enough that the row no longer ranks
-    // first.)
+    // whose summary backfill lifted the real Recall@3 from 76.5% to 100%.
+    // That the summary is also needed here, so the row still ranks first,
+    // is an untested claim: no assertion removes it and checks the rank.)
     decision::add_with_decided_at(
         root,
         "content_hash drift detection per embedding",
