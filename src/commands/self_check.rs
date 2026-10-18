@@ -5,12 +5,21 @@
 //! check needs no golden set: it samples that repository's own facts,
 //! decisions, tasks, doc chunks and architecture sections, queries recall
 //! with each sampled row's title and, separately, with a passage of the
-//! row's own text, and checks whether the row comes back.
+//! row's own text, and checks whether the row comes back. Doc chunks are
+//! checked by the passage form only: a chunk's heading path shares its words
+//! with its parent and sibling sections, which fill the few default-included
+//! doc slots of the re-rank pool, so it is not a fair known-item probe.
+//! Superseded facts and decisions are not sampled: recall ranks them below
+//! their replacements on purpose.
 //!
-//! Read-only (decision 51): it drives the shared `retrieval::recall` engine
-//! with an agent's plain-recall defaults and `log_metrics: false`, so it
-//! stages no pending write, logs nothing to `writes_log`, and appends
-//! nothing to `recall_metrics` or the `recall_queries.jsonl` query log.
+//! It adds or changes no fact, decision, task, session note, document,
+//! architecture section or `writes_log` entry (decision 51): it drives the
+//! shared `retrieval::recall_with` engine with an agent's plain-recall
+//! defaults and `log_metrics: false`, so it stages no pending write, logs
+//! nothing to `writes_log`, and appends nothing to `recall_metrics` or the
+//! `recall_queries.jsonl` query log. Like every command it runs
+//! maintenance-on-open (see the "Maintenance-on-open contract" in
+//! `docs/reference/operations.md`), once per run.
 
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
@@ -91,17 +100,18 @@ struct SampledRow {
 
 /// Per-type SQL: `SELECT id, <title>, <body>` ordered by id, with `LIMIT 1
 /// OFFSET ?1` appended by the caller. Doc chunks fall back to the document
-/// title when the chunk has no heading.
+/// title when the chunk has no heading. Superseded facts and decisions are
+/// left out of both the count and the rows; done tasks stay in.
 const TYPES: [(SourceType, &str, &str); 5] = [
     (
         SourceType::Fact,
-        "SELECT COUNT(*) FROM facts",
-        "SELECT id, key, value FROM facts ORDER BY id LIMIT 1 OFFSET ?1",
+        "SELECT COUNT(*) FROM facts WHERE superseded_by IS NULL",
+        "SELECT id, key, value FROM facts WHERE superseded_by IS NULL ORDER BY id LIMIT 1 OFFSET ?1",
     ),
     (
         SourceType::Decision,
-        "SELECT COUNT(*) FROM decisions",
-        "SELECT id, title, rationale FROM decisions ORDER BY id LIMIT 1 OFFSET ?1",
+        "SELECT COUNT(*) FROM decisions WHERE superseded_by IS NULL",
+        "SELECT id, title, rationale FROM decisions WHERE superseded_by IS NULL ORDER BY id LIMIT 1 OFFSET ?1",
     ),
     (
         SourceType::Task,
@@ -149,14 +159,19 @@ pub fn run(start: &std::path::Path, sample: usize) -> Result<SelfCheckReport> {
         };
         for row in &rows {
             let queries = [
-                (Form::Title, Some(row.title.trim().to_string())),
+                // A doc chunk cannot be queried by title (module doc), so
+                // that form is not counted, as for a task without notes.
+                (
+                    Form::Title,
+                    (source_type != SourceType::DocChunk).then(|| row.title.trim().to_string()),
+                ),
                 (Form::Passage, passage(&row.body)),
             ];
             for (form, query) in queries {
                 let Some(query) = query.filter(|q| !q.is_empty()) else {
                     continue;
                 };
-                let rank = rank_of(start, source_type, row.id, &query, &mut report.mode)?;
+                let rank = rank_of(&ctx, source_type, row.id, &query, &mut report.mode)?;
                 let counts = match form {
                     Form::Title => &mut tr.title,
                     Form::Passage => &mut tr.passage,
@@ -222,14 +237,14 @@ fn passage(body: &str) -> Option<String> {
 
 /// 1-based rank of the repo row among the hits of a plain recall for `query`.
 fn rank_of(
-    start: &std::path::Path,
+    ctx: &db::ProjectContext,
     source_type: SourceType,
     source_id: i64,
     query: &str,
     mode: &mut Option<RetrievalMode>,
 ) -> Result<Option<usize>> {
-    let response = retrieval::recall(
-        start,
+    let response = retrieval::recall_with(
+        ctx,
         RecallOptions {
             query: query.to_string(),
             mode: None,

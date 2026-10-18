@@ -772,17 +772,34 @@ recall works in a repository memhub was dropped into. `memhub eval
 self-check [--sample N] [--json]` needs no golden set: after `memhub init`
 (and `memhub index rebuild` in hybrid mode) it samples this repository's own
 rows of each type — fact, decision, task, doc chunk and architecture section —
-and asks recall for each one twice:
+and asks recall for each one, in up to two forms:
 
-- the **title** query is the row's own title (a fact's key, a doc chunk's or
-  section's heading path; a doc chunk with no heading uses its document title);
+- the **title** query is the row's own title (a fact's key, a decision's or
+  task's title, an architecture section's heading path). Doc chunks have no
+  title query (see below);
 - the **passage** query is a 12-word span from the middle of the row's own
   text. A row with no text (a task without notes) has no passage query and is
   not counted for that form.
 
-Each query is a plain `memhub recall` with an agent's defaults (default source
-types and result count; the project's retrieval mode), and a
-row "comes back" when the returned hits include that repository row.
+Superseded facts and decisions are neither sampled nor counted in the per-type
+row totals: recall ranks them below their replacements on purpose, so failing
+to surface one would not be a recall fault. Done tasks are still sampled, as
+recall keeps them visible.
+
+A doc chunk is checked by the passage form only, because a heading-path query
+is not a fair known-item probe for one. A chunk's heading path starts with its
+document's top heading and shares its words with the parent and sibling
+sections of the same document. Only `rerank_doc_cap` (default 3)
+default-included doc chunks enter the re-rank pool, so those siblings take the
+slots and the target chunk never reaches the re-ranker, even though a worded
+question about its content finds it.
+
+Each query runs through the same recall code as `memhub recall`, with an
+agent's defaults (default source types and result count; the project's
+retrieval mode), against one open of the project for the whole run, so the
+rank reported for a row is the rank `memhub recall` returns for that query on
+the same database. A row "comes back" when the returned hits include that
+repository row.
 `--sample` sets the rows sampled per type (default 10). The sample is spread
 evenly across the rows ordered by id, so an unchanged database draws the same
 sample on every run.
@@ -800,16 +817,21 @@ either the rank it had (when it came back below the top 3) or "not returned".
 A type with zero rows reports zero everywhere. A form that finds almost
 nothing for a whole type points at a recall problem rather than at single
 rows: for example doc chunks missing
-because `include_docs_in_default` is off, or architecture sections missing
-because they were never embedded. Passage misses on long, generic text are
+because `include_docs_in_default` is off, or architecture sections that were
+never embedded. An architecture section without an embedding is still found
+by keyword matching on its exact title (it has a full-text index) and loses
+only meaning-based matching; recall warns `missing_embeddings` for it. Passage misses on long, generic text are
 less alarming than title misses on distinctive titles.
 
-The command is read-only, like `eval retrieval` (decision 51): it adds,
-changes or deletes no fact, decision, task, session note, document,
-architecture section or `writes_log` entry, and, since it calls recall with
-metrics logging off, appends nothing to `recall_metrics` or the
-`recall_queries.jsonl` query log. It runs two recalls per sampled row, so the
-default sample is up to 100 recalls. Test:
+Like `eval retrieval` (decision 51), the command adds or changes no fact,
+decision, task, session note, document, architecture section or `writes_log`
+entry, and, since it calls recall with metrics logging off, appends nothing to
+`recall_metrics` or the `recall_queries.jsonl` query log. It is not literally
+read-only: like every command it runs maintenance-on-open once (see
+"Maintenance-on-open contract" above), which can apply a pending migration,
+upsert the `projects` row and expire aged pending writes. It runs up to two
+recalls per sampled row (one for doc chunks), so the default sample is up to
+90 recalls. Test:
 `tests/retrieval/self_check.rs`.
 
 ### Retrieval modes and configuration
