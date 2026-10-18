@@ -38,5 +38,7 @@ mod upgrade_manifest;
 mod upgrade_registry;
 #[path = "upgrade/upgrade_resync_transient.rs"]
 mod upgrade_resync_transient;
+#[path = "upgrade/upgrade_retired_settings.rs"]
+mod upgrade_retired_settings;
 #[path = "upgrade/upgrade_skills.rs"]
 mod upgrade_skills;

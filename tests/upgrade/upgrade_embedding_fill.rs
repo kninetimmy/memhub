@@ -1,6 +1,8 @@
 //! Issue #382: `memhub upgrade` embeds every row that lacks an active-model
 //! vector in each hybrid-mode project database and in the machine-global
-//! store, reports the count per instance, and leaves fts-mode repos alone.
+//! store, reports the count per instance, and leaves fts-mode repos alone;
+//! `upgrade --dry-run` previews how many rows each of those stores lacks
+//! (issue #393).
 //!
 //! Every memhub call is a spawned child with `HOME` and `USERPROFILE` at a
 //! tempdir, so the real home, its global store and registry are never
@@ -11,7 +13,7 @@ use std::process::{Command, Output};
 
 use rusqlite::Connection;
 use serde_json::Value;
-use tempfile::{TempDir, tempdir};
+use tempfile::{Builder, TempDir, tempdir};
 
 fn memhub(cwd: &Path, home: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_memhub"))
@@ -53,15 +55,42 @@ fn vectors(db: &Path) -> i64 {
         .expect("count embeddings")
 }
 
-/// A repo whose rows were all written under fts, so none has a vector.
+/// The source-row kinds every test repo seeds, by `index status --json` key.
+const SEEDED: [&str; 5] = ["facts", "decisions", "tasks", "doc_chunks", "arch_sections"];
+
+/// A repo whose rows were all written under fts, so none has a vector: a
+/// fact, a decision, a task, an ingested doc and two architecture sections.
+/// Its path holds a space, which upgrade's labels carry verbatim.
 fn unembedded_repo(home: &Path) -> TempDir {
-    let repo = tempdir().expect("repo");
+    let repo = Builder::new()
+        .prefix("memhub repo ")
+        .tempdir()
+        .expect("repo");
     ok(repo.path(), home, &["init"]);
     set_mode(repo.path(), "fts");
     ok(
         repo.path(),
         home,
         &["fact", "add", "build-command", "cargo build"],
+    );
+    ok(
+        repo.path(),
+        home,
+        &[
+            "decision",
+            "add",
+            "Use SQLite",
+            "--rationale",
+            "one file per repo",
+        ],
+    );
+    ok(repo.path(), home, &["task", "add", "Write the guide"]);
+    let doc = repo.path().join("guide.md");
+    std::fs::write(&doc, "# Guide\n\nRun the build before a release.\n").expect("write doc");
+    ok(
+        repo.path(),
+        home,
+        &["doc", "add", doc.to_str().expect("utf-8")],
     );
     let arch = repo.path().join("arch.md");
     std::fs::write(
@@ -75,6 +104,24 @@ fn unembedded_repo(home: &Path) -> TempDir {
         &["arch", "set", "--from-file", arch.to_str().expect("utf-8")],
     );
     repo
+}
+
+fn index_status(repo: &Path, home: &Path) -> Value {
+    serde_json::from_str(ok(repo, home, &["index", "status", "--json"]).trim())
+        .expect("index status json")
+}
+
+/// `upgrade --dry-run --json`, run from the source repo as upgrade requires.
+fn dry_run(home: &Path, also: &[&Path]) -> Value {
+    let mut args = vec!["upgrade", "--dry-run", "--json", "--no-gc", "--no-hooks"];
+    let roots: Vec<String> = also.iter().map(|p| p.display().to_string()).collect();
+    for r in &roots {
+        args.push("--also");
+        args.push(r);
+    }
+    let stdout = ok(Path::new(env!("CARGO_MANIFEST_DIR")), home, &args);
+    serde_json::from_str(stdout.lines().next().expect("json line"))
+        .unwrap_or_else(|e| panic!("{e}: {stdout}"))
 }
 
 fn finish(home: &Path, also: &[&Path], json: bool) -> String {
@@ -117,30 +164,22 @@ fn row(body: &Value, repo: Option<&Path>) -> Value {
         .clone()
 }
 
-/// The EMBEDDED cell of the text table's row for `repo` (or the global
-/// store when `None`). Columns: INSTANCE, SCHEMA (one token once at head),
-/// EMBEDDED, STATUS. The global label `<global store>` holds a space; repo
-/// labels (tempdir paths) do not.
-fn embedded_cell(text: &str, repo: Option<&Path>) -> String {
+/// The EMBEDDED cell of the text table's row labelled `label` (taken from
+/// the JSON output, so a label holding spaces, like a repo path with one or
+/// `<global store>`, is matched whole). Columns: INSTANCE, SCHEMA (one
+/// token once at head), EMBEDDED, STATUS.
+fn embedded_cell(text: &str, label: &str) -> String {
     let rest: Vec<&str> = text
         .lines()
         .find_map(|l| {
-            let l = l.trim_start();
-            match repo {
-                None => l
-                    .strip_prefix("<global store>")
-                    .map(|r| r.split_whitespace().collect()),
-                Some(p) => {
-                    let mut w = l.split_whitespace();
-                    w.next()
-                        .filter(|label| names(label, p))
-                        .map(|_| w.collect())
-                }
-            }
+            l.trim_start()
+                .strip_prefix(label)
+                .filter(|r| r.starts_with(' '))
+                .map(|r| r.split_whitespace().collect())
         })
-        .unwrap_or_else(|| panic!("no {repo:?} line: {text}"));
+        .unwrap_or_else(|| panic!("no {label:?} line: {text}"));
     rest.get(1)
-        .unwrap_or_else(|| panic!("short {repo:?} line: {text}"))
+        .unwrap_or_else(|| panic!("short {label:?} line: {text}"))
         .to_string()
 }
 
@@ -163,32 +202,74 @@ fn upgrade_embeds_missing_rows_in_hybrid_repos_and_the_global_store() {
     let global_db = home.path().join(".memhub").join("global.sqlite");
     assert_eq!(vectors(&hybrid_db), 0);
     assert_eq!(vectors(&global_db), 0);
+    let before = index_status(hybrid.path(), home.path());
+    for kind in SEEDED {
+        assert!(
+            before[kind]["total"].as_i64() >= Some(1),
+            "{kind}: {before}"
+        );
+        assert_eq!(before[kind]["embedded"], 0, "{kind}: {before}");
+    }
+    let expected = before["missing_count"].as_i64().expect("missing_count");
+
+    // The dry run counts what the fill would embed and writes nothing.
+    let preview = dry_run(home.path(), &[hybrid.path(), fts.path()]);
+    let h = row(&preview, Some(hybrid.path()));
+    assert_eq!(h["would_fill"], true, "{h}");
+    assert_eq!(h["lacking_embeddings"], expected, "{h}");
+    let f = row(&preview, Some(fts.path()));
+    assert_eq!(f["would_fill"], false, "{f}");
+    assert!(f["lacking_embeddings"].is_null(), "{f}");
+    assert_eq!(
+        preview["global_store"]["lacking_embeddings"], 1,
+        "{preview}"
+    );
+    assert_eq!(vectors(&hybrid_db), 0);
+    assert_eq!(vectors(&global_db), 0);
 
     let stdout = finish(home.path(), &[hybrid.path(), fts.path()], true);
     let body: Value = serde_json::from_str(stdout.lines().next().expect("json line"))
         .unwrap_or_else(|e| panic!("{e}: {stdout}"));
     let h = row(&body, Some(hybrid.path()));
-    // One fact + two architecture sections.
-    assert_eq!(h["embedded"], 3, "{h}");
+    assert_eq!(h["embedded"], expected, "{h}");
     let g = row(&body, None);
     assert_eq!(g["embedded"], 1, "{g}");
     let f = row(&body, Some(fts.path()));
     assert!(f["embedded"].is_null(), "fts repo is not filled: {f}");
 
-    assert_eq!(vectors(&hybrid_db), 3);
+    assert_eq!(vectors(&hybrid_db), expected);
     assert_eq!(vectors(&global_db), 1);
     assert_eq!(vectors(&fts_db), 0, "fts repo writes no embeddings");
-    let status: Value =
-        serde_json::from_str(ok(hybrid.path(), home.path(), &["index", "status", "--json"]).trim())
-            .expect("index status json");
+    let status = index_status(hybrid.path(), home.path());
+    for kind in SEEDED {
+        assert_eq!(
+            status[kind]["embedded"], status[kind]["total"],
+            "{kind}: {status}"
+        );
+    }
     assert_eq!(status["missing_count"], 0, "{status}");
 
     // Nothing left to embed: the hybrid repo's and the global store's
     // EMBEDDED cells read 0; the fts repo's reads `-` (no fill ran).
     let text = finish(home.path(), &[hybrid.path(), fts.path()], false);
     assert!(text.contains("EMBEDDED"), "{text}");
-    assert_eq!(embedded_cell(&text, Some(hybrid.path())), "0", "{text}");
-    assert_eq!(embedded_cell(&text, None), "0", "{text}");
-    assert_eq!(embedded_cell(&text, Some(fts.path())), "-", "{text}");
-    assert_eq!(vectors(&hybrid_db), 3);
+    let label = |repo| {
+        row(&body, repo)["label"]
+            .as_str()
+            .expect("label")
+            .to_string()
+    };
+    assert!(label(Some(hybrid.path())).contains(' '), "{body}");
+    assert_eq!(
+        embedded_cell(&text, &label(Some(hybrid.path()))),
+        "0",
+        "{text}"
+    );
+    assert_eq!(embedded_cell(&text, &label(None)), "0", "{text}");
+    assert_eq!(
+        embedded_cell(&text, &label(Some(fts.path()))),
+        "-",
+        "{text}"
+    );
+    assert_eq!(vectors(&hybrid_db), expected);
 }

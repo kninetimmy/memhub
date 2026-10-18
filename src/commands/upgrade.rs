@@ -67,7 +67,7 @@ use serde_json::json;
 use crate::commands::hook::{self, HookInstall};
 use crate::commands::index;
 use crate::commands::install_manifest::{self, InstallManifest};
-use crate::config::RetrievalMode;
+use crate::config::{ProjectConfig, RetrievalMode};
 use crate::db;
 use crate::retrieval::util::sha256_hex;
 use crate::retrieval::{self, RecallOptions};
@@ -955,10 +955,12 @@ fn finish_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
 
     let mut reports: Vec<InstanceReport> = Vec::new();
     let mut removed_stale_files: Vec<String> = Vec::new();
+    let mut retired: Vec<RetiredSettings> = Vec::new();
     for root in &roots {
         for removed in cleanup_stale_sync_md_twins(root) {
             removed_stale_files.push(format!("{}: {}", abbrev(root), abbrev(&removed)));
         }
+        retired.extend(clean_retired_settings(root, true));
         reports.push(verify_repo(root));
     }
     reports.push(verify_global());
@@ -1010,6 +1012,7 @@ fn finish_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
         &orphans,
         &old_exe_leftovers,
         &removed_stale_files,
+        &retired,
         &warnings,
         first_run,
         &audit_nag,
@@ -1148,6 +1151,151 @@ fn cleanup_stale_sync_md_twins(root: &Path) -> Vec<PathBuf> {
             Some(path)
         })
         .collect()
+}
+
+/// One repo's retired-settings cleanup (issue #393): the settings doctor
+/// reports as ignored (`doctor::IGNORED_LEAVES`) that upgrade removed (or,
+/// under `--dry-run`, would remove) from its `config.toml`, those it left
+/// because they are not set on a line of their own, and why the file was
+/// left alone, if it was.
+#[derive(Debug, Default, Serialize)]
+struct RetiredSettings {
+    label: String,
+    removed: Vec<&'static str>,
+    left: Vec<&'static str>,
+    error: Option<String>,
+}
+
+/// The text with every setting of `leaves` that sits on its own `key = value`
+/// line removed (that whole line, its line ending included; every other
+/// byte kept), the settings removed, and the settings left in place. Errs
+/// when `raw` is not valid TOML. A removal is kept only when the edited
+/// text parses to exactly the old document minus that one setting, so a
+/// dotted key (`scoring.stale_penalty = 0.3`), an inline table, a quoted
+/// key or a multi-line value is left and listed, and a commented-out key
+/// (not set) is neither touched nor listed.
+fn strip_retired_settings(
+    raw: &str,
+    leaves: &[&'static str],
+) -> std::result::Result<(String, Vec<&'static str>, Vec<&'static str>), toml::de::Error> {
+    let mut value: toml::Value = toml::from_str(raw)?;
+    let mut text = raw.to_string();
+    let (mut removed, mut left) = (Vec::new(), Vec::new());
+    for &leaf in leaves {
+        if crate::commands::doctor::lookup_toml_path(&value, leaf).is_none() {
+            continue;
+        }
+        // A top-level key has table "": the lines before the first header.
+        let (table, key) = leaf.rsplit_once('.').unwrap_or(("", leaf));
+        let mut expected = value.clone();
+        table
+            .split('.')
+            .filter(|part| !part.is_empty())
+            .try_fold(&mut expected, |v, part| v.get_mut(part))
+            .and_then(|v| v.as_table_mut())
+            .and_then(|t| t.remove(key));
+        let edited = own_line(&text, table, key).and_then(|span| {
+            let mut t = text.clone();
+            t.replace_range(span, "");
+            (toml::from_str::<toml::Value>(&t).ok()? == expected).then_some(t)
+        });
+        match edited {
+            Some(t) => {
+                text = t;
+                value = expected;
+                removed.push(leaf);
+            }
+            None => left.push(leaf),
+        }
+    }
+    Ok((text, removed, left))
+}
+
+/// Byte range, line ending included, of the first line under the `[table]`
+/// header that starts with the bare `key` followed by `=`.
+fn own_line(text: &str, table: &str, key: &str) -> Option<std::ops::Range<usize>> {
+    let mut current = String::new();
+    let mut start = 0;
+    for line in text.split_inclusive('\n') {
+        let end = start + line.len();
+        let t = line.trim_start_matches('\u{feff}').trim();
+        if let Some(header) = t.strip_prefix('[') {
+            // `[[array]]` leaves a leading `[` here, so it never matches.
+            let name = header.split(']').next().unwrap_or_default();
+            current = name.split('.').map(str::trim).collect::<Vec<_>>().join(".");
+        } else if current == table
+            && t.strip_prefix(key)
+                .is_some_and(|rest| rest.trim_start().starts_with('='))
+        {
+            return Some(start..end);
+        }
+        start = end;
+    }
+    None
+}
+
+/// Remove the retired settings from `root`'s `.memhub/config.toml` (only
+/// report what would go when `write` is false). `None` when there is
+/// nothing to say: no config, or none of the settings set. The rewrite is a
+/// temp file renamed into place, so a crash leaves the old file whole.
+fn clean_retired_settings(root: &Path, write: bool) -> Option<RetiredSettings> {
+    let path = root.join(".memhub").join(db::CONFIG_FILENAME);
+    let mut report = RetiredSettings {
+        label: abbrev(root),
+        ..Default::default()
+    };
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => {
+            report.error = Some(format!("could not read config.toml ({e}); left unchanged"));
+            return Some(report);
+        }
+    };
+    match strip_retired_settings(&raw, crate::commands::doctor::IGNORED_LEAVES) {
+        Err(_) => report.error = Some("config.toml is not valid TOML; left unchanged".to_string()),
+        Ok((text, removed, left)) => {
+            report.left = left;
+            if write
+                && !removed.is_empty()
+                && let Err(e) = hook::write_atomic(&path, text.as_bytes())
+            {
+                report.error = Some(format!(
+                    "could not rewrite config.toml ({e}); left unchanged, still set: {}",
+                    removed.join(", ")
+                ));
+            } else {
+                report.removed = removed;
+            }
+        }
+    }
+    (report.error.is_some() || !report.removed.is_empty() || !report.left.is_empty())
+        .then_some(report)
+}
+
+/// The text lines for a repo's retired-settings cleanup; `dry` words them
+/// as what a real run would do.
+fn retired_lines(r: &RetiredSettings, dry: bool) -> Vec<String> {
+    let mut out = Vec::new();
+    if !r.removed.is_empty() {
+        let verb = if dry { "would remove" } else { "removed" };
+        out.push(format!(
+            "{}: {verb} retired setting(s) {}",
+            r.label,
+            r.removed.join(", ")
+        ));
+    }
+    if !r.left.is_empty() {
+        out.push(format!(
+            "{}: left retired setting(s) {} (not on a `key = value` line of its own; delete by hand)",
+            r.label,
+            r.left.join(", ")
+        ));
+    }
+    if let Some(e) = &r.error {
+        out.push(format!("{}: {e}", r.label));
+    }
+    out
 }
 
 fn verify_repo(root: &Path) -> InstanceReport {
@@ -1515,7 +1663,8 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
     }
     roots.extend(args.also.iter().cloned());
 
-    let mut previews: Vec<(String, Option<String>, &'static str)> = Vec::new();
+    let mut previews: Vec<(String, Option<String>, &'static str, FillPreview)> = Vec::new();
+    let mut retired: Vec<RetiredSettings> = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
     for root in &roots {
         let key = root
@@ -1526,6 +1675,7 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
         if !seen.insert(key) {
             continue;
         }
+        retired.extend(clean_retired_settings(root, false));
         let db_path = root.join(".memhub").join("project.sqlite");
         if !db_path.exists() {
             // Dead registry rows are summarized by `would_prune`; don't
@@ -1538,7 +1688,10 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
         } else {
             "would migrate"
         };
-        previews.push((abbrev(root), cur, verdict));
+        let label = abbrev(root);
+        let fill =
+            repo_would_fill(root).then(|| preview_fill(&db_path, verdict, &label, &mut warnings));
+        previews.push((label, cur, verdict, fill));
     }
     let global_preview = if db::global_store_exists()? {
         let cur = global_ledger_schema();
@@ -1547,9 +1700,16 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
         } else {
             "would migrate"
         };
-        (cur, verdict)
+        // Filled whatever mode, like the real run's `verify_global`.
+        let fill = preview_fill(
+            &db::global_db_path()?,
+            verdict,
+            "<global store>",
+            &mut warnings,
+        );
+        (cur, verdict, Some(fill))
     } else {
-        (None, "absent (opt in via `memhub global enable`)")
+        (None, "absent (opt in via `memhub global enable`)", None)
     };
 
     let would_prune = db::registry::dead_roots().map(|d| d.len()).unwrap_or(0);
@@ -1577,18 +1737,29 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
                 "head_schema": head,
                 "path_shadow": shadow_state,
                 "would_prune": would_prune,
+                // `would_fill`: the embedding fill would run here;
+                // `lacking_embeddings`: rows with no active-model vector,
+                // null when no fill runs or the store is behind head.
                 "instances": previews
                     .iter()
-                    .map(|(l, c, v)| json!({
+                    .map(|(l, c, v, f)| json!({
                         "label": l,
                         "schema": c,
                         "verdict": v,
+                        "would_fill": f.is_some(),
+                        "lacking_embeddings": f.flatten(),
                     }))
                     .collect::<Vec<_>>(),
                 "global_store": {
                     "schema": global_preview.0,
                     "verdict": global_preview.1,
+                    "would_fill": global_preview.2.is_some(),
+                    "lacking_embeddings": global_preview.2.flatten(),
                 },
+                // Retired settings (issue #393) a real run would remove
+                // (`removed`) or leave (`left`), per repo; same shape as
+                // the real run's field.
+                "retired_settings": retired,
                 "skills": resync.agents,
                 "hooks": hooks,
                 // Resync orphans (U6): files memhub installed before but no
@@ -1623,20 +1794,25 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
         println!("  would prune:  {would_prune} stale registry entries (repo gone)");
     }
     println!("  instances ({}):", previews.len());
-    for (label, cur, verdict) in &previews {
+    for (label, cur, verdict, fill) in &previews {
         println!(
-            "    {:<40} {:<10} {}",
+            "    {:<40} {:<10} {}{}",
             label,
             cur.as_deref().unwrap_or("(none)"),
-            verdict
+            verdict,
+            fill_note(*fill)
         );
     }
     println!(
-        "    {:<40} {:<10} {}",
+        "    {:<40} {:<10} {}{}",
         "<global store>",
         global_preview.0.as_deref().unwrap_or("(none)"),
-        global_preview.1
+        global_preview.1,
+        fill_note(global_preview.2)
     );
+    for line in retired.iter().flat_map(|r| retired_lines(r, true)) {
+        println!("  config:       {line}");
+    }
     for s in &resync.agents {
         println!("  skills:       {}", s.dry_line());
     }
@@ -1664,6 +1840,66 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
         }
     }
     Ok(())
+}
+
+/// Whether the real run's fill would embed in `root`: the mode its config
+/// sets, or for a repo with no `config.toml` the one `open_project` would
+/// write (the tracked example, else the defaults). A config that does not
+/// load fails the real run's open, so no fill.
+fn repo_would_fill(root: &Path) -> bool {
+    let dir = root.join(".memhub");
+    let config = dir.join(db::CONFIG_FILENAME);
+    let example = dir.join(db::CONFIG_EXAMPLE_FILENAME);
+    let loaded = if config.exists() {
+        ProjectConfig::load(&config)
+    } else if example.exists() {
+        ProjectConfig::load(&example)
+    } else {
+        Ok(ProjectConfig::default_for_repo_name("memhub"))
+    };
+    loaded.is_ok_and(|c| c.retrieval.mode == RetrievalMode::Hybrid)
+}
+
+/// Rows the fill would find lacking an active-model vector in the store at
+/// `db_path`, counted on a read-only connection (no migrate, no write).
+/// `None` when the store is behind head: its tables may not exist until
+/// migrate, so the count is only known then.
+fn preview_fill(
+    db_path: &Path,
+    verdict: &str,
+    label: &str,
+    warnings: &mut Vec<String>,
+) -> Option<usize> {
+    if verdict != "ready" {
+        return None;
+    }
+    let counted =
+        rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(crate::MemhubError::from)
+            .and_then(|conn| retrieval::persist::count_lacking_embeddings(&conn));
+    match counted {
+        Ok((lacking, _)) => Some(lacking),
+        Err(e) => {
+            warnings.push(format!(
+                "{label}: could not count rows lacking an embedding ({e})"
+            ));
+            None
+        }
+    }
+}
+
+/// A dry-run instance's fill preview: `None` where the real run embeds
+/// nothing, `Some(None)` where it does but the count is only known after
+/// migrate, `Some(Some(n))` for n rows lacking an embedding.
+type FillPreview = Option<Option<usize>>;
+
+/// The dry-run instance line's fill suffix.
+fn fill_note(fill: FillPreview) -> String {
+    match fill {
+        None => String::new(),
+        Some(None) => "; fill: rows lacking an embedding counted after migrate".to_string(),
+        Some(Some(n)) => format!("; fill: {n} row(s) lack an embedding"),
+    }
 }
 
 fn describe_shadow(cargo_bin: &Path) -> Result<String> {
@@ -1707,6 +1943,7 @@ fn emit(
     orphans: &[String],
     old_exe_leftovers: &[String],
     removed_stale_files: &[String],
+    retired: &[RetiredSettings],
     warnings: &[String],
     first_run: bool,
     audit: &AuditNag,
@@ -1757,6 +1994,10 @@ fn emit(
                 // Claude Code auto-loads a nested CLAUDE.md, so a stale one
                 // is a live correctness hazard, not harmless clutter).
                 "removed_stale_files": removed_stale_files,
+                // Retired settings (issue #393), one entry per repo whose
+                // config.toml set one: `removed` this run, `left` (not on a
+                // line of their own), `error` when the file was left alone.
+                "retired_settings": retired,
                 // Degrade warnings (U7): recoverable problems that did NOT
                 // abort the upgrade (e.g. a corrupt registry, a shadow-fix
                 // IO error).
@@ -1816,6 +2057,9 @@ fn emit(
     }
     for removed in removed_stale_files {
         println!("  removed stale file: {removed} (retired sync_md channel; task 119)");
+    }
+    for line in retired.iter().flat_map(|r| retired_lines(r, false)) {
+        println!("  config: {line}");
     }
     if first_run {
         print_first_run_notice();
@@ -3547,5 +3791,122 @@ mod tests {
         // clean no-op, never an error.
         let removed_second = cleanup_stale_sync_md_twins(repo.path());
         assert!(removed_second.is_empty());
+    }
+
+    fn strip(
+        raw: &str,
+    ) -> std::result::Result<(String, Vec<&'static str>, Vec<&'static str>), toml::de::Error> {
+        strip_retired_settings(raw, crate::commands::doctor::IGNORED_LEAVES)
+    }
+
+    #[test]
+    fn strip_retired_settings_handles_a_top_level_key() {
+        let raw = "old = 1
+keep = 2
+[old2]
+old = 3
+";
+        let (text, removed, left) = strip_retired_settings(raw, &["old"]).unwrap();
+        assert_eq!(
+            text,
+            "keep = 2
+[old2]
+old = 3
+"
+        );
+        assert_eq!((removed, left.len()), (vec!["old"], 0));
+    }
+
+    const ALL_FOUR: &[&str] = &[
+        "retrieval.include_stale_by_default",
+        "retrieval.scoring.stale_penalty",
+        "retrieval.scoring.min_rerank_score",
+        "retrieval.scoring.doc_min_rerank_score",
+    ];
+
+    #[test]
+    fn strip_retired_settings_deletes_only_their_lines() {
+        let keep = "# top comment\nproject_name = \"x\"\n\n[retrieval]\nmode = \"fts\"\n# a note\n\n[retrieval.scoring]\nrerank_cutoff = -5.0\n\n[gc]\n";
+        let raw = "# top comment\nproject_name = \"x\"\n\n[retrieval]\nmode = \"fts\"\ninclude_stale_by_default = false\n# a note\n\n[ retrieval . scoring ]\nstale_penalty=0.3\n  min_rerank_score = 2.0   # old floor\nrerank_cutoff = -5.0\ndoc_min_rerank_score = 0.0\n\n[gc]\n";
+        let want = keep.replace("[retrieval.scoring]", "[ retrieval . scoring ]");
+        let (text, removed, left) = strip(raw).unwrap();
+        assert_eq!(text, want);
+        assert_eq!(removed, ALL_FOUR);
+        assert!(left.is_empty());
+
+        // CRLF endings survive on every kept line.
+        let crlf = raw.replace('\n', "\r\n");
+        let (text, removed, _) = strip(&crlf).unwrap();
+        assert_eq!(text, want.replace('\n', "\r\n"));
+        assert_eq!(removed, ALL_FOUR);
+
+        // Nothing set: the text is returned as is.
+        let (text, removed, left) = strip(keep).unwrap();
+        assert_eq!((text.as_str(), removed.len(), left.len()), (keep, 0, 0));
+    }
+
+    #[test]
+    fn strip_retired_settings_leaves_commented_dotted_and_inline_forms() {
+        let raw = "[retrieval]\n# include_stale_by_default = false\nscoring.stale_penalty = 0.3\nscoring.min_rerank_score = 2.0\n";
+        let (text, removed, left) = strip(raw).unwrap();
+        assert_eq!(text, raw);
+        assert!(removed.is_empty());
+        assert_eq!(
+            left,
+            [
+                "retrieval.scoring.stale_penalty",
+                "retrieval.scoring.min_rerank_score"
+            ]
+        );
+
+        let raw = "[retrieval]\nscoring = { doc_min_rerank_score = 0.0 }\ninclude_stale_by_default = true\n";
+        let (text, removed, left) = strip(raw).unwrap();
+        assert_eq!(
+            text,
+            "[retrieval]\nscoring = { doc_min_rerank_score = 0.0 }\n"
+        );
+        assert_eq!(removed, ["retrieval.include_stale_by_default"]);
+        assert_eq!(left, ["retrieval.scoring.doc_min_rerank_score"]);
+
+        // A key of the same name in another table is not the setting.
+        let raw = "[gc]\nstale_penalty = 1\n";
+        let (text, removed, left) = strip(raw).unwrap();
+        assert_eq!((text.as_str(), removed.len(), left.len()), (raw, 0, 0));
+
+        assert!(strip("[retrieval\nmode = 1\n").is_err());
+    }
+
+    #[test]
+    fn clean_retired_settings_rewrites_only_when_asked() {
+        let repo = tempfile::tempdir().expect("repo tempdir");
+        assert!(
+            clean_retired_settings(repo.path(), true).is_none(),
+            "no config"
+        );
+        let dir = repo.path().join(".memhub");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(db::CONFIG_FILENAME);
+        let raw = "[retrieval]\nmode = \"fts\"\ninclude_stale_by_default = false\n";
+        std::fs::write(&path, raw).unwrap();
+
+        let dry = clean_retired_settings(repo.path(), false).expect("report");
+        assert_eq!(dry.removed, ["retrieval.include_stale_by_default"]);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), raw);
+
+        let real = clean_retired_settings(repo.path(), true).expect("report");
+        assert_eq!(real.removed, dry.removed);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[retrieval]\nmode = \"fts\"\n"
+        );
+        assert!(
+            clean_retired_settings(repo.path(), true).is_none(),
+            "idempotent"
+        );
+
+        std::fs::write(&path, "not = [toml").unwrap();
+        let bad = clean_retired_settings(repo.path(), true).expect("report");
+        assert!(bad.error.unwrap().contains("not valid TOML"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "not = [toml");
     }
 }
