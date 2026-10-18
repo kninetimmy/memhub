@@ -347,6 +347,19 @@ the warning to the user and **ask before running `/reindex`**, not to
 auto-run it. Reindex is a one-time, multi-second operation; the user
 should be the one to trigger it.
 
+Issue #392 states that this gate covers both embedding warnings (the text
+above is kept as written, where the ask-before-`/reindex` rule was recorded
+for `stale_embeddings` alone):
+
+- Before: the gate was written for the `stale_embeddings` warning only, and
+  the `missing_embeddings` warning's fix text led with the raw
+  `memhub index rebuild`.
+- After: the gate covers `missing_embeddings` as well as `stale_embeddings`:
+  the agent surfaces either warning and asks the user before running
+  `/reindex`. `missing_embeddings` names `/reindex` first, in the same form
+  as `stale_embeddings`, and its counts include the machine-global store when
+  the repo is opted in and recall searches that store.
+
 ## 7. New CLI surface (§13 extension)
 
 ```

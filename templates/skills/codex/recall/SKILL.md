@@ -209,11 +209,12 @@ When `warnings` is non-empty, the most common entry is:
 ```
 
 In a hybrid repo you may also see `missing_embeddings` (issue #382):
-`stale_count` is how many of the repo's rows have no embedding for the
-active model, out of `total_count` rows, and `fix` names
-`memhub index rebuild`. `stale_embeddings` counts only this recall's
-candidates; `missing_embeddings` counts the whole repo, so both can
-appear together.
+`stale_count` is how many rows have no embedding for the active model,
+out of `total_count` rows, and `fix` names `/reindex`
+(`memhub index rebuild`). The counts cover the whole repo store and,
+when the repo is opted into machine-global memory, the global store
+too. `stale_embeddings` counts only this recall's candidates;
+`missing_embeddings` counts every row, so both can appear together.
 
 For either kind, surface the warning to the user and **ask before
 invoking `/reindex`**. Reindex is a one-time, multi-second operation;
