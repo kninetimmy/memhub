@@ -24,6 +24,8 @@ mod m8_retrieval_embed;
 mod m8_retrieval_eval;
 #[path = "retrieval/m8_retrieval_schema.rs"]
 mod m8_retrieval_schema;
+#[path = "retrieval/recall_include_stale_cli.rs"]
+mod recall_include_stale_cli;
 #[path = "retrieval/retrieval_golden_hermetic.rs"]
 mod retrieval_golden_hermetic;
 #[path = "retrieval/self_check.rs"]
