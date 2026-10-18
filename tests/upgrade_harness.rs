@@ -22,6 +22,8 @@ mod global_read_no_migrate;
 mod json_contracts;
 #[path = "upgrade/migrations_auto_apply.rs"]
 mod migrations_auto_apply;
+#[path = "upgrade/missing_embeddings_scope.rs"]
+mod missing_embeddings_scope;
 #[path = "upgrade/session_hook.rs"]
 mod session_hook;
 #[path = "upgrade/skill_parity.rs"]

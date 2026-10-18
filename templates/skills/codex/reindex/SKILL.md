@@ -22,8 +22,9 @@ Reindex is appropriate when:
 1. `memhub.recall` returns a `warnings[].kind == "stale_embeddings"`
    or `"missing_embeddings"` entry. The bundle is still usable, but
    hybrid scoring is undercounting some rows. (`missing_embeddings`
-   joined this trigger in issue #382; it counts the repo's rows with
-   no embedding for the active model.)
+   joined this trigger in issue #382; it counts the rows with no
+   embedding for the active model, in the repo store and, when the
+   repo is opted into machine-global memory, the global store.)
 2. The repo was running on `mode = fts` (no eager-embed on writes),
    and the user has just switched `[retrieval] mode` to `hybrid` in
    `.memhub/config.toml`. Pre-existing rows have no embedding;
@@ -60,9 +61,10 @@ Do **not** invoke reindex:
    - `decisions.total` / `decisions.embedded`
    - `tasks.total` / `tasks.embedded`
    This tells the user roughly how long the rebuild will take
-   (about 50 ms per row on the bundled BGE-small model). In a repo
-   opted into the machine-global store, the global store's rows
-   count too.
+   (about 50 ms per row on the bundled BGE-small model). `memhub
+   index status` counts this repo's store only; in a repo opted into
+   the machine-global store, the rebuild also covers the global
+   store's rows, which `index status` does not show.
 3. **Ask for confirmation.** "Rebuild N embeddings for model
    `<model>`? This takes about N x 50 ms and won't touch durable
    facts, decisions, or tasks." Wait for explicit yes.
@@ -94,7 +96,8 @@ Do **not** invoke reindex:
   model's vectors from current source bodies, all in one transaction
   per store. No
   durable facts, decisions, or tasks are touched. The `writes_log`
-  gets one summary entry attributed to the actor you passed.
+  gets one summary entry per store rebuilt, attributed to the actor
+  you passed.
 - The rebuild ignores `[retrieval] mode`. Even in `fts` mode, the
   embeddings table gets populated — handy for migrating
   `fts → hybrid` without a separate backfill pass.

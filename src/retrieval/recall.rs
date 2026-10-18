@@ -375,21 +375,15 @@ pub fn recall_with(ctx: &db::ProjectContext, options: RecallOptions) -> Result<R
     let mut warnings = repo.warnings;
     // Store-wide, unlike `stale_embeddings` (candidates only): a row with no
     // vector can never be a vector candidate, so only this count reveals it.
-    if resolved.mode == RetrievalMode::Hybrid {
-        let (lacking, total) = crate::retrieval::persist::count_lacking_embeddings(&ctx.conn)?;
-        if lacking > 0 {
-            warnings.push(RecallWarning {
-                kind: "missing_embeddings".to_string(),
-                stale_count: lacking,
-                total_count: total,
-                reason: format!(
-                    "{lacking} of {total} row(s) in this repo have no {EMBEDDING_MODEL_NAME} \
-                     embedding, so only keyword matching can find them"
-                ),
-                fix: "Run `memhub index rebuild` (or /reindex) to embed them.".to_string(),
-            });
-        }
-    }
+    // The global store joins the count below when this recall searches it.
+    let mut lacking_counts = if resolved.mode == RetrievalMode::Hybrid {
+        Some(crate::retrieval::persist::count_lacking_embeddings(
+            &ctx.conn,
+        )?)
+    } else {
+        None
+    };
+    let mut global_lacking = 0;
     let mut doc_chunk_total = repo.doc_chunk_total;
     let mut explain = repo.explain;
     let repo_excluded = repo.excluded;
@@ -420,6 +414,12 @@ pub fn recall_with(ctx: &db::ProjectContext, options: RecallOptions) -> Result<R
         }
         candidate_count += g.candidate_count;
         warnings.extend(g.warnings);
+        if let Some((lacking, total)) = &mut lacking_counts {
+            let (gl, gt) = crate::retrieval::persist::count_lacking_embeddings(&gctx.conn)?;
+            global_lacking = gl;
+            *lacking += gl;
+            *total += gt;
+        }
         doc_chunk_total += g.doc_chunk_total;
         explain.accepted_only_excluded += g.explain.accepted_only_excluded;
         explain.superseded_demoted += g.explain.superseded_demoted;
@@ -427,6 +427,24 @@ pub fn recall_with(ctx: &db::ProjectContext, options: RecallOptions) -> Result<R
         // Diagnostic only: an unresolvable home dir must not fail a recall
         // that never needed the global store.
         explain.global_store_not_searched = matches!(db::global_store_exists(), Ok(true));
+    }
+
+    if let Some((lacking, total)) = lacking_counts.filter(|(lacking, _)| *lacking > 0) {
+        let scope = if global_lacking > 0 {
+            "in this repo and the global store"
+        } else {
+            "in this repo"
+        };
+        warnings.push(RecallWarning {
+            kind: "missing_embeddings".to_string(),
+            stale_count: lacking,
+            total_count: total,
+            reason: format!(
+                "{lacking} of {total} row(s) {scope} have no {EMBEDDING_MODEL_NAME} \
+                 embedding, so only keyword matching can find them"
+            ),
+            fix: "Run /reindex (memhub index rebuild) to embed them.".to_string(),
+        });
     }
 
     // A decision, task or fact the query names by number goes first and out
@@ -3347,6 +3365,7 @@ mod tests {
             "{}",
             missing.fix
         );
+        assert!(missing.fix.starts_with("Run /reindex"), "{}", missing.fix);
 
         // fts recall in the same repo never reports it (criterion 2).
         let fts = recall(
