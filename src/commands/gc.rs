@@ -51,8 +51,9 @@
 //!   capped at the 20 newest files each. Report-only unless `[gc]
 //!   delete_stale_backups` is set. The legacy one-time
 //!   `project.sqlite.k9-bootstrap-backup` is always reported when
-//!   present, never auto-deleted. `backups/sync/` is already
-//!   single-slot and is left alone entirely.
+//!   present, never auto-deleted. `backups/sync/`, `backups/import/`
+//!   and `backups/migrations/` are already single-slot and are left
+//!   alone entirely (before issue #405 only `backups/sync/` existed).
 //!
 //! There is deliberately no CLI flag for any Wave 5 opt-in: they are
 //! persisted, per-repo policy choices read from `.memhub/config.toml

@@ -320,7 +320,8 @@ user_md_path = ""
 # actually delete .memhub/backups/{rendered,markdown} files beyond the
 # newest 20 (report-only otherwise); never applies to the legacy
 # project.sqlite.k9-bootstrap-backup, which is only ever reported, or
-# to backups/sync/, which is already single-slot.
+# to backups/sync/, backups/import/ or backups/migrations/, which are
+# already single-slot (before issue #405 only backups/sync/ existed).
 [gc]
 prune_superseded_incremental = false
 prune_large_thirdparty = false

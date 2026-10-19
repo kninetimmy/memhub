@@ -599,7 +599,9 @@ pub struct GcConfig {
     /// beyond the newest 20 (decision Q16). Off = report-only, gc's
     /// long-standing default posture. Never applies to the legacy
     /// `project.sqlite.k9-bootstrap-backup`, which is only ever
-    /// reported, nor to `backups/sync/`, which is already single-slot.
+    /// reported, nor to `backups/sync/`, `backups/import/` or
+    /// `backups/migrations/`, which are already single-slot (before issue
+    /// #405 only `backups/sync/` existed).
     #[serde(default = "default_gc_delete_stale_backups")]
     pub delete_stale_backups: bool,
 }

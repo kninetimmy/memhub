@@ -130,6 +130,17 @@ names the backup path. `memhub gc` prunes only `backups/rendered/` and
 `backups/markdown/`, so it never prunes any of these three; delete one
 by hand once you no longer need it.
 
+All three write the same way. The copy first goes to a temp file beside
+its slot, named `.<slot file name>.<process id>.<n>.tmp`, and is renamed
+over the slot only once it is complete, so a copy that fails (a full
+disk, say) leaves the earlier copy in the slot. Before issue #407 sync
+adopt and import deleted the earlier copy before writing the new one, so
+a failed copy left no copy at all; only the pre-migration copy went
+through a temp file. Each attempt also first deletes the temp files that
+killed attempts left beside the same slot. Before issue #407 nothing
+deleted them, and one left at the exact name a later pre-migration
+attempt picked (its process id reused) made that open fail.
+
 - **Sync adopt:** `backups/sync/last-replaced.sqlite`, written by `memhub
   sync adopt` (and the MCP `sync_adopt` with `confirm=true`) just before
   it restores the staged snapshot over the repo DB. Adopt reports the
@@ -149,15 +160,23 @@ by hand once you no longer need it.
   every repo command, `memhub init` on an existing DB, `memhub upgrade`,
   the MCP server and the global writes. Opening a DB at head or creating
   a new one writes none. The copy is logged to stderr only, so `--json`
-  output and the MCP server's stdout are unchanged. The copy is first
-  written to a temp file beside the slot. It moves into the slot only if
-  a migration is still pending once the DB's write lock is held, and the
-  migrations then run in that same transaction. So when two processes
-  open the same DB at once, the one that loses the race deletes its copy
-  instead of overwriting the other's pre-migration copy with an
-  already-migrated DB. A repo rooted at your
-  home directory shares `~/.memhub/` with the global store, so their two
-  pre-migration copies share one slot there.
+  output and the MCP server's stdout are unchanged. The open first takes
+  the DB's write lock, then copies the DB only if a migration is still
+  pending under that lock, and the migrations run in that same
+  transaction. So no other process can commit a write between the copy
+  and the migration, and when two processes open the same DB at once the
+  one that loses the race takes no copy instead of overwriting the
+  other's pre-migration copy with an already-migrated DB. While the copy
+  is written another process's write waits for the lock (up to its
+  5-second busy timeout). Before issue #407 the copy was written to its
+  temp file before the write lock was taken and moved into the slot only
+  if a migration was still pending once the lock was held, so a write
+  another process committed between the copy and the lock was missing
+  from the copy. A repo rooted at your home directory shares
+  `~/.memhub/` with the global store, so their two pre-migration copies
+  share one slot there; if both are copied at the same moment, one may
+  delete the other's temp file, and that open then fails closed with
+  nothing migrated (run the command again).
 
 ## Cross-machine Drive sync
 
