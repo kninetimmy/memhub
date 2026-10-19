@@ -3,7 +3,7 @@
 # a Delivery PR.
 
 schema_version  = 1
-config_revision = "sha256:2f9028e303cc"
+config_revision = "sha256:6a10cc8eb186"
 
 [concurrency]
 max_subagents = 3
@@ -88,3 +88,58 @@ variant = "xhigh"
 [hosts.opencode.roles.review_downgrade]
 model   = "openai/gpt-5.6-sol"
 variant = "high"
+
+[protected]
+methodology_version = 1
+
+[[protected.paths]]
+path   = "src/db/migrations.rs"
+reason = "runs every new migration in place on next open of every repo DB and the global store, with no pre-migration backup; holds the newer-schema refusal"
+
+[[protected.paths]]
+path   = "migrations"
+reason = "migration SQL payload; a bad statement corrupts user DBs in a way a code revert cannot undo"
+
+[[protected.paths]]
+path   = "src/commands/sync.rs"
+reason = "sync adopt overwrites the local DB; its project-id, schema, sha256 and force guards and its single backup slot live here"
+
+[[protected.paths]]
+path   = "src/commands/transcript.rs"
+reason = "transcript prune deletes files at DB-stored paths that can arrive via an adopted snapshot; the containment check is the only guard"
+
+[[protected.paths]]
+path   = "src/config/deny.rs"
+reason = "secret deny list for code index, git ingest, search and doc_add; loosening it can leak a secret into a Drive-synced snapshot"
+
+[[protected.paths]]
+path   = "src/mcp/mod.rs"
+reason = "the agent-facing trust boundary: propose-only tool surface, confirm gates on sync_adopt and unredacted transcript archive, doc_add path containment, never-write-directly instructions"
+
+[[protected.paths]]
+path   = ".claude"
+reason = "gitignored agent harness config; a force-added settings.json or agent definition would change agent permissions or reviewer profiles in every worktree"
+
+[[protected.paths]]
+path   = ".codex"
+reason = "gitignored agent harness config; a force-added config or agent definition would change Codex agent permissions or reviewer profiles"
+
+[[protected.paths]]
+path   = ".opencode"
+reason = "gitignored agent harness config; a force-added config or agent definition would change OpenCode agent permissions or reviewer profiles"
+
+[[protected.paths]]
+path   = "src/commands/wrapup_policy.rs"
+reason = "source of the wrap-up per-item human approval gate before durable writes; prose a test cannot catch being softened"
+
+[[protected.paths]]
+path   = "templates/skills/claude/wrap-up.md"
+reason = "restates the wrap-up per-item approval gate that agents follow before durable writes"
+
+[[protected.paths]]
+path   = "templates/skills/codex/wrap-up/SKILL.md"
+reason = "restates the wrap-up per-item approval gate that agents follow before durable writes"
+
+[[protected.paths]]
+path   = "templates/skills/opencode/wrap-up/SKILL.md"
+reason = "restates the wrap-up approval gate; loaded live by OpenCode via opencode.json skills, with no upgrade checkpoint"
