@@ -107,6 +107,15 @@ individually — wait for explicit approval per item, or a clear "all
 good", before writing anything. A rejected draft is dropped; do not
 retry without their saying so.
 
+**Orch grant exception.** When an active Orch autonomy grant
+(`orch grant` shows it) covers the `wrap-up` gate, you approve your own
+drafts, with limits: skip steps 2 (`review accept`/`reject`), 9
+(architecture) and 10 (fact re-verification), and the transcript
+archive; stage new decisions and facts (steps 3 and 5) with
+`memhub.propose_decision` / `memhub.propose_fact` for the user's
+`memhub review accept` instead of adding them; make no global writes.
+Without such a grant, this gate stays with the user as above.
+
 ## DB writes — first, atomic per item, halt on failure
 
 This numbered list is not a second, competing policy — it's the
@@ -207,7 +216,8 @@ of verbosity level; that's the user's call.
 
 - Bias toward less content — a tight, true summary beats a padded one.
   The approval gate is what stops hallucinated accomplishments from
-  landing; never skip it, whatever the verbosity level.
+  landing; never skip it, whatever the verbosity level. The Orch grant
+  exception above changes who approves, not whether the gate runs.
 - Session boundary is implicit (latest `project_state.created_at`). No
   explicit `memhub session` command exists, by design.
 - The PRD principle "agents are untrusted writers" applies throughout:
