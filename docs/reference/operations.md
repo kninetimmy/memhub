@@ -149,7 +149,13 @@ by hand once you no longer need it.
   every repo command, `memhub init` on an existing DB, `memhub upgrade`,
   the MCP server and the global writes. Opening a DB at head or creating
   a new one writes none. The copy is logged to stderr only, so `--json`
-  output and the MCP server's stdout are unchanged. A repo rooted at your
+  output and the MCP server's stdout are unchanged. The copy is first
+  written to a temp file beside the slot. It moves into the slot only if
+  a migration is still pending once the DB's write lock is held, and the
+  migrations then run in that same transaction. So when two processes
+  open the same DB at once, the one that loses the race deletes its copy
+  instead of overwriting the other's pre-migration copy with an
+  already-migrated DB. A repo rooted at your
   home directory shares `~/.memhub/` with the global store, so their two
   pre-migration copies share one slot there.
 

@@ -179,6 +179,8 @@ fn open_with_pending_migration_writes_pre_migration_backup() {
         })
         .expect("count facts");
     assert_eq!(facts, 1, "backup holds the pre-migration rows");
+    let entries = std::fs::read_dir(backup.parent().unwrap()).unwrap().count();
+    assert_eq!(entries, 1, "only the slot remains: no staged temp copy");
 }
 
 /// Issue #405: neither creating a DB nor opening one at head writes a
