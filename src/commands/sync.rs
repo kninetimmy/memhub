@@ -401,7 +401,7 @@ pub fn snapshot(start: &Path, out_dir: &Path, force: bool) -> Result<SnapshotSum
     if tmp_snapshot.exists() {
         fs::remove_file(&tmp_snapshot)?;
     }
-    vacuum_into(&ctx.conn, &tmp_snapshot)?;
+    db::vacuum_into(&ctx.conn, &tmp_snapshot)?;
 
     let file_sha256 = sha256_file(&tmp_snapshot)?;
     let snapshot_filename = versioned_snapshot_filename(&file_sha256);
@@ -1307,14 +1307,11 @@ pub fn adopt(start: &Path, remote: &Path, force: bool) -> Result<AdoptSummary> {
     // ── Pre-adopt safety copy of the DB being replaced ───────────────
     // `VACUUM INTO` from the still-open connection captures committed WAL
     // state that a raw `fs::copy` of `project.sqlite` alone could miss.
-    let backup_dir = memhub_dir.join("backups").join("sync");
-    fs::create_dir_all(&backup_dir)?;
-    let backup_path = backup_dir.join("last-replaced.sqlite");
-    // `VACUUM INTO` refuses to overwrite; clear the single prior slot.
-    if backup_path.exists() {
-        fs::remove_file(&backup_path)?;
-    }
-    if let Err(e) = vacuum_into(&ctx.conn, &backup_path) {
+    let backup_path = memhub_dir
+        .join("backups")
+        .join("sync")
+        .join("last-replaced.sqlite");
+    if let Err(e) = db::write_backup_slot(&ctx.conn, &backup_path) {
         let _ = fs::remove_file(&incoming);
         return Err(e);
     }
@@ -1735,19 +1732,6 @@ fn machine_id() -> String {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "unknown-host".to_string())
-}
-
-/// `VACUUM INTO '<path>'`. SQLite parses the destination as a string
-/// expression; we interpolate an escaped literal (double any single
-/// quote) rather than bind, since `VACUUM` is not a prepared-parameter
-/// statement. The path is memhub-internal, never user SQL.
-fn vacuum_into(conn: &Connection, dest: &Path) -> Result<()> {
-    let dest = dest
-        .to_str()
-        .ok_or_else(|| MemhubError::InvalidInput("snapshot path is not valid UTF-8".into()))?;
-    let escaped = dest.replace('\'', "''");
-    conn.execute_batch(&format!("VACUUM INTO '{escaped}';"))?;
-    Ok(())
 }
 
 pub fn sha256_file(path: &Path) -> Result<String> {
@@ -2377,7 +2361,7 @@ mod tests {
         let staged = dest.path().join("staged.sqlite");
         {
             let src = db::open_project(other.path()).expect("open other");
-            vacuum_into(&src.conn, &staged).expect("stage snapshot");
+            db::vacuum_into(&src.conn, &staged).expect("stage snapshot");
         }
 
         let blocker = Connection::open(&db_path).expect("second client");

@@ -251,6 +251,43 @@ fn open_connection(path: &Path) -> Result<Connection> {
     Ok(conn)
 }
 
+/// `VACUUM INTO '<path>'`: a consistent copy of `conn`'s DB, committed WAL
+/// state included. SQLite parses the destination as a string expression;
+/// we interpolate an escaped literal (double any single quote) rather than
+/// bind, since `VACUUM` is not a prepared-parameter statement. The path is
+/// memhub-internal, never user SQL. SQLite refuses an existing destination.
+pub fn vacuum_into(conn: &Connection, dest: &Path) -> Result<()> {
+    let dest = dest.to_str().ok_or_else(|| {
+        MemhubError::InvalidInput(format!(
+            "VACUUM INTO destination is not valid UTF-8: {}",
+            dest.display()
+        ))
+    })?;
+    let escaped = dest.replace('\'', "''");
+    conn.execute_batch(&format!("VACUUM INTO '{escaped}';"))?;
+    Ok(())
+}
+
+/// Copy `conn`'s DB to the single backup slot `path`, replacing any earlier
+/// copy there. Every failure is `BackupFailed` naming `path`, so the caller
+/// can fail closed before the change the copy guards.
+pub fn write_backup_slot(conn: &Connection, path: &Path) -> Result<()> {
+    let write = || -> Result<()> {
+        if let Some(dir) = path.parent() {
+            fs::create_dir_all(dir)?;
+        }
+        // `VACUUM INTO` refuses to overwrite; clear the prior slot.
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+        vacuum_into(conn, path)
+    };
+    write().map_err(|e| MemhubError::BackupFailed {
+        path: path.to_path_buf(),
+        cause: Box::new(e),
+    })
+}
+
 fn upsert_project(conn: &Connection, repo_root: &Path) -> Result<()> {
     debug!("upserting project metadata for {}", repo_root.display());
     // `schema_version` is only ever ratcheted upward: an older binary
