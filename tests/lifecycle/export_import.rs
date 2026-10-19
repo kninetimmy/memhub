@@ -1157,3 +1157,101 @@ fn import_into_hybrid_target_embeds_every_row_and_fts_target_none() {
         .expect("count");
     assert_eq!(vectors, 0, "fts target writes no embeddings");
 }
+
+/// A source export plus a target holding one fact and one task.
+fn source_export_and_populated_target() -> (tempfile::TempDir, std::path::PathBuf, tempfile::TempDir)
+{
+    let source = tempdir().expect("source tempdir");
+    seed_project(source.path());
+    let export_path = source.path().join("backup.json");
+    export::run(source.path(), &export_path).expect("export succeeds");
+
+    let target = tempdir().expect("target tempdir");
+    init::run(target.path()).expect("target init succeeds");
+    fact::add(target.path(), "preexisting", "value", "user", "cli:user").expect("seed target fact");
+    task::add(target.path(), "target-task", None, "cli:user").expect("seed target task");
+    (source, export_path, target)
+}
+
+fn import_slot(root: &std::path::Path) -> std::path::PathBuf {
+    import::import_backup_path(&db::ProjectPaths::for_repo_root(root))
+}
+
+/// Issue #405: a forced import over a populated target first copies the
+/// target, as it was, to the single import slot (replacing an earlier copy).
+#[test]
+fn forced_import_backs_up_the_populated_target() {
+    let (_source, export_path, target) = source_export_and_populated_target();
+    let slot = import_slot(target.path());
+    fs::create_dir_all(slot.parent().unwrap()).expect("mkdir");
+    fs::write(&slot, b"an earlier copy").expect("seed prior slot");
+
+    let summary = import::run(target.path(), &export_path, true).expect("forced import succeeds");
+    assert_eq!(summary.backup_path.as_deref(), Some(slot.as_path()));
+
+    let copy = rusqlite::Connection::open(&slot).expect("backup opens");
+    let keys: Vec<String> = copy
+        .prepare("SELECT key FROM facts ORDER BY key")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(keys, vec!["preexisting".to_string()], "pre-import rows");
+    let tasks: i64 = copy
+        .query_row(
+            "SELECT COUNT(*) FROM tasks WHERE title = 'target-task'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(tasks, 1);
+}
+
+/// Issue #405: an import that removes no existing row writes no backup.
+#[test]
+fn import_into_an_empty_target_writes_no_backup() {
+    let source = tempdir().expect("source tempdir");
+    seed_project(source.path());
+    let export_path = source.path().join("backup.json");
+    export::run(source.path(), &export_path).expect("export succeeds");
+
+    let target = tempdir().expect("target tempdir");
+    init::run(target.path()).expect("target init succeeds");
+    let summary = import::run(target.path(), &export_path, false).expect("import succeeds");
+    assert!(summary.backup_path.is_none());
+    assert!(!import_slot(target.path()).parent().unwrap().exists());
+}
+
+/// Issue #405: when the import backup cannot be written the import fails,
+/// naming the path, before any target row changes.
+#[test]
+fn unwritable_import_backup_leaves_the_target_unchanged() {
+    let (_source, export_path, target) = source_export_and_populated_target();
+    let slot = import_slot(target.path());
+    // A regular file where the slot's directory belongs.
+    fs::create_dir_all(slot.parent().unwrap().parent().unwrap()).expect("mkdir");
+    fs::write(slot.parent().unwrap(), b"not a directory").expect("occupy");
+
+    let err = match import::run(target.path(), &export_path, true) {
+        Ok(_) => panic!("import must fail when its backup cannot be written"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        err.contains(&slot.display().to_string()),
+        "error names the backup path: {err}"
+    );
+    let keys: Vec<_> = fact::list(target.path())
+        .expect("list facts")
+        .into_iter()
+        .map(|f| f.key)
+        .collect();
+    assert_eq!(
+        keys,
+        vec!["preexisting".to_string()],
+        "target rows unchanged"
+    );
+    let tasks = task::list(target.path(), Some("all")).expect("list tasks");
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].title, "target-task");
+}
