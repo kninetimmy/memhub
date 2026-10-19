@@ -1,6 +1,10 @@
-use rusqlite::Connection;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::Result;
+use rusqlite::{Connection, TransactionBehavior};
+
+use crate::{MemhubError, Result};
 
 pub fn latest_version() -> &'static str {
     MIGRATIONS.last().expect("MIGRATIONS list is non-empty").0
@@ -167,7 +171,71 @@ const MIGRATIONS: &[(&str, &str)] = &[
 /// sections of an already-stored latest architecture body in Rust.
 const ARCH_SECTIONS_MIGRATION: &str = "0025_arch_sections";
 
-pub fn apply_all(conn: &mut Connection) -> Result<Vec<String>> {
+/// True when the ledger records at least one compiled migration and lacks
+/// at least one (a missing tail or a gap): an existing DB about to change.
+fn existing_db_has_pending(conn: &Connection) -> Result<bool> {
+    let mut stmt =
+        conn.prepare("SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = ?1)")?;
+    let (mut applied, mut pending) = (false, false);
+    for (version, _) in MIGRATIONS {
+        if stmt.query_row([version], |r| r.get::<_, bool>(0))? {
+            applied = true;
+        } else {
+            pending = true;
+        }
+    }
+    Ok(applied && pending)
+}
+
+/// A pre-migration copy staged in a unique temp sibling of its slot. Drop
+/// deletes the temp file, so none is left behind on any path; once moved
+/// into the slot the delete is a no-op.
+struct StagedCopy {
+    tmp: PathBuf,
+    slot: PathBuf,
+}
+
+impl Drop for StagedCopy {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.tmp);
+    }
+}
+
+fn backup_failed(slot: &Path, cause: impl Into<MemhubError>) -> MemhubError {
+    MemhubError::BackupFailed {
+        path: slot.to_path_buf(),
+        cause: Box::new(cause.into()),
+    }
+}
+
+/// `VACUUM INTO` a unique temp sibling of `slot`. Outside any transaction:
+/// `VACUUM INTO` cannot run inside one.
+fn stage_copy(conn: &Connection, slot: &Path) -> Result<StagedCopy> {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let name = slot.file_name().unwrap_or_default().to_string_lossy();
+    let staged = StagedCopy {
+        tmp: slot.with_file_name(format!(
+            ".{name}.{}.{}.tmp",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        )),
+        slot: slot.to_path_buf(),
+    };
+    let write = || -> Result<()> {
+        if let Some(dir) = slot.parent() {
+            fs::create_dir_all(dir)?;
+        }
+        super::vacuum_into(conn, &staged.tmp)
+    };
+    write().map_err(|e| backup_failed(slot, e))?;
+    Ok(staged)
+}
+
+/// Apply every pending migration in one transaction. With `backup`, an
+/// existing DB that has a pending migration is first copied to that single
+/// slot, replacing any earlier copy; if the copy fails nothing is applied.
+/// `None` is for in-memory connections, which have no directory.
+pub fn apply_all(conn: &mut Connection, backup: Option<&Path>) -> Result<Vec<String>> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS schema_migrations (
             version TEXT PRIMARY KEY,
@@ -191,7 +259,32 @@ pub fn apply_all(conn: &mut Connection) -> Result<Vec<String>> {
         )));
     }
 
-    let tx = conn.transaction()?;
+    let staged = match backup {
+        Some(slot) if existing_db_has_pending(conn)? => Some(stage_copy(conn, slot)?),
+        _ => None,
+    };
+    apply_locked(conn, staged)
+}
+
+/// The migration transaction. A staged copy takes the write lock up front
+/// and enters its slot only if a migration is still pending under that lock:
+/// another process may have migrated after the copy was taken, and then the
+/// copy is not pre-migration (the slot keeps that process's copy).
+fn apply_locked(conn: &mut Connection, staged: Option<StagedCopy>) -> Result<Vec<String>> {
+    let behavior = if staged.is_some() {
+        TransactionBehavior::Immediate
+    } else {
+        TransactionBehavior::Deferred
+    };
+    let tx = conn.transaction_with_behavior(behavior)?;
+    if let Some(staged) = &staged
+        && existing_db_has_pending(&tx)?
+    {
+        // Replaces an earlier copy. Logged, not printed, so stdout (--json,
+        // the MCP stdio stream) is untouched.
+        fs::rename(&staged.tmp, &staged.slot).map_err(|e| backup_failed(&staged.slot, e))?;
+        log::info!("wrote pre-migration backup {}", staged.slot.display());
+    }
     let mut applied = Vec::new();
 
     for (version, sql) in MIGRATIONS {
@@ -230,23 +323,23 @@ mod tests {
     #[test]
     fn idempotent_reapply_is_a_noop() {
         let mut conn = Connection::open_in_memory().expect("open");
-        let first = apply_all(&mut conn).expect("first apply");
+        let first = apply_all(&mut conn, None).expect("first apply");
         assert!(!first.is_empty(), "fresh DB should apply every migration");
-        let second = apply_all(&mut conn).expect("second apply");
+        let second = apply_all(&mut conn, None).expect("second apply");
         assert!(second.is_empty(), "re-applying should touch nothing");
     }
 
     #[test]
     fn refuses_a_db_written_by_a_newer_binary() {
         let mut conn = Connection::open_in_memory().expect("open");
-        apply_all(&mut conn).expect("first apply");
+        apply_all(&mut conn, None).expect("first apply");
         // A future memhub recorded a migration this build has never heard of.
         conn.execute(
             "INSERT INTO schema_migrations(version) VALUES ('9999_from_the_future')",
             [],
         )
         .expect("seed future migration");
-        let err = apply_all(&mut conn).expect_err("must refuse a newer-schema DB");
+        let err = apply_all(&mut conn, None).expect_err("must refuse a newer-schema DB");
         let msg = err.to_string();
         assert!(msg.contains("newer memhub"), "unexpected message: {msg}");
         assert!(
@@ -325,7 +418,7 @@ mod tests {
     #[test]
     fn migration_0018_adds_facts_superseded_by_column() {
         let mut conn = Connection::open_in_memory().expect("open");
-        apply_all(&mut conn).expect("apply");
+        apply_all(&mut conn, None).expect("apply");
         let facts_has: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('facts') WHERE name = 'superseded_by'",
@@ -353,7 +446,7 @@ mod tests {
     #[test]
     fn migration_0020_adds_recall_metrics_surface_column() {
         let mut conn = Connection::open_in_memory().expect("open");
-        apply_all(&mut conn).expect("apply");
+        apply_all(&mut conn, None).expect("apply");
         let has_surface: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('recall_metrics') WHERE name = 'surface'",
@@ -376,7 +469,7 @@ mod tests {
     #[test]
     fn migration_0022_widens_embeddings_check_and_adds_session_notes_fts() {
         let mut conn = Connection::open_in_memory().expect("open");
-        apply_all(&mut conn).expect("apply");
+        apply_all(&mut conn, None).expect("apply");
         // `embeddings.project_id` carries a real FK to `projects(id)` and
         // this connection (unlike `db::open_project`) enforces foreign
         // keys, so seed the row it references before inserting.
@@ -422,7 +515,7 @@ mod tests {
     #[test]
     fn migration_0021_adds_facts_kind_column() {
         let mut conn = Connection::open_in_memory().expect("open");
-        apply_all(&mut conn).expect("apply");
+        apply_all(&mut conn, None).expect("apply");
         let has_kind: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('facts') WHERE name = 'kind'",
@@ -440,7 +533,7 @@ mod tests {
     #[test]
     fn migration_0023_creates_session_transcripts_table() {
         let mut conn = Connection::open_in_memory().expect("open");
-        apply_all(&mut conn).expect("apply");
+        apply_all(&mut conn, None).expect("apply");
 
         let table_exists: i64 = conn
             .query_row(
@@ -510,7 +603,7 @@ mod tests {
         )
         .expect("insert legacy note");
 
-        let applied = apply_all(&mut conn).expect("auto-apply 0024");
+        let applied = apply_all(&mut conn, None).expect("auto-apply 0024");
         assert_eq!(applied, vec!["0024_session_note_provenance"]);
         for column in [
             "session_id",
@@ -595,7 +688,7 @@ mod tests {
         )
         .expect("seed legacy arch body");
 
-        let applied = apply_all(&mut conn).expect("auto-apply 0025");
+        let applied = apply_all(&mut conn, None).expect("auto-apply 0025");
         assert_eq!(applied, vec![ARCH_SECTIONS_MIGRATION]);
 
         let after: Vec<(i64, String, i64, String)> = {
@@ -645,5 +738,83 @@ mod tests {
             [],
         )
         .expect("widened CHECK must admit 'arch_section'");
+    }
+
+    /// A file DB at head plus a temp copy staged beside `slot`, as
+    /// `stage_copy` leaves it just before `apply_locked` takes the lock.
+    fn staged_beside(dir: &std::path::Path) -> (Connection, StagedCopy) {
+        let mut conn = Connection::open(dir.join("db.sqlite")).expect("open");
+        apply_all(&mut conn, None).expect("to head");
+        let slot = dir.join("backups").join("pre-migration.sqlite");
+        fs::create_dir_all(slot.parent().unwrap()).expect("mkdir");
+        let tmp = dir.join("backups").join(".staged.tmp");
+        fs::write(&tmp, "copy staged by this process").expect("stage");
+        (conn, StagedCopy { tmp, slot })
+    }
+
+    /// Issue #405 race: another process migrated after this one staged its
+    /// copy. Under the lock nothing is pending, so the stale copy is dropped
+    /// and the other process's pre-migration copy stays in the slot.
+    #[test]
+    fn staged_copy_is_discarded_when_another_process_already_migrated() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (mut conn, staged) = staged_beside(dir.path());
+        let (tmp, slot) = (staged.tmp.clone(), staged.slot.clone());
+        fs::write(&slot, "the other process's copy").expect("seed slot");
+
+        let applied = apply_locked(&mut conn, Some(staged)).expect("apply");
+        assert!(applied.is_empty());
+        assert_eq!(
+            fs::read_to_string(&slot).unwrap(),
+            "the other process's copy"
+        );
+        assert!(!tmp.exists(), "staged temp copy is removed");
+    }
+
+    /// Still pending under the lock: the staged copy replaces the slot and
+    /// the migration is applied in that same transaction.
+    #[test]
+    fn staged_copy_enters_the_slot_when_still_pending() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (mut conn, staged) = staged_beside(dir.path());
+        let (tmp, slot) = (staged.tmp.clone(), staged.slot.clone());
+        fs::write(&slot, "an earlier copy").expect("seed slot");
+        let probe = "0010_embeddings_delete_triggers";
+        conn.execute("DELETE FROM schema_migrations WHERE version = ?1", [probe])
+            .expect("open a gap");
+
+        let applied = apply_locked(&mut conn, Some(staged)).expect("apply");
+        assert_eq!(applied, vec![probe.to_string()]);
+        assert_eq!(
+            fs::read_to_string(&slot).unwrap(),
+            "copy staged by this process"
+        );
+        assert!(!tmp.exists(), "staged temp copy was moved, not left behind");
+    }
+
+    /// The move into the slot failing applies nothing, names the slot and
+    /// leaves no temp copy.
+    #[test]
+    fn failed_move_into_the_slot_applies_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (mut conn, staged) = staged_beside(dir.path());
+        let (tmp, slot) = (staged.tmp.clone(), staged.slot.clone());
+        // A non-empty directory where the slot file belongs.
+        fs::create_dir_all(slot.join("occupied")).expect("occupy slot");
+        let probe = "0010_embeddings_delete_triggers";
+        conn.execute("DELETE FROM schema_migrations WHERE version = ?1", [probe])
+            .expect("open a gap");
+
+        let err = apply_locked(&mut conn, Some(staged)).expect_err("move must fail");
+        assert!(matches!(&err, MemhubError::BackupFailed { path, .. } if *path == slot));
+        let still_pending: bool = conn
+            .query_row(
+                "SELECT NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version = ?1)",
+                [probe],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(still_pending, "no migration applied");
+        assert!(!tmp.exists(), "staged temp copy is removed");
     }
 }

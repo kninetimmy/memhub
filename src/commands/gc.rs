@@ -673,9 +673,10 @@ fn sweep_stale_staging(temp_dir: &Path, dry_run: bool, out: &mut GcOutcome) {
 
 /// U8 (decision Q16): `.memhub/backups/{rendered,markdown}` retention.
 /// Report-only unless `delete` (and never when `dry_run`, which always
-/// wins); `backups/sync/` is already single-slot (one fixed
-/// `last-replaced.sqlite`, never accumulates) and is deliberately left
-/// alone. Also flags — but never deletes — the legacy one-time
+/// wins); `backups/sync/`, `backups/import/` and `backups/migrations/`
+/// are already single-slot (one fixed file each, never accumulates) and
+/// are deliberately left alone (before issue #405 only `backups/sync/`
+/// existed). Also flags — but never deletes — the legacy one-time
 /// `project.sqlite.k9-bootstrap-backup` left behind by the
 /// K9-to-memhub-primary migration, if still present.
 fn backups_retention(root: &Path, dry_run: bool, delete: bool, out: &mut GcOutcome) {

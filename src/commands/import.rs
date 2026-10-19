@@ -44,6 +44,9 @@ pub struct ImportSummary {
     /// just overwritten, `--force` or not, and the CLI surfaces it
     /// unconditionally rather than letting it vanish with no signal at all.
     pub overwritten_writes_log: usize,
+    /// Where the target was copied before this import removed any of its
+    /// rows (issue #405). `None` when the import removed none.
+    pub backup_path: Option<PathBuf>,
     /// Rows embedded after the import committed, in a hybrid-mode target
     /// (every imported row lacks a vector: export carries none). `None` in
     /// an fts-mode target, which writes no embeddings.
@@ -68,16 +71,26 @@ pub fn run(start: &Path, source: &Path, force: bool) -> Result<ImportSummary> {
     // destroy, whether or not `--force` was needed to get here.
     let overwritten_writes_log = count_writes_log(&ctx.conn)?;
 
-    if !force {
-        let total = count_durable_rows(&ctx.conn)?;
-        if total > 0 {
-            return Err(MemhubError::InvalidInput(format!(
-                "target memhub project at {} has {} durable row(s); pass --force to overwrite",
-                ctx.paths.repo_root.display(),
-                total
-            )));
-        }
+    let durable = count_durable_rows(&ctx.conn)?;
+    if !force && durable > 0 {
+        return Err(MemhubError::InvalidInput(format!(
+            "target memhub project at {} has {} durable row(s); pass --force to overwrite",
+            ctx.paths.repo_root.display(),
+            durable
+        )));
     }
+
+    // Copy the target before the wipe removes any row of it, outside the
+    // transaction (`VACUUM INTO` cannot run inside one). `arch_sections`
+    // rows cascade from `project_arch`, so they are covered by `durable`.
+    let backup_path =
+        if durable > 0 || overwritten_writes_log > 0 || count_decision_chunks(&ctx.conn)? > 0 {
+            let path = import_backup_path(&ctx.paths);
+            db::write_backup_slot(&ctx.conn, &path)?;
+            Some(path)
+        } else {
+            None
+        };
 
     let summary_counts = (
         payload.facts.len(),
@@ -151,8 +164,27 @@ pub fn run(start: &Path, source: &Path, force: bool) -> Result<ImportSummary> {
         project_arch: summary_counts.8,
         retained_doc_chunks,
         overwritten_writes_log,
+        backup_path,
         embedded,
     })
+}
+
+/// The single slot an import copies its target to before overwriting it,
+/// replaced by the next such copy.
+pub fn import_backup_path(paths: &db::ProjectPaths) -> PathBuf {
+    paths
+        .memhub_dir
+        .join("backups")
+        .join("import")
+        .join("last-replaced.sqlite")
+}
+
+fn count_decision_chunks(conn: &rusqlite::Connection) -> Result<i64> {
+    Ok(conn.query_row(
+        "SELECT COUNT(*) FROM chunks WHERE project_id = 1 AND source_type = 'decision'",
+        [],
+        |row| row.get(0),
+    )?)
 }
 
 fn count_doc_chunks(conn: &rusqlite::Connection) -> Result<usize> {

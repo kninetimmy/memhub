@@ -17,6 +17,13 @@ pub enum MemhubError {
     },
     #[error("invalid input: {0}")]
     InvalidInput(String),
+    /// A single-slot safety copy (`db::write_backup_slot`) could not be
+    /// written, so the change it guards was not made.
+    #[error("could not write the backup {path} ({cause}); nothing was changed")]
+    BackupFailed {
+        path: PathBuf,
+        cause: Box<MemhubError>,
+    },
     #[error("{command} failed: {stderr}")]
     ExternalCommand { command: String, stderr: String },
     #[error("mcp error: {0}")]

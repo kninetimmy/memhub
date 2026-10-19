@@ -129,3 +129,98 @@ fn open_project_is_idempotent_against_an_already_migrated_db() {
         "repeated open_project calls should not duplicate or add schema_migrations rows"
     );
 }
+
+const PROBE: &str = "0010_embeddings_delete_triggers";
+
+/// Init a repo holding one fact, then drop `PROBE`'s ledger row so the next
+/// open has a pending migration (a gap). Same simulation as above.
+fn repo_behind_by_one(root: &std::path::Path) -> std::path::PathBuf {
+    init::run(root).expect("init succeeds");
+    memhub::commands::fact::add(root, "keeper", "1", "user", "cli:user").expect("fact");
+    let ctx = db::open_project(root).expect("open project");
+    ctx.conn
+        .execute("DELETE FROM schema_migrations WHERE version = ?1", [PROBE])
+        .expect("simulate stale schema");
+    db::pre_migration_backup_path(&ctx.paths)
+}
+
+fn has_version(conn: &rusqlite::Connection, version: &str) -> bool {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = ?1)",
+        [version],
+        |r| r.get(0),
+    )
+    .expect("query ledger")
+}
+
+/// Issue #405: an open with a pending migration first copies the DB as it
+/// was to the single pre-migration slot, replacing an earlier copy.
+#[test]
+fn open_with_pending_migration_writes_pre_migration_backup() {
+    let _env_guard = crate::support::env_read_lock();
+
+    let temp = tempdir().expect("tempdir");
+    let backup = repo_behind_by_one(temp.path());
+    std::fs::create_dir_all(backup.parent().unwrap()).expect("mkdir");
+    std::fs::write(&backup, b"an earlier copy").expect("seed prior slot");
+
+    let ctx = db::open_project(temp.path()).expect("open migrates");
+    assert!(has_version(&ctx.conn, PROBE), "live DB is migrated");
+
+    let copy = rusqlite::Connection::open(&backup).expect("backup opens");
+    assert!(
+        !has_version(&copy, PROBE),
+        "backup holds the pre-migration ledger"
+    );
+    assert!(has_version(&copy, "0001_initial"));
+    let facts: i64 = copy
+        .query_row("SELECT COUNT(*) FROM facts WHERE key = 'keeper'", [], |r| {
+            r.get(0)
+        })
+        .expect("count facts");
+    assert_eq!(facts, 1, "backup holds the pre-migration rows");
+    let entries = std::fs::read_dir(backup.parent().unwrap()).unwrap().count();
+    assert_eq!(entries, 1, "only the slot remains: no staged temp copy");
+}
+
+/// Issue #405: neither creating a DB nor opening one at head writes a
+/// pre-migration backup.
+#[test]
+fn fresh_init_and_up_to_date_open_write_no_pre_migration_backup() {
+    let _env_guard = crate::support::env_read_lock();
+
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init succeeds");
+    let ctx = db::open_project(temp.path()).expect("open at head");
+    let backup = db::pre_migration_backup_path(&ctx.paths);
+    assert!(
+        !backup.exists(),
+        "no backup for a fresh init or a head open"
+    );
+    assert!(!backup.parent().unwrap().exists());
+}
+
+/// Issue #405: when the pre-migration backup cannot be written, the open
+/// fails naming the backup path and applies no migration.
+#[test]
+fn unwritable_pre_migration_backup_leaves_db_unmigrated() {
+    let _env_guard = crate::support::env_read_lock();
+
+    let temp = tempdir().expect("tempdir");
+    let backup = repo_behind_by_one(temp.path());
+    // A regular file where the slot's directory belongs.
+    std::fs::create_dir_all(backup.parent().unwrap().parent().unwrap()).expect("mkdir");
+    std::fs::write(backup.parent().unwrap(), b"not a directory").expect("occupy");
+
+    let err = match db::open_project(temp.path()) {
+        Ok(_) => panic!("open must fail when the backup cannot be written"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        err.contains(&backup.display().to_string()),
+        "error names the backup path: {err}"
+    );
+    let db_path = temp.path().join(".memhub").join("project.sqlite");
+    let conn = rusqlite::Connection::open(&db_path).expect("open raw");
+    assert!(!has_version(&conn, PROBE), "no pending migration applied");
+}

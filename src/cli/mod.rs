@@ -1217,6 +1217,9 @@ pub fn run(cli: Cli) -> Result<()> {
             println!("  project arch entries: {}", summary.project_arch);
             print_retained_docs_hint(summary.retained_doc_chunks);
             print_overwritten_writes_log_warning(summary.overwritten_writes_log);
+            if let Some(path) = &summary.backup_path {
+                println!("  replaced DB backed up to {}", path.display());
+            }
             println!();
             println!("Next steps:");
             // Before issue #382 every import printed the rebuild hint; a

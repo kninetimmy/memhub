@@ -98,7 +98,7 @@ fn init_project_inner(
 
     let config = ProjectConfig::load(&paths.config_path)?;
     let mut conn = open_connection(&paths.db_path)?;
-    let migrations_applied = migrations::apply_all(&mut conn)?;
+    let migrations_applied = migrate(&mut conn, &paths)?;
     upsert_project(&conn, repo_root)?;
 
     let result = InitResult {
@@ -164,7 +164,7 @@ pub fn open_project(start: &Path) -> Result<ProjectContext> {
 
     let config = ProjectConfig::load(&paths.config_path)?;
     let mut conn = open_connection(&paths.db_path)?;
-    let _ = migrations::apply_all(&mut conn)?;
+    let _ = migrate(&mut conn, &paths)?;
     upsert_project(&conn, &paths.repo_root)?;
 
     // Self-maintaining machine-wide upgrade registry (decision 96).
@@ -235,6 +235,20 @@ fn create_config_if_missing(
     Ok(true)
 }
 
+/// Where an existing DB is copied before a pending migration runs: one
+/// slot under the directory holding the DB, replaced by the next copy.
+pub fn pre_migration_backup_path(paths: &ProjectPaths) -> PathBuf {
+    paths
+        .memhub_dir
+        .join("backups")
+        .join("migrations")
+        .join("pre-migration.sqlite")
+}
+
+fn migrate(conn: &mut Connection, paths: &ProjectPaths) -> Result<Vec<String>> {
+    migrations::apply_all(conn, Some(&pre_migration_backup_path(paths)))
+}
+
 fn open_connection(path: &Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -249,6 +263,43 @@ fn open_connection(path: &Path) -> Result<Connection> {
          PRAGMA recursive_triggers = OFF;",
     )?;
     Ok(conn)
+}
+
+/// `VACUUM INTO '<path>'`: a consistent copy of `conn`'s DB, committed WAL
+/// state included. SQLite parses the destination as a string expression;
+/// we interpolate an escaped literal (double any single quote) rather than
+/// bind, since `VACUUM` is not a prepared-parameter statement. The path is
+/// memhub-internal, never user SQL. SQLite refuses an existing destination.
+pub fn vacuum_into(conn: &Connection, dest: &Path) -> Result<()> {
+    let dest = dest.to_str().ok_or_else(|| {
+        MemhubError::InvalidInput(format!(
+            "VACUUM INTO destination is not valid UTF-8: {}",
+            dest.display()
+        ))
+    })?;
+    let escaped = dest.replace('\'', "''");
+    conn.execute_batch(&format!("VACUUM INTO '{escaped}';"))?;
+    Ok(())
+}
+
+/// Copy `conn`'s DB to the single backup slot `path`, replacing any earlier
+/// copy there. Every failure is `BackupFailed` naming `path`, so the caller
+/// can fail closed before the change the copy guards.
+pub fn write_backup_slot(conn: &Connection, path: &Path) -> Result<()> {
+    let write = || -> Result<()> {
+        if let Some(dir) = path.parent() {
+            fs::create_dir_all(dir)?;
+        }
+        // `VACUUM INTO` refuses to overwrite; clear the prior slot.
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+        vacuum_into(conn, path)
+    };
+    write().map_err(|e| MemhubError::BackupFailed {
+        path: path.to_path_buf(),
+        cause: Box::new(e),
+    })
 }
 
 fn upsert_project(conn: &Connection, repo_root: &Path) -> Result<()> {
@@ -357,7 +408,7 @@ fn global_paths() -> Result<ProjectPaths> {
 pub fn open_global() -> Result<ProjectContext> {
     let paths = global_paths()?;
     let mut conn = open_connection(&paths.db_path)?;
-    let _ = migrations::apply_all(&mut conn)?;
+    let _ = migrate(&mut conn, &paths)?;
     upsert_project(&conn, &paths.repo_root)?;
     Ok(ProjectContext {
         config: ProjectConfig::default_for_repo_name("<global>"),
