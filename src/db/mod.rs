@@ -98,7 +98,7 @@ fn init_project_inner(
 
     let config = ProjectConfig::load(&paths.config_path)?;
     let mut conn = open_connection(&paths.db_path)?;
-    let migrations_applied = migrations::apply_all(&mut conn)?;
+    let migrations_applied = migrate(&mut conn, &paths)?;
     upsert_project(&conn, repo_root)?;
 
     let result = InitResult {
@@ -164,7 +164,7 @@ pub fn open_project(start: &Path) -> Result<ProjectContext> {
 
     let config = ProjectConfig::load(&paths.config_path)?;
     let mut conn = open_connection(&paths.db_path)?;
-    let _ = migrations::apply_all(&mut conn)?;
+    let _ = migrate(&mut conn, &paths)?;
     upsert_project(&conn, &paths.repo_root)?;
 
     // Self-maintaining machine-wide upgrade registry (decision 96).
@@ -233,6 +233,20 @@ fn create_config_if_missing(
         ProjectConfig::default_for_repo_name(repo_name).save(config_path)?;
     }
     Ok(true)
+}
+
+/// Where an existing DB is copied before a pending migration runs: one
+/// slot under the directory holding the DB, replaced by the next copy.
+pub fn pre_migration_backup_path(paths: &ProjectPaths) -> PathBuf {
+    paths
+        .memhub_dir
+        .join("backups")
+        .join("migrations")
+        .join("pre-migration.sqlite")
+}
+
+fn migrate(conn: &mut Connection, paths: &ProjectPaths) -> Result<Vec<String>> {
+    migrations::apply_all(conn, Some(&pre_migration_backup_path(paths)))
 }
 
 fn open_connection(path: &Path) -> Result<Connection> {
@@ -394,7 +408,7 @@ fn global_paths() -> Result<ProjectPaths> {
 pub fn open_global() -> Result<ProjectContext> {
     let paths = global_paths()?;
     let mut conn = open_connection(&paths.db_path)?;
-    let _ = migrations::apply_all(&mut conn)?;
+    let _ = migrate(&mut conn, &paths)?;
     upsert_project(&conn, &paths.repo_root)?;
     Ok(ProjectContext {
         config: ProjectConfig::default_for_repo_name("<global>"),

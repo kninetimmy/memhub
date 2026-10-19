@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use rusqlite::Connection;
 
 use crate::Result;
@@ -167,7 +169,27 @@ const MIGRATIONS: &[(&str, &str)] = &[
 /// sections of an already-stored latest architecture body in Rust.
 const ARCH_SECTIONS_MIGRATION: &str = "0025_arch_sections";
 
-pub fn apply_all(conn: &mut Connection) -> Result<Vec<String>> {
+/// True when the ledger records at least one compiled migration and lacks
+/// at least one (a missing tail or a gap): an existing DB about to change.
+fn existing_db_has_pending(conn: &Connection) -> Result<bool> {
+    let mut stmt =
+        conn.prepare("SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = ?1)")?;
+    let (mut applied, mut pending) = (false, false);
+    for (version, _) in MIGRATIONS {
+        if stmt.query_row([version], |r| r.get::<_, bool>(0))? {
+            applied = true;
+        } else {
+            pending = true;
+        }
+    }
+    Ok(applied && pending)
+}
+
+/// Apply every pending migration in one transaction. With `backup`, an
+/// existing DB that has a pending migration is first copied to that single
+/// slot (`db::write_backup_slot`); if the copy fails nothing is applied.
+/// `None` is for in-memory connections, which have no directory.
+pub fn apply_all(conn: &mut Connection, backup: Option<&Path>) -> Result<Vec<String>> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS schema_migrations (
             version TEXT PRIMARY KEY,
@@ -189,6 +211,15 @@ pub fn apply_all(conn: &mut Connection) -> Result<Vec<String>> {
              with an older binary. Run `memhub upgrade` to rebuild, then retry.",
             latest_version()
         )));
+    }
+
+    // Before the transaction: `VACUUM INTO` cannot run inside one. Logged,
+    // not printed, so stdout (--json, the MCP stdio stream) is untouched.
+    if let Some(path) = backup
+        && existing_db_has_pending(conn)?
+    {
+        super::write_backup_slot(conn, path)?;
+        log::info!("wrote pre-migration backup {}", path.display());
     }
 
     let tx = conn.transaction()?;
@@ -230,23 +261,23 @@ mod tests {
     #[test]
     fn idempotent_reapply_is_a_noop() {
         let mut conn = Connection::open_in_memory().expect("open");
-        let first = apply_all(&mut conn).expect("first apply");
+        let first = apply_all(&mut conn, None).expect("first apply");
         assert!(!first.is_empty(), "fresh DB should apply every migration");
-        let second = apply_all(&mut conn).expect("second apply");
+        let second = apply_all(&mut conn, None).expect("second apply");
         assert!(second.is_empty(), "re-applying should touch nothing");
     }
 
     #[test]
     fn refuses_a_db_written_by_a_newer_binary() {
         let mut conn = Connection::open_in_memory().expect("open");
-        apply_all(&mut conn).expect("first apply");
+        apply_all(&mut conn, None).expect("first apply");
         // A future memhub recorded a migration this build has never heard of.
         conn.execute(
             "INSERT INTO schema_migrations(version) VALUES ('9999_from_the_future')",
             [],
         )
         .expect("seed future migration");
-        let err = apply_all(&mut conn).expect_err("must refuse a newer-schema DB");
+        let err = apply_all(&mut conn, None).expect_err("must refuse a newer-schema DB");
         let msg = err.to_string();
         assert!(msg.contains("newer memhub"), "unexpected message: {msg}");
         assert!(
@@ -325,7 +356,7 @@ mod tests {
     #[test]
     fn migration_0018_adds_facts_superseded_by_column() {
         let mut conn = Connection::open_in_memory().expect("open");
-        apply_all(&mut conn).expect("apply");
+        apply_all(&mut conn, None).expect("apply");
         let facts_has: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('facts') WHERE name = 'superseded_by'",
@@ -353,7 +384,7 @@ mod tests {
     #[test]
     fn migration_0020_adds_recall_metrics_surface_column() {
         let mut conn = Connection::open_in_memory().expect("open");
-        apply_all(&mut conn).expect("apply");
+        apply_all(&mut conn, None).expect("apply");
         let has_surface: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('recall_metrics') WHERE name = 'surface'",
@@ -376,7 +407,7 @@ mod tests {
     #[test]
     fn migration_0022_widens_embeddings_check_and_adds_session_notes_fts() {
         let mut conn = Connection::open_in_memory().expect("open");
-        apply_all(&mut conn).expect("apply");
+        apply_all(&mut conn, None).expect("apply");
         // `embeddings.project_id` carries a real FK to `projects(id)` and
         // this connection (unlike `db::open_project`) enforces foreign
         // keys, so seed the row it references before inserting.
@@ -422,7 +453,7 @@ mod tests {
     #[test]
     fn migration_0021_adds_facts_kind_column() {
         let mut conn = Connection::open_in_memory().expect("open");
-        apply_all(&mut conn).expect("apply");
+        apply_all(&mut conn, None).expect("apply");
         let has_kind: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('facts') WHERE name = 'kind'",
@@ -440,7 +471,7 @@ mod tests {
     #[test]
     fn migration_0023_creates_session_transcripts_table() {
         let mut conn = Connection::open_in_memory().expect("open");
-        apply_all(&mut conn).expect("apply");
+        apply_all(&mut conn, None).expect("apply");
 
         let table_exists: i64 = conn
             .query_row(
@@ -510,7 +541,7 @@ mod tests {
         )
         .expect("insert legacy note");
 
-        let applied = apply_all(&mut conn).expect("auto-apply 0024");
+        let applied = apply_all(&mut conn, None).expect("auto-apply 0024");
         assert_eq!(applied, vec!["0024_session_note_provenance"]);
         for column in [
             "session_id",
@@ -595,7 +626,7 @@ mod tests {
         )
         .expect("seed legacy arch body");
 
-        let applied = apply_all(&mut conn).expect("auto-apply 0025");
+        let applied = apply_all(&mut conn, None).expect("auto-apply 0025");
         assert_eq!(applied, vec![ARCH_SECTIONS_MIGRATION]);
 
         let after: Vec<(i64, String, i64, String)> = {
