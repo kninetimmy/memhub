@@ -310,6 +310,10 @@ Show all drafts in one block, grouped by kind. The user approves, edits, or reje
 each item individually. Wait for explicit approval per item, or a clear 'all good',
 before moving on. A rejected draft is dropped; do not retry without being told to.
 
+Under an active Orch autonomy grant (`orch grant` shows it) covering the `wrap-up` gate,
+the wrap-up skill's Orch grant exception applies: the agent approves its own drafts
+within that exception's limits. Without such a grant, this gate stays with the user.
+
 ";
 
 fn db_writes(level: WrapUpVerbosity) -> String {
@@ -517,6 +521,34 @@ mod tests {
             );
             assert!(
                 text.contains("do not repeat draft assembly or the durable writes"),
+                "level {level:?}: {text}"
+            );
+        }
+    }
+
+    /// Issue #413: the gate points at the skills' Orch grant exception at every
+    /// level, citing no step numbers (db_writes numbers its steps differently
+    /// from the skills).
+    #[test]
+    fn approval_gate_points_at_the_orch_grant_exception_without_step_numbers() {
+        assert!(
+            !APPROVAL_GATE.chars().any(|c| c.is_ascii_digit()),
+            "{APPROVAL_GATE}"
+        );
+        for level in [
+            WrapUpVerbosity::Minimal,
+            WrapUpVerbosity::Standard,
+            WrapUpVerbosity::Full,
+            WrapUpVerbosity::Transcript,
+        ] {
+            let text = render_instructions(level)
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert!(
+                text.contains(
+                    "covering the `wrap-up` gate, the wrap-up skill's Orch grant exception applies"
+                ),
                 "level {level:?}: {text}"
             );
         }
