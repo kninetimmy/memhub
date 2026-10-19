@@ -3,6 +3,7 @@ pub mod registry;
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use log::debug;
 use rusqlite::{Connection, params};
@@ -282,23 +283,47 @@ pub fn vacuum_into(conn: &Connection, dest: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Makes each `write_backup_slot` temp name unique within this process.
+static BACKUP_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
 /// Copy `conn`'s DB to the single backup slot `path`, replacing any earlier
-/// copy there. Every failure is `BackupFailed` naming `path`, so the caller
-/// can fail closed before the change the copy guards.
+/// copy there only once the new copy is complete: it is written to a unique
+/// temp sibling, then renamed over the slot, so a failed copy leaves the
+/// earlier one in place. Every failure is `BackupFailed` naming `path`, so
+/// the caller can fail closed before the change the copy guards.
 pub fn write_backup_slot(conn: &Connection, path: &Path) -> Result<()> {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let prefix = format!(".{name}.");
+    let tmp = path.with_file_name(format!(
+        "{prefix}{}.{}.tmp",
+        std::process::id(),
+        BACKUP_TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
     let write = || -> Result<()> {
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir)?;
+            // Temp copies left by killed attempts, including one at `tmp`
+            // (a reused pid), which `VACUUM INTO` would refuse to overwrite.
+            // A live one, possible only where two DBs share a slot, makes
+            // that attempt fail closed instead.
+            for entry in fs::read_dir(dir)?.flatten() {
+                let file = entry.file_name();
+                let file = file.to_string_lossy();
+                if file.starts_with(&prefix) && file.ends_with(".tmp") {
+                    let _ = fs::remove_file(entry.path());
+                }
+            }
         }
-        // `VACUUM INTO` refuses to overwrite; clear the prior slot.
-        if path.exists() {
-            fs::remove_file(path)?;
-        }
-        vacuum_into(conn, path)
+        vacuum_into(conn, &tmp)?;
+        fs::rename(&tmp, path)?;
+        Ok(())
     };
-    write().map_err(|e| MemhubError::BackupFailed {
-        path: path.to_path_buf(),
-        cause: Box::new(e),
+    write().map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        MemhubError::BackupFailed {
+            path: path.to_path_buf(),
+            cause: Box::new(e),
+        }
     })
 }
 
@@ -609,5 +634,28 @@ mod tests {
             .query_row("PRAGMA synchronous", [], |row| row.get(0))
             .expect("query synchronous pragma");
         assert_eq!(synchronous, 1, "expected synchronous = NORMAL (1)");
+    }
+
+    /// Issue #407: the sync adopt and import backups share this helper. A
+    /// copy that fails (here `VACUUM INTO` refusing inside a transaction)
+    /// keeps the earlier copy in the slot and leaves no temp file.
+    #[test]
+    fn failed_backup_copy_keeps_the_earlier_slot() {
+        let temp = tempdir().expect("tempdir");
+        let conn = open_connection(&temp.path().join("project.sqlite")).expect("open");
+        let slot = temp.path().join("backups").join("last-replaced.sqlite");
+        fs::create_dir_all(slot.parent().unwrap()).expect("mkdir");
+        fs::write(&slot, "an earlier copy").expect("seed slot");
+
+        conn.execute_batch("BEGIN").expect("begin");
+        let err = write_backup_slot(&conn, &slot).expect_err("copy must fail");
+        assert!(matches!(&err, MemhubError::BackupFailed { path, .. } if *path == slot));
+        assert_eq!(fs::read_to_string(&slot).unwrap(), "an earlier copy");
+        assert_eq!(fs::read_dir(slot.parent().unwrap()).unwrap().count(), 1);
+
+        conn.execute_batch("ROLLBACK").expect("rollback");
+        write_backup_slot(&conn, &slot).expect("copy succeeds");
+        assert!(fs::read(&slot).unwrap().starts_with(b"SQLite format 3\0"));
+        assert_eq!(fs::read_dir(slot.parent().unwrap()).unwrap().count(), 1);
     }
 }
