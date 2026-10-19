@@ -22,7 +22,10 @@ cargo run --release -- status   # first call auto-applies pending
 
 `db::open_project` runs `migrations::apply_all` on every invocation;
 migrations are idempotent against `schema_migrations`, so no manual
-step is needed even if the schema bumped on another machine.
+step is needed even if the schema bumped on another machine. Before
+issue #405 an open with a pending migration migrated the DB in place
+and kept no copy; it now first copies the DB to its pre-migration
+backup (see "Safety backups" below).
 
 **To carry memory between machines (e.g. continue on Windows what you
 started on Mac):**
@@ -42,6 +45,11 @@ memhub import ~/transfer/memhub-<repo>-<date>.json --force  # overwrite
 # or to bootstrap a target that has no DB yet
 memhub init --from-backup ~/transfer/memhub-<repo>-<date>.json
 ```
+
+Before issue #405 an import that wiped the target's rows (`--force` on
+a populated target, or a target holding only `writes_log` rows) kept no
+copy of what it removed. It now first copies the target to its import
+backup and prints that path (see "Safety backups" below).
 
 Before issue #382, after import the target's embeddings were not yet
 built (only the rows). You ran `memhub index` to populate them — the
@@ -107,6 +115,43 @@ registry upsert, an expiry pass) that a purist "reads never write"
 rule would forbid. This contract covers the repo DB only: the
 machine-global store follows the opposite rule for migrations (see
 "Machine-global memory" below).
+
+## Safety backups
+
+Three operations replace data that reverting the code cannot bring
+back, and each first writes a copy of the DB with SQLite `VACUUM INTO`
+(a consistent copy that includes committed WAL state). Each copy is a
+**single slot**: one fixed file that the next backup of the same kind
+replaces, so only the most recent copy of each kind is kept. Each is
+written under the directory that holds the DB file (`.memhub/` for a
+repo DB, `~/.memhub/` for the machine-global store). If a copy cannot be
+written, the operation fails before it changes the DB, and the error
+names the backup path. `memhub gc` prunes only `backups/rendered/` and
+`backups/markdown/`, so it never prunes any of these three; delete one
+by hand once you no longer need it.
+
+- **Sync adopt:** `backups/sync/last-replaced.sqlite`, written by `memhub
+  sync adopt` (and the MCP `sync_adopt` with `confirm=true`) just before
+  it restores the staged snapshot over the repo DB. Adopt reports the
+  path (`backup_path`). This was the only one of the three before issue
+  #405.
+- **Import:** `backups/import/last-replaced.sqlite`, written by `memhub
+  import` just before its wipe, whenever the wipe would remove at least
+  one existing row of the target (a durable row, a `writes_log` row or a
+  decision chunk). The import output prints the path. An import that
+  removes nothing, such as `memhub init --from-backup` into its freshly
+  created DB, writes none.
+- **Pre-migration:** `backups/migrations/pre-migration.sqlite`, written
+  when a repo DB or the machine-global store that already has at least
+  one applied migration is opened with one or more migrations pending
+  (a missing tail or a gap in `schema_migrations`), before any of them
+  runs. That is the first open after a binary update by any command:
+  every repo command, `memhub init` on an existing DB, `memhub upgrade`,
+  the MCP server and the global writes. Opening a DB at head or creating
+  a new one writes none. The copy is logged to stderr only, so `--json`
+  output and the MCP server's stdout are unchanged. A repo rooted at your
+  home directory shares `~/.memhub/` with the global store, so their two
+  pre-migration copies share one slot there.
 
 ## Cross-machine Drive sync
 
@@ -187,7 +232,7 @@ snapshot into a local `.memhub/project.sqlite.incoming` copy, hashes
 Drive rewrites between hashing and install can never be installed
 unverified. It then takes a `VACUUM INTO` safety copy of the current DB
 to `.memhub/backups/sync/last-replaced.sqlite` (single slot,
-WAL-inclusive) and restores the staged snapshot's pages into the live
+WAL-inclusive; see "Safety backups" above) and restores the staged snapshot's pages into the live
 DB **in place** through SQLite's online-backup API. It never deletes or
 renames the DB (or its `-wal`/`-shm`) out from under a process that may
 hold it open: on Windows that would raise a sharing violation; on POSIX
