@@ -1,6 +1,4 @@
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::Path;
 
 use rusqlite::{Connection, TransactionBehavior};
 
@@ -187,50 +185,6 @@ fn existing_db_has_pending(conn: &Connection) -> Result<bool> {
     Ok(applied && pending)
 }
 
-/// A pre-migration copy staged in a unique temp sibling of its slot. Drop
-/// deletes the temp file, so none is left behind on any path; once moved
-/// into the slot the delete is a no-op.
-struct StagedCopy {
-    tmp: PathBuf,
-    slot: PathBuf,
-}
-
-impl Drop for StagedCopy {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.tmp);
-    }
-}
-
-fn backup_failed(slot: &Path, cause: impl Into<MemhubError>) -> MemhubError {
-    MemhubError::BackupFailed {
-        path: slot.to_path_buf(),
-        cause: Box::new(cause.into()),
-    }
-}
-
-/// `VACUUM INTO` a unique temp sibling of `slot`. Outside any transaction:
-/// `VACUUM INTO` cannot run inside one.
-fn stage_copy(conn: &Connection, slot: &Path) -> Result<StagedCopy> {
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-    let name = slot.file_name().unwrap_or_default().to_string_lossy();
-    let staged = StagedCopy {
-        tmp: slot.with_file_name(format!(
-            ".{name}.{}.{}.tmp",
-            std::process::id(),
-            SEQ.fetch_add(1, Ordering::Relaxed)
-        )),
-        slot: slot.to_path_buf(),
-    };
-    let write = || -> Result<()> {
-        if let Some(dir) = slot.parent() {
-            fs::create_dir_all(dir)?;
-        }
-        super::vacuum_into(conn, &staged.tmp)
-    };
-    write().map_err(|e| backup_failed(slot, e))?;
-    Ok(staged)
-}
-
 /// Apply every pending migration in one transaction. With `backup`, an
 /// existing DB that has a pending migration is first copied to that single
 /// slot, replacing any earlier copy; if the copy fails nothing is applied.
@@ -259,31 +213,46 @@ pub fn apply_all(conn: &mut Connection, backup: Option<&Path>) -> Result<Vec<Str
         )));
     }
 
-    let staged = match backup {
-        Some(slot) if existing_db_has_pending(conn)? => Some(stage_copy(conn, slot)?),
+    let backup = match backup {
+        Some(slot) if existing_db_has_pending(conn)? => Some(slot),
         _ => None,
     };
-    apply_locked(conn, staged)
+    apply_locked(conn, backup)
 }
 
-/// The migration transaction. A staged copy takes the write lock up front
-/// and enters its slot only if a migration is still pending under that lock:
-/// another process may have migrated after the copy was taken, and then the
-/// copy is not pre-migration (the slot keeps that process's copy).
-fn apply_locked(conn: &mut Connection, staged: Option<StagedCopy>) -> Result<Vec<String>> {
-    let behavior = if staged.is_some() {
+/// The migration transaction. With `backup` it takes the write lock up
+/// front and copies the DB only if a migration is still pending under that
+/// lock (another process may have migrated first; then the slot keeps that
+/// process's copy). The lock is held from the copy to the commit, so no
+/// other connection can commit a write the copy would miss.
+fn apply_locked(conn: &mut Connection, backup: Option<&Path>) -> Result<Vec<String>> {
+    let behavior = if backup.is_some() {
         TransactionBehavior::Immediate
     } else {
         TransactionBehavior::Deferred
     };
     let tx = conn.transaction_with_behavior(behavior)?;
-    if let Some(staged) = &staged
+    if let Some(slot) = backup
         && existing_db_has_pending(&tx)?
     {
-        // Replaces an earlier copy. Logged, not printed, so stdout (--json,
-        // the MCP stdio stream) is untouched.
-        fs::rename(&staged.tmp, &staged.slot).map_err(|e| backup_failed(&staged.slot, e))?;
-        log::info!("wrote pre-migration backup {}", staged.slot.display());
+        // `VACUUM INTO` cannot run inside a transaction, so a second
+        // connection reads the last committed state while `tx` holds the
+        // write lock.
+        let reader = tx
+            .path()
+            .filter(|path| !path.is_empty())
+            .ok_or_else(|| MemhubError::InvalidInput("the DB has no file to copy".into()))
+            .and_then(|path| Ok(Connection::open(path)?))
+            .map_err(|e| MemhubError::BackupFailed {
+                path: slot.to_path_buf(),
+                cause: Box::new(e),
+            })?;
+        super::write_backup_slot(&reader, slot)?;
+        // Logged, not printed, so stdout (--json, the MCP stdio stream) is
+        // untouched.
+        log::info!("wrote pre-migration backup {}", slot.display());
+        #[cfg(test)]
+        tests::after_copy(&tx);
     }
     let mut applied = Vec::new();
 
@@ -319,6 +288,7 @@ fn apply_locked(conn: &mut Connection, staged: Option<StagedCopy>) -> Result<Vec
 mod tests {
     use super::*;
     use rusqlite::Connection;
+    use std::fs;
 
     #[test]
     fn idempotent_reapply_is_a_noop() {
@@ -740,56 +710,138 @@ mod tests {
         .expect("widened CHECK must admit 'arch_section'");
     }
 
-    /// A file DB at head plus a temp copy staged beside `slot`, as
-    /// `stage_copy` leaves it just before `apply_locked` takes the lock.
-    fn staged_beside(dir: &std::path::Path) -> (Connection, StagedCopy) {
-        let mut conn = Connection::open(dir.join("db.sqlite")).expect("open");
-        apply_all(&mut conn, None).expect("to head");
-        let slot = dir.join("backups").join("pre-migration.sqlite");
-        fs::create_dir_all(slot.parent().unwrap()).expect("mkdir");
-        let tmp = dir.join("backups").join(".staged.tmp");
-        fs::write(&tmp, "copy staged by this process").expect("stage");
-        (conn, StagedCopy { tmp, slot })
+    thread_local! {
+        static AFTER_COPY: std::cell::Cell<Option<fn(&Connection)>> =
+            const { std::cell::Cell::new(None) };
     }
 
-    /// Issue #405 race: another process migrated after this one staged its
-    /// copy. Under the lock nothing is pending, so the stale copy is dropped
-    /// and the other process's pre-migration copy stays in the slot.
+    /// Called by `apply_locked` right after the pre-migration copy enters
+    /// its slot, while the migration transaction is still open.
+    pub(super) fn after_copy(tx: &Connection) {
+        if let Some(hook) = AFTER_COPY.with(|h| h.take()) {
+            hook(tx);
+        }
+    }
+
+    const PROBE: &str = "0010_embeddings_delete_triggers";
+
+    fn has_version(conn: &Connection, version: &str) -> bool {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = ?1)",
+            [version],
+            |r| r.get(0),
+        )
+        .expect("query ledger")
+    }
+
+    /// A WAL file DB at head with `PROBE` dropped from the ledger (a gap),
+    /// and the pre-migration slot beside it.
+    fn behind_by_one(dir: &std::path::Path) -> (Connection, std::path::PathBuf) {
+        let mut conn = Connection::open(dir.join("db.sqlite")).expect("open");
+        conn.execute_batch("PRAGMA journal_mode = WAL;")
+            .expect("wal");
+        apply_all(&mut conn, None).expect("to head");
+        conn.execute("DELETE FROM schema_migrations WHERE version = ?1", [PROBE])
+            .expect("open a gap");
+        (conn, dir.join("backups").join("pre-migration.sqlite"))
+    }
+
+    fn entries(dir: &std::path::Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .expect("read dir")
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Issue #407: the copy is taken under the migration's write lock, so
+    /// between the copy and the commit no other connection can commit a
+    /// write the copy would miss.
     #[test]
-    fn staged_copy_is_discarded_when_another_process_already_migrated() {
+    fn no_other_connection_commits_between_the_copy_and_the_migration() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let (mut conn, staged) = staged_beside(dir.path());
-        let (tmp, slot) = (staged.tmp.clone(), staged.slot.clone());
+        let (mut conn, slot) = behind_by_one(dir.path());
+        AFTER_COPY.with(|h| {
+            h.set(Some(|tx: &Connection| {
+                let db = std::path::PathBuf::from(tx.path().unwrap());
+                let copy =
+                    Connection::open(db.with_file_name("backups").join("pre-migration.sqlite"))
+                        .expect("slot holds the copy");
+                assert!(!has_version(&copy, PROBE), "copy is pre-migration");
+                let intruder = Connection::open(&db).expect("intruder");
+                intruder.busy_timeout(std::time::Duration::ZERO).unwrap();
+                let err = intruder
+                    .execute_batch("CREATE TABLE intruder(x)")
+                    .expect_err("the write lock is held");
+                assert_eq!(
+                    err.sqlite_error_code(),
+                    Some(rusqlite::ErrorCode::DatabaseBusy)
+                );
+            }))
+        });
+
+        let applied = apply_all(&mut conn, Some(&slot)).expect("apply");
+        assert!(AFTER_COPY.with(|h| h.get().is_none()), "hook ran");
+        assert_eq!(applied, vec![PROBE.to_string()]);
+        assert!(has_version(&conn, PROBE));
+        let copy = Connection::open(&slot).expect("open copy");
+        assert!(!has_version(&copy, PROBE));
+        assert_eq!(
+            entries(slot.parent().unwrap()),
+            vec!["pre-migration.sqlite"]
+        );
+    }
+
+    /// Issue #405 race: another process migrated after this one saw a
+    /// pending migration. Under the lock nothing is pending, so no copy is
+    /// taken and the other process's pre-migration copy stays in the slot.
+    #[test]
+    fn no_copy_when_another_process_already_migrated() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (mut conn, slot) = behind_by_one(dir.path());
+        apply_all(&mut conn, None).expect("the other process migrates");
+        fs::create_dir_all(slot.parent().unwrap()).expect("mkdir");
         fs::write(&slot, "the other process's copy").expect("seed slot");
 
-        let applied = apply_locked(&mut conn, Some(staged)).expect("apply");
+        let applied = apply_locked(&mut conn, Some(&slot)).expect("apply");
         assert!(applied.is_empty());
         assert_eq!(
             fs::read_to_string(&slot).unwrap(),
             "the other process's copy"
         );
-        assert!(!tmp.exists(), "staged temp copy is removed");
+        assert_eq!(
+            entries(slot.parent().unwrap()),
+            vec!["pre-migration.sqlite"]
+        );
     }
 
-    /// Still pending under the lock: the staged copy replaces the slot and
-    /// the migration is applied in that same transaction.
+    /// Issue #407: temp copies left by killed attempts, one of them at the
+    /// path this attempt would use (a reused pid), neither stop the
+    /// migration nor remain afterwards.
     #[test]
-    fn staged_copy_enters_the_slot_when_still_pending() {
+    fn stale_temp_copies_neither_stop_the_migration_nor_remain() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let (mut conn, staged) = staged_beside(dir.path());
-        let (tmp, slot) = (staged.tmp.clone(), staged.slot.clone());
-        fs::write(&slot, "an earlier copy").expect("seed slot");
-        let probe = "0010_embeddings_delete_triggers";
-        conn.execute("DELETE FROM schema_migrations WHERE version = ?1", [probe])
-            .expect("open a gap");
+        let (mut conn, slot) = behind_by_one(dir.path());
+        let backups = slot.parent().unwrap();
+        fs::create_dir_all(backups).expect("mkdir");
+        // The next names this process can pick, plus a foreign pid's.
+        let next = crate::db::BACKUP_TMP_SEQ.load(std::sync::atomic::Ordering::Relaxed);
+        let pid = std::process::id();
+        for seq in next..next + 16 {
+            fs::write(
+                backups.join(format!(".pre-migration.sqlite.{pid}.{seq}.tmp")),
+                "stale",
+            )
+            .expect("plant");
+        }
+        fs::write(backups.join(".pre-migration.sqlite.4242.0.tmp"), "stale").expect("plant");
 
-        let applied = apply_locked(&mut conn, Some(staged)).expect("apply");
-        assert_eq!(applied, vec![probe.to_string()]);
-        assert_eq!(
-            fs::read_to_string(&slot).unwrap(),
-            "copy staged by this process"
-        );
-        assert!(!tmp.exists(), "staged temp copy was moved, not left behind");
+        let applied = apply_all(&mut conn, Some(&slot)).expect("apply");
+        assert_eq!(applied, vec![PROBE.to_string()]);
+        let copy = Connection::open(&slot).expect("open copy");
+        assert!(!has_version(&copy, PROBE));
+        assert_eq!(entries(backups), vec!["pre-migration.sqlite"]);
     }
 
     /// The move into the slot failing applies nothing, names the slot and
@@ -797,24 +849,16 @@ mod tests {
     #[test]
     fn failed_move_into_the_slot_applies_nothing() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let (mut conn, staged) = staged_beside(dir.path());
-        let (tmp, slot) = (staged.tmp.clone(), staged.slot.clone());
+        let (mut conn, slot) = behind_by_one(dir.path());
         // A non-empty directory where the slot file belongs.
         fs::create_dir_all(slot.join("occupied")).expect("occupy slot");
-        let probe = "0010_embeddings_delete_triggers";
-        conn.execute("DELETE FROM schema_migrations WHERE version = ?1", [probe])
-            .expect("open a gap");
 
-        let err = apply_locked(&mut conn, Some(staged)).expect_err("move must fail");
+        let err = apply_all(&mut conn, Some(&slot)).expect_err("move must fail");
         assert!(matches!(&err, MemhubError::BackupFailed { path, .. } if *path == slot));
-        let still_pending: bool = conn
-            .query_row(
-                "SELECT NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version = ?1)",
-                [probe],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert!(still_pending, "no migration applied");
-        assert!(!tmp.exists(), "staged temp copy is removed");
+        assert!(!has_version(&conn, PROBE), "no migration applied");
+        assert_eq!(
+            entries(slot.parent().unwrap()),
+            vec!["pre-migration.sqlite"]
+        );
     }
 }
