@@ -13,6 +13,8 @@ mod audit_md;
 mod cli_args;
 #[path = "lifecycle/config_example.rs"]
 mod config_example;
+#[path = "lifecycle/doctor_codex.rs"]
+mod doctor_codex;
 #[path = "lifecycle/export_import.rs"]
 mod export_import;
 #[path = "lifecycle/foundation.rs"]
