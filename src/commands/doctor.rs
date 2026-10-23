@@ -145,7 +145,7 @@ fn run_with_home(start: &Path, strict: bool, home: Option<PathBuf>) -> Result<Do
 
     // Integrations (P1 report-only, P4).
     checks.push(check_mcp_claude(&ctx.paths.repo_root, home.as_deref()));
-    checks.push(check_mcp_codex(home.as_deref()));
+    checks.push(check_mcp_codex(&ctx.paths.repo_root, home.as_deref()));
     checks.push(check_mcp_opencode(&ctx.paths.repo_root, home.as_deref()));
     checks.push(check_sync_freshness(start, &ctx.config));
 
@@ -1196,50 +1196,119 @@ fn check_mcp_claude(repo_root: &Path, home: Option<&Path>) -> Check {
     }
 }
 
-fn check_mcp_codex(home: Option<&Path>) -> Check {
-    let Some(home) = home else {
-        return Check::new(
+fn check_mcp_codex(repo_root: &Path, home: Option<&Path>) -> Check {
+    let check = |status, message: String| {
+        Check::new(
             "mcp_registration_codex",
             Group::Integrations,
-            Status::Skipped,
-            "cannot resolve home directory",
-        );
+            status,
+            message,
+        )
+        .with_detail(
+            "Inspects only ~/.codex/config.toml and repository-root .codex/config.toml. \
+             Project fields override user fields; Codex loads project configuration only in a \
+             trusted project. Other configuration layers, project trust and live connectivity \
+             are not checked.",
+        )
     };
-    let codex_dir = home.join(".codex");
-    if !codex_dir.is_dir() {
-        return Check::new(
-            "mcp_registration_codex",
-            Group::Integrations,
+    let Some(home) = home else {
+        return check(Status::Skipped, "cannot resolve home directory".into());
+    };
+    let user_dir = home.join(".codex");
+    let project_dir = repo_root.join(".codex");
+    let mut registration = toml::Table::new();
+    let mut project_registration = false;
+    for (dir, is_project) in [(&user_dir, false), (&project_dir, true)] {
+        match read_codex_memhub(&dir.join("config.toml")) {
+            Ok(Some(fields)) => {
+                registration.extend(fields);
+                project_registration |= is_project;
+            }
+            Ok(None) => {}
+            Err(message) => return check(Status::Warn, message),
+        }
+    }
+
+    if !user_dir.exists() && !project_dir.exists() {
+        return check(
             Status::Skipped,
-            "Codex CLI not set up (no ~/.codex)",
+            "Codex CLI not set up (no user or repository-root .codex)".into(),
         );
     }
-
-    let registered = fs::read_to_string(codex_dir.join("config.toml"))
-        .ok()
-        .and_then(|raw| toml::from_str::<toml::Value>(&raw).ok())
-        .and_then(|v| {
-            v.get("mcp_servers")
-                .and_then(|m| m.get("memhub"))
-                .map(|_| ())
-        })
-        .is_some();
-
-    if registered {
-        Check::new(
-            "mcp_registration_codex",
-            Group::Integrations,
-            Status::Ok,
-            "memhub MCP server registered in Codex",
-        )
+    let scope = if project_registration {
+        "repository-root .codex/config.toml (with inherited user fields; trusted projects only)"
     } else {
-        Check::new(
-            "mcp_registration_codex",
-            Group::Integrations,
-            Status::Warn,
-            format!("Codex {MCP_WARN_SUFFIX}"),
-        )
+        "user-level ~/.codex/config.toml"
+    };
+    if registration.is_empty() {
+        return check(Status::Warn, format!("Codex {MCP_WARN_SUFFIX}"));
     }
+    if let Some(problem) = codex_registration_problem(&registration) {
+        return check(
+            Status::Warn,
+            format!("invalid Codex memhub MCP registration in {scope}: {problem}"),
+        );
+    }
+    if registration.get("enabled").and_then(toml::Value::as_bool) == Some(false) {
+        return check(
+            Status::Warn,
+            format!("memhub MCP registration disabled in Codex ({scope}; enabled = false)"),
+        );
+    }
+    check(
+        Status::Ok,
+        format!("enabled memhub MCP registration configured in Codex ({scope})"),
+    )
+}
+
+fn read_codex_memhub(path: &Path) -> std::result::Result<Option<toml::Table>, String> {
+    let raw = match fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
+    };
+    // Do not print parser excerpts: user configuration can contain credentials.
+    let value: toml::Value =
+        toml::from_str(&raw).map_err(|_| format!("{} is not valid TOML", path.display()))?;
+    let Some(servers) = value.get("mcp_servers") else {
+        return Ok(None);
+    };
+    let servers = servers
+        .as_table()
+        .ok_or_else(|| format!("{}: mcp_servers must be a table", path.display()))?;
+    servers
+        .get("memhub")
+        .map(|server| {
+            server
+                .as_table()
+                .cloned()
+                .ok_or_else(|| format!("{}: mcp_servers.memhub must be a table", path.display()))
+        })
+        .transpose()
+}
+
+fn codex_registration_problem(fields: &toml::Table) -> Option<&'static str> {
+    if fields.get("enabled").is_some_and(|v| !v.is_bool()) {
+        return Some("enabled must be a boolean");
+    }
+    for key in ["command", "url"] {
+        if fields
+            .get(key)
+            .is_some_and(|v| v.as_str().is_none_or(|s| s.trim().is_empty()))
+        {
+            return Some("command and url, when present, must be non-empty strings");
+        }
+    }
+    if fields.contains_key("command") == fields.contains_key("url") {
+        return Some("provide exactly one of command (STDIO) or url (HTTP)");
+    }
+    if fields.get("args").is_some_and(|v| {
+        v.as_array()
+            .is_none_or(|args| args.iter().any(|arg| !arg.is_str()))
+    }) {
+        return Some("args must be an array of strings");
+    }
+    None
 }
 
 fn check_mcp_opencode(repo_root: &Path, home: Option<&Path>) -> Check {
@@ -2284,25 +2353,207 @@ transcript_retention_days = 99999999
 
     #[test]
     fn mcp_codex_warns_when_set_up_but_not_registered() {
+        let repo = tempdir().expect("repo");
         let home = empty_home();
         fs::create_dir_all(home.path().join(".codex")).expect("mkdir");
 
-        let check = check_mcp_codex(Some(home.path()));
+        let check = check_mcp_codex(repo.path(), Some(home.path()));
         assert_eq!(check.status, Status::Warn);
     }
 
     #[test]
-    fn mcp_codex_ok_when_registered() {
-        let home = empty_home();
-        fs::create_dir_all(home.path().join(".codex")).expect("mkdir");
-        fs::write(
-            home.path().join(".codex").join("config.toml"),
-            "[mcp_servers.memhub]\ncommand = \"memhub\"\nargs = [\"serve\"]\n",
-        )
-        .expect("write");
+    fn mcp_codex_config_layers() {
+        let server = "[mcp_servers.memhub]\ncommand = 'memhub'\nargs = ['serve']\n";
+        let disabled = "[mcp_servers.memhub]\ncommand = 'memhub'\nenabled = false\n";
+        for (name, user, project, status, message) in [
+            ("not set up", None, None, Status::Skipped, "not set up"),
+            ("user only", Some(server), None, Status::Ok, "user-level"),
+            (
+                "project only",
+                None,
+                Some(server),
+                Status::Ok,
+                "repository-root",
+            ),
+            (
+                "missing server",
+                Some("model = 'test'"),
+                None,
+                Status::Warn,
+                MCP_WARN_SUFFIX,
+            ),
+            (
+                "empty server",
+                Some("[mcp_servers.memhub]"),
+                None,
+                Status::Warn,
+                MCP_WARN_SUFFIX,
+            ),
+            (
+                "user disabled",
+                Some(disabled),
+                None,
+                Status::Warn,
+                "disabled",
+            ),
+            (
+                "project disabled",
+                Some(server),
+                Some("[mcp_servers.memhub]\nenabled = false"),
+                Status::Warn,
+                "disabled",
+            ),
+            (
+                "project enables",
+                Some(disabled),
+                Some("[mcp_servers.memhub]\nenabled = true"),
+                Status::Ok,
+                "repository-root",
+            ),
+            (
+                "omitted enabled inherits",
+                Some(disabled),
+                Some("[mcp_servers.memhub]\nargs = ['serve']"),
+                Status::Warn,
+                "disabled",
+            ),
+            (
+                "omitted command inherits",
+                Some(server),
+                Some("[mcp_servers.memhub]\nargs = []"),
+                Status::Ok,
+                "repository-root",
+            ),
+            (
+                "command override",
+                Some(server),
+                Some("[mcp_servers.memhub]\ncommand = 3"),
+                Status::Warn,
+                "non-empty strings",
+            ),
+            (
+                "corrected command",
+                Some("[mcp_servers.memhub]\ncommand = 3"),
+                Some(server),
+                Status::Ok,
+                "repository-root",
+            ),
+            (
+                "malformed user",
+                Some("[mcp_servers"),
+                Some(server),
+                Status::Warn,
+                "not valid TOML",
+            ),
+            (
+                "malformed project",
+                Some(server),
+                Some("[mcp_servers"),
+                Status::Warn,
+                "not valid TOML",
+            ),
+            (
+                "wrong servers type",
+                Some("mcp_servers = []"),
+                None,
+                Status::Warn,
+                "mcp_servers must be a table",
+            ),
+            (
+                "wrong server type",
+                Some("[mcp_servers]\nmemhub = false"),
+                None,
+                Status::Warn,
+                "memhub must be a table",
+            ),
+            (
+                "wrong project server type",
+                Some(server),
+                Some("[mcp_servers]\nmemhub = 'bad'"),
+                Status::Warn,
+                "memhub must be a table",
+            ),
+            (
+                "wrong enabled type",
+                Some(server),
+                Some("[mcp_servers.memhub]\nenabled = 'false'"),
+                Status::Warn,
+                "enabled must be a boolean",
+            ),
+            (
+                "missing transport",
+                Some("[mcp_servers.memhub]\nenabled = true"),
+                None,
+                Status::Warn,
+                "exactly one",
+            ),
+            (
+                "empty command",
+                Some("[mcp_servers.memhub]\ncommand = ' '"),
+                None,
+                Status::Warn,
+                "non-empty strings",
+            ),
+            (
+                "wrong args type",
+                Some(server),
+                Some("[mcp_servers.memhub]\nargs = 'serve'"),
+                Status::Warn,
+                "args must be an array of strings",
+            ),
+            (
+                "wrong argument type",
+                Some(server),
+                Some("[mcp_servers.memhub]\nargs = [1]"),
+                Status::Warn,
+                "args must be an array of strings",
+            ),
+            (
+                "HTTP transport",
+                Some("[mcp_servers.memhub]\nurl = 'http://localhost/mcp'"),
+                None,
+                Status::Ok,
+                "user-level",
+            ),
+            (
+                "two transports",
+                Some(server),
+                Some("[mcp_servers.memhub]\nurl = 'http://localhost/mcp'"),
+                Status::Warn,
+                "exactly one",
+            ),
+        ] {
+            let repo = tempdir().expect("repo");
+            let home = empty_home();
+            for (root, raw) in [(home.path(), user), (repo.path(), project)] {
+                if let Some(raw) = raw {
+                    fs::create_dir_all(root.join(".codex")).expect("mkdir");
+                    fs::write(root.join(".codex/config.toml"), raw).expect("write config");
+                }
+            }
 
-        let check = check_mcp_codex(Some(home.path()));
-        assert_eq!(check.status, Status::Ok);
+            let check = check_mcp_codex(repo.path(), Some(home.path()));
+            assert_eq!(check.status, status, "{name}: {check:?}");
+            assert!(check.message.contains(message), "{name}: {check:?}");
+            let detail = check.detail.as_deref().expect("scope detail");
+            assert!(detail.contains("trusted project"), "{name}: {detail}");
+            assert!(detail.contains("live connectivity"), "{name}: {detail}");
+            for (root, raw) in [(home.path(), user), (repo.path(), project)] {
+                let after = fs::read_to_string(root.join(".codex/config.toml")).ok();
+                assert_eq!(after.as_deref(), raw, "{name}: config must not change");
+            }
+        }
+    }
+
+    #[test]
+    fn mcp_codex_reports_unreadable_config_and_unresolved_home() {
+        let repo = tempdir().expect("repo");
+        let home = empty_home();
+        fs::create_dir_all(home.path().join(".codex/config.toml")).expect("config directory");
+        let check = check_mcp_codex(repo.path(), Some(home.path()));
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.message.contains("cannot read"), "{check:?}");
+        assert_eq!(check_mcp_codex(repo.path(), None).status, Status::Skipped);
     }
 
     #[test]

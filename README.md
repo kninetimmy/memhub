@@ -165,12 +165,10 @@ Please install memhub for me, then turn on hybrid recall.
        command = "memhub"
        args = ["serve"]
 
-   Codex has no repo-scoped MCP config, so also confirm this repo is
-   trusted — accept Codex's own trust prompt the first time you run it
-   here, or add a `[projects.<absolute-repo-path>]` table by hand with
-   `trust_level = "trusted"`. Without a trust entry Codex runs this repo
-   under its untrusted-project approval/sandbox posture and the
-   MCP-first skill instructions won't reliably fire.
+   For project-scoped registration instead, put the same server table
+   in this repo's `.codex/config.toml`. Codex loads project configuration
+   only in a trusted project; accept its trust prompt if you trust this
+   folder. User-level registration remains available across projects.
 
 5. Copy the user-level skills so /wrap-up, /catch-up, /check-init,
    /init-project, /recall, /locate, /reindex, /eval-recall, /doc,
@@ -839,7 +837,7 @@ memhub has two retrieval modes, and the install prompt asks you to pick one. Set
 
 - Reads `AGENTS.md` at session start (same role as `CLAUDE.md`).
 - User-level skills at `~/.codex/skills/`: same set as above.
-- Codex has no repo-scoped MCP config, so registration is a one-time **per-machine** step in `~/.codex/config.toml`. See [Register the MCP server](#register-the-mcp-server).
+- Register MCP in user-level `~/.codex/config.toml` or project-scoped `.codex/config.toml` (trusted projects only). See [Register the MCP server](#register-the-mcp-server).
 
 **OpenCode CLI**
 
@@ -871,7 +869,7 @@ Every write records two things. `source` on facts and decisions says where a cla
 
 #### Register the MCP server
 
-In a checkout of this repo, registration for the two CLIs that support repo scope is already committed, so there is nothing to do:
+In a checkout of this repo, registration for Claude Code and OpenCode is already committed, so there is nothing to do for those CLIs:
 
 - **Claude Code**: the committed [`.mcp.json`](.mcp.json) at the repo root (`mcpServers.memhub`).
 - **OpenCode**: the `mcp.servers.memhub` block in the tracked [`opencode.json`](opencode.json).
@@ -895,23 +893,29 @@ For OpenCode, merge only the `mcp.servers.memhub` block into `~/.config/opencode
 }
 ```
 
-**Codex** has no repo scope, so it's a one-time **per-machine** step. Append this to `~/.codex/config.toml` (not committed):
+**Codex** supports both user and project scopes. For a one-time **per-machine** registration across projects, add this server table to `~/.codex/config.toml` (not committed). For project-scoped registration, put the same table in the repo's `.codex/config.toml` instead:
 
 ```toml
 [mcp_servers.memhub]
 command = "memhub"
 args = ["serve"]
+```
 
-# Trust entry, keyed by this repo's absolute path (a TOML literal
-# string avoids escaping backslashes on Windows):
+Project fields override corresponding user fields; omitted fields retain their user values. In particular, `enabled = false` in the project server table disables a user-level registration when the project configuration is loaded.
+
+Codex loads project configuration only in a trusted project. Accept Codex's own trust prompt if you trust the folder, or add a trust entry to **user-level** `~/.codex/config.toml`:
+
+```toml
+# Keyed by the repo's absolute path; a TOML literal string avoids
+# escaping backslashes on Windows:
 [projects.'C:\absolute\path\to\this\repo']
 trust_level = "trusted"
 # macOS/Linux: [projects."/absolute/path/to/this/repo"]
 ```
 
-The `[projects.*]` table has to be re-added on every machine (and after a repo move or rename). Without a trust entry, Codex runs the repo under its untrusted-project posture and the MCP-first skill instructions won't reliably fire. If you've already accepted Codex's trust prompt for this folder, that entry already exists.
+The trust entry is machine-local and path-specific, so a different machine or repo location needs its own trust decision. An untrusted project does not load project configuration; user-level registration still loads. If you've already accepted Codex's trust prompt for this folder, that entry already exists. See OpenAI's [MCP documentation](https://learn.chatgpt.com/docs/extend/mcp?surface=cli) and [configuration precedence](https://learn.chatgpt.com/docs/config-file/config-basic).
 
-Run `memhub doctor` (or `--json`) anytime to confirm registration status per CLI.
+Run `memhub doctor` (or `--json`) anytime to inspect registration per CLI. Its Codex check reads only user-level `~/.codex/config.toml` and the repository-root `.codex/config.toml`, combining the registration fields with project precedence and checking `enabled`, `command`/`url`, and `args`. It does not resolve other Codex configuration layers (such as profiles, subfolder overrides, system settings, or CLI flags), evaluate project trust, or verify a live MCP connection. It never starts Codex or changes configuration.
 
 ### Staleness and confidence
 
