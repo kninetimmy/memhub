@@ -1337,7 +1337,17 @@ per-file hooks line (`--json` carries `skills` and `hooks` arrays).
 would-add hook entries) and changes nothing. Before issue #286 the flow
 wrote no agent-CLI config file at all; it now merges one hook entry into
 `~/.claude/settings.json` and `~/.codex/hooks.json` (MCP registration is
-still manual, and `memhub doctor` still only reads agent-CLI config).
+still manual). `memhub doctor` reads agent-CLI config and checks for active
+Memhub entrypoint files in existing Claude commands, Codex skills, OpenCode
+skills, and OpenCode commands install directories. Its embedded inventory
+works outside the source checkout; default builds exclude hibernated metrics,
+and metrics-enabled builds include it. Missing files warn with target paths
+and source-checkout upgrade guidance. Absent directories are not set up;
+inaccessible or malformed paths warn. Customized regular files count as
+present regardless of ownership records, and extra user files are ignored.
+These checks do not verify content freshness or host discovery and never
+repair files or change ownership or host configuration. Human and JSON
+output carry the same findings; only `--strict` fails on warnings.
 
 Embedding fill (issue #382): after each instance's migrate and recall
 smoke, the pass embeds, for the active model, every row that has no
