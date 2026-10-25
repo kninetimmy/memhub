@@ -1,5 +1,5 @@
-//! Issue #415: inspect project Codex registration through the real CLI,
-//! including disabled overrides and doctor's normal/strict exit contract.
+//! Inspect Codex registration and installed skill presence through the real
+//! CLI, including human/JSON output and doctor's normal/strict exit contract.
 
 use std::fs;
 use std::path::Path;
@@ -81,4 +81,90 @@ fn doctor_codex_project_only_and_disabled_override_json_and_exit_codes() {
         fs::read_to_string(project_config).unwrap(),
         "[mcp_servers.memhub]\nenabled = false\n"
     );
+}
+
+#[test]
+fn doctor_installed_skills_human_json_and_exit_codes_outside_source_checkout() {
+    let repo = tempdir().expect("repo");
+    let home = tempdir().expect("home");
+    for args in [["init"], ["render"]] {
+        let output = run_cli(repo.path(), home.path(), &args);
+        assert!(output.status.success(), "{output:?}");
+    }
+    // This project has no source templates. Register MCP separately so every
+    // warning comes from the empty skill install directories.
+    fs::create_dir(repo.path().join(".codex")).unwrap();
+    fs::write(
+        repo.path().join(".codex/config.toml"),
+        "[mcp_servers.memhub]\ncommand = 'memhub'\nargs = ['serve']\n",
+    )
+    .unwrap();
+    fs::write(
+        repo.path().join(".mcp.json"),
+        r#"{"mcpServers":{"memhub":{"command":"memhub","args":["serve"]}}}"#,
+    )
+    .unwrap();
+    fs::write(
+        repo.path().join("opencode.json"),
+        r#"{"mcp":{"servers":{"memhub":{"command":"memhub"}}}}"#,
+    )
+    .unwrap();
+    let surfaces = [
+        ("installed_skills_claude", ".claude/commands", false),
+        ("installed_skills_codex", ".codex/skills", true),
+        ("installed_skills_opencode", ".config/opencode/skills", true),
+        (
+            "installed_commands_opencode",
+            ".config/opencode/commands",
+            false,
+        ),
+    ];
+    for (_, relative, _) in surfaces {
+        fs::create_dir_all(home.path().join(relative)).unwrap();
+    }
+    for strict in [false, true] {
+        let mut args = vec!["doctor"];
+        if strict {
+            args.push("--strict");
+        }
+        let human = run_cli(repo.path(), home.path(), &args);
+        let text = String::from_utf8(human.stdout).unwrap();
+        args.push("--json");
+        let json = run_cli(repo.path(), home.path(), &args);
+        let body: Value = serde_json::from_slice(&json.stdout).unwrap();
+        let report = &body["doctor"];
+        assert_eq!(report["counts"]["warn"], 4, "{body}");
+        assert_eq!(report["counts"]["error"], 0, "{body}");
+        assert_eq!(report["exit_code"], i32::from(strict));
+        assert_eq!(human.status.code(), Some(i32::from(strict)));
+        assert_eq!(json.status.code(), Some(i32::from(strict)));
+        for (id, relative, nested) in surfaces {
+            let check = report["checks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|check| check["id"] == id)
+                .unwrap();
+            assert_eq!(check["status"], "warn");
+            let message = check["message"].as_str().unwrap();
+            assert!(message.contains("recall:"));
+            let target = home.path().join(relative);
+            let entrypoint = if nested {
+                target.join("recall").join("SKILL.md")
+            } else {
+                target.join("recall.md")
+            };
+            assert!(
+                message.contains(&entrypoint.display().to_string()),
+                "{message}"
+            );
+            assert_eq!(message.contains("metrics:"), cfg!(feature = "metrics"));
+            assert!(!message.contains("viz:"));
+            assert!(message.contains("memhub upgrade"));
+            assert!(text.contains(message), "{text}");
+            assert!(text.contains(check["detail"].as_str().unwrap()), "{text}");
+            assert_eq!(fs::read_dir(home.path().join(relative)).unwrap().count(), 0);
+        }
+    }
+    assert!(!home.path().join(".memhub/install-manifest.json").exists());
 }

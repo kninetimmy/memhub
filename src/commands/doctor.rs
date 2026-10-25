@@ -120,7 +120,7 @@ pub fn run(start: &Path, strict: bool) -> Result<DoctorReport> {
 }
 
 /// Core orchestration. `home` is injected (rather than resolved inline)
-/// so the P1 MCP-registration checks are hermetically testable — they
+/// so the integration checks are hermetically testable - they
 /// must never depend on the ambient state of the machine running
 /// `cargo test`.
 fn run_with_home(start: &Path, strict: bool, home: Option<PathBuf>) -> Result<DoctorReport> {
@@ -147,6 +147,7 @@ fn run_with_home(start: &Path, strict: bool, home: Option<PathBuf>) -> Result<Do
     checks.push(check_mcp_claude(&ctx.paths.repo_root, home.as_deref()));
     checks.push(check_mcp_codex(&ctx.paths.repo_root, home.as_deref()));
     checks.push(check_mcp_opencode(&ctx.paths.repo_root, home.as_deref()));
+    checks.extend(check_installed_skills(home.as_deref()));
     checks.push(check_sync_freshness(start, &ctx.config));
 
     Ok(build_report(&ctx.config.project_name, checks, strict))
@@ -1119,6 +1120,144 @@ pub(crate) fn check_metrics_health(_conn: &Connection, _config: &ProjectConfig) 
 const MCP_WARN_SUFFIX: &str =
     "is set up but memhub's MCP server is not registered — skills' MCP-first path won't fire";
 
+// Embedded so installed binaries can inspect other repos without source templates
+// or an ownership manifest. The parity test below guards this inventory.
+const ACTIVE_SKILL_NAMES: &[&str] = &[
+    "audit-md",
+    "catch-up",
+    "check-init",
+    "doc",
+    "eval-recall",
+    "global",
+    "init-project",
+    "locate",
+    #[cfg(feature = "metrics")]
+    "metrics",
+    "recall",
+    "reindex",
+    "upgrade",
+    "wrap-up",
+];
+
+// (check id, home-relative install directory, directory-per-skill layout)
+const SKILL_INSTALL_SURFACES: &[(&str, &str, bool)] = &[
+    ("installed_skills_claude", ".claude/commands", false),
+    ("installed_skills_codex", ".codex/skills", true),
+    ("installed_skills_opencode", ".config/opencode/skills", true),
+    (
+        "installed_commands_opencode",
+        ".config/opencode/commands",
+        false,
+    ),
+];
+
+fn skill_install_directory_exists(target: &Path) -> std::io::Result<bool> {
+    // Windows can report NotFound when a parent is a file. Check ancestors
+    // before describing the install directory as merely absent.
+    for path in target.ancestors() {
+        match fs::metadata(path) {
+            Ok(metadata) if metadata.is_dir() => return Ok(path == target),
+            Ok(_) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotADirectory,
+                    format!("{} is not a directory", path.display()),
+                ));
+            }
+            Err(e)
+                if e.kind() == std::io::ErrorKind::NotFound
+                    && matches!(fs::symlink_metadata(path), Err(absent)
+                        if absent.kind() == std::io::ErrorKind::NotFound) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(false)
+}
+
+fn check_installed_skills(home: Option<&Path>) -> Vec<Check> {
+    SKILL_INSTALL_SURFACES
+        .iter()
+        .map(|&(id, relative, dir_per_skill)| {
+            let check = |status, message: String| {
+                Check::new(id, Group::Integrations, status, message).with_detail(
+                    "Presence only: regular entrypoint files count even when customized or \
+                     untracked by the ownership manifest. Content freshness and host discovery \
+                     are not checked. Nothing is repaired automatically.",
+                )
+            };
+            let Some(home) = home else {
+                return check(
+                    Status::Warn,
+                    format!("cannot inspect ~/{relative}: home directory unavailable"),
+                );
+            };
+            let target = home.join(relative);
+            match skill_install_directory_exists(&target) {
+                Ok(true) => {}
+                Ok(false) => {
+                    return check(
+                        Status::Skipped,
+                        format!("not set up (install directory absent: {})", target.display()),
+                    );
+                }
+                Err(e) => {
+                    return check(
+                        Status::Warn,
+                        format!("cannot inspect {}: {e}", target.display()),
+                    );
+                }
+            }
+            // Metadata alone can succeed on an unreadable install directory.
+            if let Err(e) = fs::read_dir(&target) {
+                return check(
+                    Status::Warn,
+                    format!("cannot inspect {}: {e}", target.display()),
+                );
+            }
+
+            let mut missing = Vec::new();
+            let mut unavailable = Vec::new();
+            for name in ACTIVE_SKILL_NAMES {
+                let path = if dir_per_skill {
+                    target.join(name).join("SKILL.md")
+                } else {
+                    target.join(format!("{name}.md"))
+                };
+                match fs::metadata(&path) {
+                    Ok(metadata) if metadata.is_file() => {}
+                    Ok(_) => missing.push(format!("{name}: {} (not a regular file)", path.display())),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        missing.push(format!("{name}: {}", path.display()));
+                    }
+                    Err(e) => unavailable.push(format!("{}: {e}", path.display())),
+                }
+            }
+            let mut findings = Vec::new();
+            if !missing.is_empty() {
+                findings.push(format!(
+                    "missing active Memhub entrypoints: {}. Run `memhub upgrade` from the Memhub \
+                     source checkout to sync installed skills (pre-existing files remain protected)",
+                    missing.join("; ")
+                ));
+            }
+            if !unavailable.is_empty() {
+                findings.push(format!("inspection incomplete: {}", unavailable.join("; ")));
+            }
+            if findings.is_empty() {
+                check(
+                    Status::Ok,
+                    format!(
+                        "all {} active Memhub entrypoint files present at {}",
+                        ACTIVE_SKILL_NAMES.len(),
+                        target.display()
+                    ),
+                )
+            } else {
+                check(Status::Warn, findings.join(". "))
+            }
+        })
+        .collect()
+}
+
 fn check_mcp_claude(repo_root: &Path, home: Option<&Path>) -> Check {
     // A repo-scoped `.mcp.json` (the Q40 target format per the review's
     // decision 40) always counts as registered, independent of whatever
@@ -1585,6 +1724,218 @@ mod tests {
 
     fn empty_home() -> tempfile::TempDir {
         tempdir().expect("tempdir for fake home")
+    }
+
+    // -- Installed skill presence ---------------------------------------
+
+    fn installed_entrypoint(home: &Path, relative: &str, nested: bool, name: &str) -> PathBuf {
+        let directory = home.join(relative);
+        if nested {
+            directory.join(name).join("SKILL.md")
+        } else {
+            directory.join(format!("{name}.md"))
+        }
+    }
+
+    fn write_fixture(path: &Path, content: &str) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, content).unwrap();
+    }
+
+    #[test]
+    fn installed_skill_inventory_matches_each_shipped_surface() {
+        use std::collections::BTreeSet;
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let expected: BTreeSet<_> = ACTIVE_SKILL_NAMES.iter().map(|s| s.to_string()).collect();
+        assert_eq!(expected.len(), 12 + usize::from(cfg!(feature = "metrics")));
+        assert!(!expected.contains("viz"));
+        assert_eq!(expected.contains("metrics"), cfg!(feature = "metrics"));
+        for (sources, nested) in [
+            (vec!["templates/skills/claude"], false),
+            (vec!["templates/skills/codex"], true),
+            (
+                vec![
+                    "templates/skills/opencode",
+                    "templates/skills/opencode-hibernated",
+                ],
+                true,
+            ),
+            (vec!["templates/commands/opencode"], false),
+        ] {
+            let mut shipped = BTreeSet::new();
+            for source in &sources {
+                for entry in fs::read_dir(root.join(source)).unwrap() {
+                    let path = entry.unwrap().path();
+                    let name = if nested && path.join("SKILL.md").is_file() {
+                        path.file_name()
+                    } else if !nested && path.extension().is_some_and(|e| e == "md") {
+                        path.file_stem()
+                    } else {
+                        continue;
+                    }
+                    .unwrap()
+                    .to_str()
+                    .unwrap();
+                    if name != "metrics" || cfg!(feature = "metrics") {
+                        shipped.insert(name.to_string());
+                    }
+                }
+            }
+            assert_eq!(expected, shipped, "inventory drift for {sources:?}");
+        }
+    }
+
+    #[test]
+    fn installed_skills_accept_custom_files_and_ignore_ownership_without_writes() {
+        let home = empty_home();
+        let mut files = Vec::new();
+        for &(_, relative, nested) in SKILL_INSTALL_SURFACES {
+            for name in ACTIVE_SKILL_NAMES
+                .iter()
+                .copied()
+                .chain(["user-extra", "viz"])
+            {
+                let path = installed_entrypoint(home.path(), relative, nested, name);
+                write_fixture(&path, "customized user content\n");
+                files.push(path);
+            }
+        }
+        let host_config = home.path().join(".codex/config.toml");
+        write_fixture(&host_config, "# leave host configuration alone\n");
+        files.push(host_config);
+        let manifest = home.path().join(".memhub/install-manifest.json");
+        // No manifest, corrupt manifest, and a valid manifest with no ownership
+        // records must all give the same presence-only result.
+        for contents in [None, Some("{broken"), Some(r#"{"version":1,"files":{}}"#)] {
+            if let Some(contents) = contents {
+                write_fixture(&manifest, contents);
+            }
+            let paths: Vec<_> = files.iter().chain(contents.map(|_| &manifest)).collect();
+            let before: Vec<_> = paths
+                .iter()
+                .map(|path| {
+                    let permissions = fs::metadata(path).unwrap().permissions();
+                    let mut readonly = permissions.clone();
+                    readonly.set_readonly(true);
+                    fs::set_permissions(path, readonly).unwrap();
+                    (fs::read(path).unwrap(), permissions)
+                })
+                .collect();
+
+            let checks = check_installed_skills(Some(home.path()));
+            assert_eq!(checks.len(), 4);
+            for check in checks {
+                assert_eq!(check.status, Status::Ok, "{check:?}");
+                assert!(
+                    check
+                        .detail
+                        .unwrap()
+                        .contains("Content freshness and host discovery")
+                );
+            }
+            assert_eq!(manifest.exists(), contents.is_some());
+            for (path, (bytes, permissions)) in paths.iter().zip(before) {
+                assert_eq!(fs::read(path).unwrap(), bytes);
+                assert!(fs::metadata(path).unwrap().permissions().readonly());
+                fs::set_permissions(path, permissions).unwrap();
+            }
+        }
+        for &(_, relative, nested) in SKILL_INSTALL_SURFACES {
+            let missing = installed_entrypoint(home.path(), relative, nested, "recall");
+            fs::remove_file(&missing).unwrap();
+        }
+        for check in check_installed_skills(Some(home.path())) {
+            assert_eq!(check.status, Status::Warn, "{check:?}");
+            assert!(check.message.contains("recall:"));
+            assert!(check.message.contains("memhub upgrade"));
+            assert!(check.message.contains("source checkout"));
+            assert!(!check.message.contains("metrics:"));
+            assert!(!check.message.contains("viz:"));
+        }
+    }
+
+    #[test]
+    fn installed_skills_report_absent_and_malformed_paths_and_unavailable_home() {
+        let home = empty_home();
+        for check in check_installed_skills(Some(home.path())) {
+            assert_eq!(check.status, Status::Skipped, "{check:?}");
+            assert!(check.message.contains("not set up"));
+        }
+        assert_eq!(fs::read_dir(home.path()).unwrap().count(), 0);
+        for check in check_installed_skills(None) {
+            assert_eq!(check.status, Status::Warn);
+            assert!(check.message.contains("home directory unavailable"));
+        }
+        for check in check_installed_skills(Some(Path::new("invalid\0home"))) {
+            assert_eq!(check.status, Status::Warn, "{check:?}");
+            assert!(check.message.contains("cannot inspect"));
+        }
+        for &(_, relative, _) in SKILL_INSTALL_SURFACES {
+            write_fixture(&home.path().join(relative), "not a directory");
+        }
+        for check in check_installed_skills(Some(home.path())) {
+            assert_eq!(check.status, Status::Warn, "{check:?}");
+            assert!(check.message.contains("not a directory"));
+        }
+        let malformed_home = empty_home();
+        for relative in [".claude", ".codex", ".config/opencode"] {
+            write_fixture(&malformed_home.path().join(relative), "not a directory");
+        }
+        for check in check_installed_skills(Some(malformed_home.path())) {
+            assert_eq!(check.status, Status::Warn, "{check:?}");
+            assert!(check.message.contains("cannot inspect"));
+        }
+    }
+
+    #[test]
+    fn installed_skills_reject_non_file_entrypoints_and_check_feature_inventory() {
+        let home = empty_home();
+        for &(_, relative, nested) in SKILL_INSTALL_SURFACES {
+            for name in ACTIVE_SKILL_NAMES {
+                write_fixture(
+                    &installed_entrypoint(home.path(), relative, nested, name),
+                    "present",
+                );
+            }
+            let recall = installed_entrypoint(home.path(), relative, nested, "recall");
+            fs::remove_file(&recall).unwrap();
+            fs::create_dir(&recall).unwrap();
+            let metrics = installed_entrypoint(home.path(), relative, nested, "metrics");
+            if metrics.is_file() {
+                fs::remove_file(metrics).unwrap();
+            }
+        }
+        for check in check_installed_skills(Some(home.path())) {
+            assert_eq!(check.status, Status::Warn, "{check:?}");
+            assert!(check.message.contains("not a regular file"));
+            assert_eq!(
+                check.message.contains("metrics:"),
+                cfg!(feature = "metrics")
+            );
+            assert!(!check.message.contains("viz:"));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installed_skills_report_unreadable_directory_without_claiming_success() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = empty_home();
+        let target = home.path().join(".codex/skills");
+        fs::create_dir_all(&target).unwrap();
+        let permissions = fs::metadata(&target).unwrap().permissions();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o000)).unwrap();
+        let unreadable = fs::read_dir(&target).is_err();
+        let checks = check_installed_skills(Some(home.path()));
+        fs::set_permissions(&target, permissions).unwrap();
+        // Privileged test runners can bypass mode bits.
+        if unreadable {
+            let check = find(&checks, "installed_skills_codex");
+            assert_eq!(check.status, Status::Warn);
+            assert!(check.message.contains("cannot inspect"));
+        }
     }
 
     // -- Top-level report shape / exit codes ----------------------------

@@ -917,6 +917,10 @@ The trust entry is machine-local and path-specific, so a different machine or re
 
 Run `memhub doctor` (or `--json`) anytime to inspect registration per CLI. Its Codex check reads only user-level `~/.codex/config.toml` and the repository-root `.codex/config.toml`, combining the registration fields with project precedence and checking `enabled`, `command`/`url`, and `args`. It does not resolve other Codex configuration layers (such as profiles, subfolder overrides, system settings, or CLI flags), evaluate project trust, or verify a live MCP connection. It never starts Codex or changes configuration.
 
+Doctor also checks active Memhub entrypoint files in existing `~/.claude/commands`, `~/.codex/skills`, `~/.config/opencode/skills`, and `~/.config/opencode/commands` directories. Missing files produce warnings with their names, target paths, and guidance to run `memhub upgrade` from the Memhub source checkout. These checks work from any initialized project without source templates or an ownership manifest. Absent directories are reported as not set up and are never created; unavailable or malformed paths are reported explicitly.
+
+This is a presence check: customized regular files count as present, extra user files are ignored, and neither content freshness nor host discovery is verified. Default builds exclude the hibernated metrics entrypoints; builds with `--features metrics` expect them. Removed viz entrypoints are never expected. Doctor leaves installed files, ownership records, and host configuration unchanged. Warnings preserve the usual exit behavior: normal doctor succeeds without errors, while `--strict` fails on warnings.
+
 ### Staleness and confidence
 
 - **Facts** go stale after 90 days without re-verification. Recall still returns a stale fact, ranked like a fresh one and flagged `stale`, so the agent can weigh it. `memhub fact verify <id|key>` refreshes `verified_at` only, and `/wrap-up` offers a per-item re-verify step for the oldest facts. It is CLI only, because agent self-verification is exactly what the untrusted-writer guardrail forbids.
