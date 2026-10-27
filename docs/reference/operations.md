@@ -1337,7 +1337,12 @@ per-file hooks line (`--json` carries `skills` and `hooks` arrays).
 would-add hook entries) and changes nothing. Before issue #286 the flow
 wrote no agent-CLI config file at all; it now merges one hook entry into
 `~/.claude/settings.json` and `~/.codex/hooks.json` (MCP registration is
-still manual). `memhub doctor` reads agent-CLI config and checks for active
+still manual). `memhub doctor` reads agent-CLI config and reports whether
+memhub's MCP server is registered with each CLI, including Antigravity CLI
+(`mcp_registration_antigravity`: skipped unless `~/.gemini/antigravity-cli`
+exists, since Gemini CLI also uses `~/.gemini`; otherwise OK when
+`~/.gemini/config/mcp_config.json` has `mcpServers.memhub`, else a warning
+naming `agy mcp add memhub memhub serve`). It also checks for active
 Memhub entrypoint files in existing Claude commands, Codex skills, OpenCode
 skills, and OpenCode commands install directories. Its embedded inventory
 works outside the source checkout; default builds exclude hibernated metrics,

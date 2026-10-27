@@ -147,6 +147,7 @@ fn run_with_home(start: &Path, strict: bool, home: Option<PathBuf>) -> Result<Do
     checks.push(check_mcp_claude(&ctx.paths.repo_root, home.as_deref()));
     checks.push(check_mcp_codex(&ctx.paths.repo_root, home.as_deref()));
     checks.push(check_mcp_opencode(&ctx.paths.repo_root, home.as_deref()));
+    checks.push(check_mcp_antigravity(home.as_deref()));
     checks.extend(check_installed_skills(home.as_deref()));
     checks.push(check_sync_freshness(start, &ctx.config));
 
@@ -1488,6 +1489,40 @@ fn check_mcp_opencode(repo_root: &Path, home: Option<&Path>) -> Check {
             Group::Integrations,
             Status::Warn,
             format!("OpenCode {MCP_WARN_SUFFIX}"),
+        )
+    }
+}
+
+fn check_mcp_antigravity(home: Option<&Path>) -> Check {
+    // `~/.gemini` alone is shared with Gemini CLI, so only Antigravity's own
+    // `antigravity-cli` dir counts as "set up".
+    let gemini = home.map(|h| h.join(".gemini"));
+    let set_up = gemini
+        .as_deref()
+        .is_some_and(|g| g.join("antigravity-cli").is_dir());
+    let Some(gemini) = gemini.filter(|_| set_up) else {
+        return Check::new(
+            "mcp_registration_antigravity",
+            Group::Integrations,
+            Status::Skipped,
+            "Antigravity not set up (no ~/.gemini/antigravity-cli)",
+        );
+    };
+
+    if json_file_registers_memhub(&gemini.join("config").join("mcp_config.json"), "mcpServers") {
+        Check::new(
+            "mcp_registration_antigravity",
+            Group::Integrations,
+            Status::Ok,
+            "memhub MCP server registered in Antigravity",
+        )
+    } else {
+        Check::new(
+            "mcp_registration_antigravity",
+            Group::Integrations,
+            Status::Warn,
+            "Antigravity is set up but memhub's MCP server is not registered in \
+             ~/.gemini/config/mcp_config.json — run `agy mcp add memhub memhub serve`",
         )
     }
 }
@@ -3016,6 +3051,59 @@ transcript_retention_days = 99999999
 
         let check = check_mcp_opencode(temp.path(), Some(home.path()));
         assert_eq!(check.status, Status::Warn);
+    }
+
+    #[test]
+    fn mcp_antigravity_skipped_without_antigravity_cli_dir() {
+        let home = empty_home();
+        assert_eq!(
+            check_mcp_antigravity(Some(home.path())).status,
+            Status::Skipped
+        );
+        // Gemini CLI also uses ~/.gemini, so it alone is not Antigravity.
+        fs::create_dir_all(home.path().join(".gemini")).expect("mkdir");
+        assert_eq!(
+            check_mcp_antigravity(Some(home.path())).status,
+            Status::Skipped
+        );
+        assert_eq!(check_mcp_antigravity(None).status, Status::Skipped);
+    }
+
+    fn antigravity_home(mcp_config: Option<&str>) -> tempfile::TempDir {
+        let home = empty_home();
+        fs::create_dir_all(home.path().join(".gemini").join("antigravity-cli")).expect("mkdir");
+        if let Some(contents) = mcp_config {
+            let config = home.path().join(".gemini").join("config");
+            fs::create_dir_all(&config).expect("mkdir config");
+            fs::write(config.join("mcp_config.json"), contents).expect("write");
+        }
+        home
+    }
+
+    #[test]
+    fn mcp_antigravity_ok_when_registered() {
+        let home = antigravity_home(Some(
+            r#"{"mcpServers": {"memhub": {"command": "memhub", "args": ["serve"], "disabled": false}}}"#,
+        ));
+        let check = check_mcp_antigravity(Some(home.path()));
+        assert_eq!(check.status, Status::Ok, "{check:?}");
+    }
+
+    #[test]
+    fn mcp_antigravity_warns_when_missing_invalid_or_unregistered() {
+        for (label, contents) in [
+            ("missing file", None),
+            ("invalid json", Some("{ not json")),
+            ("no memhub entry", Some(r#"{"mcpServers": {"other": {}}}"#)),
+        ] {
+            let home = antigravity_home(contents);
+            let check = check_mcp_antigravity(Some(home.path()));
+            assert_eq!(check.status, Status::Warn, "{label}: {check:?}");
+            assert!(
+                check.message.contains("agy mcp add memhub memhub serve"),
+                "{label}: {check:?}"
+            );
+        }
     }
 
     // -- Sync freshness (P4) ------------------------------------------------------

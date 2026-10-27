@@ -416,6 +416,9 @@ EOF
 # OpenCode: merge the memhub block from "Register the MCP server" below
 # into ~/.config/opencode/opencode.json (or opencode.jsonc, whichever exists)
 
+# Antigravity CLI:
+agy mcp add memhub memhub serve
+
 # 7. (Recommended) Turn on hybrid recall: set mode = "hybrid" under [retrieval]
 #    in .memhub/config.toml, then backfill embeddings for existing rows
 memhub index rebuild --actor cli:user
@@ -847,7 +850,14 @@ memhub has two retrieval modes, and the install prompt asks you to pick one. Set
 - The OpenCode `/wrap-up` skill reads and verifies the current `Session.Info` through `opencode2 api`. It then stores its session/agent/provider/model/variant values as optional structured fields on the session note only. Those values do not change the actor or source.
 - Set the optional root `model` in `opencode.json(c)` for a default, or select one run with `opencode2 run --model provider/model#variant` (short form `-m provider/model#variant`). If no configured default is available, OpenCode can fall back to an available supported model.
 
-All three share one database, and every write is tagged with who surfaced it (see [Attribution](#attribution)).
+**Antigravity CLI (`agy`)**
+
+- Reads `AGENTS.md` at session start (walking up from the working directory to the repo root; same role as Codex).
+- MCP server registered per machine with `agy mcp add memhub memhub serve`, which writes `~/.gemini/config/mcp_config.json`. See [Register the MCP server](#register-the-mcp-server). It needs a memhub binary that includes the MCP handshake fix from PR #421, so update and run `memhub upgrade` (or `cargo install --path .`) first.
+- Interactive Antigravity asks permission before calling a memhub tool. Headless `agy -p` cannot prompt, so it denies memhub tool calls unless `permissions.allow` in `~/.gemini/antigravity-cli/settings.json` has a matching `mcp(...)` rule; its denial message suggests the exact form.
+- Not supported yet: memhub skills, the session-start hook, and the transcript archive. Memory reaches Antigravity through `AGENTS.md` and the MCP tools only.
+
+All four share one database, and every write is tagged with who surfaced it (see [Attribution](#attribution)).
 
 ### Session-start hook
 
@@ -869,7 +879,7 @@ Every write records two things. `source` on facts and decisions says where a cla
 
 #### Register the MCP server
 
-In a checkout of this repo, registration for Claude Code and OpenCode is already committed, so there is nothing to do for those CLIs:
+In a checkout of this repo, registration for Claude Code and OpenCode is already committed, so there is nothing to do for those CLIs (Codex and Antigravity are per-machine):
 
 - **Claude Code**: the committed [`.mcp.json`](.mcp.json) at the repo root (`mcpServers.memhub`).
 - **OpenCode**: the `mcp.servers.memhub` block in the tracked [`opencode.json`](opencode.json).
@@ -889,6 +899,16 @@ For OpenCode, merge only the `mcp.servers.memhub` block into `~/.config/opencode
         "disabled": false
       }
     }
+  }
+}
+```
+
+**Antigravity CLI** is registered per machine: run `agy mcp add memhub memhub serve`, which writes this entry to `~/.gemini/config/mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "memhub": { "command": "memhub", "args": ["serve"], "disabled": false }
   }
 }
 ```
@@ -915,7 +935,7 @@ trust_level = "trusted"
 
 The trust entry is machine-local and path-specific, so a different machine or repo location needs its own trust decision. An untrusted project does not load project configuration; user-level registration still loads. If you've already accepted Codex's trust prompt for this folder, that entry already exists. See OpenAI's [MCP documentation](https://learn.chatgpt.com/docs/extend/mcp?surface=cli) and [configuration precedence](https://learn.chatgpt.com/docs/config-file/config-basic).
 
-Run `memhub doctor` (or `--json`) anytime to inspect registration per CLI. Its Codex check reads only user-level `~/.codex/config.toml` and the repository-root `.codex/config.toml`, combining the registration fields with project precedence and checking `enabled`, `command`/`url`, and `args`. It does not resolve other Codex configuration layers (such as profiles, subfolder overrides, system settings, or CLI flags), evaluate project trust, or verify a live MCP connection. It never starts Codex or changes configuration.
+Run `memhub doctor` (or `--json`) anytime to inspect registration per CLI. The Antigravity check is skipped unless `~/.gemini/antigravity-cli` exists (Gemini CLI also uses `~/.gemini`), and otherwise warns, naming `agy mcp add memhub memhub serve`, when `~/.gemini/config/mcp_config.json` is missing, invalid, or has no `memhub` entry. Its Codex check reads only user-level `~/.codex/config.toml` and the repository-root `.codex/config.toml`, combining the registration fields with project precedence and checking `enabled`, `command`/`url`, and `args`. It does not resolve other Codex configuration layers (such as profiles, subfolder overrides, system settings, or CLI flags), evaluate project trust, or verify a live MCP connection. It never starts Codex or changes configuration.
 
 Doctor also checks active Memhub entrypoint files in existing `~/.claude/commands`, `~/.codex/skills`, `~/.config/opencode/skills`, and `~/.config/opencode/commands` directories. Missing files produce warnings with their names, target paths, and guidance to run `memhub upgrade` from the Memhub source checkout. These checks work from any initialized project without source templates or an ownership manifest. Absent directories are reported as not set up and are never created; unavailable or malformed paths are reported explicitly.
 
