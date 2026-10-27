@@ -257,6 +257,158 @@ fn recall_tool_call_round_trips_through_mcp() {
     );
 }
 
+/// Writes `messages` to a fresh `memhub serve` and returns its replies keyed
+/// by id. Stdin stays open until every `expected_ids` reply has arrived, and
+/// the wait is bounded, so a session that ends early fails instead of hanging.
+fn replay(
+    repo: &std::path::Path,
+    messages: &[Value],
+    expected_ids: &[i64],
+) -> std::collections::HashMap<i64, Value> {
+    let mut child = Command::new(memhub_bin())
+        .arg("serve")
+        .current_dir(repo)
+        .env("MEMHUB_LOG", "off")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn memhub serve");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    for msg in messages {
+        writeln!(stdin, "{msg}").expect("write json-rpc");
+    }
+
+    let stdout = child.stdout.take().expect("stdout");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if let Ok(reply) = serde_json::from_str::<Value>(&line)
+                && tx.send(reply).is_err()
+            {
+                break;
+            }
+        }
+    });
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let mut replies = std::collections::HashMap::new();
+    while !expected_ids.iter().all(|id| replies.contains_key(id)) {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        match rx.recv_timeout(remaining) {
+            Ok(reply) => {
+                if let Some(id) = reply["id"].as_i64() {
+                    replies.insert(id, reply);
+                }
+            }
+            Err(err) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!(
+                    "memhub serve gave no reply for all of {expected_ids:?} ({err}); got {replies:?}"
+                );
+            }
+        }
+    }
+
+    drop(stdin);
+    let _ = child.wait_timeout(Duration::from_secs(2));
+    let _ = child.kill();
+    let _ = child.wait();
+    replies
+}
+
+// The exact lines Antigravity CLI (agy 1.4.7) was observed sending (issue #419).
+fn antigravity_discover() -> Value {
+    json!({"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/clientCapabilities":{"elicitation":{"form":{},"url":{}},"roots":{"listChanged":true}},"io.modelcontextprotocol/clientInfo":{"name":"antigravity-client","version":"v1.0.0"},"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}})
+}
+
+fn antigravity_initialize() -> Value {
+    json!({"jsonrpc":"2.0","id":2,"method":"initialize","params":{"clientInfo":{"name":"antigravity-client","version":"v1.0.0"},"protocolVersion":"2025-11-25","capabilities":{"elicitation":{"form":{},"url":{}},"roots":{"listChanged":true}}}})
+}
+
+fn antigravity_tail() -> [Value; 2] {
+    [
+        json!({"jsonrpc":"2.0","method":"notifications/initialized","params":{}}),
+        json!({"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}),
+    ]
+}
+
+fn roots_list_changed() -> Value {
+    json!({"jsonrpc":"2.0","method":"notifications/roots/list_changed","params":{}})
+}
+
+/// Asserts the discover probe got method-not-found and the rest of the
+/// session matches a client that opened directly with `initialize`.
+fn assert_matches_direct_initialize(
+    repo: &std::path::Path,
+    replies: &std::collections::HashMap<i64, Value>,
+) {
+    assert_eq!(
+        replies[&1]["error"]["code"],
+        json!(-32601),
+        "server/discover must get method-not-found: {}",
+        replies[&1]
+    );
+
+    let [initialized, list_tools] = antigravity_tail();
+    let direct = replay(
+        repo,
+        &[antigravity_initialize(), initialized, list_tools],
+        &[2, 3],
+    );
+    assert_eq!(replies[&2], direct[&2], "initialize result differs");
+    let tools = replies[&3]["result"]["tools"]
+        .as_array()
+        .expect("tools array");
+    assert!(
+        tools.iter().any(|t| t["name"] == json!("recall")),
+        "tool list is missing recall: {tools:?}"
+    );
+    assert_eq!(replies[&3], direct[&3], "tool list differs");
+}
+
+#[test]
+fn antigravity_discover_then_initialize_gets_full_tool_list() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    let [initialized, list_tools] = antigravity_tail();
+    let replies = replay(
+        temp.path(),
+        &[
+            antigravity_discover(),
+            antigravity_initialize(),
+            initialized,
+            list_tools,
+        ],
+        &[1, 2, 3],
+    );
+    assert_matches_direct_initialize(temp.path(), &replies);
+}
+
+#[test]
+fn antigravity_roots_notifications_before_handshake_keep_session() {
+    let temp = tempdir().expect("tempdir");
+    init::run(temp.path()).expect("init");
+
+    let [initialized, list_tools] = antigravity_tail();
+    let replies = replay(
+        temp.path(),
+        &[
+            antigravity_discover(),
+            roots_list_changed(),
+            antigravity_initialize(),
+            roots_list_changed(),
+            initialized,
+            list_tools,
+        ],
+        &[1, 2, 3],
+    );
+    assert_matches_direct_initialize(temp.path(), &replies);
+}
+
 // Tiny helper to keep the spawn loop terminating on timeout. Avoid pulling
 // in the `wait_timeout` crate; do it with a manual poll loop.
 trait WaitTimeoutExt {
