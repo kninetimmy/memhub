@@ -5,13 +5,13 @@ use log::info;
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
 use rmcp::model::{
-    Implementation, InitializeRequestParams, InitializeResult, Meta, RequestId, ServerCapabilities,
-    ServerInfo,
+    ClientJsonRpcMessage, ClientRequest, ErrorCode, Implementation, InitializeRequestParams,
+    InitializeResult, Meta, RequestId, ServerCapabilities, ServerInfo, ServerJsonRpcMessage,
 };
 use rmcp::service::RequestContext;
+use rmcp::transport::{Transport, async_rw::AsyncRwTransport};
 use rmcp::{
     Json, RoleServer, ServerHandler, ServiceExt, schemars, tool, tool_handler, tool_router,
-    transport::stdio,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -57,8 +57,12 @@ pub fn serve(start: &Path) -> crate::Result<()> {
         .build()?;
 
     runtime.block_on(async move {
+        let transport = PreInitializeTolerance {
+            inner: AsyncRwTransport::new_server(tokio::io::stdin(), tokio::io::stdout()),
+            initialize_seen: false,
+        };
         let service = server
-            .serve(stdio())
+            .serve(transport)
             .await
             .map_err(|err| MemhubError::Mcp(err.to_string()))?;
         service
@@ -67,6 +71,63 @@ pub fn serve(start: &Path) -> crate::Result<()> {
             .map_err(|err| MemhubError::Mcp(err.to_string()))?;
         Ok(())
     })
+}
+
+/// Wraps the stdio transport so a client opening with the 2026-07-28
+/// `server/discover` probe (Antigravity CLI) falls back to `initialize`
+/// instead of ending the session: until `initialize` arrives, discover gets
+/// a method-not-found error and notifications (e.g.
+/// `notifications/roots/list_changed`) are dropped. Every message from
+/// `initialize` on passes through unchanged (issue #419).
+// shortcut: tolerates only discover + early notifications, remove when memhub moves to an MCP library with native 2026-07-28 support.
+struct PreInitializeTolerance<T> {
+    inner: T,
+    initialize_seen: bool,
+}
+
+impl<T: Transport<RoleServer>> Transport<RoleServer> for PreInitializeTolerance<T> {
+    type Error = T::Error;
+
+    fn send(
+        &mut self,
+        item: ServerJsonRpcMessage,
+    ) -> impl Future<Output = std::result::Result<(), Self::Error>> + Send + 'static {
+        self.inner.send(item)
+    }
+
+    async fn receive(&mut self) -> Option<ClientJsonRpcMessage> {
+        loop {
+            let message = self.inner.receive().await?;
+            if self.initialize_seen {
+                return Some(message);
+            }
+            match &message {
+                ClientJsonRpcMessage::Request(request) => match &request.request {
+                    ClientRequest::CustomRequest(custom) if custom.method == "server/discover" => {
+                        let reply = ServerJsonRpcMessage::error(
+                            McpError::new(ErrorCode::METHOD_NOT_FOUND, "Method not found", None),
+                            Some(request.id.clone()),
+                        );
+                        if let Err(err) = self.inner.send(reply).await {
+                            log::warn!("mcp: failed to answer server/discover: {err}");
+                            return None;
+                        }
+                    }
+                    ClientRequest::InitializeRequest(_) => {
+                        self.initialize_seen = true;
+                        return Some(message);
+                    }
+                    _ => return Some(message),
+                },
+                ClientJsonRpcMessage::Notification(_) => {}
+                _ => return Some(message),
+            }
+        }
+    }
+
+    fn close(&mut self) -> impl Future<Output = std::result::Result<(), Self::Error>> + Send {
+        self.inner.close()
+    }
 }
 
 #[derive(Clone)]
@@ -2153,6 +2214,7 @@ fn normalize_client_name(name: &str) -> String {
         // OpenCode V2's CLI initializes MCP clients with the app identity
         // `cli`, so include it in the OpenCode actor bucket.
         "opencode" | "open-code" | "opencode-cli" | "cli" => "opencode".to_string(),
+        "antigravity" | "antigravity-client" => "antigravity".to_string(),
         other => {
             // An unmapped client still works (it buckets under its own
             // name); the warning surfaces the missing alias so it can be
@@ -2538,6 +2600,7 @@ mod tests {
         assert_eq!(normalize_client_name("Codex-MCP-Client"), "codex");
         assert_eq!(normalize_client_name("OpenCode"), "opencode");
         assert_eq!(normalize_client_name("opencode-cli"), "opencode");
+        assert_eq!(normalize_client_name("antigravity-client"), "antigravity");
         assert_eq!(normalize_client_name("CustomClient"), "customclient");
     }
 
