@@ -1,6 +1,6 @@
-# memhub — Codex CLI instructions
+# memhub — Codex / OpenCode / Antigravity instructions
 
-Local-first Rust CLI for durable per-repo project memory shared between Codex, Claude Code, and OpenCode. Treat [docs/reference/memhub-prd.md](docs/reference/memhub-prd.md) as the product authority and do not silently diverge from it.
+Local-first Rust CLI for durable per-repo project memory shared between Codex, Claude Code, OpenCode, and Antigravity. Treat [docs/reference/memhub-prd.md](docs/reference/memhub-prd.md) as the product authority and do not silently diverge from it.
 
 Operational detail for every subsystem — retrieval, token accounting, doc ingestion, the code index, machine-global memory, cross-machine workflow and Drive sync, and machine-wide upgrade/GC — now lives in [docs/reference/operations.md](docs/reference/operations.md) and is memhub-recall-searchable. Recall it on demand rather than loading it every session; this file keeps only what an agent needs inline from turn one.
 
@@ -11,7 +11,7 @@ rendered: .memhub/rendered/
 config: .memhub/config.toml
 <!-- /memhub:managed-block -->
 
-This file is the Codex / OpenCode counterpart to `CLAUDE.md`, and is **generated** from it by `generate_agents_md` — do not hand-edit it; edit `CLAUDE.md` and regenerate with `MEMHUB_REGEN=1 cargo test skill_parity`. The two exist so Codex CLI, OpenCode CLI, and Claude Code sessions get the same orientation when they open this repo; where they diverge it is intentional (a different H1, plus the Codex/OpenCode-only sections injected at the end).
+This file is the Codex / OpenCode / Antigravity counterpart to `CLAUDE.md`, and is **generated** from it by `generate_agents_md` — do not hand-edit it; edit `CLAUDE.md` and regenerate with `MEMHUB_REGEN=1 cargo test skill_parity`. The two exist so Codex CLI, OpenCode CLI, Antigravity CLI, and Claude Code sessions get the same orientation when they open this repo; where they diverge it is intentional (a different H1, plus the Codex/OpenCode/Antigravity-only sections injected at the end).
 
 ## Session Continuity
 
@@ -100,18 +100,26 @@ cargo run -- init
 cargo run -- status
 ```
 
-## Agent attribution (Codex-specific)
+## Agent attribution (Codex / OpenCode / Antigravity)
 
 When you write to memhub from the CLI, identify yourself so the row gets attributed correctly. Two flags matter:
 
-- `--source` — origin of the claim. Pass `--source user+agent:codex` on `memhub fact add` / `memhub decision add` writes that go through `/wrap-up` (agent surfaced, user approved). For direct CLI writes the user typed themselves, omit the flag and take the `user` default.
-- `--actor` — who performed the write. Pass `--actor codex:wrap-up` from the wrap-up skill; `--actor codex:<skill-name>` from other skills.
+- `--source` — origin of the claim. Pass `--source user+agent:<host>` on `memhub fact add` / `memhub decision add` writes that go through `/wrap-up` (agent surfaced, user approved). For direct CLI writes the user typed themselves, omit the flag and take the `user` default.
+- `--actor` — who performed the write. Pass `--actor <host>:wrap-up` from the wrap-up skill; `--actor <host>:<skill-name>` from other skills.
+
+Use your own host's ids (never another host's):
+
+| Host | `--source` | `--actor` (wrap-up) |
+|---|---|---|
+| Codex | `user+agent:codex` | `codex:wrap-up` |
+| OpenCode | `user+agent:opencode` | `opencode:wrap-up` |
+| Antigravity | `user+agent:antigravity` | `antigravity:wrap-up` |
 
 See [docs/reference/memhub-prd-source-vocabulary-addendum.md](docs/reference/memhub-prd-source-vocabulary-addendum.md) for the full vocabulary (`user`, `agent:<id>`, `user+agent:<id>`, `git`, `observed`).
 
-Once `memhub serve` is registered in `~/.codex/config.toml` (a per-machine step — see README's "Register the MCP server"; `memhub doctor` reports current status), writes via MCP attribute automatically — the server reads `clientInfo.name` from `initialize` and tags writes as `codex` / `codex:wrap-up` without you needing to pass anything.
+Once `memhub serve` is registered with your host (Codex: `~/.codex/config.toml`; Antigravity: `agy mcp add memhub memhub serve`; a per-machine step — see README's "Register the MCP server"; `memhub doctor` reports current status), writes via MCP attribute automatically — the server reads `clientInfo.name` from `initialize` and tags writes as `codex` / `opencode` / `antigravity` (and `<host>:wrap-up`) without you needing to pass anything.
 
-## memhub routing (Codex / OpenCode)
+## memhub routing (Codex / OpenCode / Antigravity)
 memhub is this repo's project memory. When intent matches, use the memhub MCP tools — do
 not fall through to Grep/Read/manual scan:
 - past decisions / status / "is there a fact/task about X" → `recall`
@@ -124,7 +132,7 @@ Never Grep for code by intent before `locate`. Never read `PROJECT_LEDGER.md` be
 (it is the fallback). Never write facts/decisions directly — stage via `propose_fact` /
 `propose_decision`, durable on `memhub review accept`.
 (Carrier note: Claude Code gets these rules from the MCP `instructions` field; this block is
-the Codex/OpenCode fallback pending the Wave 4 delivery spike.)
+the Codex/OpenCode/Antigravity fallback pending the Wave 4 delivery spike.)
 
 <!-- orchestrator:managed:start version=1 -->
 This file is partially managed by Orch (see `.orchestrator/config.toml`).

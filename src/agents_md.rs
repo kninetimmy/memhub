@@ -1,11 +1,11 @@
-//! Derive `AGENTS.md` (the Codex / OpenCode orientation file) from
+//! Derive `AGENTS.md` (the Codex / OpenCode / Antigravity orientation file) from
 //! `CLAUDE.md` so the two can never silently drift.
 //!
 //! `CLAUDE.md` is the single hand-edited source. `AGENTS.md` is a pure
 //! transform of it: swap the `# memhub` H1 for the Codex-flavored title,
 //! inject a "generated — do not hand-edit" counterpart note after the
-//! intro, and append the two Codex/OpenCode-only sections that have no
-//! `CLAUDE.md` counterpart (the Codex attribution block and the Q41
+//! intro, and append the two non-Claude-only sections that have no
+//! `CLAUDE.md` counterpart (the per-host attribution block and the Q41
 //! fail-safe routing block). Nothing else is rewritten — the retained
 //! `## ` sections carry through verbatim.
 //!
@@ -13,7 +13,7 @@
 //! … `<!-- orchestrator:managed:end -->`, appended and maintained by Orch's
 //! installer — see `.orchestrator/config.toml`), it is split off before the
 //! transform above and re-appended last, verbatim, after the two
-//! Codex/OpenCode-only sections. Orch's installer expects to find that block
+//! non-Claude-only sections. Orch's installer expects to find that block
 //! at EOF, so the generated file keeps it there instead of letting the
 //! appended sections push it out of place.
 //!
@@ -33,35 +33,42 @@
 pub(crate) const CLAUDE_TITLE: &str = "# memhub";
 
 /// The H1 line the generated `AGENTS.md` carries instead.
-const AGENTS_TITLE: &str = "# memhub — Codex CLI instructions";
+const AGENTS_TITLE: &str = "# memhub — Codex / OpenCode / Antigravity instructions";
 
 /// Injected right after `CLAUDE.md`'s intro paragraphs (before the first
 /// `## ` section). Explains that this file is a generated derivative — not
 /// present in `CLAUDE.md`.
-const COUNTERPART_NOTE: &str = "This file is the Codex / OpenCode counterpart to `CLAUDE.md`, and is **generated** from it by `generate_agents_md` — do not hand-edit it; edit `CLAUDE.md` and regenerate with `MEMHUB_REGEN=1 cargo test skill_parity`. The two exist so Codex CLI, OpenCode CLI, and Claude Code sessions get the same orientation when they open this repo; where they diverge it is intentional (a different H1, plus the Codex/OpenCode-only sections injected at the end).";
+const COUNTERPART_NOTE: &str = "This file is the Codex / OpenCode / Antigravity counterpart to `CLAUDE.md`, and is **generated** from it by `generate_agents_md` — do not hand-edit it; edit `CLAUDE.md` and regenerate with `MEMHUB_REGEN=1 cargo test skill_parity`. The two exist so Codex CLI, OpenCode CLI, Antigravity CLI, and Claude Code sessions get the same orientation when they open this repo; where they diverge it is intentional (a different H1, plus the Codex/OpenCode/Antigravity-only sections injected at the end).";
 
-/// Codex-specific attribution guidance, appended to the generated file.
-/// Has no `CLAUDE.md` counterpart by design (Claude attributes via the MCP
+/// Per-host attribution guidance, appended to the generated file. Has no
+/// `CLAUDE.md` counterpart by design (Claude attributes via the MCP
 /// `clientInfo.name`, not these CLI flags).
-const AGENT_ATTRIBUTION: &str = "\
-## Agent attribution (Codex-specific)
+const AGENT_ATTRIBUTION: &str = "## Agent attribution (Codex / OpenCode / Antigravity)
 
 When you write to memhub from the CLI, identify yourself so the row gets attributed correctly. Two flags matter:
 
-- `--source` — origin of the claim. Pass `--source user+agent:codex` on `memhub fact add` / `memhub decision add` writes that go through `/wrap-up` (agent surfaced, user approved). For direct CLI writes the user typed themselves, omit the flag and take the `user` default.
-- `--actor` — who performed the write. Pass `--actor codex:wrap-up` from the wrap-up skill; `--actor codex:<skill-name>` from other skills.
+- `--source` — origin of the claim. Pass `--source user+agent:<host>` on `memhub fact add` / `memhub decision add` writes that go through `/wrap-up` (agent surfaced, user approved). For direct CLI writes the user typed themselves, omit the flag and take the `user` default.
+- `--actor` — who performed the write. Pass `--actor <host>:wrap-up` from the wrap-up skill; `--actor <host>:<skill-name>` from other skills.
+
+Use your own host's ids (never another host's):
+
+| Host | `--source` | `--actor` (wrap-up) |
+|---|---|---|
+| Codex | `user+agent:codex` | `codex:wrap-up` |
+| OpenCode | `user+agent:opencode` | `opencode:wrap-up` |
+| Antigravity | `user+agent:antigravity` | `antigravity:wrap-up` |
 
 See [docs/reference/memhub-prd-source-vocabulary-addendum.md](docs/reference/memhub-prd-source-vocabulary-addendum.md) for the full vocabulary (`user`, `agent:<id>`, `user+agent:<id>`, `git`, `observed`).
 
-Once `memhub serve` is registered in `~/.codex/config.toml` (a per-machine step — see README's \"Register the MCP server\"; `memhub doctor` reports current status), writes via MCP attribute automatically — the server reads `clientInfo.name` from `initialize` and tags writes as `codex` / `codex:wrap-up` without you needing to pass anything.";
+Once `memhub serve` is registered with your host (Codex: `~/.codex/config.toml`; Antigravity: `agy mcp add memhub memhub serve`; a per-machine step — see README's \"Register the MCP server\"; `memhub doctor` reports current status), writes via MCP attribute automatically — the server reads `clientInfo.name` from `initialize` and tags writes as `codex` / `opencode` / `antigravity` (and `<host>:wrap-up`) without you needing to pass anything.";
 
 /// The Q41 fail-safe routing block (decision Q41, issue #30), appended after
 /// the attribution section. Claude Code receives these routing rules through
-/// the MCP server's `instructions` field; Codex/OpenCode delivery is
+/// the MCP server's `instructions` field; Codex/OpenCode/Antigravity delivery is
 /// unverified until the Wave 4 spike, so they carry this compact copy here.
 /// Deliberately **not** in `CLAUDE.md`.
 const ROUTING_BLOCK: &str = "\
-## memhub routing (Codex / OpenCode)
+## memhub routing (Codex / OpenCode / Antigravity)
 memhub is this repo's project memory. When intent matches, use the memhub MCP tools — do
 not fall through to Grep/Read/manual scan:
 - past decisions / status / \"is there a fact/task about X\" → `recall`
@@ -74,7 +81,7 @@ Never Grep for code by intent before `locate`. Never read `PROJECT_LEDGER.md` be
 (it is the fallback). Never write facts/decisions directly — stage via `propose_fact` /
 `propose_decision`, durable on `memhub review accept`.
 (Carrier note: Claude Code gets these rules from the MCP `instructions` field; this block is
-the Codex/OpenCode fallback pending the Wave 4 delivery spike.)";
+the Codex/OpenCode/Antigravity fallback pending the Wave 4 delivery spike.)";
 
 /// Opening marker of the Orch-managed block Orch's installer appends to
 /// `CLAUDE.md` (and, via [`generate_agents_md`], to `AGENTS.md`). See the
@@ -119,7 +126,7 @@ pub(crate) fn split_trailing_managed_block(claude_md: &str) -> (String, Option<S
 /// out CRLF on Windows under `core.autocrlf=true`).
 pub fn generate_agents_md(claude_md: &str) -> String {
     // 0. Split off a trailing Orch-managed block, if present, so it can be
-    //    re-appended last after the Codex/OpenCode-only sections rather
+    //    re-appended last after the non-Claude-only sections rather
     //    than getting pushed out of EOF position by step 3.
     let (claude, managed_block) = split_trailing_managed_block(claude_md);
 
@@ -140,7 +147,7 @@ pub fn generate_agents_md(claude_md: &str) -> String {
     let (head, tail) = retitled.split_at(idx);
     let with_note = format!("{head}\n{COUNTERPART_NOTE}\n{tail}");
 
-    // 3. Append the Codex/OpenCode-only sections after the last CLAUDE.md
+    // 3. Append the non-Claude-only sections after the last CLAUDE.md
     //    section, separated by a blank line, with a single trailing newline.
     //    A trailing Orch-managed block (split off in step 0) is carried
     //    through verbatim and re-appended last of all, so it stays at EOF.
@@ -166,7 +173,7 @@ mod tests {
     #[test]
     fn swaps_title_and_keeps_body_sections() {
         let out = generate_agents_md(SAMPLE);
-        assert!(out.starts_with("# memhub — Codex CLI instructions\n"));
+        assert!(out.starts_with("# memhub — Codex / OpenCode / Antigravity instructions\n"));
         assert!(!out.contains("\n# memhub\n"));
         assert!(out.contains("## Session Continuity"));
         assert!(out.contains("## Build / Test / Run"));
@@ -187,13 +194,13 @@ mod tests {
     }
 
     #[test]
-    fn appends_codex_only_sections_at_end() {
+    fn appends_non_claude_sections_at_end() {
         let out = generate_agents_md(SAMPLE);
         let attrib = out
-            .find("## Agent attribution (Codex-specific)")
+            .find("## Agent attribution (Codex / OpenCode / Antigravity)")
             .expect("attribution section appended");
         let routing = out
-            .find("## memhub routing (Codex / OpenCode)")
+            .find("## memhub routing (Codex / OpenCode / Antigravity)")
             .expect("routing block appended");
         let last_body = out.find("## Build / Test / Run").expect("body section");
         assert!(last_body < attrib, "injected sections come after the body");
@@ -215,10 +222,10 @@ mod tests {
         let out = generate_agents_md(SAMPLE_WITH_MANAGED_BLOCK);
         let last_body = out.find("## Build / Test / Run").expect("body section");
         let attrib = out
-            .find("## Agent attribution (Codex-specific)")
+            .find("## Agent attribution (Codex / OpenCode / Antigravity)")
             .expect("attribution section appended");
         let routing = out
-            .find("## memhub routing (Codex / OpenCode)")
+            .find("## memhub routing (Codex / OpenCode / Antigravity)")
             .expect("routing block appended");
         let managed = out
             .find(MANAGED_BLOCK_START)

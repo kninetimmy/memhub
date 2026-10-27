@@ -1,6 +1,6 @@
 # memhub
 
-Local-first Rust CLI for durable per-repo project memory shared between Codex, Claude Code, and OpenCode. Treat [docs/reference/memhub-prd.md](docs/reference/memhub-prd.md) as the product authority and do not silently diverge from it.
+Local-first Rust CLI for durable per-repo project memory shared between Codex, Claude Code, OpenCode, and Antigravity. Treat [docs/reference/memhub-prd.md](docs/reference/memhub-prd.md) as the product authority and do not silently diverge from it.
 
 Operational detail for every subsystem — retrieval, token accounting, doc ingestion, the code index, machine-global memory, cross-machine workflow and Drive sync, and machine-wide upgrade/GC — now lives in [docs/reference/operations.md](docs/reference/operations.md) and is memhub-recall-searchable. Recall it on demand rather than loading it every session; this file keeps only what an agent needs inline from turn one.
 
