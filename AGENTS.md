@@ -60,20 +60,17 @@ not write to them; ignore them.
 <!-- BEGIN MANAGED: delegation-policy (per-repo; delete this whole block to revert) -->
 ## Delegation (this repo)
 
-Scoped exception to the global Subagent Dispatch Policy, for memhub only:
-once an implementation plan is approved, the main Opus session MAY delegate
-implementation work to subagents without re-asking for each spawn. This
-license is limited to executing the approved plan — it is not open season.
+memhub is Orch-managed, so delegation follows Orch and this repo adds no
+exception of its own:
 
-- **Default to Sonnet.** Delegate implementation tasks to the `implementer`
-  agent (Sonnet). Use `cargo-test-runner` (Sonnet) for test runs/diagnosis.
-- **Escalate a subtask to Opus** (spawn with `model: opus`) only when it needs
-  cross-file architectural reasoning, subtle concurrency/correctness work, or
-  it already failed once on Sonnet. Otherwise stay on Sonnet.
-- **Main thread keeps** architecture/design decisions and anything outside the
-  approved plan. Subagents execute; they don't decide scope.
-- Outside an approved plan, the global Subagent Dispatch Policy applies as
-  written (ask before spawning for multi-file/architectural work).
+- **Spawn only Orch's `orch-*` role agents.** Read-only exploration goes to
+  `orch-scout`.
+- **Tracked-file changes ship only through a Delivery run** whose plan gate the
+  user approved. The engine routes each issue's executor and reviewer from
+  `.orchestrator/config.toml`; never choose or override a subagent's model
+  yourself.
+- **The main session keeps** design decisions, scope, and every memhub write.
+  Subagents execute and report back; they never write to memhub.
 <!-- END MANAGED: delegation-policy -->
 
 ## Safety gates
@@ -117,7 +114,7 @@ Use your own host's ids (never another host's):
 
 See [docs/reference/memhub-prd-source-vocabulary-addendum.md](docs/reference/memhub-prd-source-vocabulary-addendum.md) for the full vocabulary (`user`, `agent:<id>`, `user+agent:<id>`, `git`, `observed`).
 
-Once `memhub serve` is registered with your host (Codex: `~/.codex/config.toml`; Antigravity: `agy mcp add memhub memhub serve`; a per-machine step — see README's "Register the MCP server"; `memhub doctor` reports current status), writes via MCP attribute automatically — the server reads `clientInfo.name` from `initialize` and tags writes as `codex` / `opencode` / `antigravity` (and `<host>:wrap-up`) without you needing to pass anything.
+Once `memhub serve` is registered with your host (Codex: `~/.codex/config.toml`; Antigravity: `agy mcp add memhub memhub serve`; a per-machine step — see README's "Register the MCP server"; `memhub doctor` reports current status), writes via MCP attribute automatically — the server reads `clientInfo.name` from `initialize` and tags writes with the bare host name (`codex` / `opencode` / `antigravity`) without you needing to pass anything.
 
 ## memhub routing (Codex / OpenCode / Antigravity)
 memhub is this repo's project memory. When intent matches, use the memhub MCP tools — do
