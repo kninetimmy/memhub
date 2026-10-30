@@ -58,20 +58,17 @@ not write to them; ignore them.
 <!-- BEGIN MANAGED: delegation-policy (per-repo; delete this whole block to revert) -->
 ## Delegation (this repo)
 
-Scoped exception to the global Subagent Dispatch Policy, for memhub only:
-once an implementation plan is approved, the main Opus session MAY delegate
-implementation work to subagents without re-asking for each spawn. This
-license is limited to executing the approved plan — it is not open season.
+memhub is Orch-managed, so delegation follows Orch and this repo adds no
+exception of its own:
 
-- **Default to Sonnet.** Delegate implementation tasks to the `implementer`
-  agent (Sonnet). Use `cargo-test-runner` (Sonnet) for test runs/diagnosis.
-- **Escalate a subtask to Opus** (spawn with `model: opus`) only when it needs
-  cross-file architectural reasoning, subtle concurrency/correctness work, or
-  it already failed once on Sonnet. Otherwise stay on Sonnet.
-- **Main thread keeps** architecture/design decisions and anything outside the
-  approved plan. Subagents execute; they don't decide scope.
-- Outside an approved plan, the global Subagent Dispatch Policy applies as
-  written (ask before spawning for multi-file/architectural work).
+- **Spawn only Orch's `orch-*` role agents.** Read-only exploration goes to
+  `orch-scout`.
+- **Tracked-file changes ship only through a Delivery run** whose plan gate the
+  user approved. The engine routes each issue's executor and reviewer from
+  `.orchestrator/config.toml`; never choose or override a subagent's model
+  yourself.
+- **The main session keeps** design decisions, scope, and every memhub write.
+  Subagents execute and report back; they never write to memhub.
 <!-- END MANAGED: delegation-policy -->
 
 ## Safety gates

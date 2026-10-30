@@ -60,7 +60,7 @@ Use your own host's ids (never another host's):
 
 See [docs/reference/memhub-prd-source-vocabulary-addendum.md](docs/reference/memhub-prd-source-vocabulary-addendum.md) for the full vocabulary (`user`, `agent:<id>`, `user+agent:<id>`, `git`, `observed`).
 
-Once `memhub serve` is registered with your host (Codex: `~/.codex/config.toml`; Antigravity: `agy mcp add memhub memhub serve`; a per-machine step — see README's \"Register the MCP server\"; `memhub doctor` reports current status), writes via MCP attribute automatically — the server reads `clientInfo.name` from `initialize` and tags writes as `codex` / `opencode` / `antigravity` (and `<host>:wrap-up`) without you needing to pass anything.";
+Once `memhub serve` is registered with your host (Codex: `~/.codex/config.toml`; Antigravity: `agy mcp add memhub memhub serve`; a per-machine step — see README's \"Register the MCP server\"; `memhub doctor` reports current status), writes via MCP attribute automatically — the server reads `clientInfo.name` from `initialize` and tags writes with the bare host name (`codex` / `opencode` / `antigravity`) without you needing to pass anything.";
 
 /// The Q41 fail-safe routing block (decision Q41, issue #30), appended after
 /// the attribution section. Claude Code receives these routing rules through
