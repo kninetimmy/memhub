@@ -1,4 +1,4 @@
-//! Contract test: the Claude, Codex, and OpenCode agent surfaces must stay in
+//! Contract test: the Claude, Codex, OpenCode, and Antigravity agent surfaces must stay in
 //! parity, and the README install blocks plus the two tracked
 //! orientation files must not drift away from the actual skill set.
 //!
@@ -6,7 +6,7 @@
 //! reactivation assets, but default install blocks exclude them while the
 //! subsystem is hibernated.
 //!
-//! There is no CI in this repo — `cargo test` is the gate. Adding a
+//! `cargo test` is the local and CI gate. Adding a
 //! new skill, or a new `## ` section to one orientation file, now
 //! forces the matching update everywhere or this test fails.
 
@@ -122,6 +122,7 @@ fn canonical_skill_set() -> BTreeSet<String> {
     let mut set = claude_skill_names();
     set.extend(codex_skill_names());
     set.extend(opencode_skill_names());
+    set.extend(dir_per_skill_names("templates/skills/antigravity"));
     for s in CLAUDE_ONLY_SKILLS
         .iter()
         .chain(CODEX_ONLY_SKILLS.iter())
@@ -143,6 +144,7 @@ fn agent_skill_template_sets_match() {
     let claude = claude_skill_names();
     let codex = codex_skill_names();
     let opencode = opencode_skill_names();
+    let antigravity = dir_per_skill_names("templates/skills/antigravity");
 
     assert!(!claude.is_empty(), "no Claude skill templates discovered");
     assert!(!codex.is_empty(), "no Codex skill templates discovered");
@@ -159,6 +161,10 @@ fn agent_skill_template_sets_match() {
         OPENCODE_ONLY_SKILLS.iter().map(|s| s.to_string()).collect();
 
     let canonical = canonical_skill_set();
+    assert_eq!(
+        antigravity, canonical,
+        "Antigravity skill templates must match the canonical set"
+    );
     let claude_only: BTreeSet<_> = claude.difference(&canonical).cloned().collect();
     let codex_only: BTreeSet<_> = codex.difference(&canonical).cloned().collect();
     let opencode_only: BTreeSet<_> = opencode.difference(&canonical).cloned().collect();
@@ -432,9 +438,9 @@ fn readme_install_blocks_enumerate_every_skill() {
 
     assert_eq!(
         segments.len(),
-        3,
-        "expected exactly three install-block skill enumerations \
-         (Claude + Codex + OpenCode); found {}",
+        4,
+        "expected exactly four install-block skill enumerations \
+         (Claude + Codex + OpenCode + Antigravity); found {}",
         segments.len()
     );
 
@@ -653,10 +659,10 @@ fn check_readme_install_blocks(readme: &str) -> Result<(usize, usize), String> {
     // Claude, Codex, OpenCode quickstarts + Install by hand; more copy
     // lines per block are fine, fewer blocks are not.
     let blocks = copy_blocks.len();
-    if blocks < 4 || posix < 8 || ps < 8 {
+    if blocks < 5 || posix < 10 || ps < 10 {
         return Err(format!(
-            "expected skill-copy lines in at least 4 install blocks (Claude/\
-             Codex/OpenCode quickstarts + Install by hand), 8 POSIX and 8 \
+            "expected skill-copy lines in at least 5 install blocks (Claude/\
+             Codex/OpenCode/Antigravity quickstarts + Install by hand), 10 POSIX and 10 \
              PowerShell lines in total; found {blocks} blocks, {posix} \
              POSIX, {ps} PowerShell"
         ));
@@ -1036,9 +1042,10 @@ fn claude_md_managed_block_parses() {
     );
 }
 
-/// Every skill template file across all three agents, as absolute paths:
+/// Every skill template file across all four agents, as absolute paths:
 /// `templates/skills/claude/*.md`, `templates/skills/codex/*/SKILL.md`,
-/// active and hibernated `templates/skills/opencode*/*/SKILL.md` roots.
+/// active and hibernated `templates/skills/opencode*/*/SKILL.md` roots,
+/// and `templates/skills/antigravity/*/SKILL.md`.
 fn all_skill_template_files() -> Vec<PathBuf> {
     let mut files = Vec::new();
 
@@ -1054,6 +1061,7 @@ fn all_skill_template_files() -> Vec<PathBuf> {
         "templates/skills/codex",
         "templates/skills/opencode",
         "templates/skills/opencode-hibernated",
+        "templates/skills/antigravity",
     ] {
         let dir = repo_root().join(relative);
         for entry in fs::read_dir(&dir).unwrap_or_else(|_| panic!("read {relative}")) {
@@ -1079,6 +1087,10 @@ fn wrap_up_templates_render_with_actor_and_resume_without_replaying_writes() {
         (
             "templates/skills/opencode/wrap-up/SKILL.md",
             "opencode:wrap-up",
+        ),
+        (
+            "templates/skills/antigravity/wrap-up/SKILL.md",
+            "antigravity:wrap-up",
         ),
     ] {
         let path = repo_root().join(relative);
@@ -1135,6 +1147,48 @@ fn opencode_wrap_up_requires_verified_session_provenance_before_writes() {
     assert!(content.contains("normalized `opencode` actor and raw client identity"));
     assert!(content.contains("--actor opencode:wrap-up"));
     assert!(content.contains("Do not put these values in the free-form session-note text"));
+}
+
+#[test]
+fn antigravity_wrappers_keep_native_attribution_and_document_host_limits() {
+    let root = repo_root().join("templates/skills/antigravity");
+    for entry in fs::read_dir(&root).unwrap() {
+        let path = entry.unwrap().path().join("SKILL.md");
+        let text = fs::read_to_string(&path).unwrap();
+        for foreign in [
+            "--actor codex:",
+            "--actor claude:",
+            "--actor opencode:",
+            "--source user+agent:codex",
+            "--source user+agent:gemini",
+        ] {
+            assert!(
+                !text.contains(foreign),
+                "foreign attribution {foreign} in {}",
+                path.display()
+            );
+        }
+    }
+    let wrapup = fs::read_to_string(root.join("wrap-up/SKILL.md")).unwrap();
+    for expected in [
+        "memhub wrapup-policy",
+        "wait for explicit approval per item",
+        "Orch grant exception",
+        "--actor antigravity:wrap-up",
+        "--source user+agent:antigravity",
+        "transcript archiving as unsupported",
+        "Do not invoke the",
+        "internal conversation storage",
+    ] {
+        assert!(
+            wrapup.contains(expected),
+            "Antigravity wrap-up omits {expected}"
+        );
+    }
+    assert!(!wrapup.contains("--agent codex"));
+    let upgrade = fs::read_to_string(root.join("upgrade/SKILL.md")).unwrap();
+    assert!(upgrade.contains("exit 3"));
+    assert!(upgrade.contains("--verify-last"));
 }
 
 /// True when `s` is a YAML block-scalar indicator on its own: `>` or `|`,

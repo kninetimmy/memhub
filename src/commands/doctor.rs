@@ -1144,6 +1144,11 @@ const ACTIVE_SKILL_NAMES: &[&str] = &[
 const SKILL_INSTALL_SURFACES: &[(&str, &str, bool)] = &[
     ("installed_skills_claude", ".claude/commands", false),
     ("installed_skills_codex", ".codex/skills", true),
+    (
+        "installed_skills_antigravity",
+        ".gemini/config/skills",
+        true,
+    ),
     ("installed_skills_opencode", ".config/opencode/skills", true),
     (
         "installed_commands_opencode",
@@ -1191,10 +1196,24 @@ fn check_installed_skills(home: Option<&Path>) -> Vec<Check> {
                     format!("cannot inspect ~/{relative}: home directory unavailable"),
                 );
             };
+            let antigravity = id == "installed_skills_antigravity";
+            if antigravity {
+                let setup = home.join(".gemini/antigravity-cli");
+                match skill_install_directory_exists(&setup) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        return check(Status::Skipped, "Antigravity not set up (no ~/.gemini/antigravity-cli)".to_string());
+                    }
+                    Err(e) => return check(Status::Warn, format!("cannot inspect {}: {e}", setup.display())),
+                }
+            }
             let target = home.join(relative);
             match skill_install_directory_exists(&target) {
                 Ok(true) => {}
                 Ok(false) => {
+                    if antigravity {
+                        return check(Status::Warn, format!("Antigravity is set up but its skill directory is absent: {}. Run `memhub upgrade` from the Memhub source checkout to sync installed skills", target.display()));
+                    }
                     return check(
                         Status::Skipped,
                         format!("not set up (install directory absent: {})", target.display()),
@@ -1509,22 +1528,36 @@ fn check_mcp_antigravity(home: Option<&Path>) -> Check {
         );
     };
 
-    if json_file_registers_memhub(&gemini.join("config").join("mcp_config.json"), "mcpServers") {
+    let registered = fs::read_to_string(gemini.join("config").join("mcp_config.json"))
+        .ok()
+        .and_then(|raw| {
+            serde_json::from_str::<serde_json::Value>(raw.trim_start_matches('\u{feff}')).ok()
+        })
+        .and_then(|v| v.get("mcpServers")?.get("memhub").cloned())
+        .is_some_and(|entry| {
+            entry.is_object()
+                && matches!(
+                    entry.get("disabled"),
+                    None | Some(serde_json::Value::Bool(false))
+                )
+        });
+    let check = if registered {
         Check::new(
             "mcp_registration_antigravity",
             Group::Integrations,
             Status::Ok,
-            "memhub MCP server registered in Antigravity",
+            "enabled memhub MCP registration configured in Antigravity",
         )
     } else {
         Check::new(
             "mcp_registration_antigravity",
             Group::Integrations,
             Status::Warn,
-            "Antigravity is set up but memhub's MCP server is not registered in \
+            "Antigravity is set up but memhub's MCP server is missing, invalid or disabled in \
              ~/.gemini/config/mcp_config.json — run `agy mcp add memhub memhub serve`",
         )
-    }
+    };
+    check.with_detail("Configuration only: live MCP connectivity is not checked. No host configuration is changed.")
 }
 
 fn json_file_registers_memhub(path: &Path, servers_key: &str) -> bool {
@@ -1797,6 +1830,7 @@ mod tests {
                 true,
             ),
             (vec!["templates/commands/opencode"], false),
+            (vec!["templates/skills/antigravity"], true),
         ] {
             let mut shipped = BTreeSet::new();
             for source in &sources {
@@ -1824,6 +1858,7 @@ mod tests {
     #[test]
     fn installed_skills_accept_custom_files_and_ignore_ownership_without_writes() {
         let home = empty_home();
+        fs::create_dir_all(home.path().join(".gemini/antigravity-cli")).unwrap();
         let mut files = Vec::new();
         for &(_, relative, nested) in SKILL_INSTALL_SURFACES {
             for name in ACTIVE_SKILL_NAMES
@@ -1859,7 +1894,7 @@ mod tests {
                 .collect();
 
             let checks = check_installed_skills(Some(home.path()));
-            assert_eq!(checks.len(), 4);
+            assert_eq!(checks.len(), SKILL_INSTALL_SURFACES.len());
             for check in checks {
                 assert_eq!(check.status, Status::Ok, "{check:?}");
                 assert!(
@@ -1906,6 +1941,7 @@ mod tests {
             assert_eq!(check.status, Status::Warn, "{check:?}");
             assert!(check.message.contains("cannot inspect"));
         }
+        fs::create_dir_all(home.path().join(".gemini/antigravity-cli")).unwrap();
         for &(_, relative, _) in SKILL_INSTALL_SURFACES {
             write_fixture(&home.path().join(relative), "not a directory");
         }
@@ -1914,7 +1950,7 @@ mod tests {
             assert!(check.message.contains("not a directory"));
         }
         let malformed_home = empty_home();
-        for relative in [".claude", ".codex", ".config/opencode"] {
+        for relative in [".claude", ".codex", ".config/opencode", ".gemini"] {
             write_fixture(&malformed_home.path().join(relative), "not a directory");
         }
         for check in check_installed_skills(Some(malformed_home.path())) {
@@ -1926,6 +1962,7 @@ mod tests {
     #[test]
     fn installed_skills_reject_non_file_entrypoints_and_check_feature_inventory() {
         let home = empty_home();
+        fs::create_dir_all(home.path().join(".gemini/antigravity-cli")).unwrap();
         for &(_, relative, nested) in SKILL_INSTALL_SURFACES {
             for name in ACTIVE_SKILL_NAMES {
                 write_fixture(
@@ -3082,11 +3119,21 @@ transcript_retention_days = 99999999
 
     #[test]
     fn mcp_antigravity_ok_when_registered() {
-        let home = antigravity_home(Some(
-            r#"{"mcpServers": {"memhub": {"command": "memhub", "args": ["serve"], "disabled": false}}}"#,
-        ));
-        let check = check_mcp_antigravity(Some(home.path()));
-        assert_eq!(check.status, Status::Ok, "{check:?}");
+        for prefix in ["", "\u{feff}"] {
+            let config = format!(
+                "{prefix}{}",
+                r#"{"mcpServers": {"memhub": {"command": "memhub", "args": ["serve"], "disabled": false}}}"#
+            );
+            let home = antigravity_home(Some(&config));
+            let check = check_mcp_antigravity(Some(home.path()));
+            assert_eq!(check.status, Status::Ok, "{check:?}");
+            assert!(
+                check
+                    .detail
+                    .unwrap()
+                    .contains("live MCP connectivity is not checked")
+            );
+        }
     }
 
     #[test]
@@ -3095,6 +3142,17 @@ transcript_retention_days = 99999999
             ("missing file", None),
             ("invalid json", Some("{ not json")),
             ("no memhub entry", Some(r#"{"mcpServers": {"other": {}}}"#)),
+            (
+                "disabled entry",
+                Some(
+                    r#"{"mcpServers":{"memhub":{"command":"memhub","args":["serve"],"disabled":true}}}"#,
+                ),
+            ),
+            (
+                "invalid disabled field",
+                Some(r#"{"mcpServers":{"memhub":{"disabled":"false"}}}"#),
+            ),
+            ("invalid entry", Some(r#"{"mcpServers":{"memhub":null}}"#)),
         ] {
             let home = antigravity_home(contents);
             let check = check_mcp_antigravity(Some(home.path()));
@@ -3107,6 +3165,39 @@ transcript_retention_days = 99999999
     }
 
     // -- Sync freshness (P4) ------------------------------------------------------
+
+    #[test]
+    fn installed_antigravity_skills_follow_host_setup_and_do_not_create_files() {
+        let home = antigravity_home(None);
+        let target = home.path().join(".gemini/config/skills");
+        let checks = check_installed_skills(Some(home.path()));
+        let check = find(&checks, "installed_skills_antigravity");
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.message.contains("skill directory is absent"));
+        assert!(check.message.contains("memhub upgrade"));
+        assert!(!target.exists());
+        for name in ACTIVE_SKILL_NAMES {
+            write_fixture(&target.join(name).join("SKILL.md"), "present");
+        }
+        assert_eq!(
+            find(
+                &check_installed_skills(Some(home.path())),
+                "installed_skills_antigravity"
+            )
+            .status,
+            Status::Ok
+        );
+        fs::remove_dir(home.path().join(".gemini/antigravity-cli")).unwrap();
+        assert_eq!(
+            find(
+                &check_installed_skills(Some(home.path())),
+                "installed_skills_antigravity"
+            )
+            .status,
+            Status::Skipped
+        );
+        assert!(target.join("recall/SKILL.md").is_file());
+    }
 
     #[test]
     fn sync_freshness_skipped_when_disabled() {

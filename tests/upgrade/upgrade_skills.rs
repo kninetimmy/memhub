@@ -81,7 +81,7 @@ fn count_opencode_command_templates(repo: &Path) -> usize {
         .count()
 }
 
-fn installed_wrapper_paths(home: &Path, name: &str) -> [PathBuf; 4] {
+fn installed_wrapper_paths(home: &Path, name: &str) -> [PathBuf; 5] {
     [
         home.join(".claude")
             .join("commands")
@@ -99,6 +99,11 @@ fn installed_wrapper_paths(home: &Path, name: &str) -> [PathBuf; 4] {
             .join("opencode")
             .join("commands")
             .join(format!("{name}.md")),
+        home.join(".gemini")
+            .join("config")
+            .join("skills")
+            .join(name)
+            .join("SKILL.md"),
     ]
 }
 
@@ -107,6 +112,157 @@ fn report_contains_path(orphans: &[String], home: &Path, path: &Path) -> bool {
     orphans
         .iter()
         .any(|orphan| orphan.ends_with(&*relative.to_string_lossy()))
+}
+
+#[test]
+fn antigravity_resync_requires_its_host_and_preserves_ownership() {
+    let _env_guard = crate::support::env_lock();
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let expected = std::fs::read_dir(repo.join("templates/skills/antigravity"))
+        .unwrap()
+        .flatten()
+        .filter(|entry| active_template(&entry.path()))
+        .count();
+    let home = tempdir().unwrap();
+    unsafe {
+        std::env::set_var("HOME", home.path());
+        std::env::remove_var("USERPROFILE");
+    }
+    let gemini = home.path().join(".gemini");
+    let setup = gemini.join("antigravity-cli");
+    let target = gemini.join("config/skills");
+    let manifest_path = home.path().join(".memhub/install-manifest.json");
+    for dry in [true, false] {
+        assert_eq!(
+            find(&sync_skills(repo, dry).agents, "antigravity").status,
+            SkillSyncStatus::Skipped
+        );
+        assert!(!gemini.exists());
+    }
+    std::fs::create_dir(&gemini).unwrap();
+    assert_eq!(
+        find(&sync_skills(repo, false).agents, "antigravity").status,
+        SkillSyncStatus::Skipped
+    );
+    assert!(
+        !target.exists(),
+        "Gemini CLI alone must not enable Antigravity installs"
+    );
+    std::fs::write(&setup, b"not a directory").unwrap();
+    let report = find(&sync_skills(repo, false).agents, "antigravity");
+    assert_eq!(report.status, SkillSyncStatus::Skipped);
+    assert!(report.detail.unwrap().contains("not a directory"));
+    assert_eq!(std::fs::read(&setup).unwrap(), b"not a directory");
+    std::fs::remove_file(&setup).unwrap();
+    std::fs::create_dir(&setup).unwrap();
+    let report = find(&sync_skills(repo, true).agents, "antigravity");
+    assert_eq!(report.status, SkillSyncStatus::Synced);
+    assert_eq!(report.synced, expected);
+    assert!(!target.exists());
+    assert!(!manifest_path.exists());
+
+    let report = find(&sync_skills(repo, false).agents, "antigravity");
+    assert_eq!(report.status, SkillSyncStatus::Synced, "{report:?}");
+    assert_eq!(report.synced, expected);
+    let recall = target.join("recall/SKILL.md");
+    let installed = std::fs::read(&recall).unwrap();
+    assert_eq!(
+        installed,
+        std::fs::read(repo.join("templates/skills/antigravity/recall/SKILL.md")).unwrap()
+    );
+    assert!(manifest_path.is_file());
+    let before = std::fs::read(&manifest_path).unwrap();
+    for dry in [true, false] {
+        assert_eq!(
+            find(&sync_skills(repo, dry).agents, "antigravity").synced,
+            expected
+        );
+        assert_eq!(std::fs::read(&recall).unwrap(), installed);
+        assert_eq!(std::fs::read(&manifest_path).unwrap(), before);
+    }
+    std::fs::write(&recall, b"custom recall").unwrap();
+    let unowned = target.join("wrap-up/SKILL.md");
+    std::fs::write(&unowned, b"unowned wrap-up").unwrap();
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    manifest["files"]
+        .as_object_mut()
+        .unwrap()
+        .remove(unowned.to_string_lossy().as_ref());
+    std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    let unowned_before = std::fs::read(&unowned).unwrap();
+    let orphan = target.join("retired/SKILL.md");
+    std::fs::create_dir_all(orphan.parent().unwrap()).unwrap();
+    std::fs::write(&orphan, b"keep retired wrapper").unwrap();
+    let mut manifest = memhub::commands::install_manifest::InstallManifest::load();
+    manifest.record(orphan.to_string_lossy().to_string(), "old hash".to_string());
+    manifest.save().unwrap();
+    for dry in [true, false] {
+        let report = sync_skills(repo, dry);
+        assert_eq!(find(&report.agents, "antigravity").protected, 2);
+        assert_eq!(std::fs::read(&recall).unwrap(), b"custom recall");
+        assert_eq!(std::fs::read(&unowned).unwrap(), unowned_before);
+        assert!(report_contains_path(&report.orphans, home.path(), &orphan));
+        assert_eq!(std::fs::read(&orphan).unwrap(), b"keep retired wrapper");
+    }
+    assert!(!home.path().join(".codex").exists());
+
+    let malformed = tempdir().unwrap();
+    std::fs::create_dir_all(malformed.path().join(".gemini/antigravity-cli")).unwrap();
+    let config = malformed.path().join(".gemini/config");
+    std::fs::write(&config, b"not a directory").unwrap();
+    unsafe { std::env::set_var("HOME", malformed.path()) };
+    for dry in [true, false] {
+        let report = find(&sync_skills(repo, dry).agents, "antigravity");
+        assert_eq!(report.status, SkillSyncStatus::Warn, "{report:?}");
+        assert_eq!(std::fs::read(&config).unwrap(), b"not a directory");
+    }
+    std::fs::remove_file(&config).unwrap();
+    std::fs::create_dir(&config).unwrap();
+    let target_file = config.join("skills");
+    std::fs::write(&target_file, b"not a directory").unwrap();
+    for dry in [true, false] {
+        let report = find(&sync_skills(repo, dry).agents, "antigravity");
+        assert_eq!(report.status, SkillSyncStatus::Skipped, "{report:?}");
+        assert!(report.detail.unwrap().contains("not a directory"));
+        assert_eq!(std::fs::read(&target_file).unwrap(), b"not a directory");
+    }
+    unsafe { std::env::remove_var("HOME") };
+}
+
+#[cfg(unix)]
+#[test]
+fn antigravity_resync_reports_an_unreadable_target() {
+    use std::os::unix::fs::PermissionsExt;
+    let _env_guard = crate::support::env_lock();
+    let home = tempdir().unwrap();
+    unsafe {
+        std::env::set_var("HOME", home.path());
+        std::env::remove_var("USERPROFILE");
+    }
+    std::fs::create_dir_all(home.path().join(".gemini/antigravity-cli")).unwrap();
+    let target = home.path().join(".gemini/config/skills");
+    std::fs::create_dir_all(&target).unwrap();
+    let permissions = std::fs::metadata(&target).unwrap().permissions();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let unreadable = std::fs::read_dir(&target).is_err();
+    let reports: Vec<_> = [true, false]
+        .into_iter()
+        .map(|dry| {
+            find(
+                &sync_skills(Path::new(env!("CARGO_MANIFEST_DIR")), dry).agents,
+                "antigravity",
+            )
+        })
+        .collect();
+    std::fs::set_permissions(&target, permissions).unwrap();
+    unsafe { std::env::remove_var("HOME") };
+    if unreadable {
+        for report in reports {
+            assert_eq!(report.status, SkillSyncStatus::Warn, "{report:?}");
+            assert!(report.detail.unwrap().contains("cannot inspect"));
+        }
+    }
 }
 
 #[test]
@@ -185,6 +341,8 @@ fn skill_resync_additive_idempotent_and_conservative() {
     std::fs::create_dir_all(&codex_dir).expect("mk codex dir");
     std::fs::create_dir_all(&opencode_skills_dir).expect("mk opencode skills dir");
     std::fs::create_dir_all(&opencode_commands_dir).expect("mk opencode commands dir");
+    std::fs::create_dir_all(home.path().join(".gemini/antigravity-cli"))
+        .expect("mk Antigravity setup");
     // A user's own skill in the shared dir must survive (additive only).
     std::fs::write(claude_dir.join("user-own.md"), b"keep me").expect("seed user skill");
 

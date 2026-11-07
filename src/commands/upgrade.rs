@@ -2233,15 +2233,15 @@ enum CopyKind {
 }
 
 /// Additively copy the repo's skill templates over the installed agent
-/// skill wrappers, for each agent dir that **already exists** (never
-/// created — mirrors `upgrade`'s "only act on what exists" posture for
-/// the PATH shadow and the global store). Idempotent; best-effort.
+/// skill wrappers. Legacy install dirs must already exist; Antigravity's
+/// existing CLI setup marker permits creating its shared skill dir.
+/// Idempotent; best-effort.
 ///
 /// Additive only: a skill/command removed or renamed in `templates/` leaves a
 /// harmless installed orphan. Settled against mirror-with-prune because
 /// pruning shared user-global dirs (`~/.claude/commands`,
 /// `~/.codex/skills`, `~/.config/opencode/skills`,
-/// `~/.config/opencode/commands`) risks a user's own same-named file,
+/// `~/.config/opencode/commands`, `~/.gemini/config/skills`) risks a user's own same-named file,
 /// while an orphan is just a stale slash-command, not a correctness bug.
 ///
 /// `dry` stats and counts but performs no filesystem mutation.
@@ -2278,12 +2278,14 @@ pub fn sync_skills(source_repo: &Path, dry: bool) -> ResyncReport {
     let codex_target = home.join(".codex").join("skills");
     let oc_skills_target = home.join(".config").join("opencode").join("skills");
     let oc_commands_target = home.join(".config").join("opencode").join("commands");
+    let antigravity_target = home.join(".gemini").join("config").join("skills");
     let outcomes: Vec<(AgentOutcome, PathBuf)> = vec![
         (
             sync_one(
                 "claude",
                 &[skills_root.join("claude")],
                 &claude_target,
+                None,
                 CopyKind::FlatMd,
                 dry,
                 &manifest,
@@ -2295,6 +2297,7 @@ pub fn sync_skills(source_repo: &Path, dry: bool) -> ResyncReport {
                 "codex",
                 &[skills_root.join("codex")],
                 &codex_target,
+                None,
                 CopyKind::DirPerSkill,
                 dry,
                 &manifest,
@@ -2309,6 +2312,7 @@ pub fn sync_skills(source_repo: &Path, dry: bool) -> ResyncReport {
                     skills_root.join("opencode-hibernated"),
                 ],
                 &oc_skills_target,
+                None,
                 CopyKind::DirPerSkill,
                 dry,
                 &manifest,
@@ -2320,11 +2324,24 @@ pub fn sync_skills(source_repo: &Path, dry: bool) -> ResyncReport {
                 "opencode-commands",
                 &[commands_root.join("opencode")],
                 &oc_commands_target,
+                None,
                 CopyKind::FlatMd,
                 dry,
                 &manifest,
             ),
             oc_commands_target.clone(),
+        ),
+        (
+            sync_one(
+                "antigravity",
+                &[skills_root.join("antigravity")],
+                &antigravity_target,
+                Some(&home.join(".gemini").join("antigravity-cli")),
+                CopyKind::DirPerSkill,
+                dry,
+                &manifest,
+            ),
+            antigravity_target.clone(),
         ),
     ];
 
@@ -2390,6 +2407,7 @@ pub fn sync_skills(source_repo: &Path, dry: bool) -> ResyncReport {
             codex_target.join(name).join("SKILL.md"),
             oc_skills_target.join(name).join("SKILL.md"),
             oc_commands_target.join(format!("{name}.md")),
+            antigravity_target.join(name).join("SKILL.md"),
         ] {
             if std::fs::symlink_metadata(&path).is_ok() {
                 orphans.push(abbrev(&path));
@@ -2426,7 +2444,7 @@ pub fn sync_skills(source_repo: &Path, dry: bool) -> ResyncReport {
 }
 
 /// True when `key` (a target path string) lives under any of `prefixes`.
-/// The four install targets are distinct, non-nested dirs, so this cleanly
+/// The install targets are distinct, non-nested dirs, so this cleanly
 /// partitions manifest entries by owning agent.
 fn under_any(key: &str, prefixes: &[PathBuf]) -> bool {
     let p = Path::new(key);
@@ -2471,6 +2489,7 @@ fn sync_one(
     agent: &str,
     sources: &[PathBuf],
     target: &Path,
+    setup: Option<&Path>,
     kind: CopyKind,
     dry: bool,
     manifest: &InstallManifest,
@@ -2489,11 +2508,70 @@ fn sync_one(
         enumerated,
     };
 
-    // Only sync an agent dir the user actually set up. A missing dir or
-    // a non-dir at that path is a clean skip — never created. These ARE
+    // Antigravity shares ~/.gemini with Gemini CLI; its own marker gates
+    // creating a missing shared skill directory, including during dry-run.
+    if let Some(setup) = setup {
+        match std::fs::metadata(setup) {
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => {
+                return skip(
+                    SkillSyncStatus::Skipped,
+                    Some(format!("{} is not a directory", setup.display())),
+                    false,
+                );
+            }
+            Err(e) => {
+                return skip(
+                    if e.kind() == std::io::ErrorKind::NotFound {
+                        SkillSyncStatus::Skipped
+                    } else {
+                        SkillSyncStatus::Warn
+                    },
+                    Some(format!(
+                        "cannot inspect Antigravity setup at {}: {e}",
+                        setup.display()
+                    )),
+                    false,
+                );
+            }
+        }
+    }
+
+    // Without a setup marker, a missing install dir is never created.
+    // A non-dir at the install path is always skipped. These skips ARE
     // authoritative (`enumerated: true`): the target is genuinely gone, so
     // there is nothing to carry forward.
     match std::fs::symlink_metadata(target) {
+        Err(e) if setup.is_some() && e.kind() == std::io::ErrorKind::NotFound => {
+            // Windows also reports NotFound when a parent is a file.
+            for parent in target.ancestors().skip(1) {
+                match std::fs::metadata(parent) {
+                    Ok(metadata) if metadata.is_dir() => break,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                    result => {
+                        let reason = match result {
+                            Ok(_) => "not a directory".to_string(),
+                            Err(e) => e.to_string(),
+                        };
+                        return skip(
+                            SkillSyncStatus::Warn,
+                            Some(format!(
+                                "cannot use install parent {}: {reason}",
+                                parent.display()
+                            )),
+                            false,
+                        );
+                    }
+                }
+            }
+        }
+        Err(e) if setup.is_some() => {
+            return skip(
+                SkillSyncStatus::Warn,
+                Some(format!("cannot inspect {label}: {e}")),
+                false,
+            );
+        }
         Err(_) => {
             return skip(
                 SkillSyncStatus::Skipped,
@@ -2508,7 +2586,17 @@ fn sync_one(
                 true,
             );
         }
-        Ok(_) => {}
+        Ok(_) => {
+            if setup.is_some()
+                && let Err(e) = std::fs::read_dir(target)
+            {
+                return skip(
+                    SkillSyncStatus::Warn,
+                    Some(format!("cannot inspect {label}: {e}")),
+                    false,
+                );
+            }
+        }
     }
 
     let mut entries = Vec::new();

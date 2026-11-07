@@ -3,12 +3,13 @@
 //! `[wrap_up] verbosity` level from one canonical Rust source, instead of
 //! every agent re-deriving it by eye from `templates/skills/claude/wrap-up.md`,
 //! `templates/skills/codex/wrap-up/SKILL.md`, and
-//! `templates/skills/opencode/wrap-up/`.
+//! `templates/skills/opencode/wrap-up/`, and
+//! `templates/skills/antigravity/wrap-up/`.
 //! No DB is opened — verbosity is a config-only value, same as
 //! `audit_md::run` — and this command never writes anything.
 //!
 //! Level semantics (Q10/W2) are ported faithfully from the wrap-up flow
-//! in those three skill files, not reinvented — see
+//! in those skill files, not reinvented — see
 //! [`crate::config::WrapUpVerbosity`] for the short summary and
 //! [`render_instructions`] below for the full text:
 //!   - `minimal`    — `state set` + task closures only.
@@ -410,6 +411,10 @@ OpenCode: the OpenCode wrapper passes its already-verified current session id, a
 archiver requests the complete OpenCode 2 session export with sanitization disabled and
 verifies that the returned id matches before writing. Claude/Codex archives remain
 `.jsonl.zst`; OpenCode exports are `.json.zst`.
+
+Antigravity CLI is not supported by the archiver. Its wrap-up skill runs the full
+non-archive flow at this level and reports the archive as skipped. Never substitute
+another host identity or read Antigravity's internal conversation storage.
 
 Every archive is stored UNREDACTED under gitignored, export-excluded
 `.memhub/transcripts/` and may contain secrets, so the command requires `--yes` and
