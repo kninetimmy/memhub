@@ -105,7 +105,7 @@ impl<T: Transport<RoleServer>> Transport<RoleServer> for PreInitializeTolerance<
                 ClientJsonRpcMessage::Request(request) => match &request.request {
                     ClientRequest::CustomRequest(custom) if custom.method == "server/discover" => {
                         let reply = ServerJsonRpcMessage::error(
-                            McpError::new(ErrorCode::METHOD_NOT_FOUND, "Method not found", None),
+                            McpError::new(ErrorCode::METHOD_NOT_FOUND, "server/discover", None),
                             Some(request.id.clone()),
                         );
                         if let Err(err) = self.inner.send(reply).await {

@@ -1,0 +1,246 @@
+---
+name: wrap-up
+description: Summarize this memhub session, route updates into the database, then re-render PROJECT.md and PROJECT_LEDGER.md
+framework: memhub
+framework_version: 1.0.0
+last_updated: 2026-11-07
+---
+
+Wrap up the current session against the memhub repo. Memhub's SQLite
+database is the source of truth; the rendered markdown files
+(`.memhub/rendered/PROJECT.md` and
+`.memhub/rendered/PROJECT_LEDGER.md` by default) are local output of
+`memhub render`, not a parallel narrative. Your job is to draft
+updates, get approval per item, write to the DB, then re-render.
+
+This is the Antigravity CLI counterpart to the Claude Code `/wrap-up` skill.
+Both invoke the same `memhub` CLI against the same `.memhub/project.sqlite`,
+using their own agent identifier in `--actor` and `--source`. Antigravity's
+unsupported archive step is called out below. Writes from this skill are attributed as
+`user+agent:antigravity` / `antigravity:wrap-up` after user approval.
+
+It is a **thin executor** (Q10, issue #99): the step-by-step policy —
+detection, read window, draft assembly, approval gate — is rendered
+from one canonical source in the binary by `memhub wrapup-policy`, not
+duplicated here. What follows is (1) the pre-flight this skill needs
+before it can even run that command, (2) a handful of repo-specific
+additions the generic policy text doesn't know about yet, and (3) the
+concrete, Antigravity CLI-attributed DB-write sequence.
+
+## Detection (pre-flight)
+
+Run this once, before anything else — it only covers what has to be
+true before `memhub wrapup-policy` can even run; schema currency is
+checked as part of the policy text itself, not here.
+
+1. Check whether `.memhub/` exists in the repo root.
+   - POSIX shell (bash/zsh): `test -d .memhub && echo present || echo absent`
+   - Windows PowerShell: `if (Test-Path .memhub -PathType Container) { "present" } else { "absent" }`
+   `absent` → stop. Tell the user: "No `.memhub/` in this repo. Run
+   `memhub init` (or `/init-project`) first." Do not proceed.
+2. Check whether `memhub` is on PATH.
+   - POSIX shell (bash/zsh): `command -v memhub >/dev/null 2>&1 && echo present || echo absent`
+   - Windows PowerShell: `if (Get-Command memhub -ErrorAction SilentlyContinue) { "present" } else { "absent" }`
+   `absent` → stop. Tell the user to put `memhub` on PATH, then
+   re-run.
+
+Run whichever variant matches the current shell — there is no bash or
+WSL dependency here, this preflight must work on native Windows.
+Use the exact syntax shown for each command. Every mutating CLI command
+below that exposes `--actor` passes `--actor antigravity:wrap-up` so
+`writes_log` distinguishes wrap-up writes from raw CLI use. Read-only
+commands omit it, and any other exception is called out beside that
+command. Fact and decision adds also pass `--source user+agent:antigravity`
+so the durable rows preserve both the user-approval signal and the
+mediating agent.
+
+## Run the policy
+
+Run `memhub wrapup-policy` (human-readable) or
+`memhub wrapup-policy --json` (the wrapped
+`{"wrapup_policy": {"verbosity": ..., "instructions": "..."}}` form —
+no `--actor`, it's read-only and never opens the DB). It renders this
+repo's full wrap-up policy — the schema-currency check, the read
+window, the draft-assembly items for this repo's `[wrap_up] verbosity`
+(`.memhub/config.toml`; `minimal` / `standard` / `full` /
+`transcript`), and the approval-gate rule — from one source. **Follow
+the returned `instructions` text for all of that.** It supersedes
+anything you remember from a previous session or a different repo,
+since both the level and the text can differ.
+
+## Antigravity limits
+
+At `transcript` verbosity, follow the full non-archive policy and report
+transcript archiving as unsupported for Antigravity. Do not invoke the
+archive tool or command, substitute another host identity, or inspect
+Antigravity's internal conversation storage. No Antigravity session-start
+hook is installed: read the rendered `PROJECT.md` once on turn 1 unless
+its frame is already in context, as the repo's `AGENTS.md` requires.
+
+MCP supplies the shared structured tools; `state set`, `arch set`, and
+`review accept` remain CLI operations with the approval gates below.
+An open MCP connection does not itself require unsandboxed CLI access.
+If the host refuses a necessary command, report the actual denial and
+use its normal permission flow; never disable permission checks.
+
+## Repo-specific additions to draft assembly
+
+The policy text is agent-agnostic and, as of this build, doesn't yet
+know about a few newer surfaces. Layer these on top of what it says —
+they refine its draft assembly, they don't replace it. They apply
+wherever the policy actually drafts decisions/facts at all — at
+`minimal` it drafts neither (state + task closures only), so none of
+these apply there either:
+
+- **Decision summaries (decision 72).** Whenever you draft a decision,
+  also draft a one-sentence `--summary` — a natural-language
+  paraphrase of the title. On memhub's own golden set this lifted
+  Recall@3 on jargon-titled decisions from 76.5% to 100%; the policy
+  text calls it mandatory at `full`/`transcript` verbosity, but draft
+  one regardless of level — it's cheap and it's what actually moves
+  the number. Facts have no `--summary` field; don't add one there.
+- **Verified commands are not facts (Q11).** A build/test/run/lint
+  command actually executed this session, with an observed exit code,
+  is not a fact — draft it for `memhub command verify` instead (DB
+  writes, below). This is go-forward only: do not backfill existing
+  command-shaped facts into the `commands` table.
+- **New or revised reference docs.** If a durable spec/design doc was
+  authored or materially revised this session, draft a
+  `memhub doc add <path>` item alongside the others.
+- **Global promotion (M9) — only when the user says so.** Repo-scoped
+  is always the default. If, and only if, the user explicitly frames a
+  drafted fact or decision as machine-wide during approval, stage it
+  for the global store instead of writing it repo-scoped (see "Global
+  writes" below). Never infer this yourself — same anti-noise rule as
+  `/global`: one bad global write pollutes every repo on the machine.
+
+## Approval gate
+
+Non-negotiable at every verbosity level. Show all drafts in one block,
+grouped by kind. The user approves, edits, or rejects each item
+individually — wait for explicit approval per item, or a clear "all
+good", before writing anything. A rejected draft is dropped; do not
+retry without their saying so.
+
+**Orch grant exception.** When an active Orch autonomy grant
+(`orch grant` shows it) covers the `wrap-up` gate, you approve your own
+drafts, with limits: skip steps 2 (`review accept`/`reject`), 9
+(architecture) and 10 (fact re-verification), and the transcript
+archive; stage new decisions and facts (steps 3 and 5) with
+`memhub.propose_decision` / `memhub.propose_fact` for the user's
+`memhub review accept` instead of adding them; make no global writes.
+Without such a grant, this gate stays with the user as above.
+
+## DB writes — first, atomic per item, halt on failure
+
+This numbered list is not a second, competing policy — it's the
+concrete command mechanics for executing whatever the policy text
+(above) and the approved drafts actually called for; skip any step
+nothing was drafted for. Once approved, invoke each write in this
+order. Every command takes `--json --actor antigravity:wrap-up` so the
+response is parseable and the audit row is correctly attributed. Fact
+and decision adds also pass `--source user+agent:antigravity` so the durable
+`source` column records both the user approval and the mediating
+agent.
+
+```
+# 1. State (only if changed)
+memhub state set "<approved body>" --json --actor antigravity:wrap-up
+
+# 2. Pending-write promotions / rejections (also where any global
+#    proposal from step 3 becomes durable, once the user has confirmed it)
+memhub review accept <id> --json --actor antigravity:wrap-up
+memhub review reject <id> --reason "<reason>" --json --actor antigravity:wrap-up
+
+# 3. New decisions (repo-scoped) -- always draft --summary (decision 72)
+memhub decision add "<title>" --rationale "<rationale>" --summary "<summary>" --source user+agent:antigravity --json --actor antigravity:wrap-up
+
+# 4. New tasks + closures
+memhub task add "<title>" --notes "<notes>" --json --actor antigravity:wrap-up
+memhub task done <id> --json --actor antigravity:wrap-up
+
+# 5. New facts (repo-scoped; --kind optional: gotcha | env | preference | command | constraint)
+memhub fact add "<key>" "<value>" [--kind <kind>] --source user+agent:antigravity --json --actor antigravity:wrap-up
+
+# 6. Verified commands (Q11 -- not facts; no --json/--actor on this one)
+memhub command verify <build|test|run|lint|other> "<cmdline>" --exit-code <n>
+
+# 7. New or revised reference docs (repo-scoped)
+memhub doc add "<path>" [--title "<title>"] --json --actor antigravity:wrap-up
+
+# 8. Session summary (always, unless the user rejected it; length
+#    follows the resolved verbosity level -- standard's two-to-four
+#    sentences, or full/transcript's richer account)
+memhub note add "<summary>" --json --actor antigravity:wrap-up
+
+# 9. Architecture (only if approved this session)
+memhub arch set "<approved body>" --json --actor antigravity:wrap-up
+
+# 10. Stale-fact re-verifications -- one invocation per approved fact,
+#     never a bulk "verify all" pass
+memhub fact verify <id> --json --actor antigravity:wrap-up
+```
+
+For multi-line state or arch bodies, write the body to a temp file and
+pass `--from-file <path>` instead of inlining.
+
+**Halt on first non-zero exit.** Do not retry, do not skip, do not
+proceed to render. Tell the user which command failed and what stderr
+said. The writes that succeeded are durable in `writes_log` and the
+target tables — they can fix the cause and re-run `/wrap-up` to pick
+up the rest.
+
+## Global writes (M9)
+
+For any fact or decision the user explicitly flagged as global during
+approval, do **not** run its repo-scoped line above. An agent never
+writes `--global` directly (same rule as `/global`) — stage it
+instead, and let step 2 above accept it once the user has confirmed:
+
+```
+memhub.propose_fact(key=..., value=..., rationale=..., kind=..., global=true)
+memhub.propose_decision(title=..., rationale=..., global=true)
+```
+
+This lands in this repo's `pending_writes` tagged `target:"global"`
+and becomes durable in `~/.memhub/global.sqlite` only via
+`memhub review accept <id>` (step 2), and only while this repo still
+has `memhub global enable`d. `propose_decision` has no `--summary`
+field yet — if a global decision had one approved, backfill it after
+acceptance: `memhub decision set-summary <id> "<summary>" --json --actor antigravity:wrap-up`.
+
+Docs have no agent-mediated global path at all — there is no `global`
+parameter on `memhub.doc_add`. If the user wants a doc promoted to
+global, tell them to run `memhub doc add <path> --global` (or
+`/global`) themselves; you keep ingesting it repo-scoped as in step 7.
+
+## After the writes
+
+Once every approved write above succeeds, pick the policy text back up
+for Render and Cross-machine sync — run
+`memhub render --actor antigravity:wrap-up`, then the sync steps if this repo
+has sync enabled, exactly as it describes them. If render fails, stop
+before sync. When all approved DB writes already succeeded, resume at
+render after fixing the cause; do not repeat draft assembly or the
+durable writes. The policy also covers the closing reminder (audit
+trail, rendered files aren't a commit, start a new session anytime) —
+including that **you never run `git commit`**, which holds regardless
+of verbosity level; that's the user's call.
+
+## Notes
+
+- Bias toward less content — a tight, true summary beats a padded one.
+  The approval gate is what stops hallucinated accomplishments from
+  landing; never skip it, whatever the verbosity level. The Orch grant
+  exception above changes who approves, not whether the gate runs.
+- Session boundary is implicit (latest `project_state.created_at`). No
+  explicit `memhub session` command exists, by design.
+- The PRD principle "agents are untrusted writers" applies throughout:
+  every approved item flows through a write that records the actor and
+  the compound source, and anything global gets an extra staged-review
+  hop for the same reason.
+- Source vocabulary lives at
+  `docs/reference/memhub-prd-source-vocabulary-addendum.md` if a
+  question arises about which value to pass.
+- This skill is user-level; it fires in any repo that has `.memhub/`.
+  In a repo without `.memhub/`, Detection stops here.

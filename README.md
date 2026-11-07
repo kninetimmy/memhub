@@ -361,6 +361,48 @@ this repo, in my home directory; that is expected).
 </details>
 
 <details>
+<summary><b>Install via Antigravity CLI (`agy`)</b></summary>
+
+Open Antigravity in the project you want to track and paste:
+
+```
+Please install memhub for me.
+
+1. Clone https://github.com/kninetimmy/memhub.git into ~/src/memhub if
+   missing, or update that checkout. Stop if Rust 1.87+ or cargo is absent.
+2. Run cargo install --path ~/src/memhub --force --locked, then verify
+   memhub --version. Ensure ~/.cargo/bin is on PATH. The first build
+   downloads and verifies the bundled models; runtime recall is offline.
+3. Register the MCP server with agy mcp add memhub memhub serve.
+4. Copy the user-level skills so /wrap-up, /catch-up, /check-init,
+   /init-project, /recall, /locate, /reindex, /eval-recall, /doc,
+   /global, /audit-md, and /upgrade all work as slash commands:
+
+       POSIX shell (bash/zsh):
+       mkdir -p ~/.gemini/config/skills
+       for d in ~/src/memhub/templates/skills/antigravity/*; do case "$(basename "$d")" in metrics) continue;; esac; cp -R "$d" ~/.gemini/config/skills/; done
+
+       Windows PowerShell:
+       New-Item -ItemType Directory -Force -Path "$HOME\.gemini\config\skills" | Out-Null
+       Get-ChildItem "$HOME\src\memhub\templates\skills\antigravity" -Directory | Where-Object { $_.Name -notin 'metrics' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.gemini\config\skills\" -Recurse -Force }
+
+5. Start a fresh agy conversation in the target project. If memhub is
+   already initialized, use /check-init; otherwise use /init-project
+   and follow its interview and approval gates. Inspect /skills to verify
+   discovery. Later skill changes can be refreshed with /skills reload.
+6. Verify an actual read-only memhub MCP tool call. Report any permission
+   denial accurately; do not broaden permissions or claim every write
+   tool works merely because it is listed.
+```
+
+Subsequent `memhub upgrade` runs install skills only if the Antigravity CLI
+setup directory already exists. Antigravity reads `AGENTS.md`/`GEMINI.md`;
+it has no memhub session-start hook or transcript archive. Native skills
+and their discovery locations are described in [Google's documentation](https://antigravity.google/docs/customization-discovery?tab=cli).
+
+</details>
+
+<details>
 <summary><b>Install by hand</b></summary>
 
 ```bash
@@ -380,13 +422,17 @@ memhub status
 memhub code index
 memhub code status   # confirm files indexed
 
-# 5. Install the skills for Claude Code, Codex, and OpenCode (the hibernated metrics skill is skipped)
+# 5. Install the skills for the agents you use (the hibernated metrics skill is skipped)
 mkdir -p ~/.claude/commands ~/.codex/skills
 for f in ~/src/memhub/templates/skills/claude/*.md; do case "$(basename "$f")" in metrics.md) continue;; esac; cp "$f" ~/.claude/commands/; done
 for d in ~/src/memhub/templates/skills/codex/*; do case "$(basename "$d")" in metrics) continue;; esac; cp -R "$d" ~/.codex/skills/; done
 mkdir -p ~/.config/opencode/skills ~/.config/opencode/commands
 for d in ~/src/memhub/templates/skills/opencode/*; do case "$(basename "$d")" in metrics) continue;; esac; cp -R "$d" ~/.config/opencode/skills/; done
 for f in ~/src/memhub/templates/commands/opencode/*.md; do case "$(basename "$f")" in metrics.md) continue;; esac; cp "$f" ~/.config/opencode/commands/; done
+if [ -d ~/.gemini/antigravity-cli ]; then
+  mkdir -p ~/.gemini/config/skills
+  for d in ~/src/memhub/templates/skills/antigravity/*; do case "$(basename "$d")" in metrics) continue;; esac; cp -R "$d" ~/.gemini/config/skills/; done
+fi
 ```
 
 Windows PowerShell equivalent for step 5 (the `for`/`case`/`basename` loops above are POSIX-only):
@@ -398,6 +444,10 @@ Get-ChildItem "$HOME\src\memhub\templates\skills\codex" -Directory | Where-Objec
 New-Item -ItemType Directory -Force -Path "$HOME\.config\opencode\skills","$HOME\.config\opencode\commands" | Out-Null
 Get-ChildItem "$HOME\src\memhub\templates\skills\opencode" -Directory | Where-Object { $_.Name -notin 'metrics' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.config\opencode\skills\" -Recurse -Force }
 Get-ChildItem "$HOME\src\memhub\templates\commands\opencode\*.md" | Where-Object { $_.Name -notin 'metrics.md' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.config\opencode\commands\" }
+if (Test-Path "$HOME\.gemini\antigravity-cli" -PathType Container) {
+  New-Item -ItemType Directory -Force -Path "$HOME\.gemini\config\skills" | Out-Null
+  Get-ChildItem "$HOME\src\memhub\templates\skills\antigravity" -Directory | Where-Object { $_.Name -notin 'metrics' } | ForEach-Object { Copy-Item $_.FullName "$HOME\.gemini\config\skills\" -Recurse -Force }
+}
 ```
 
 Then continue with the steps you need:
@@ -526,9 +576,11 @@ memhub render
 ## Project status
 
 <details>
-<summary><b>Expand for the current snapshot</b>, taken from the memhub task tracker as of <b>2026-10-19</b> (not a live feed; run <code>memhub task list</code> in this repo for the current picture)</summary>
+<summary><b>Expand for the dated project snapshot</b> (Antigravity refreshed <b>2026-11-07</b>; earlier entries retain their dates; not a live feed — run <code>memhub task list</code> for the current picture)</summary>
 
 ### Recently fixed
+
+- **Antigravity CLI gets native memhub workflows (2026-11-07, issue #427; baseline PRs #421/#422).** PR #421 made Antigravity's discover/initialize handshake work; #422 added registration diagnostics and setup guidance. Before this follow-up it had no memhub skills, doctor missed that absence, disabled registrations counted as enabled, and BOM-prefixed JSON was rejected. It now has native skills with Antigravity attribution, conservative upgrade installation, skill-presence checks, corrected registration checks and MCP staged-write coverage. Hooks and transcript archiving remain excluded. For the first upgrade adding this install target, invoke the current source with `cargo run --release -- upgrade` (preview with `--dry-run --no-gc`), or install the new binary first: skill resync runs in the invoking binary. Later upgrades use the installed binary normally.
 
 Retrieval numbers below come from `memhub eval` on this repo's own golden set, a list of queries with known answers. Found@5 counts queries whose answer is in the top 5 hits, and rank-1 counts those whose answer is the first hit. Empty probes are queries that should return nothing confident. Recall p50 latency is the median recall time. The 2026-10-17 and later recall entries also use answer@1 (the top hit answers the question) and answer@3 (an answer is in the top 3), which come from judging hits against blind questions.
 
@@ -820,7 +872,7 @@ Sync state (the `[sync]` config and the per-machine baseline marker) is wiring, 
 | `memhub sync enable/status/snapshot/check/adopt/commit` | Cross-machine sync of a whole-database snapshot ([Cross-machine sync](#cross-machine-sync)) |
 | `memhub upgrade` | Rebuild + install the binary and bring every memhub instance on this machine to head schema; resync skills; install the [session-start hook](#session-start-hook) (`--no-hooks` skips it) |
 | `memhub gc` | Reclaim stale Cargo build artifacts (memhub-owned `target/` rlibs and test binaries) |
-| `memhub serve` | Stdio MCP server for Claude Code / Codex / OpenCode |
+| `memhub serve` | Stdio MCP server for Claude Code / Codex / OpenCode / Antigravity |
 
 Run any command with `--help` for flags. The `--global` flags are explained under [Machine-global memory](#machine-global-memory).
 
@@ -855,7 +907,9 @@ memhub has two retrieval modes, and the install prompt asks you to pick one. Set
 - Reads `AGENTS.md` at session start (walking up from the working directory to the repo root; same role as Codex).
 - MCP server registered per machine with `agy mcp add memhub memhub serve`, which writes `~/.gemini/config/mcp_config.json`. See [Register the MCP server](#register-the-mcp-server). It needs a memhub binary that includes the MCP handshake fix from PR #421, so update and run `memhub upgrade` (or `cargo install --path .`) first.
 - Interactive Antigravity asks permission before calling a memhub tool. Headless `agy -p` cannot prompt, so it denies memhub tool calls unless `permissions.allow` in `~/.gemini/antigravity-cli/settings.json` has a matching `mcp(...)` rule; its denial message suggests the exact form.
-- Not supported yet: memhub skills, the session-start hook, and the transcript archive. Memory reaches Antigravity through `AGENTS.md` and the MCP tools only.
+- Before this change Antigravity had MCP and `AGENTS.md` guidance but no memhub skills. It now gets the same active skill set at `~/.gemini/config/skills/`, with `antigravity` attribution. Upgrade installs it only when `~/.gemini/antigravity-cli` is already a directory. Use `/skills` or `/skills reload` to inspect discovery.
+- The session-start hook and transcript archive remain unsupported. Read rendered `PROJECT.md` on turn 1 as `AGENTS.md` directs. At transcript verbosity, `/wrap-up` performs the non-archive flow and explicitly reports the skipped archive; it never borrows another host's identity or reads internal conversation databases.
+- The shared MCP server exposes 25 tools in a default build. Availability is not a test result: verify the needed operations. `state set`, `arch set`, and `review accept` remain CLI operations with the normal approval gates. An open MCP connection does not itself require unsandboxed CLI access.
 
 All four share one database, and every write is tagged with who surfaced it (see [Attribution](#attribution)).
 
@@ -879,7 +933,7 @@ Every write records two things. `source` on facts and decisions says where a cla
 
 #### Register the MCP server
 
-In a checkout of this repo, registration for Claude Code and OpenCode is already committed, so there is nothing to do for those CLIs (Codex and Antigravity are per-machine):
+In a checkout of this repo, registration for Claude Code and OpenCode is already committed, so there is nothing to do for those CLIs. Codex supports user-level or project-scoped registration; Antigravity is configured per machine:
 
 - **Claude Code**: the committed [`.mcp.json`](.mcp.json) at the repo root (`mcpServers.memhub`).
 - **OpenCode**: the `mcp.servers.memhub` block in the tracked [`opencode.json`](opencode.json).
@@ -935,9 +989,11 @@ trust_level = "trusted"
 
 The trust entry is machine-local and path-specific, so a different machine or repo location needs its own trust decision. An untrusted project does not load project configuration; user-level registration still loads. If you've already accepted Codex's trust prompt for this folder, that entry already exists. See OpenAI's [MCP documentation](https://learn.chatgpt.com/docs/extend/mcp?surface=cli) and [configuration precedence](https://learn.chatgpt.com/docs/config-file/config-basic).
 
-Run `memhub doctor` (or `--json`) anytime to inspect registration per CLI. The Antigravity check is skipped unless `~/.gemini/antigravity-cli` exists (Gemini CLI also uses `~/.gemini`), and otherwise warns, naming `agy mcp add memhub memhub serve`, when `~/.gemini/config/mcp_config.json` is missing, invalid, or has no `memhub` entry. Its Codex check reads only user-level `~/.codex/config.toml` and the repository-root `.codex/config.toml`, combining the registration fields with project precedence and checking `enabled`, `command`/`url`, and `args`. It does not resolve other Codex configuration layers (such as profiles, subfolder overrides, system settings, or CLI flags), evaluate project trust, or verify a live MCP connection. It never starts Codex or changes configuration.
+Run `memhub doctor` (or `--json`) anytime to inspect registration per CLI. Before this change, Antigravity's check counted a disabled entry as registered and rejected valid UTF-8 JSON with a BOM. It now warns for missing, invalid or disabled `mcpServers.memhub` configuration, accepts a BOM, and is skipped unless `~/.gemini/antigravity-cli` is a directory (Gemini CLI also uses `~/.gemini`). The warning names `agy mcp add memhub memhub serve`. Registration checks inspect configuration, not live MCP connectivity.
 
-Doctor also checks active Memhub entrypoint files in existing `~/.claude/commands`, `~/.codex/skills`, `~/.config/opencode/skills`, and `~/.config/opencode/commands` directories. Missing files produce warnings with their names, target paths, and guidance to run `memhub upgrade` from the Memhub source checkout. These checks work from any initialized project without source templates or an ownership manifest. Absent directories are reported as not set up and are never created; unavailable or malformed paths are reported explicitly.
+Doctor's Codex registration check reads only user-level `~/.codex/config.toml` and the repository-root `.codex/config.toml`, combining the registration fields with project precedence and checking `enabled`, `command`/`url`, and `args`. That check does not resolve other Codex configuration layers (such as profiles, subfolder overrides, system settings, or CLI flags), evaluate project trust, or verify a live MCP connection. Doctor never starts Codex or changes configuration.
+
+Doctor also checks active Memhub entrypoint files in existing `~/.claude/commands`, `~/.codex/skills`, `~/.config/opencode/skills`, and `~/.config/opencode/commands` directories. It now also checks `~/.gemini/config/skills` when the Antigravity CLI setup directory exists; a configured Antigravity host with no skill directory warns rather than being skipped. Missing files produce warnings with their names, target paths, and guidance to run `memhub upgrade` from the Memhub source checkout. These checks work from any initialized project without source templates or an ownership manifest. Absent legacy directories are reported as not set up and are never created; unavailable or malformed paths are reported explicitly.
 
 This is a presence check: customized regular files count as present, extra user files are ignored, and neither content freshness nor host discovery is verified. Default builds exclude the hibernated metrics entrypoints; builds with `--features metrics` expect them. Removed viz entrypoints are never expected. Doctor leaves installed files, ownership records, and host configuration unchanged. Warnings preserve the usual exit behavior: normal doctor succeeds without errors, while `--strict` fails on warnings.
 

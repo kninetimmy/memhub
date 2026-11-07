@@ -7,7 +7,7 @@
 //! silently returns an empty array. The in-process unit tests don't
 //! catch that; only a real handshake does.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -268,10 +268,10 @@ fn replay(
     let mut child = Command::new(memhub_bin())
         .arg("serve")
         .current_dir(repo)
-        .env("MEMHUB_LOG", "off")
+        .env("MEMHUB_LOG", "warn")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("spawn memhub serve");
 
@@ -316,6 +316,17 @@ fn replay(
     let _ = child.wait_timeout(Duration::from_secs(2));
     let _ = child.kill();
     let _ = child.wait();
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    assert!(
+        !stderr.contains("unmapped client name"),
+        "known MCP client emitted an alias warning: {stderr}"
+    );
     replies
 }
 
@@ -407,6 +418,82 @@ fn antigravity_roots_notifications_before_handshake_keep_session() {
         &[1, 2, 3],
     );
     assert_matches_direct_initialize(temp.path(), &replies);
+}
+
+#[test]
+fn antigravity_discover_error_is_consistent_after_initialize() {
+    let temp = tempdir().unwrap();
+    init::run(temp.path()).unwrap();
+    let [initialized, list_tools] = antigravity_tail();
+    let mut after = antigravity_discover();
+    after["id"] = json!(4);
+    let replies = replay(
+        temp.path(),
+        &[
+            antigravity_discover(),
+            antigravity_initialize(),
+            initialized,
+            after,
+            list_tools,
+        ],
+        &[1, 2, 3, 4],
+    );
+    assert_eq!(replies[&1]["error"]["code"], -32601);
+    assert_eq!(replies[&1]["error"], replies[&4]["error"]);
+}
+
+#[test]
+fn antigravity_proposals_keep_identity_and_wait_for_acceptance() {
+    let temp = tempdir().unwrap();
+    init::run(temp.path()).unwrap();
+    let [initialized, _] = antigravity_tail();
+    let fact = json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"propose_fact","arguments":{"key":"test-antigravity","value":"fixture only","rationale":"Review this fixture"}}});
+    let decision = json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"propose_decision","arguments":{"title":"Review this Antigravity fixture","rationale":"Keep it pending"}}});
+    let replies = replay(
+        temp.path(),
+        &[
+            antigravity_discover(),
+            antigravity_initialize(),
+            initialized,
+            fact,
+            decision,
+        ],
+        &[1, 2, 4, 5],
+    );
+    for id in [4, 5] {
+        let body = &replies[&id]["result"]["structuredContent"];
+        assert_eq!(body["status"], "pending", "{:?}", replies[&id]);
+        assert_eq!(body["actor"], "antigravity");
+        assert_eq!(body["actor_raw"], "antigravity-client");
+    }
+    let ctx = memhub::db::open_project(temp.path()).unwrap();
+    let mut statement = ctx.conn.prepare("SELECT actor, actor_raw, provenance_json FROM pending_writes WHERE status = 'pending' ORDER BY id").unwrap();
+    let rows: Vec<(String, String, String)> = statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(rows.len(), 2);
+    for (actor, raw, provenance) in rows {
+        assert_eq!(actor, "antigravity");
+        assert_eq!(raw, "antigravity-client");
+        assert_eq!(
+            serde_json::from_str::<Value>(&provenance).unwrap()["client_name"],
+            "antigravity-client"
+        );
+    }
+    for table in ["facts", "decisions"] {
+        let count: i64 = ctx
+            .conn
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            count, 0,
+            "a proposal must not become a durable {table} row before acceptance"
+        );
+    }
 }
 
 // Tiny helper to keep the spawn loop terminating on timeout. Avoid pulling

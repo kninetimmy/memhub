@@ -1340,19 +1340,27 @@ wrote no agent-CLI config file at all; it now merges one hook entry into
 still manual). `memhub doctor` reads agent-CLI config and reports whether
 memhub's MCP server is registered with each CLI, including Antigravity CLI
 (`mcp_registration_antigravity`: skipped unless `~/.gemini/antigravity-cli`
-exists, since Gemini CLI also uses `~/.gemini`; otherwise OK when
-`~/.gemini/config/mcp_config.json` has `mcpServers.memhub`, else a warning
+exists as a directory, since Gemini CLI also uses `~/.gemini`; otherwise OK when
+`~/.gemini/config/mcp_config.json` has an enabled `mcpServers.memhub` entry, else a warning
 naming `agy mcp add memhub memhub serve`). It also checks for active
 Memhub entrypoint files in existing Claude commands, Codex skills, OpenCode
-skills, and OpenCode commands install directories. Its embedded inventory
+skills, OpenCode commands, and configured Antigravity shared skills install directories. Its embedded inventory
 works outside the source checkout; default builds exclude hibernated metrics,
 and metrics-enabled builds include it. Missing files warn with target paths
-and source-checkout upgrade guidance. Absent directories are not set up;
+and source-checkout upgrade guidance. Absent legacy directories are not set up;
 inaccessible or malformed paths warn. Customized regular files count as
 present regardless of ownership records, and extra user files are ignored.
 These checks do not verify content freshness or host discovery and never
 repair files or change ownership or host configuration. Human and JSON
 output carry the same findings; only `--strict` fails on warnings.
+
+Before issue #427, Antigravity's registration check also accepted disabled
+entries and rejected valid UTF-8 JSON with a BOM. It now warns for disabled
+or malformed entries and accepts a leading BOM. Before that issue, doctor
+did not check Antigravity skills; it now checks `~/.gemini/config/skills`
+when `~/.gemini/antigravity-cli` is a directory, warning even if the entire
+skill directory is missing. A machine with only Gemini CLI remains skipped.
+Registration is a configuration check, not a live connection test.
 
 Embedding fill (issue #382): after each instance's migrate and recall
 smoke, the pass embeds, for the active model, every row that has no
@@ -1424,6 +1432,18 @@ as the registry/metrics writes). `--no-skills` skips the step; the
 binary + DB migrate still run. The manual `cp` recipe (fact 10) is now
 a fallback only.
 
+Before issue #427, skill resync had no Antigravity target. It now also
+copies `templates/skills/antigravity/` into `~/.gemini/config/skills/`,
+but only when `~/.gemini/antigravity-cli` is already a directory. That
+host marker permits creating the shared skill directory; `~/.gemini`
+alone is insufficient. The same ownership, dry-run, additive-copy and
+orphan-reporting rules apply. A malformed or inaccessible setup/install
+path is reported without clobbering it. Default builds skip metrics.
+For the first upgrade adding this target, run the current source via
+`cargo run --release -- upgrade` (preview with `--dry-run --no-gc`), or
+install the new binary first: the invoking binary performs skill resync,
+so an older installed binary cannot enumerate the new target yet.
+
 Instances are enumerated from a **self-maintaining registry**, never a
 filesystem scan: every `db::open_project` does a single guarded,
 debounced UPSERT into `known_projects` in `~/.memhub/global.sqlite`,
@@ -1443,11 +1463,13 @@ recall output: the eval-regression guarantee, tested in
 if it already exists; it never creates it (opting in stays the
 explicit `memhub global enable` choice). `known_projects` is
 machine-local and **not** exported by `memhub export`. Skill resync
-likewise only ever writes into an agent dir that already exists — it
+likewise preserves the existing legacy-host rule: it
 never creates `~/.claude/commands`, `~/.codex/skills`,
 `~/.config/opencode/skills`, or `~/.config/opencode/commands`, and a
 non-directory at that path is a clean skip, not a clobber (mirrors the
 PATH-shadow and global-store "only act on what exists" rule). The
+Antigravity setup-marker exception above permits its missing shared skill
+directory to be created, but never creates the CLI setup directory. The
 session-start hook install follows the same rule at the directory level:
 it never creates `~/.claude` or `~/.codex`, and skips an agent whose
 directory is missing. It differs at the file level: inside a directory
@@ -1601,8 +1623,9 @@ Skill writes carry a fixed actor and source per agent:
 - Claude Code: `actor=claude:wrap-up`, `source=user+agent:claude-code`
 - Codex: `actor=codex:wrap-up`, `source=user+agent:codex`
 - OpenCode: `actor=opencode:wrap-up`, `source=user+agent:opencode`
+- Antigravity CLI: `actor=antigravity:wrap-up`, `source=user+agent:antigravity`
 
-All three share one database, and every write is tagged, so you always know
+All four share one database, and every write is tagged, so you always know
 who surfaced what:
 
 ```text
@@ -1612,9 +1635,11 @@ user                        You typed `memhub fact add` directly
 agent:codex                 Codex proposed it (still in pending_writes)
 agent:claude-code           Claude proposed it
 agent:opencode              OpenCode proposed it
+agent:antigravity           Antigravity proposed it
 user+agent:codex            Codex surfaced via /wrap-up, you approved
 user+agent:claude-code      Same, Claude-side
 user+agent:opencode         Same, OpenCode-side
+user+agent:antigravity      Same, Antigravity-side
 git                         Reserved for git ingestion
 observed                    Reserved for observed signals
 ```
