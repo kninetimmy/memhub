@@ -18,8 +18,9 @@ session start, but only as a frame: the current state, an architecture
 section index, and session note stubs (the architecture section index
 and the session note stubs may be dropped to keep it within its size
 budget). Recall fetches the full architecture sections (`--source-type
-arch`) and notes (`--source-type note`); reach for the ledger only if
-recall comes up empty for something you suspect is recorded.
+arch`) and notes (`--source-type note`); retry empty or thin results as
+described below before reaching for the ledger, unless the user asks
+for it explicitly.
 
 ## Preconditions
 
@@ -185,18 +186,43 @@ Doc hits come back with `source_type: "doc_chunk"` and a `title` of
 `<document title> — <section breadcrumb>`; cite the document and
 section when you use one.
 
-## Empty results
+## Empty or thin results
 
-When `results` is empty (nothing matched at all, or every candidate
-scored below the nonsense cutoff, which a `rerank_cutoff_dropped_all`
-warning reports):
+When `results` is empty or does not answer the question:
 
-1. State that recall returned nothing for the query and quote the
-   exact query you ran.
-2. Offer one of: rephrase the query as a natural-language question,
-   broaden filters (drop `--accepted-only` or `--source-type`), or — if the question
-   really needs the full ledger — open the configured rendered
-   `PROJECT_LEDGER.md` directly.
+1. State what recall returned and quote the exact query you ran. An
+   empty bundle may mean no match or that every candidate scored below
+   the cutoff (`rerank_cutoff_dropped_all`).
+2. Make one targeted retry with alternate phrasings of the same
+   question and `explain=true`. Keep the main query a natural-language
+   question and preserve user-requested filters in the retry:
+
+   ```
+   memhub.recall(query="<same question>", variants=["<keyword phrasing>", "<answer-shaped phrasing>"], explain=true)
+   ```
+
+   CLI equivalent (carry over the same filters):
+
+   ```bash
+   memhub recall "<same question>" --variant "<keyword phrasing>" --variant "<answer-shaped phrasing>" --explain --json
+   ```
+
+   At most four nonblank variants are accepted. They widen candidate
+   discovery; reranking and the cutoff still score against the main
+   question (or its best question-part), never a variant.
+3. Inspect `explain`: `accepted_only_excluded` counts filter exclusions;
+   `dropped_by_cutoff`, `rerank_pool_cut`, and `result_limit_cut` count
+   relevance, candidate-pool, and result-limit cuts. `reranker_ran`
+   indicates whether reranking and its cutoff applied.
+   `docs_not_searched` and `docs_dropped_no_rerank` report unsearched or
+   excluded doc chunks; `global_store_not_searched` flags an existing
+   global store skipped because this repo has not opted in. Diagnostics
+   do not search additional stores or restore dropped rows. Keep user
+   filters and retrieval configuration unchanged.
+4. If the retry is still insufficient and there is concrete reason to
+   expect recorded context, open the configured rendered
+   `PROJECT_LEDGER.md`. A user explicitly requesting the ledger may go
+   straight to it.
 
 Never invent a result to fill an empty bundle.
 
