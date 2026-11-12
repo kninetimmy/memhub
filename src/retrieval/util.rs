@@ -132,14 +132,25 @@ pub(crate) fn vector_to_le_bytes(v: &[f32]) -> Vec<u8> {
 /// Unpack little-endian f32 bytes back into a vector. A trailing partial
 /// chunk (corrupt blob) is ignored rather than panicking.
 pub(crate) fn bytes_to_vector(blob: &[u8]) -> Vec<f32> {
-    blob.chunks_exact(4)
-        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    blob.as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| f32::from_le_bytes(*b))
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bytes_to_vector_ignores_partial_tail() {
+        let bytes = [0, 0, 0x80, 0x3f, 0, 0, 0x20, 0xc0, 0xff, 0xff, 0xff];
+        for tail in 0..4 {
+            assert!(bytes_to_vector(&bytes[..tail]).is_empty());
+            assert_eq!(bytes_to_vector(&bytes[..8 + tail]), vec![1.0, -2.5]);
+        }
+    }
 
     #[test]
     fn build_fts_match_any_ors_content_terms_and_drops_stopwords() {
