@@ -8,7 +8,7 @@
 //! Command surface (all local-file, all offline):
 //! - `enable` / `disable` / `enablement_status` — per-repo opt-in.
 //! - `snapshot` — clean single-file DB copy + manifest for upload.
-//! - `check` — fast-forward verdict of local vs a downloaded snapshot.
+//! - `check` — baseline-relative verdict of local vs a downloaded snapshot.
 //! - `adopt` — gated replace of the local DB with a snapshot.
 //! - `commit` — record the post-push baseline in the marker.
 
@@ -359,8 +359,8 @@ pub fn snapshot(start: &Path, out_dir: &Path, force: bool) -> Result<SnapshotSum
         ) {
             return Err(MemhubError::InvalidInput(format!(
                 "refusing to overwrite the remote: it is {} relative to local. \
-                 Pull first (`memhub sync check`, then `sync adopt`), or pass \
-                 --force to overwrite the remote with this machine's state.",
+                 Inspect and reconcile first (`memhub sync check --diff`), or explicitly \
+                 pass --force to overwrite the remote with this machine's state.",
                 report.verdict.as_str()
             )));
         }
@@ -497,12 +497,9 @@ fn is_canonical_remote_dir(repo_root: &Path, cfg: &SyncConfig, out_dir: &Path) -
 }
 
 /// Per-machine last-sync marker, stored at `.memhub/sync_marker.json`
-/// (gitignored). Records the logical version the two sides agreed on at
-/// the last successful sync. Only **one** version is needed: a sync
-/// (pull or push) leaves local and Drive byte-identical, so they share
-/// a single baseline. Divergence is then "did local move off the
-/// baseline?" and "did Drive move off the baseline?", computed
-/// independently.
+/// (gitignored). Records the logical version at this machine's last
+/// successful sync. A later replacement of the shared manifest can name
+/// an independent history, so this marker does not prove shared ancestry.
 pub const MARKER_FILENAME: &str = "sync_marker.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -638,8 +635,8 @@ fn gc_unreferenced_snapshots(out_dir: &Path, keep: &str) {
     }
 }
 
-/// Fast-forward verdict of the local DB against a Drive snapshot, by
-/// exact analogy to git. `NoRemote` = nothing at the given path;
+/// Baseline-relative verdict of the local DB against a Drive snapshot.
+/// Counters do not prove ancestry. `NoRemote` = nothing at the given path;
 /// `Diverged` with `baseline_present == false` = first sync, no
 /// baseline to fast-forward from (the skill phrases that gently).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -667,6 +664,8 @@ impl SyncVerdict {
 #[derive(Debug, Clone, Serialize)]
 pub struct CheckReport {
     pub verdict: SyncVerdict,
+    /// Explains an incompatible baseline or unverified remote ancestry.
+    pub baseline_warning: Option<String>,
     pub baseline_present: bool,
     pub project_id: String,
     pub local_logical: LogicalVersion,
@@ -704,6 +703,7 @@ pub fn check(start: &Path, remote: &Path) -> Result<CheckReport> {
     let Some(manifest) = manifest else {
         return Ok(CheckReport {
             verdict: SyncVerdict::NoRemote,
+            baseline_warning: None,
             baseline_present,
             project_id,
             local_logical,
@@ -729,9 +729,9 @@ pub fn check(start: &Path, remote: &Path) -> Result<CheckReport> {
         Err(_) => true,
     };
 
-    // Did each side move off the shared baseline? With no baseline this
-    // is the first sync: equal logical → already in step, else the
-    // operator must choose (Diverged, baseline_present=false).
+    let mut baseline_warning = None;
+    // Equality is meaningful even with a stale marker. Inequality alone
+    // does not establish forward movement from that marker.
     let verdict = match &marker {
         None => {
             if manifest.logical_version == local_logical {
@@ -750,13 +750,25 @@ pub fn check(start: &Path, remote: &Path) -> Result<CheckReport> {
             if manifest.logical_version == local_logical {
                 SyncVerdict::UpToDate
             } else {
+                baseline_warning =
+                    incompatible_baseline("remote", &manifest.logical_version, &m.baseline)
+                        .or_else(|| incompatible_baseline("local", &local_logical, &m.baseline));
                 let local_changed = local_logical != m.baseline;
                 let drive_changed = manifest.logical_version != m.baseline;
-                match (local_changed, drive_changed) {
-                    (false, false) => SyncVerdict::UpToDate,
-                    (true, false) => SyncVerdict::LocalAhead,
-                    (false, true) => SyncVerdict::DriveAhead,
-                    (true, true) => SyncVerdict::Diverged,
+                match (local_changed, drive_changed, baseline_warning.is_some()) {
+                    (_, _, true) => SyncVerdict::Diverged,
+                    (false, false, false) => SyncVerdict::UpToDate,
+                    (true, false, false) => SyncVerdict::LocalAhead,
+                    (false, true, false) => {
+                        baseline_warning = Some(
+                            "remote changed while local matches the marker, but ancestry is \
+                             unverified: independent histories with higher audit counters are \
+                             not detected; adopting can discard local-only records"
+                                .into(),
+                        );
+                        SyncVerdict::DriveAhead
+                    }
+                    (true, true, false) => SyncVerdict::Diverged,
                 }
             }
         }
@@ -764,6 +776,7 @@ pub fn check(start: &Path, remote: &Path) -> Result<CheckReport> {
 
     Ok(CheckReport {
         verdict,
+        baseline_warning,
         baseline_present,
         project_id,
         local_logical,
@@ -775,6 +788,29 @@ pub fn check(start: &Path, remote: &Path) -> Result<CheckReport> {
         remote_machine_id: Some(manifest.machine_id),
         remote_created_at: Some(manifest.created_at),
     })
+}
+
+fn incompatible_baseline(
+    side: &str,
+    current: &LogicalVersion,
+    baseline: &LogicalVersion,
+) -> Option<String> {
+    let reason = if current.writes_log_max_id < baseline.writes_log_max_id
+        || current.writes_log_count < baseline.writes_log_count
+    {
+        "audit max ID or count is below the recorded baseline"
+    } else if current.writes_log_max_id == baseline.writes_log_max_id
+        && current.writes_log_count == baseline.writes_log_count
+        && current.digest != baseline.digest
+    {
+        "durable content differs despite unchanged baseline audit counters"
+    } else {
+        return None;
+    };
+    Some(format!(
+        "{side} {reason}; cannot establish a shared sync baseline. \
+         Preserve both histories and reconcile before replacing either copy"
+    ))
 }
 
 /// Resolve `remote` to its manifest. Accepts a directory (looks for
@@ -894,8 +930,9 @@ pub struct SideDiff {
 /// baseline — the `--diff` detail behind `memhub sync check --diff`
 /// (tracker X1). `local`/`remote` are `None` exactly when
 /// `unavailable_reason` explains why no diff could be computed: no
-/// baseline recorded yet (first sync), no remote snapshot, or a remote
-/// schema this binary cannot open.
+/// baseline recorded yet (first sync), an incompatible audit cutoff, no
+/// remote snapshot, or a remote schema this binary cannot open. An
+/// available audit diff is not proof of complete reconciliation.
 #[derive(Debug, Clone, Serialize)]
 pub struct DiffReport {
     pub baseline_writes_log_max_id: Option<i64>,
@@ -921,13 +958,10 @@ fn diff_unavailable(baseline: Option<i64>, reason: impl Into<String>) -> DiffRep
 /// `db::open_project`, which migrates/upserts on open. Nothing here
 /// writes to the local DB, the sync marker, or the remote dir.
 ///
-/// `writes_log` rows are appended by every durable mutation (see
-/// [`db::log_write`]), so `WHERE id > baseline` on each side's own copy
-/// gives that side's writes since the fork — both sides' `writes_log`
-/// share the same id numbering up to the baseline because a sync
-/// (`adopt`/`snapshot`+`commit`) leaves the two byte-identical at that
-/// point, and each side's `AUTOINCREMENT` counter continues from there
-/// independently.
+/// The audit cutoff is usable only when both copies can contain it.
+/// shortcut: compatible counters cannot detect an independent history with
+/// higher counters; add persisted lineage before claiming ancestry or a
+/// complete reconciliation diff.
 pub fn diff(start: &Path, remote: &Path) -> Result<DiffReport> {
     let ctx = db::open_project(start)?;
     require_enabled(&ctx.config.sync)?;
@@ -983,13 +1017,51 @@ pub fn diff(start: &Path, remote: &Path) -> Result<DiffReport> {
         ));
     }
 
-    let local = side_diff_since(&ctx.conn, baseline_id)?;
-
     // Read-only: never opened via `db::open_project` (would migrate/upsert
     // the remote file), and `SQLITE_OPEN_READ_ONLY` refuses any write SQLite
     // itself might otherwise attempt (e.g. journal creation).
     let remote_conn =
         Connection::open_with_flags(&snapshot_file, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    for (side, conn) in [("local", &ctx.conn), ("remote", &remote_conn)] {
+        let (max_id, count): (i64, i64) = conn.query_row(
+            "SELECT COALESCE(MAX(id), 0), COUNT(*) FROM writes_log \
+             WHERE project_id = 1 AND id <= ?1",
+            [baseline_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if max_id != baseline_id || count != marker.baseline.writes_log_count {
+            return Ok(diff_unavailable(
+                Some(baseline_id),
+                format!(
+                    "{side} audit history does not contain the recorded baseline cutoff \
+                     (max ID {baseline_id}, count {}); cannot compute a shared-baseline diff",
+                    marker.baseline.writes_log_count
+                ),
+            ));
+        }
+        let has_later_writes: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM writes_log WHERE project_id = 1 AND id > ?1)",
+            [baseline_id],
+            |row| row.get(0),
+        )?;
+        if !has_later_writes {
+            let current = match LogicalVersion::read(conn) {
+                Ok(current) => current,
+                Err(err) => {
+                    return Ok(diff_unavailable(
+                        Some(baseline_id),
+                        format!(
+                            "cannot compare {side} durable content with the recorded baseline: {err}"
+                        ),
+                    ));
+                }
+            };
+            if let Some(reason) = incompatible_baseline(side, &current, &marker.baseline) {
+                return Ok(diff_unavailable(Some(baseline_id), reason));
+            }
+        }
+    }
+    let local = side_diff_since(&ctx.conn, baseline_id)?;
     let remote_side = side_diff_since(&remote_conn, baseline_id)?;
 
     Ok(DiffReport {
@@ -2116,10 +2188,55 @@ mod tests {
             digest: "drive-moved-on".into(),
         };
         write_remote_manifest(&remote, "test-proj-abcd1234", drive_ahead, &schema);
-        assert_eq!(
-            check(temp.path(), &remote).expect("status").verdict,
-            SyncVerdict::DriveAhead
-        );
+        let report = check(temp.path(), &remote).expect("status");
+        assert_eq!(report.verdict, SyncVerdict::DriveAhead);
+        assert!(report.baseline_warning.unwrap().contains("ancestry"));
+    }
+
+    #[test]
+    fn status_rejects_each_incompatible_baseline_signal() {
+        let local = new_synced_repo();
+        fact::add(local.path(), "local-only", "keep", "user", "cli:user").unwrap();
+        let drive = local.path().join("drive");
+        snapshot(local.path(), &drive, false).unwrap();
+        commit(local.path(), &drive).unwrap();
+        let (baseline, schema) = local_state(local.path());
+
+        for (max_id, count) in [
+            (baseline.writes_log_max_id - 1, baseline.writes_log_count),
+            (baseline.writes_log_max_id, baseline.writes_log_count - 1),
+            (baseline.writes_log_max_id, baseline.writes_log_count),
+        ] {
+            write_remote_manifest(
+                &drive,
+                "test-proj-abcd1234",
+                LogicalVersion {
+                    writes_log_max_id: max_id,
+                    writes_log_count: count,
+                    digest: "independent-content".into(),
+                },
+                &schema,
+            );
+            let report = check(local.path(), &drive).unwrap();
+            assert_eq!(report.verdict, SyncVerdict::Diverged);
+            assert!(report.baseline_warning.unwrap().contains("remote"));
+            assert!(snapshot(local.path(), &drive, false).is_err());
+        }
+
+        // A replaced local DB must not become push-eligible against a
+        // remote that still equals the retained marker, either.
+        write_remote_manifest(&drive, "test-proj-abcd1234", baseline.clone(), &schema);
+        let ctx = db::open_project(local.path()).unwrap();
+        ctx.conn
+            .execute(
+                "DELETE FROM writes_log WHERE id = ?1",
+                [baseline.writes_log_max_id],
+            )
+            .unwrap();
+        let report = check(local.path(), &drive).unwrap();
+        assert_eq!(report.verdict, SyncVerdict::Diverged);
+        assert!(report.baseline_warning.unwrap().contains("local"));
+        assert!(snapshot(local.path(), &drive, false).is_err());
     }
 
     #[test]
@@ -3521,6 +3638,67 @@ mod tests {
             reason.contains("baseline"),
             "reason names the missing baseline: {reason}"
         );
+    }
+
+    #[test]
+    fn diff_rejects_missing_audit_prefix_on_either_side() {
+        for side in ["local", "remote"] {
+            let a = new_synced_repo();
+            fact::add(a.path(), "baseline", "b", "user", "cli:user").unwrap();
+            let drive = a.path().join("drive");
+            snapshot(a.path(), &drive, false).unwrap();
+            commit(a.path(), &drive).unwrap();
+            let b = new_synced_repo();
+            adopt(b.path(), &drive, true).unwrap();
+            fact::add(a.path(), "remote-1", "r", "user", "cli:user").unwrap();
+            fact::add(a.path(), "remote-2", "r", "user", "cli:user").unwrap();
+            snapshot(a.path(), &drive, false).unwrap();
+            fact::add(b.path(), "local-1", "l", "user", "cli:user").unwrap();
+            fact::add(b.path(), "local-2", "l", "user", "cli:user").unwrap();
+
+            let manifest = Manifest::load(&drive.join(MANIFEST_FILENAME)).unwrap();
+            let path = if side == "local" {
+                b.path().join(".memhub/project.sqlite")
+            } else {
+                resolve_snapshot_file(&drive, &manifest).unwrap()
+            };
+            let conn = Connection::open(path).unwrap();
+            conn.execute("DELETE FROM writes_log WHERE id = ?1", [1])
+                .unwrap();
+            drop(conn);
+
+            let report = diff(b.path(), &drive).unwrap();
+            assert!(report.local.is_none());
+            assert!(report.remote.is_none());
+            let reason = report.unavailable_reason.unwrap();
+            assert!(
+                reason.contains(side) && reason.contains("cutoff"),
+                "{reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn diff_explains_when_older_snapshot_content_cannot_be_compared() {
+        let local = new_synced_repo();
+        fact::add(local.path(), "baseline", "b", "user", "cli:user").unwrap();
+        let drive = local.path().join("drive");
+        let summary = snapshot(local.path(), &drive, false).unwrap();
+        commit(local.path(), &drive).unwrap();
+        let conn = Connection::open(&summary.snapshot_path).unwrap();
+        conn.execute("ALTER TABLE facts RENAME COLUMN kind TO old_kind", [])
+            .unwrap();
+        drop(conn);
+
+        let report = diff(local.path(), &drive).unwrap();
+        assert!(report.local.is_none());
+        assert!(report.remote.is_none());
+        let reason = report.unavailable_reason.unwrap();
+        assert!(
+            reason.contains("cannot compare remote durable content"),
+            "{reason}"
+        );
+        assert!(reason.contains("kind"), "{reason}");
     }
 
     #[test]

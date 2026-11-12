@@ -665,6 +665,7 @@ impl MemhubServer {
                         .to_string(),
                 ),
                 verdict: Some(report.verdict.as_str().to_string()),
+                baseline_warning: report.baseline_warning,
                 project_id_mismatch: report.project_id_mismatch,
                 schema_blocks_adopt: Some(report.schema_blocks_adopt),
                 project_id: None,
@@ -971,7 +972,7 @@ impl MemhubServer {
 
     #[tool(
         name = "sync_snapshot",
-        description = "Write a consistent single-file DB snapshot + manifest into the synced Drive folder — the push. When targeting the configured remote dir (the default) this records the new baseline itself, so no follow-up call is needed; sync_commit remains for an explicit-remote push or as a manual repair step. Refuses when the remote is drive-ahead of or diverged from local (would clobber newer state) — pull first, or pass `force=true` for last-writer-wins. Defaults to the configured remote dir; pass `remote` to override. Requires `memhub sync enable` for this repo."
+        description = "Write a consistent single-file DB snapshot + manifest into the synced Drive folder — the push. When targeting the configured remote dir (the default) this records the new baseline itself, so no follow-up call is needed; sync_commit remains for an explicit-remote push or as a manual repair step. Refuses when the remote is drive-ahead of or diverged from local (would clobber distinct state) — inspect and reconcile first, or explicitly pass `force=true` for last-writer-wins. Defaults to the configured remote dir; pass `remote` to override. Requires `memhub sync enable` for this repo."
     )]
     async fn sync_snapshot(
         &self,
@@ -982,7 +983,7 @@ impl MemhubServer {
 
     #[tool(
         name = "sync_check",
-        description = "Compare the local DB against the Drive snapshot and report the fast-forward verdict (up-to-date / local-ahead / drive-ahead / diverged / no-remote). Reads only the manifest, never the multi-MB snapshot. Surface `project_id_mismatch` and `schema_blocks_adopt` to the user — both block a safe adopt. Defaults to the configured remote dir; pass `remote` to override."
+        description = "Compare the local DB against the Drive snapshot and report the baseline-relative verdict (up-to-date / local-ahead / drive-ahead / diverged / no-remote). Reads only the manifest, never the multi-MB snapshot. Surface `baseline_warning`: regressed or unchanged-counter/different-content histories are diverged; counters and content equality do not prove ancestry, and independent histories with higher counters remain undetectable, so drive-ahead is not a guaranteed safe fast-forward. Diverged can mean an incompatible baseline, not only two changed sides. An available CLI audit diff is not proof of complete reconciliation. Surface `project_id_mismatch` and `schema_blocks_adopt` to the user — both block a safe adopt. Defaults to the configured remote dir; pass `remote` to override."
     )]
     async fn sync_check(
         &self,
@@ -1904,7 +1905,7 @@ struct SyncSnapshotParams {
     remote: Option<String>,
     /// Overwrite the remote even when it is drive-ahead of or diverged
     /// from local (last-writer-wins). Without it the push refuses rather
-    /// than clobber newer remote state — surface the refusal to the user.
+    /// than clobber distinct remote state — surface the refusal to the user.
     force: Option<bool>,
 }
 
@@ -1985,6 +1986,7 @@ impl From<commands::sync::SnapshotSummary> for SyncSnapshotToolResponse {
 struct SyncCheckToolResponse {
     /// `up-to-date` | `local-ahead` | `drive-ahead` | `diverged` | `no-remote`.
     verdict: String,
+    baseline_warning: Option<String>,
     baseline_present: bool,
     project_id: String,
     remote_dir: String,
@@ -2005,6 +2007,7 @@ impl From<(commands::sync::CheckReport, String)> for SyncCheckToolResponse {
     fn from((r, remote_dir): (commands::sync::CheckReport, String)) -> Self {
         Self {
             verdict: r.verdict.as_str().to_string(),
+            baseline_warning: r.baseline_warning,
             baseline_present: r.baseline_present,
             project_id: r.project_id,
             remote_dir,
@@ -2027,6 +2030,7 @@ struct SyncAdoptToolResponse {
     adopted: bool,
     reason: Option<String>,
     verdict: Option<String>,
+    baseline_warning: Option<String>,
     project_id_mismatch: Option<String>,
     schema_blocks_adopt: Option<bool>,
     project_id: Option<String>,
@@ -2043,6 +2047,7 @@ impl From<commands::sync::AdoptSummary> for SyncAdoptToolResponse {
             adopted: true,
             reason: None,
             verdict: None,
+            baseline_warning: None,
             project_id_mismatch: None,
             schema_blocks_adopt: None,
             project_id: Some(s.project_id),

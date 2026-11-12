@@ -47,8 +47,16 @@ the guard flags first:
 
 Then on `verdict`: `no-remote` → nothing to catch up (first-run, or the
 Drive app is still syncing); `up-to-date` → nothing; `local-ahead` →
-nothing to pull (wrap-up will push); `drive-ahead` → recommend adopting
-(safe fast-forward); `diverged` → both changed, gated decision below.
+nothing to pull (wrap-up will push); `drive-ahead` → inspect incoming
+state and its warning before proposing adoption; `diverged` → changed
+or incompatible histories, gated decision below.
+
+Earlier guidance called `drive-ahead` a safe fast-forward and `diverged`
+"both changed". Now surface `baseline_warning`: counters and content
+equality do not prove ancestry, and independent histories with higher
+counters remain undetectable. Preserve both histories before replacing
+either. An unavailable CLI `sync check --diff` does not mean no unique
+records exist; an available audit diff is not proof of complete reconciliation.
 
 ## Adopt (gated)
 
@@ -59,12 +67,14 @@ nothing (a built-in dry run). Pass `confirm: true` only after the user
 says yes.
 
 - `drive-ahead`: summarize incoming `remote_machine_id` +
-  `remote_created_at`, confirm, then `memhub.sync_adopt(confirm=true)`.
-- `diverged`: the lossy case. State clearly that adopting Drive
+  `remote_created_at` and `baseline_warning`; explain that adoption can
+  discard local-only records, confirm, then `memhub.sync_adopt(confirm=true)`.
+- `diverged`: state clearly that adopting Drive
   **discards local-only changes**; show local vs drive logical versions;
   require an explicit "yes, overwrite local" before
   `memhub.sync_adopt(confirm=true)`. If the user prefers local, do
-  nothing — `/wrap-up` pushes local up instead.
+  nothing. Reconcile or make a separate explicit overwrite decision;
+  `/wrap-up` cannot push over divergence without force.
 
 `adopt` backs up the replaced DB under `.memhub/backups/sync/` and
 self-refuses on bad checksum / schema / project id.

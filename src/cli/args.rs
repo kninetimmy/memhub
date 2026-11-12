@@ -591,7 +591,7 @@ pub enum SyncCommand {
         out_dir: Option<PathBuf>,
         /// Overwrite the remote even when it is drive-ahead of or
         /// diverged from local (last-writer-wins). Without it a push
-        /// refuses rather than clobber newer remote state.
+        /// refuses rather than clobber distinct remote state.
         #[arg(long)]
         force: bool,
         #[arg(long)]
@@ -614,8 +614,10 @@ pub enum SyncCommand {
         json: bool,
     },
     /// Compare the local DB against the Drive-synced snapshot and
-    /// report the fast-forward verdict (up-to-date / local-ahead /
-    /// drive-ahead / diverged). Reads only the manifest.
+    /// report the baseline-relative verdict (up-to-date / local-ahead /
+    /// drive-ahead / diverged). Reads only the manifest. Counters do not
+    /// prove ancestry; independent histories with higher counters are not
+    /// detected, so drive-ahead is not a guaranteed safe fast-forward.
     Check {
         /// Directory holding the downloaded `project.sqlite` +
         /// `manifest.json` (or a path to `manifest.json`). Omit to use
@@ -623,7 +625,9 @@ pub enum SyncCommand {
         remote: Option<PathBuf>,
         /// Print per-table divergence detail (added/updated counts, plus
         /// changed fact/decision/task titles) for both sides since the
-        /// common sync baseline. Strictly read-only: opens the remote
+        /// recorded sync baseline, or explain why that cutoff is
+        /// incompatible. An available audit diff is not proof of complete
+        /// reconciliation. Strictly read-only: opens the remote
         /// snapshot read-only and never touches the local DB, marker, or
         /// remote dir.
         #[arg(long)]

@@ -1764,7 +1764,15 @@ fn sync_report_to_check(report: &sync::CheckReport) -> Check {
             "sync_freshness",
             Group::Integrations,
             Status::Warn,
-            "remote is ahead — run /catch-up before writing",
+            format!(
+                "sync verdict: {} — run /catch-up before writing{}",
+                report.verdict.as_str(),
+                report
+                    .baseline_warning
+                    .as_deref()
+                    .map(|warning| format!("; {warning}"))
+                    .unwrap_or_default()
+            ),
         ),
         sync::SyncVerdict::UpToDate
         | sync::SyncVerdict::LocalAhead
@@ -3213,6 +3221,7 @@ transcript_retention_days = 99999999
     fn base_check_report() -> sync::CheckReport {
         sync::CheckReport {
             verdict: sync::SyncVerdict::UpToDate,
+            baseline_warning: None,
             baseline_present: true,
             project_id: "proj-a".to_string(),
             local_logical: sync::LogicalVersion {
@@ -3248,6 +3257,32 @@ transcript_retention_days = 99999999
         let check = sync_report_to_check(&report);
         assert_eq!(check.status, Status::Warn);
         assert!(check.message.contains("memhub upgrade"));
+    }
+
+    #[test]
+    fn sync_freshness_reports_incompatible_baseline_without_claiming_remote_is_ahead() {
+        let mut report = base_check_report();
+        report.verdict = sync::SyncVerdict::Diverged;
+        report.baseline_warning = Some("remote audit count is below the baseline".into());
+        let check = sync_report_to_check(&report);
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.message.contains("diverged"));
+        assert!(check.message.contains("below the baseline"));
+        assert!(!check.message.contains("remote is ahead"));
+
+        report.project_id_mismatch = Some("other".into());
+        assert!(
+            sync_report_to_check(&report)
+                .message
+                .contains("different project")
+        );
+        report.project_id_mismatch = None;
+        report.schema_blocks_adopt = true;
+        assert!(
+            sync_report_to_check(&report)
+                .message
+                .contains("memhub upgrade")
+        );
     }
 
     // -- misc ------------------------------------------------------

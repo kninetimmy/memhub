@@ -780,7 +780,7 @@ Export covers facts, decisions, tasks, commands, pending writes, writes_log, ses
 
 Sync moves your repo's memory between *your own* machines (one person, not a team). It uses a folder that already syncs, such as Google Drive for Desktop or an rclone mount. memhub never makes a network call: it only reads and writes a local path. A push writes one whole-database snapshot, manifest last, so another machine never sees a half-finished push. A pull compares content digests and reports one of five verdicts. The model is animated [above](#sync-between-your-machines).
 
-- **`diverged` is the one lossy case.** If both machines changed since the last sync, adopting the remote copy discards this machine's local-only changes. memhub shows both versions, requires an explicit yes, and never adopts automatically.
+- **Check the baseline warning before adopting.** Earlier guidance called `diverged` the one lossy case. It now also covers an incompatible baseline, such as a returned older fork, even if local has not changed. `drive-ahead` is not a guaranteed safe fast-forward: counters and content equality do not prove ancestry, and independent histories with higher counters remain undetectable. Adopting can discard local-only records; memhub shows both versions, requires an explicit yes, and never adopts automatically. An unavailable `sync check --diff` means its cutoff cannot be used, not that no unique data exists; an available audit diff is not proof of complete reconciliation.
 - **Adopt is guarded.** It writes a backup under `.memhub/backups/sync/` first. It refuses outright on a project-id mismatch, a snapshot from a newer memhub schema (run `memhub upgrade` first), or a checksum that disagrees with the manifest.
 
 ### Prerequisites

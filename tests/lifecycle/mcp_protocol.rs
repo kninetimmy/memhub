@@ -269,6 +269,8 @@ fn replay(
         .arg("serve")
         .current_dir(repo)
         .env("MEMHUB_LOG", "warn")
+        .env("HOME", repo.join(".test-home"))
+        .env("USERPROFILE", repo.join(".test-home"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -328,6 +330,161 @@ fn replay(
         "known MCP client emitted an alias warning: {stderr}"
     );
     replies
+}
+
+#[test]
+fn sync_forks_surface_baseline_diagnostics_through_cli_and_mcp() {
+    use memhub::{commands::sync, db};
+
+    fn repo() -> tempfile::TempDir {
+        let temp = tempdir().unwrap();
+        init::run(temp.path()).unwrap();
+        let ctx = db::open_project(temp.path()).unwrap();
+        let mut cfg = ctx.config.clone();
+        cfg.sync.enabled = true;
+        cfg.sync.project_id = "sync-baseline-test".into();
+        cfg.save(&ctx.paths.config_path).unwrap();
+        temp
+    }
+
+    fn cli(repo: &std::path::Path, args: &[&str]) -> std::process::Output {
+        Command::new(memhub_bin())
+            .args(args)
+            .current_dir(repo)
+            .env("HOME", repo.join(".test-home"))
+            .env("USERPROFILE", repo.join(".test-home"))
+            .output()
+            .unwrap()
+    }
+
+    let local = repo();
+    for n in 0..4 {
+        fact::add(
+            local.path(),
+            &format!("local-{n}"),
+            "keep",
+            "user",
+            "cli:user",
+        )
+        .unwrap();
+    }
+    let baseline = local.path().join("baseline");
+    sync::snapshot(local.path(), &baseline, false).unwrap();
+    sync::commit(local.path(), &baseline).unwrap();
+    let marker_path = local.path().join(".memhub/sync_marker.json");
+    let marker_before = std::fs::read(&marker_path).unwrap();
+    let before = sync::LogicalVersion::read(&db::open_project(local.path()).unwrap().conn).unwrap();
+
+    // Independent histories with fewer, equal, and more audit writes.
+    for facts in [1, 4, 5] {
+        let fork = repo();
+        for n in 0..facts {
+            fact::add(
+                fork.path(),
+                &format!("fork-{n}"),
+                "unique",
+                "user",
+                "cli:user",
+            )
+            .unwrap();
+        }
+        let remote = fork.path().join("remote");
+        let summary = sync::snapshot(fork.path(), &remote, false).unwrap();
+        let manifest_before = std::fs::read(&summary.manifest_path).unwrap();
+        let snapshot_before = std::fs::read(&summary.snapshot_path).unwrap();
+        let remote_arg = remote.to_str().unwrap();
+        let expected = if facts <= 4 {
+            "diverged"
+        } else {
+            "drive_ahead"
+        };
+
+        let output = cli(local.path(), &["sync", "check", remote_arg, "--json"]);
+        assert!(output.status.success(), "{:?}", output);
+        let check: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(check["verdict"], expected);
+        assert!(check["baseline_warning"].is_string());
+
+        let output = cli(local.path(), &["sync", "check", remote_arg]);
+        assert!(output.status.success());
+        let human = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            human.contains(check["baseline_warning"].as_str().unwrap()),
+            "{human}"
+        );
+
+        let output = cli(
+            local.path(),
+            &["sync", "check", remote_arg, "--diff", "--json"],
+        );
+        assert!(output.status.success(), "{:?}", output);
+        let detail: Value = serde_json::from_slice(&output.stdout).unwrap();
+        if facts <= 4 {
+            assert!(detail["diff"]["local"].is_null(), "{detail}");
+            assert!(detail["diff"]["remote"].is_null(), "{detail}");
+            assert!(detail["diff"]["unavailable_reason"].is_string(), "{detail}");
+        } else {
+            // This focused guard cannot prove that the higher-counter
+            // fork shares the baseline: only its last write is shown.
+            assert!(detail["diff"]["unavailable_reason"].is_null());
+            assert_eq!(detail["diff"]["remote"]["writes_since_baseline"], 1);
+            assert!(
+                check["baseline_warning"]
+                    .as_str()
+                    .unwrap()
+                    .contains("higher audit counters")
+            );
+        }
+
+        let [initialized, _] = antigravity_tail();
+        let replies = replay(
+            local.path(),
+            &[
+                antigravity_initialize(),
+                initialized,
+                json!({"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"sync_check","arguments":{"remote":remote_arg}}}),
+                json!({"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"sync_adopt","arguments":{"remote":remote_arg}}}),
+                json!({"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"sync_snapshot","arguments":{"remote":remote_arg}}}),
+            ],
+            &[2, 10, 11, 12],
+        );
+        let mcp_check = &replies[&10]["result"]["structuredContent"];
+        assert_eq!(
+            mcp_check["verdict"],
+            if facts <= 4 {
+                "diverged"
+            } else {
+                "drive-ahead"
+            }
+        );
+        assert_eq!(mcp_check["baseline_warning"], check["baseline_warning"]);
+        let refusal = &replies[&11]["result"]["structuredContent"];
+        assert_eq!(refusal["adopted"], false);
+        assert_eq!(refusal["verdict"], mcp_check["verdict"]);
+        assert_eq!(refusal["baseline_warning"], check["baseline_warning"]);
+        assert!(refusal["reason"].as_str().unwrap().contains("confirm=true"));
+        assert!(
+            replies[&12]["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("refusing to overwrite")),
+            "{}",
+            replies[&12]
+        );
+
+        assert_eq!(
+            std::fs::read(&summary.manifest_path).unwrap(),
+            manifest_before
+        );
+        assert_eq!(
+            std::fs::read(&summary.snapshot_path).unwrap(),
+            snapshot_before
+        );
+        assert_eq!(std::fs::read(&marker_path).unwrap(), marker_before);
+        assert_eq!(
+            sync::LogicalVersion::read(&db::open_project(local.path()).unwrap().conn).unwrap(),
+            before
+        );
+    }
 }
 
 // The exact lines Antigravity CLI (agy 1.4.7) was observed sending (issue #419).
