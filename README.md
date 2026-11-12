@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/License-MIT-2E7D32?style=flat&logo=opensourceinitiative&logoColor=white" alt="License: MIT"/>
-  <img src="https://img.shields.io/badge/Rust-1.87%2B-B7410E?style=flat&logo=rust&logoColor=white" alt="Rust 1.87+"/>
+  <img src="https://img.shields.io/badge/Rust-1.89%2B-B7410E?style=flat&logo=rust&logoColor=white" alt="Rust 1.89+"/>
   <img src="https://img.shields.io/badge/SQLite-bundled-003B57?style=flat&logo=sqlite&logoColor=white" alt="SQLite bundled"/>
   <br/>
   <img src="https://img.shields.io/badge/Recall-keyword%20%2B%20meaning-5E81AC?style=flat" alt="Recall: keyword and meaning-based search"/>
@@ -47,6 +47,8 @@ memhub is one offline binary and one SQLite file next to your code. Claude Code,
 
 Each agent below has a copy-paste prompt that installs memhub end to end. Expand the one you use. To run the steps yourself, expand **Install by hand**.
 
+Starting with v0.3.1, source builds require Rust 1.89+ (previously 1.87+) for the patched SQLite dependency.
+
 <details>
 <summary><b>Install via Claude Code</b> — recommended</summary>
 
@@ -57,7 +59,7 @@ Please install memhub for me, then turn on hybrid recall.
 
 1. Clone https://github.com/kninetimmy/memhub.git into ~/src/memhub if it
    isn't already there (`git pull` if it is). Stop if the Rust toolchain
-   (1.87+) is missing.
+   (1.89+) is missing.
 2. Run `cargo install --path ~/src/memhub --force` so `memhub` ends up on
    PATH (~/.cargo/bin must be on PATH; warn me if it isn't). First build
    takes a couple of minutes — it downloads and bundles ~150 MB of
@@ -152,7 +154,7 @@ Please install memhub for me, then turn on hybrid recall.
 
 1. Clone https://github.com/kninetimmy/memhub.git into ~/src/memhub if it
    isn't already there (`git pull` if it is). Stop if the Rust toolchain
-   (1.87+) is missing.
+   (1.89+) is missing.
 2. Run `cargo install --path ~/src/memhub --force` so `memhub` ends up on
    PATH (~/.cargo/bin must be on PATH; warn me if it isn't). First build
    takes a couple of minutes — it downloads and bundles ~150 MB of
@@ -256,7 +258,7 @@ Please install memhub for me, then turn on hybrid recall.
 
 1. Clone https://github.com/kninetimmy/memhub.git into ~/src/memhub if it
    isn't already there (`git pull` if it is). Stop if the Rust toolchain
-   (1.87+) is missing.
+   (1.89+) is missing.
 2. Run `cargo install --path ~/src/memhub --force` so `memhub` ends up on
    PATH (~/.cargo/bin must be on PATH; warn me if it isn't). First build
    takes a couple of minutes — it downloads and bundles ~150 MB of
@@ -369,7 +371,7 @@ Open Antigravity in the project you want to track and paste:
 Please install memhub for me.
 
 1. Clone https://github.com/kninetimmy/memhub.git into ~/src/memhub if
-   missing, or update that checkout. Stop if Rust 1.87+ or cargo is absent.
+   missing, or update that checkout. Stop if Rust 1.89+ or cargo is absent.
 2. Run cargo install --path ~/src/memhub --force --locked, then verify
    memhub --version. Ensure ~/.cargo/bin is on PATH. The first build
    downloads and verifies the bundled models; runtime recall is offline.

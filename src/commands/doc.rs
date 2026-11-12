@@ -912,8 +912,10 @@ beta
                 )
                 .expect("stored embedding");
             let stored: Vec<f32> = blob
-                .chunks_exact(4)
-                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|b| f32::from_le_bytes(*b))
                 .collect();
 
             let expected = crate::retrieval::embed_one(&crate::retrieval::doc_chunk_embed_text(
