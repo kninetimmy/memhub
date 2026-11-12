@@ -58,9 +58,16 @@ Then act on `verdict`:
 |---|---|---|
 | `no-remote` | no snapshot in the folder yet | nothing to catch up — say so. Expected first-run state; your next `/wrap-up` pushes the first. (Or the Drive app is still syncing — give it a moment.) |
 | `up-to-date` | local already matches Drive | nothing to do — say so |
-| `drive-ahead` | another machine pushed newer state | recommend adopting; this is a safe fast-forward |
+| `drive-ahead` | remote changed while local equals its marker; ancestry unverified | inspect incoming state and its warning before proposing adoption |
 | `local-ahead` | this machine is ahead of Drive | nothing to pull; `/wrap-up` will push |
-| `diverged` | **both** sides changed since last sync | requires an explicit decision — see below |
+| `diverged` | changed or incompatible histories | requires an explicit decision — see below |
+
+Earlier guidance called `drive-ahead` a safe fast-forward and `diverged`
+"both changed". Now surface `baseline_warning`: counters and content
+equality do not prove ancestry, and independent histories with higher
+counters remain undetectable. Preserve both histories before replacing
+either. An unavailable CLI `sync check --diff` does not mean no unique
+records exist; an available audit diff is not proof of complete reconciliation.
 
 ## Adopt (gated)
 
@@ -70,16 +77,17 @@ Only adopt on `drive-ahead` or `diverged`, and only after I confirm.
 so you can use it as a dry run. Only pass `confirm: true` after I say
 yes.
 
-- **`drive-ahead`**: summarize what's incoming (the `remote_machine_id`
-  and `remote_created_at` from the check output) and ask me to confirm.
+- **`drive-ahead`**: summarize what's incoming (the `remote_machine_id`,
+  `remote_created_at`, and `baseline_warning` from the check output).
+  Explain that adopting can discard local-only records and ask me to confirm.
   On yes, call `memhub.sync_adopt(confirm=true)`.
-- **`diverged`**: the lossy case. Tell me plainly that both this machine
-  and Drive changed since the last sync, so adopting the Drive copy
+- **`diverged`**: tell me plainly that the histories changed independently
+  or the baseline is incompatible, so adopting the Drive copy
   **discards the local-only changes** made here. Show the local vs
   drive logical versions. Require an explicit "yes, overwrite local"
   before calling `memhub.sync_adopt(confirm=true)`. If I'd rather keep
-  local, do nothing — `/wrap-up` will push local up and Drive becomes
-  the one that's behind.
+  local, do nothing. Reconcile or make a separate explicit overwrite
+  decision; `/wrap-up` cannot push over divergence without force.
 
 `adopt` makes a single safety copy of the replaced DB under
 `.memhub/backups/sync/` before swapping, and refuses on its own if the

@@ -1873,6 +1873,9 @@ pub fn run(cli: Cli) -> Result<()> {
                 } else {
                     println!("sync status for project '{}'", report.project_id);
                     println!("  verdict: {}", report.verdict.as_str());
+                    if let Some(warning) = &report.baseline_warning {
+                        println!("  warning: {warning}");
+                    }
                     if !report.baseline_present {
                         println!("  (no prior sync baseline — first sync)");
                     }

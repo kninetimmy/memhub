@@ -184,7 +184,7 @@ Milestone 10 (design anchor:
 [docs/reference/memhub-prd-addendum-m10-drive-sync.md](docs/reference/memhub-prd-addendum-m10-drive-sync.md))
 makes one user's repo memory follow them between their own machines
 through a synced folder, **without memhub ever going online**. It is
-the export/import flow above, automated and made fast-forward-aware.
+the export/import flow above, automated with baseline-relative checks.
 
 **Model (decisions 102/103/104).** Whole-DB **snapshot**, not row
 merge: each push writes a consistent single-file DB copy (`VACUUM
@@ -192,10 +192,28 @@ INTO`) plus a `manifest.json` (the exact on-disk files and the
 crash-safe write order are in "Remote layout and publication
 atomicity" below). Divergence is decided from a **logical
 version** (a digest of the durable content tables, never file bytes —
-SQLite is byte-unstable), so `check` reports a git-style verdict:
+SQLite is byte-unstable), so `check` reports a baseline-relative verdict:
 `up-to-date` / `local-ahead` / `drive-ahead` / `diverged` /
-`no-remote`. The single lossy case (both sides changed) is **operator-
-gated**, never automatic. Scope is deliberately **single-user across
+`no-remote`. Before the baseline-safety correction, `drive-ahead` was
+described as a safe fast-forward and `diverged` as the only lossy case
+(both sides changed). Now unequal copies with regressed audit max ID or
+count, or unchanged baseline counters but different durable content,
+report `diverged` with `baseline_warning`. A returned older fork can
+therefore diverge even when local still equals its last-push marker.
+Equal local/remote logical versions still report `up-to-date` despite a
+stale marker. Counters and content equality do not prove ancestry:
+independent histories with higher counters remain undetectable by this
+focused guard, so `drive-ahead` is not a guaranteed safe fast-forward.
+Surface its warning and preserve both histories before deciding what to
+replace. Adoption is **operator-gated**, never automatic.
+
+`sync check --diff` validates the audit cutoff against both actual
+databases. An incompatible cutoff returns null sides with an explicit
+`unavailable_reason`, never an available empty diff. Unavailable does not
+mean there are no unique records; an available audit diff is not proof
+of complete reconciliation or ancestry, either.
+
+Scope is deliberately **single-user across
 their own machines**: last-writer-wins on a diverged history is an
 accepted cost; no snapshot-history/undo buffer, no multi-user plumbing
 — do not re-propose either (decision 103).

@@ -98,21 +98,42 @@ merge** in M10 (see §8 for why, and what a merge model would cost).
 State is tracked with a **last-sync marker** stored locally under
 `.memhub/` (gitignored, per-machine). The marker records the logical
 version (§3) of the DB the last time this machine successfully synced,
-for both sides. `sync check` then reduces to git-style fast-forward
-logic:
+for both sides. `sync check` compares each side with that marker; the
+marker does not prove that a later shared-folder replacement descends
+from it. For compatible baseline counters the verdicts are:
 
 | local changed since marker? | Drive changed since marker? | verdict | action |
 |---|---|---|---|
 | no | no | `up-to-date` | nothing |
-| no | yes | `drive-ahead` | safe pull → adopt |
+| no | yes | `drive-ahead` | ancestry unverified; inspect and confirm before adopting |
 | yes | no | `local-ahead` | push on wrap-up |
 | yes | yes | `diverged` | **operator-gated** overwrite y/N |
 
-`diverged` is the only case that can lose data, and it never does so
-silently: the operator is told both sides changed and must confirm
-which side wins. This is the deliberate cost of the snapshot model —
-accepted in exchange for shipping the cross-machine win without the
-distributed-systems work a real merge requires.
+**Baseline-safety correction.** Previously the table called `drive-ahead`
+a "safe pull" and the text called `diverged` the only case that could
+lose data, assuming both sides had changed. Now unequal local/remote
+copies report `diverged` when either side's audit max ID or count is
+below the marker, or when its counters equal the marker but its durable
+content differs. `baseline_warning` explains the incompatibility. A
+returned independent fork can therefore diverge while local still equals
+its last-push baseline. Equal local/remote logical versions take priority
+over stale markers and remain `up-to-date`.
+
+Counters and content equality do not prove ancestry. Independent
+histories with higher counters remain undetectable by this focused
+guard; `drive-ahead` retains its baseline-relative meaning with an
+ancestry warning, not a guaranteed safe fast-forward. Preserve both
+histories, inspect unique content, and confirm explicitly before
+adopting. Unforced pushes still refuse `drive-ahead` and `diverged`.
+
+`sync check --diff` checks the actual databases' audit max ID, count,
+and rows through the marker cutoff before reporting writes beyond it.
+An incompatible cutoff or unchanged-counter/different-content case
+returns null sides and an explicit `unavailable_reason`. Unavailable
+does not mean no unique records exist; an available audit diff is not
+proof of complete reconciliation or shared ancestry. Whole-DB snapshots
+still require an operator to decide which history to retain or reconcile;
+there is no automatic row merge.
 
 ## 3. Change detection is logical, not byte-level (load-bearing)
 
