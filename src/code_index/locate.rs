@@ -10,15 +10,26 @@
 //! There is no stale penalty — a code chunk is either present or not,
 //! never "decayed".
 //!
-//! **Lazy freshness (decision 107).** A locate first runs [`super::refresh`]
-//! so the index always reflects the working tree; the PR1 staleness engine
-//! makes that stat-only (no read, no embed) when nothing changed, so a warm
-//! index pays almost nothing. `memhub code index` is the explicit warm-up /
-//! rebuild for callers that want to pay that cost up front. `--no-refresh`
-//! (issue #67) opts out of that pass entirely — no `git ls-files`, no stat,
-//! no `git rev-parse HEAD` — for callers making tight repeat calls against
-//! a warm index who accept stale-by-choice results in exchange for the
-//! lowest possible latency.
+//! **Lazy freshness (decision 107; corrected by issue #435).**
+//!
+//! **Before issue #435,** this module said running [`super::refresh`] made
+//! the index “always reflect the working tree.” That expressed intended
+//! convergence as a per-lookup guarantee and was too strong.
+//!
+//! **After issue #435,** a default locate still attempts that refresh before
+//! querying, and successful concurrent refreshes converge safely; lock
+//! contention past the code index's busy timeout reports an error for retry.
+//! Enumeration, file reads, model inference, querying, and snippet reads do
+//! not share an atomic filesystem snapshot, so an external edit can cross
+//! those phases. Once the tree stops changing, a later successful default
+//! refresh converges. The PR1 staleness engine makes an unchanged tree
+//! stat-only (no read, no embed), so a warm index pays almost nothing.
+//! `memhub code index` is the explicit warm-up / rebuild for callers that
+//! want to pay that cost up front.
+//! `--no-refresh` (issue #67) opts out of that pass entirely — no `git
+//! ls-files`, no stat, no `git rev-parse HEAD` — for callers making tight
+//! repeat calls against a warm index who accept stale-by-choice results in
+//! exchange for the lowest possible latency.
 //!
 //! **Reranker off by default (PR3).** The bundled ms-marco cross-encoder is
 //! NL-trained; its fit on code is unproven until PR5 measures it. So
@@ -67,7 +78,7 @@ pub struct LocateOptions {
     /// ls-files`, no per-file stat, no `git rev-parse HEAD`. Queries the
     /// index exactly as it last stood. Stale-by-choice — an explicit
     /// opt-in for tight repeat-locate loops on a warm index; the default
-    /// (`false`) keeps the lazy-freshness guarantee described on
+    /// (`false`) keeps the refresh-and-convergence behavior described on
     /// [`locate`].
     pub no_refresh: bool,
 }
@@ -125,8 +136,8 @@ pub struct LocateResponse {
     pub elapsed_ms: u128,
 }
 
-/// Run a code locate: refresh the index to the working tree, then blend
-/// FTS + vector candidates and return the ranked breadcrumbs.
+/// Run a code locate: unless opted out, attempt the lazy refresh pass, then
+/// blend FTS + vector candidates and return the ranked breadcrumbs.
 pub fn locate(start: &Path, options: LocateOptions) -> Result<LocateResponse> {
     let started = Instant::now();
 
@@ -137,12 +148,12 @@ pub fn locate(start: &Path, options: LocateOptions) -> Result<LocateResponse> {
         ));
     }
 
-    // Lazy freshness: bring the index in line with the tree first. Cheap
-    // (stat-only, no embed) when nothing changed. `--no-refresh` skips this
-    // entirely — no `git ls-files`, no per-file stat, no `git rev-parse
-    // HEAD` — trading freshness for the lowest possible warm latency
-    // (issue #67). `files_total`/`chunks_total`/`head` are then read
-    // straight off the index below instead of off this summary.
+    // Attempt the lazy refresh pass before querying. Cheap (stat-only, no
+    // embed) when nothing changed. `--no-refresh` skips this entirely — no
+    // `git ls-files`, no per-file stat, no `git rev-parse HEAD` — trading
+    // convergence for the lowest possible warm latency (issue #67).
+    // `files_total`/`chunks_total`/`head` are then read straight off the
+    // index below instead of off this summary.
     let summary = if options.no_refresh {
         None
     } else {

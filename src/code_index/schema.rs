@@ -14,7 +14,7 @@
 //! here (added in v2), so a chunk insert/delete flows into FTS without
 //! the writer touching it.
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 use crate::Result;
 
@@ -35,27 +35,32 @@ const META_VERSION_KEY: &str = "schema_version";
 /// [`CODE_INDEX_SCHEMA_VERSION`], the whole index is dropped and rebuilt.
 /// Otherwise the `CREATE TABLE IF NOT EXISTS` statements are idempotent.
 pub fn bootstrap(conn: &Connection) -> Result<()> {
-    let needs_rebuild = match stored_version(conn)? {
+    // Bootstrap is a read-then-write operation. Taking the writer slot before
+    // reading the version keeps concurrent first opens and rebuilds from
+    // acting on the same stale schema snapshot.
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let needs_rebuild = match stored_version(&tx)? {
         Some(version) => version != CODE_INDEX_SCHEMA_VERSION,
         // `index_meta` exists but holds no parseable version: a corrupt or
         // partially-written prior state. Treat it as a mismatch and rebuild
         // — the index is regenerable, so a spurious rebuild is only cheap,
         // never lossy. A genuinely fresh DB has no `index_meta` table and
         // is reported as `false` here, so it is created, not dropped.
-        None => meta_table_present(conn)?,
+        None => meta_table_present(&tx)?,
     };
     if needs_rebuild {
-        drop_all(conn)?;
+        drop_all(&tx)?;
     }
 
-    create_all(conn)?;
+    create_all(&tx)?;
 
-    conn.execute(
+    tx.execute(
         "INSERT INTO index_meta(key, value) VALUES (?1, ?2)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         params![META_VERSION_KEY, CODE_INDEX_SCHEMA_VERSION.to_string()],
     )?;
 
+    tx.commit()?;
     Ok(())
 }
 

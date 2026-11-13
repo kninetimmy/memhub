@@ -140,10 +140,24 @@ The **first-ever index is the one expensive pass** — on memhub's own tree,
 explicit warm-up so the first interactive `locate` is fast.
 
 Consequence (D109): `locate` is a **read-then-write** op, not strictly
-read-only — it refreshes the sibling index before querying. This was
-chosen over a query-only + stale-warning model so results always reflect
-the working tree. It still writes nothing to `project.sqlite` and logs no
-`writes_log` entry.
+read-only — it refreshes the sibling index before querying. It still writes
+nothing to `project.sqlite` and logs no `writes_log` entry.
+
+**Moving-tree correction (issue #435, 2026-11-13).**
+
+**Before issue #435:** this section said choosing refresh over a query-only +
+stale-warning model meant “results always reflect the working tree.” That
+expressed intended convergence as a per-lookup guarantee and was too strong.
+
+**After issue #435:** every default lookup still attempts a refresh before
+querying. Concurrent refresh database-write phases serialize, and delayed
+embedding persistence rechecks the exact `(chunk_id, embed_text)`.
+Successful overlapping refreshes therefore converge safely; lock contention
+past the code index's busy timeout reports an error for retry. A lookup still
+observes a moving tree: enumeration, file reads, model inference, querying,
+and snippet reads do not share an atomic filesystem snapshot, so an external
+edit can cross those phases. Once the tree stops changing, a later successful
+default refresh converges.
 
 ## 5. Retrieval: fusion default, reranker off (D110, D114, D122, D123)
 

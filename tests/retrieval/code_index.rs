@@ -4,12 +4,13 @@
 
 use std::fs;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
 
 use memhub::code_index::{self, code_index_db_path};
 use memhub::commands::init;
 use memhub::config::{ProjectConfig, RetrievalMode};
 use memhub::retrieval::embeddings::{EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME};
+use sha2::{Digest, Sha256};
 
 /// Run a git subcommand in `repo`, failing the test on a non-zero status.
 fn git(repo: &Path, args: &[&str]) {
@@ -58,6 +59,28 @@ fn set_hybrid(root: &Path) {
     let mut config = ProjectConfig::load(&config_path).expect("load config");
     config.retrieval.mode = RetrievalMode::Hybrid;
     config.save(&config_path).expect("save config");
+}
+
+fn memhub_command(root: &Path, home: &Path, args: &[&str]) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_memhub"));
+    command
+        .args(args)
+        .current_dir(root)
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .env("MEMHUB_LOG", "off");
+    command
+}
+
+fn assert_success(output: Output, label: &str) -> Output {
+    assert!(
+        output.status.success(),
+        "{label} failed ({}):\nstdout: {}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output
 }
 
 /// A repo with git initialized, memhub initialized, and `files` staged.
@@ -323,6 +346,148 @@ fn hybrid_mode_embeds_every_chunk() {
     // A second refresh with no changes re-embeds nothing.
     let again = code_index::refresh(root).expect("third refresh");
     assert_eq!(again.embedded_chunks, 0, "unchanged tree re-embeds nothing");
+}
+
+#[test]
+fn concurrent_cli_refreshes_create_and_backfill_one_shared_index() {
+    let repo = tempfile::tempdir().expect("repo");
+    let home = tempfile::tempdir().expect("home");
+    let root = repo.path();
+    git(root, &["init"]);
+
+    let mut source = String::new();
+    for index in 0..120 {
+        source.push_str(&format!(
+            "pub fn shared_lookup_{index:03}() -> usize {{ {index} }}\n"
+        ));
+    }
+    fs::create_dir_all(root.join("src")).expect("mkdir");
+    fs::write(root.join("src/lib.rs"), source).expect("write source");
+    assert_success(
+        memhub_command(root, home.path(), &["init"])
+            .output()
+            .expect("run init"),
+        "init",
+    );
+    let config_path = root.join(".memhub").join("config.toml");
+    let mut config = ProjectConfig::load(&config_path).expect("load config");
+    config.retrieval.mode = RetrievalMode::Fts;
+    config.save(&config_path).expect("save fts config");
+    git(root, &["add", "-A"]);
+
+    let project_db = root.join(".memhub").join("project.sqlite");
+    let project_before = fs::read(&project_db).expect("read project db");
+
+    // Start together against no code DB. The immediate refresh transaction
+    // makes the second process read the first process's committed index
+    // instead of trying to insert the same file rows from a stale snapshot.
+    let cold_one = memhub_command(root, home.path(), &["code", "index", "--json"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn cold writer one");
+    let cold_two = memhub_command(root, home.path(), &["code", "index", "--json"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn cold writer two");
+    assert_success(
+        cold_one.wait_with_output().expect("wait cold one"),
+        "cold one",
+    );
+    assert_success(
+        cold_two.wait_with_output().expect("wait cold two"),
+        "cold two",
+    );
+
+    let db = code_index_db_path(root);
+    let chunks = count(&db, "SELECT COUNT(*) FROM code_chunks");
+    assert!(
+        chunks >= 120,
+        "fixture should produce one chunk per function"
+    );
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM code_chunks_fts"), chunks);
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM code_embeddings"), 0);
+
+    // Reproduce issue #435: leave the shared chunks/FTS index in place,
+    // switch to hybrid, then make two CLI locate processes backfill the same
+    // missing vectors concurrently.
+    let mut config = ProjectConfig::load(&config_path).expect("load config");
+    config.retrieval.mode = RetrievalMode::Hybrid;
+    config.save(&config_path).expect("save hybrid config");
+    let locate_one = memhub_command(
+        root,
+        home.path(),
+        &["locate", "shared lookup", "--limit", "5", "--json"],
+    )
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .spawn()
+    .expect("spawn locate one");
+    let locate_two = memhub_command(
+        root,
+        home.path(),
+        &["locate", "shared lookup", "--limit", "5", "--json"],
+    )
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .spawn()
+    .expect("spawn locate two");
+    let first = assert_success(
+        locate_one.wait_with_output().expect("wait locate one"),
+        "locate one",
+    );
+    let second = assert_success(
+        locate_two.wait_with_output().expect("wait locate two"),
+        "locate two",
+    );
+    for output in [first, second] {
+        let payload: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("locate JSON");
+        assert!(
+            payload["returned_count"]
+                .as_u64()
+                .is_some_and(|count| count > 0),
+            "locate should return shared_lookup hits: {payload}"
+        );
+    }
+
+    let conn = rusqlite::Connection::open(&db).expect("open code index");
+    let embeddings: i64 = conn
+        .query_row("SELECT COUNT(*) FROM code_embeddings", [], |row| row.get(0))
+        .expect("count embeddings");
+    assert_eq!(embeddings, chunks, "exactly one embedding per chunk");
+    let mut stmt = conn
+        .prepare(
+            "SELECT c.embed_text, e.content_hash, e.model_name, e.dimension, LENGTH(e.vector)
+             FROM code_chunks c
+             JOIN code_embeddings e ON e.chunk_id = c.id",
+        )
+        .expect("prepare embeddings");
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })
+        .expect("query embeddings");
+    for row in rows {
+        let (text, hash, model, dimension, bytes) = row.expect("embedding row");
+        assert_eq!(hash, format!("{:x}", Sha256::digest(text.as_bytes())));
+        assert_eq!(model, EMBEDDING_MODEL_NAME);
+        assert_eq!(dimension, EMBEDDING_DIMENSION as i64);
+        assert_eq!(bytes, (EMBEDDING_DIMENSION * 4) as i64);
+    }
+
+    assert_eq!(
+        fs::read(&project_db).expect("reread project db"),
+        project_before,
+        "code-cache refresh must not write durable project memory"
+    );
 }
 
 /// A warm refresh with no vectors from another model must not delete any

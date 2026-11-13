@@ -23,9 +23,10 @@ pub mod walker;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::thread;
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use rusqlite::{Connection, Statement, Transaction, params};
+use rusqlite::{Connection, Statement, Transaction, TransactionBehavior, params};
 
 use crate::Result;
 use crate::config::{PathMatcher, ProjectConfig, RetrievalMode};
@@ -35,6 +36,9 @@ use crate::retrieval::util::{bytes_to_vector, sha256_hex, vector_to_le_bytes};
 
 /// Filename of the sibling code-index DB inside `.memhub/`.
 pub const CODE_INDEX_DB_FILENAME: &str = "code_index.sqlite";
+
+const CODE_INDEX_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+const JOURNAL_MODE_RETRY_DELAY: Duration = Duration::from_millis(10);
 
 /// Resolve the sibling DB path for a repo root: `<root>/.memhub/code_index.sqlite`.
 pub fn code_index_db_path(repo_root: &Path) -> PathBuf {
@@ -51,13 +55,55 @@ pub fn open_code_index(db_path: &Path) -> Result<Connection> {
     let conn = Connection::open(db_path)?;
     conn.execute_batch(
         "PRAGMA foreign_keys = ON;
-         PRAGMA journal_mode = WAL;
-         PRAGMA synchronous = NORMAL;
-         PRAGMA busy_timeout = 5000;
          PRAGMA recursive_triggers = OFF;",
     )?;
+    set_wal_journal_mode(&conn)?;
+    conn.execute_batch("PRAGMA synchronous = NORMAL;")?;
     schema::bootstrap(&conn)?;
     Ok(conn)
+}
+
+fn set_wal_journal_mode(conn: &Connection) -> Result<()> {
+    // Disable rusqlite's per-attempt default handler so repeated PRAGMAs
+    // cannot each consume a full timeout beyond the outer deadline.
+    conn.busy_timeout(Duration::ZERO)?;
+    set_wal_journal_mode_with(conn, thread::sleep)?;
+    conn.busy_timeout(CODE_INDEX_BUSY_TIMEOUT)?;
+    Ok(())
+}
+
+fn set_wal_journal_mode_with<F>(conn: &Connection, mut wait: F) -> Result<()>
+where
+    F: FnMut(Duration),
+{
+    // A concurrent cold opener can make this mode transition return
+    // SQLITE_BUSY without invoking SQLite's installed busy handler. Retry
+    // only that operation, and only inside the same five-second budget used
+    // by the connection's normal busy handler.
+    let deadline = Instant::now() + CODE_INDEX_BUSY_TIMEOUT;
+    loop {
+        match conn.execute_batch("PRAGMA journal_mode = WAL;") {
+            Ok(()) => return Ok(()),
+            Err(error) if is_database_busy(&error) => {
+                let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                    return Err(error.into());
+                };
+                if remaining.is_zero() {
+                    return Err(error.into());
+                }
+                wait(std::cmp::min(JOURNAL_MODE_RETRY_DELAY, remaining));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+fn is_database_busy(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(code, _)
+            if code.code == rusqlite::ErrorCode::DatabaseBusy
+    )
 }
 
 /// Outcome of a [`refresh`] pass over the working tree.
@@ -154,7 +200,10 @@ pub fn refresh(start: &Path) -> Result<RefreshSummary> {
 
     let db_path = code_index_db_path(&repo_root);
     let mut conn = open_code_index(&db_path)?;
-    let tx = conn.transaction()?;
+    // Take the writer slot before reading the prior index state. A deferred
+    // transaction could let two cold refreshes read the same empty snapshot,
+    // then fail one writer while it upgrades after the other commits.
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
     let mut existing = load_existing_files(&tx)?;
     let mut summary = RefreshSummary {
@@ -466,6 +515,13 @@ pub fn remove_index(start: &Path) -> Result<RemoveOutcome> {
 /// re-running the model. Cache misses are gathered into a single batched
 /// inference. Returns the number of chunks given an embedding row.
 fn embed_missing(conn: &mut Connection) -> Result<usize> {
+    embed_missing_with(conn, |texts| embed_batch(texts))
+}
+
+fn embed_missing_with<F>(conn: &mut Connection, embed: F) -> Result<usize>
+where
+    F: FnOnce(&[&str]) -> Result<Vec<Vec<f32>>>,
+{
     // Vectors from another model or dimension are neither searchable (locate
     // scans only the current model) nor reusable, so drop them: their chunks
     // then count as missing below, and the cache is seeded from current-model
@@ -508,7 +564,9 @@ fn embed_missing(conn: &mut Connection) -> Result<usize> {
         })?;
         for row in rows {
             let (hash, blob) = row?;
-            cache.insert(hash, bytes_to_vector(&blob));
+            if blob.len() == EMBEDDING_DIMENSION * 4 {
+                cache.insert(hash, bytes_to_vector(&blob));
+            }
         }
     }
 
@@ -528,33 +586,54 @@ fn embed_missing(conn: &mut Connection) -> Result<usize> {
     }
 
     if !batch_texts.is_empty() {
-        let vectors = embed_batch(&batch_texts)?;
+        let vectors = embed(&batch_texts)?;
+        if vectors.len() != batch_texts.len() {
+            return Err(crate::MemhubError::Embedding(format!(
+                "expected {} code embedding vector(s), got {}",
+                batch_texts.len(),
+                vectors.len()
+            )));
+        }
+        if let Some(vector) = vectors
+            .iter()
+            .find(|vector| vector.len() != EMBEDDING_DIMENSION)
+        {
+            return Err(crate::MemhubError::Embedding(format!(
+                "expected {EMBEDDING_DIMENSION}-dim code embedding, got {}",
+                vector.len()
+            )));
+        }
         for (hash, idx) in &pending {
             cache.insert(hash.clone(), vectors[*idx].clone());
         }
     }
 
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let mut inserted = 0;
     {
         let mut insert = tx.prepare(
             "INSERT INTO code_embeddings(chunk_id, model_name, dimension, vector, content_hash)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+             SELECT ?1, ?2, ?3, ?4, ?5
+             FROM code_chunks
+             WHERE id = ?1 AND embed_text = ?6
+             ON CONFLICT(chunk_id) DO NOTHING",
         )?;
-        for ((chunk_id, _), hash) in missing.iter().zip(&hashes) {
+        for ((chunk_id, text), hash) in missing.iter().zip(&hashes) {
             let vector = cache
                 .get(hash)
                 .expect("every missing chunk's vector is cached or freshly embedded");
-            insert.execute(params![
+            inserted += insert.execute(params![
                 chunk_id,
                 EMBEDDING_MODEL_NAME,
                 EMBEDDING_DIMENSION as i64,
                 vector_to_le_bytes(vector),
                 hash,
+                text,
             ])?;
         }
     }
     tx.commit()?;
-    Ok(missing.len())
+    Ok(inserted)
 }
 
 fn load_existing_files(tx: &Transaction<'_>) -> Result<HashMap<String, ExistingFile>> {
@@ -670,6 +749,10 @@ mod tests {
     use super::*;
     use rusqlite::params;
     use schema::CODE_INDEX_SCHEMA_VERSION;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier, mpsc};
+    use std::thread;
+    use std::time::Duration;
     use tempfile::tempdir;
 
     fn table_exists(conn: &Connection, name: &str) -> bool {
@@ -679,6 +762,254 @@ mod tests {
             |row| row.get::<_, i64>(0),
         )
         .is_ok()
+    }
+
+    fn seed_chunks(path: &Path, chunks: &[(i64, &str)]) {
+        let conn = open_code_index(path).expect("open");
+        conn.execute(
+            "INSERT INTO indexed_files(id, path, mtime, size, content_hash, language)
+             VALUES (1, 'src/lib.rs', 0, 0, 'file', 'rust')",
+            [],
+        )
+        .expect("seed file");
+        for (id, text) in chunks {
+            conn.execute(
+                "INSERT INTO code_chunks(
+                    id, file_id, start_line, end_line, symbol, kind, content_hash, embed_text
+                 ) VALUES (?1, 1, ?1, ?1, NULL, 'function', ?2, ?3)",
+                params![id, sha256_hex(text.as_bytes()), text],
+            )
+            .expect("seed chunk");
+        }
+    }
+
+    fn test_vectors(texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        Ok(texts
+            .iter()
+            .map(|text| {
+                let mut vector = vec![0.0; EMBEDDING_DIMENSION];
+                vector[0] = text.bytes().map(f32::from).sum();
+                vector
+            })
+            .collect())
+    }
+
+    fn count_rows(path: &Path, table: &str) -> i64 {
+        let conn = Connection::open(path).expect("open");
+        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+            row.get(0)
+        })
+        .expect("count")
+    }
+
+    #[test]
+    fn overlapping_embedding_writers_converge_without_duplicate_rows() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("code_index.sqlite");
+        seed_chunks(
+            &path,
+            &[(1, "alpha text"), (2, "beta text"), (3, "gamma text")],
+        );
+
+        // Both writers must finish their missing-row reads before either is
+        // allowed to persist. This reproduces the old duplicate-key window
+        // without a timing-dependent sleep.
+        let ready = Arc::new(Barrier::new(2));
+        let mut writers = Vec::new();
+        for _ in 0..2 {
+            let path = path.clone();
+            let ready = Arc::clone(&ready);
+            writers.push(thread::spawn(move || {
+                let mut conn = open_code_index(&path).expect("open writer");
+                embed_missing_with(&mut conn, move |texts| {
+                    ready.wait();
+                    test_vectors(texts)
+                })
+            }));
+        }
+
+        let inserted: usize = writers
+            .into_iter()
+            .map(|writer| writer.join().expect("writer thread").expect("embed writer"))
+            .sum();
+        assert_eq!(inserted, 3, "only one row per chunk should be inserted");
+        assert_eq!(count_rows(&path, "code_embeddings"), 3);
+
+        let conn = Connection::open(&path).expect("open");
+        let valid: i64 = conn
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM code_embeddings e
+                 JOIN code_chunks c ON c.id = e.chunk_id
+                 WHERE e.model_name = ?1
+                   AND e.dimension = ?2
+                   AND LENGTH(e.vector) = ?3",
+                params![
+                    EMBEDDING_MODEL_NAME,
+                    EMBEDDING_DIMENSION as i64,
+                    (EMBEDDING_DIMENSION * 4) as i64
+                ],
+                |row| row.get(0),
+            )
+            .expect("count valid");
+        assert_eq!(valid, 3);
+    }
+
+    #[test]
+    fn delayed_embeddings_skip_changed_reused_and_deleted_chunks() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("code_index.sqlite");
+        seed_chunks(&path, &[(1, "old reused text"), (2, "old deleted text")]);
+
+        let (selected_tx, selected_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let writer_path = path.clone();
+        let writer = thread::spawn(move || {
+            let mut conn = open_code_index(&writer_path).expect("open writer");
+            embed_missing_with(&mut conn, move |texts| {
+                selected_tx.send(texts.len()).expect("signal selection");
+                resume_rx
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("resume writer");
+                test_vectors(texts)
+            })
+        });
+
+        assert_eq!(
+            selected_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("writer selected chunks"),
+            2
+        );
+
+        // Replace id 1 with different text and remove id 2 while the old
+        // texts are being "embedded". Explicit ids make row reuse certain.
+        {
+            let mut conn = open_code_index(&path).expect("open mutator");
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .expect("begin mutation");
+            tx.execute("DELETE FROM code_chunks WHERE id IN (1, 2)", [])
+                .expect("delete old chunks");
+            tx.execute(
+                "INSERT INTO code_chunks(
+                    id, file_id, start_line, end_line, symbol, kind, content_hash, embed_text
+                 ) VALUES (1, 1, 1, 1, NULL, 'function', 'new', 'new current text')",
+                [],
+            )
+            .expect("reuse chunk id");
+            tx.commit().expect("commit mutation");
+        }
+        resume_tx.send(()).expect("resume writer");
+
+        assert_eq!(
+            writer
+                .join()
+                .expect("writer thread")
+                .expect("delayed embed"),
+            0,
+            "old work must not attach to changed or deleted rows"
+        );
+        assert_eq!(count_rows(&path, "code_embeddings"), 0);
+
+        let mut conn = open_code_index(&path).expect("open retry");
+        assert_eq!(
+            embed_missing_with(&mut conn, test_vectors).expect("retry embed"),
+            1
+        );
+        let (text, hash, vector, model, dimension): (String, String, Vec<u8>, String, i64) = conn
+            .query_row(
+                "SELECT c.embed_text, e.content_hash, e.vector, e.model_name, e.dimension
+                 FROM code_chunks c
+                 JOIN code_embeddings e ON e.chunk_id = c.id
+                 WHERE c.id = 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .expect("current embedding");
+        assert_eq!(text, "new current text");
+        assert_eq!(hash, sha256_hex(text.as_bytes()));
+        assert_eq!(
+            vector,
+            vector_to_le_bytes(&test_vectors(&[&text]).expect("vector")[0])
+        );
+        assert_eq!(model, EMBEDDING_MODEL_NAME);
+        assert_eq!(dimension, EMBEDDING_DIMENSION as i64);
+    }
+
+    #[test]
+    fn embedding_and_writer_failures_leave_committed_index_recoverable() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("code_index.sqlite");
+        seed_chunks(
+            &path,
+            &[
+                (1, "already embedded"),
+                (2, "pending two"),
+                (3, "pending three"),
+            ],
+        );
+        {
+            let conn = Connection::open(&path).expect("open");
+            let text = "already embedded";
+            conn.execute(
+                "INSERT INTO code_embeddings(
+                    chunk_id, model_name, dimension, vector, content_hash
+                 ) VALUES (1, ?1, ?2, ?3, ?4)",
+                params![
+                    EMBEDDING_MODEL_NAME,
+                    EMBEDDING_DIMENSION as i64,
+                    vector_to_le_bytes(&test_vectors(&[text]).expect("vector")[0]),
+                    sha256_hex(text.as_bytes())
+                ],
+            )
+            .expect("seed embedding");
+        }
+
+        let mut conn = open_code_index(&path).expect("open");
+        let err = embed_missing_with(&mut conn, |_| {
+            Err(crate::MemhubError::Embedding(
+                "injected inference failure".into(),
+            ))
+        })
+        .expect_err("embedding must fail");
+        assert!(err.to_string().contains("injected inference failure"));
+        assert_eq!(count_rows(&path, "code_chunks"), 3);
+        assert_eq!(
+            count_rows(&path, "code_embeddings"),
+            1,
+            "already committed vector must survive inference failure"
+        );
+
+        conn.execute_batch(
+            "CREATE TRIGGER fail_embedding_write
+             BEFORE INSERT ON code_embeddings
+             WHEN new.chunk_id = 3
+             BEGIN SELECT RAISE(ABORT, 'injected writer failure'); END;",
+        )
+        .expect("install failure");
+        embed_missing_with(&mut conn, test_vectors).expect_err("writer must fail");
+        assert_eq!(
+            count_rows(&path, "code_embeddings"),
+            1,
+            "the failed embedding transaction must roll back every pending row"
+        );
+
+        conn.execute_batch("DROP TRIGGER fail_embedding_write")
+            .expect("remove failure");
+        assert_eq!(
+            embed_missing_with(&mut conn, test_vectors).expect("retry"),
+            2
+        );
+        assert_eq!(count_rows(&path, "code_embeddings"), 3);
     }
 
     #[test]
@@ -734,6 +1065,88 @@ mod tests {
             .query_row("PRAGMA synchronous", [], |row| row.get(0))
             .expect("query synchronous pragma");
         assert_eq!(synchronous, 1, "expected synchronous = NORMAL (1)");
+    }
+
+    #[test]
+    fn journal_mode_busy_skips_sqlite_handler_but_narrow_retry_recovers() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("code_index.sqlite");
+        let holder_path = path.clone();
+        let (locked_tx, locked_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (committed_tx, committed_rx) = mpsc::channel();
+
+        let holder = thread::spawn(move || {
+            let mut conn = Connection::open(holder_path).expect("open holder");
+            conn.execute_batch("CREATE TABLE held_write(value INTEGER);")
+                .expect("create holder table");
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .expect("begin held write");
+            tx.execute("INSERT INTO held_write(value) VALUES (1)", [])
+                .expect("write held row");
+            locked_tx.send(()).expect("signal held write");
+            release_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("release held write");
+            tx.commit().expect("commit held write");
+            committed_tx.send(()).expect("signal commit");
+        });
+        locked_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("writer acquired lock");
+
+        // This is the cold-open failure from CI: changing a rollback-journal
+        // database to WAL while another connection writes returns BUSY
+        // without consulting even an installed busy handler.
+        let busy_calls = Arc::new(AtomicUsize::new(0));
+        let observed_calls = Arc::clone(&busy_calls);
+        let mut probe = Connection::open(&path).expect("open probe");
+        probe
+            .busy_handler(Some(move |_| {
+                observed_calls.fetch_add(1, Ordering::SeqCst);
+                false
+            }))
+            .expect("install probe busy handler");
+        let error = probe
+            .execute_batch("PRAGMA journal_mode = WAL;")
+            .expect_err("journal transition should be busy");
+        assert!(is_database_busy(&error), "unexpected error: {error}");
+        assert_eq!(
+            busy_calls.load(Ordering::SeqCst),
+            0,
+            "SQLite bypassed the handler for this journal-mode transition"
+        );
+        drop(probe);
+
+        let conn = Connection::open(&path).expect("open retry connection");
+        conn.busy_timeout(Duration::ZERO)
+            .expect("disable per-attempt timeout");
+        let mut released = false;
+        set_wal_journal_mode_with(&conn, |_| {
+            if !released {
+                release_tx.send(()).expect("release holder");
+                committed_rx
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("holder committed");
+                released = true;
+            }
+        })
+        .expect("retry journal transition");
+        conn.busy_timeout(CODE_INDEX_BUSY_TIMEOUT)
+            .expect("restore busy timeout");
+        assert!(released, "the first journal transition should be busy");
+        let mode: String = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .expect("query journal mode");
+        assert_eq!(mode, "wal");
+
+        schema::bootstrap(&conn).expect("bootstrap after journal transition");
+        assert_eq!(
+            schema::stored_version(&conn).expect("schema version"),
+            Some(CODE_INDEX_SCHEMA_VERSION)
+        );
+        holder.join().expect("join holder");
     }
 
     #[test]

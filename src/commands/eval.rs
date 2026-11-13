@@ -744,9 +744,13 @@ pub fn run_locate(start: &Path, opts: LocateEvalOptions) -> Result<LocateEvalSum
             query: query.query.clone(),
             limit: opts.k,
             use_reranker: opts.use_reranker,
-            // Eval measures retrieval quality against a fully refreshed
-            // index, never a stale one — `--no-refresh` is a CLI-only
-            // opt-in (issue #67), not something an eval run should touch.
+            // Before issue #435, this described eval as measuring a fully
+            // refreshed, never-stale index. After issue #435, eval still
+            // attempts the default refresh before every query, but a lookup
+            // observes a moving tree rather than an atomic filesystem
+            // snapshot; a later successful refresh converges once the tree
+            // stops changing. `--no-refresh` remains a CLI-only opt-in
+            // (issue #67).
             no_refresh: false,
         };
         let response = locate::locate(start, locate_opts)?;
