@@ -23,7 +23,8 @@ pub mod walker;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::thread;
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use rusqlite::{Connection, Statement, Transaction, TransactionBehavior, params};
 
@@ -35,6 +36,9 @@ use crate::retrieval::util::{bytes_to_vector, sha256_hex, vector_to_le_bytes};
 
 /// Filename of the sibling code-index DB inside `.memhub/`.
 pub const CODE_INDEX_DB_FILENAME: &str = "code_index.sqlite";
+
+const CODE_INDEX_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+const JOURNAL_MODE_RETRY_DELAY: Duration = Duration::from_millis(10);
 
 /// Resolve the sibling DB path for a repo root: `<root>/.memhub/code_index.sqlite`.
 pub fn code_index_db_path(repo_root: &Path) -> PathBuf {
@@ -50,14 +54,56 @@ pub fn open_code_index(db_path: &Path) -> Result<Connection> {
     }
     let conn = Connection::open(db_path)?;
     conn.execute_batch(
-        "PRAGMA busy_timeout = 5000;
-         PRAGMA foreign_keys = ON;
-         PRAGMA journal_mode = WAL;
-         PRAGMA synchronous = NORMAL;
+        "PRAGMA foreign_keys = ON;
          PRAGMA recursive_triggers = OFF;",
     )?;
+    set_wal_journal_mode(&conn)?;
+    conn.execute_batch("PRAGMA synchronous = NORMAL;")?;
     schema::bootstrap(&conn)?;
     Ok(conn)
+}
+
+fn set_wal_journal_mode(conn: &Connection) -> Result<()> {
+    // Disable rusqlite's per-attempt default handler so repeated PRAGMAs
+    // cannot each consume a full timeout beyond the outer deadline.
+    conn.busy_timeout(Duration::ZERO)?;
+    set_wal_journal_mode_with(conn, thread::sleep)?;
+    conn.busy_timeout(CODE_INDEX_BUSY_TIMEOUT)?;
+    Ok(())
+}
+
+fn set_wal_journal_mode_with<F>(conn: &Connection, mut wait: F) -> Result<()>
+where
+    F: FnMut(Duration),
+{
+    // A concurrent cold opener can make this mode transition return
+    // SQLITE_BUSY without invoking SQLite's installed busy handler. Retry
+    // only that operation, and only inside the same five-second budget used
+    // by the connection's normal busy handler.
+    let deadline = Instant::now() + CODE_INDEX_BUSY_TIMEOUT;
+    loop {
+        match conn.execute_batch("PRAGMA journal_mode = WAL;") {
+            Ok(()) => return Ok(()),
+            Err(error) if is_database_busy(&error) => {
+                let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                    return Err(error.into());
+                };
+                if remaining.is_zero() {
+                    return Err(error.into());
+                }
+                wait(std::cmp::min(JOURNAL_MODE_RETRY_DELAY, remaining));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+fn is_database_busy(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(code, _)
+            if code.code == rusqlite::ErrorCode::DatabaseBusy
+    )
 }
 
 /// Outcome of a [`refresh`] pass over the working tree.
@@ -703,6 +749,7 @@ mod tests {
     use super::*;
     use rusqlite::params;
     use schema::CODE_INDEX_SCHEMA_VERSION;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier, mpsc};
     use std::thread;
     use std::time::Duration;
@@ -1018,6 +1065,88 @@ mod tests {
             .query_row("PRAGMA synchronous", [], |row| row.get(0))
             .expect("query synchronous pragma");
         assert_eq!(synchronous, 1, "expected synchronous = NORMAL (1)");
+    }
+
+    #[test]
+    fn journal_mode_busy_skips_sqlite_handler_but_narrow_retry_recovers() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("code_index.sqlite");
+        let holder_path = path.clone();
+        let (locked_tx, locked_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (committed_tx, committed_rx) = mpsc::channel();
+
+        let holder = thread::spawn(move || {
+            let mut conn = Connection::open(holder_path).expect("open holder");
+            conn.execute_batch("CREATE TABLE held_write(value INTEGER);")
+                .expect("create holder table");
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .expect("begin held write");
+            tx.execute("INSERT INTO held_write(value) VALUES (1)", [])
+                .expect("write held row");
+            locked_tx.send(()).expect("signal held write");
+            release_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("release held write");
+            tx.commit().expect("commit held write");
+            committed_tx.send(()).expect("signal commit");
+        });
+        locked_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("writer acquired lock");
+
+        // This is the cold-open failure from CI: changing a rollback-journal
+        // database to WAL while another connection writes returns BUSY
+        // without consulting even an installed busy handler.
+        let busy_calls = Arc::new(AtomicUsize::new(0));
+        let observed_calls = Arc::clone(&busy_calls);
+        let mut probe = Connection::open(&path).expect("open probe");
+        probe
+            .busy_handler(Some(move |_| {
+                observed_calls.fetch_add(1, Ordering::SeqCst);
+                false
+            }))
+            .expect("install probe busy handler");
+        let error = probe
+            .execute_batch("PRAGMA journal_mode = WAL;")
+            .expect_err("journal transition should be busy");
+        assert!(is_database_busy(&error), "unexpected error: {error}");
+        assert_eq!(
+            busy_calls.load(Ordering::SeqCst),
+            0,
+            "SQLite bypassed the handler for this journal-mode transition"
+        );
+        drop(probe);
+
+        let conn = Connection::open(&path).expect("open retry connection");
+        conn.busy_timeout(Duration::ZERO)
+            .expect("disable per-attempt timeout");
+        let mut released = false;
+        set_wal_journal_mode_with(&conn, |_| {
+            if !released {
+                release_tx.send(()).expect("release holder");
+                committed_rx
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("holder committed");
+                released = true;
+            }
+        })
+        .expect("retry journal transition");
+        conn.busy_timeout(CODE_INDEX_BUSY_TIMEOUT)
+            .expect("restore busy timeout");
+        assert!(released, "the first journal transition should be busy");
+        let mode: String = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .expect("query journal mode");
+        assert_eq!(mode, "wal");
+
+        schema::bootstrap(&conn).expect("bootstrap after journal transition");
+        assert_eq!(
+            schema::stored_version(&conn).expect("schema version"),
+            Some(CODE_INDEX_SCHEMA_VERSION)
+        );
+        holder.join().expect("join holder");
     }
 
     #[test]

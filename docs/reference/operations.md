@@ -1214,12 +1214,23 @@ serialization rule below without running the refresh/backfill rules:
 The limit is still observation of a moving working tree, not a filesystem
 snapshot: an external edit during enumeration/stat/read or after the index
 commit can cross those observations, and a snippet read can see later bytes.
-The next default refresh converges again. SQLite contention waits up to the
-code index's five-second busy timeout and then reports a retryable busy
-error; it does not wait forever. Manual `memhub code rm` and the removal
-step of `code index --rebuild` are not coordinated with an active lookup, so
-run them when no locate/index process is using the disposable cache and
-retry/rebuild if they race.
+The next default refresh converges again.
+
+The first issue #435 implementation serialized schema bootstrap and refresh
+but still ran `PRAGMA journal_mode=WAL` in the connection's startup batch.
+During a competing cold open SQLite can return `SQLITE_BUSY` from that journal
+transition without invoking the configured busy handler, so one process could
+still fail immediately before reaching either serialized transaction. The
+corrected startup separates that operation and retries only its
+`SQLITE_BUSY`, bounded by the same five-second budget. Bootstrap and refresh
+continue to use immediate transactions and the normal busy handler; other
+journal-setup errors are not treated as transient. Contention that exhausts
+the bound reports the existing retryable busy error rather than waiting
+forever.
+
+Manual `memhub code rm` and the removal step of `code index --rebuild` are not
+coordinated with an active lookup, so run them when no locate/index process is
+using the disposable cache and retry/rebuild if they race.
 
 `--no-refresh` (issue #67) opts out of the freshness and maintenance pass
 entirely for tight repeat-call loops on an already-warm index — no `git
