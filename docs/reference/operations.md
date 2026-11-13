@@ -1183,9 +1183,15 @@ reflect the working tree.” That was too strong: the scan, model inference,
 query, and snippet read do not form an atomic filesystem snapshot, and two
 processes could select the same missing embeddings before either inserted
 them; one then failed with a duplicate `code_embeddings.chunk_id`. After
-issue #435, every refreshing surface — CLI `locate`, MCP `memhub.locate`,
-and `memhub code index`, all through `code_index::refresh` — has these
-concurrency and recovery rules:
+issue #435, every production Rust entry point that requests a refresh —
+CLI `memhub locate` without `--no-refresh`, eval harness `memhub eval
+locate`, MCP `memhub.locate`, and CLI `memhub code index` — reaches these
+concurrency and recovery rules through `code_index::refresh`. The three
+locate entry points call `code_index::locate::locate` with refresh enabled;
+`memhub code index` calls `code_index::refresh` directly. A CLI locate with
+`--no-refresh` skips `code_index::refresh` but still opens and bootstraps
+the sibling database before querying, so it shares the bootstrap
+serialization rule below without running the refresh/backfill rules:
 
 - Schema bootstrap and the chunk/FTS refresh take SQLite's writer slot
   before reading the state they will update. Concurrent cold refreshes
