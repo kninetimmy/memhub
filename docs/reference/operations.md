@@ -1172,18 +1172,56 @@ excluded from the index entirely (task 69, below) rather than line-windowed.
 
 **Lazy git-aware freshness (decision 109).** Every `locate` first diffs
 `(mtime, size)` per tracked file against the index, confirms changes with a
-content hash, re-chunks only what moved, and drops deleted/renamed files —
-so results always reflect the working tree. A warm index is near-free
-(stat-only); the first-ever index is the one expensive pass (~171s cold vs
-~1.4s warm on memhub's tree), so `memhub code index` is the explicit
-warm-up. `locate` is therefore a read-then-write op, but writes nothing to
-`project.sqlite`. `--no-refresh` (issue #67) opts out of this pass
+content hash, re-chunks only what moved, and drops deleted/renamed files. A
+warm index is near-free (stat-only); the first-ever index is the one
+expensive pass (~171s cold vs ~1.4s warm on memhub's tree), so `memhub code
+index` is the explicit warm-up. `locate` is therefore a read-then-write op,
+but writes nothing to `project.sqlite`.
+
+Before issue #435, this section described that default as “results always
+reflect the working tree.” That was too strong: the scan, model inference,
+query, and snippet read do not form an atomic filesystem snapshot, and two
+processes could select the same missing embeddings before either inserted
+them; one then failed with a duplicate `code_embeddings.chunk_id`. After
+issue #435, every refreshing surface — CLI `locate`, MCP `memhub.locate`,
+and `memhub code index`, all through `code_index::refresh` — has these
+concurrency and recovery rules:
+
+- Schema bootstrap and the chunk/FTS refresh take SQLite's writer slot
+  before reading the state they will update. Concurrent cold refreshes
+  therefore serialize that database phase and the later writer sees
+  the earlier commit instead of trying to update a stale transaction.
+- Missing-vector selection and model inference still run without a write
+  transaction. Persistence rechecks the exact `(chunk_id, embed_text)` and
+  ignores an already-inserted primary key. Stable overlapping backfills
+  converge on one current-model vector per chunk; delayed work for a
+  changed, deleted, or reused row id is discarded rather than attached to
+  different text. A later refresh embeds any replacement chunk.
+- A model failure happens after the chunk/FTS commit and before vector
+  writes. A vector-write failure rolls back that whole pending batch.
+  Already committed chunks, FTS rows, and current-model vectors remain
+  usable, and the next successful refresh retries whatever is still
+  missing. This maintenance remains confined to
+  `.memhub/code_index.sqlite`; durable project memory, export, and sync
+  contents are unchanged.
+
+The limit is still observation of a moving working tree, not a filesystem
+snapshot: an external edit during enumeration/stat/read or after the index
+commit can cross those observations, and a snippet read can see later bytes.
+The next default refresh converges again. SQLite contention waits up to the
+code index's five-second busy timeout and then reports a retryable busy
+error; it does not wait forever. Manual `memhub code rm` and the removal
+step of `code index --rebuild` are not coordinated with an active lookup, so
+run them when no locate/index process is using the disposable cache and
+retry/rebuild if they race.
+
+`--no-refresh` (issue #67) opts out of the freshness and maintenance pass
 entirely for tight repeat-call loops on an already-warm index — no `git
-ls-files`, no per-file stat, no `git rev-parse HEAD` — trading the
-freshness guarantee for the lowest possible latency; `files_total` /
-`chunks_total` / `head` then report the last-*indexed* state, not a fresh
-recount. Stale-by-choice, explicit opt-in; default behavior (refresh every
-call) is unchanged without the flag.
+ls-files`, no per-file stat, no `git rev-parse HEAD` — trading convergence
+for the lowest possible latency; `files_total` / `chunks_total` / `head`
+then report the last-*indexed* state, not a fresh recount. Stale-by-choice,
+explicit opt-in; default behavior (attempt a refresh every call) is
+unchanged without the flag.
 
 **Retrieval default: fusion, reranker OFF (decisions 114, 122, 123).**
 Recall is FTS BM25 + vector fusion with the cross-encoder reranker off and
