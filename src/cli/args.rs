@@ -49,7 +49,16 @@ pub enum TopLevelCommand {
         #[arg(long)]
         json: bool,
     },
-    Serve,
+    Serve {
+        /// Launch-fixed project root that owns `.memhub/project.sqlite`
+        /// and `.memhub/config.toml`. Must be paired with `--code-root`.
+        #[arg(long, value_name = "PATH", requires = "code_root")]
+        memory_root: Option<PathBuf>,
+        /// Launch-fixed Git checkout whose tracked source and independent
+        /// `.memhub/code_index.sqlite` are used by MCP locate.
+        #[arg(long, value_name = "PATH", requires = "memory_root")]
+        code_root: Option<PathBuf>,
+    },
     IngestGit {
         #[arg(long)]
         since: Option<String>,

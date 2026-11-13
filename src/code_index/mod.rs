@@ -22,7 +22,7 @@ pub mod walker;
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
@@ -43,6 +43,95 @@ const JOURNAL_MODE_RETRY_DELAY: Duration = Duration::from_millis(10);
 /// Resolve the sibling DB path for a repo root: `<root>/.memhub/code_index.sqlite`.
 pub fn code_index_db_path(repo_root: &Path) -> PathBuf {
     repo_root.join(MEMHUB_DIR).join(CODE_INDEX_DB_FILENAME)
+}
+
+/// A fixed checkout/config pairing for one code-index operation. Ordinary
+/// CLI callers discover both from one project root; the MCP server supplies
+/// the launch-bound checkout plus the primary project's config path.
+#[derive(Debug, Clone)]
+pub(crate) struct CodeIndexSource {
+    repo_root: PathBuf,
+    config_path: PathBuf,
+}
+
+impl CodeIndexSource {
+    pub(crate) fn discover(start: &Path) -> Result<Self> {
+        let paths = db::discover_paths(start)?;
+        Ok(Self {
+            repo_root: paths.repo_root,
+            config_path: paths.config_path,
+        })
+    }
+
+    pub(crate) fn bound(code_root: &Path, config_path: &Path) -> Result<Self> {
+        Ok(Self {
+            repo_root: fs::canonicalize(code_root)?,
+            config_path: config_path.to_path_buf(),
+        })
+    }
+
+    fn load_config(&self) -> Result<ProjectConfig> {
+        if self.config_path.exists() {
+            ProjectConfig::load(&self.config_path)
+        } else {
+            let repo_name = self
+                .config_path
+                .parent()
+                .and_then(Path::parent)
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str())
+                .unwrap_or("memhub");
+            Ok(ProjectConfig::default_for_repo_name(repo_name))
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SourceFileIssue {
+    InvalidRelativePath,
+    Unreadable,
+    Symlink,
+    EscapesRoot,
+    NotFile,
+}
+
+pub(crate) struct SourceFile {
+    pub(crate) path: PathBuf,
+    pub(crate) metadata: fs::Metadata,
+}
+
+/// Resolve one Git-reported relative path without allowing a final symlink
+/// or an ancestor symlink/junction to escape `canonical_root`.
+pub(crate) fn resolve_source_file(
+    canonical_root: &Path,
+    relative: &str,
+) -> std::result::Result<SourceFile, SourceFileIssue> {
+    let relative = Path::new(relative);
+    if relative.as_os_str().is_empty()
+        || relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(SourceFileIssue::InvalidRelativePath);
+    }
+
+    let lexical = canonical_root.join(relative);
+    let link_metadata = fs::symlink_metadata(&lexical).map_err(|_| SourceFileIssue::Unreadable)?;
+    if link_metadata.file_type().is_symlink() {
+        return Err(SourceFileIssue::Symlink);
+    }
+    let canonical = fs::canonicalize(&lexical).map_err(|_| SourceFileIssue::Unreadable)?;
+    if canonical == canonical_root || !canonical.starts_with(canonical_root) {
+        return Err(SourceFileIssue::EscapesRoot);
+    }
+    let metadata = fs::metadata(&canonical).map_err(|_| SourceFileIssue::Unreadable)?;
+    if !metadata.is_file() {
+        return Err(SourceFileIssue::NotFile);
+    }
+    Ok(SourceFile {
+        path: canonical,
+        metadata,
+    })
 }
 
 /// Open (creating + bootstrapping if necessary) the sibling code-index DB
@@ -166,22 +255,18 @@ struct ExistingFile {
 /// re-chunked; files no longer tracked have their rows (and, via cascade,
 /// chunks) dropped. The whole pass is one transaction.
 pub fn refresh(start: &Path) -> Result<RefreshSummary> {
-    // Resolve the canonical repo root + deny-list WITHOUT opening
-    // project.sqlite: discover_paths + a config read are all we need, and
-    // they skip open_project's heavy side effects (migrations, Claude
-    // transcript scrape, registry upsert). The code index is a separate DB
-    // and stays decoupled from project.sqlite (finding M1).
-    let paths = db::discover_paths(start)?;
-    let repo_root = paths.repo_root.clone();
-    let config = if paths.config_path.exists() {
-        ProjectConfig::load(&paths.config_path)?
-    } else {
-        let repo_name = repo_root
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("memhub");
-        ProjectConfig::default_for_repo_name(repo_name)
-    };
+    let source = CodeIndexSource::discover(start)?;
+    refresh_source(&source)
+}
+
+pub(crate) fn refresh_source(source: &CodeIndexSource) -> Result<RefreshSummary> {
+    // Resolve the selected code root + config WITHOUT opening
+    // project.sqlite. Ordinary callers discovered both together; a bound
+    // MCP caller supplied its code root plus the primary config path. Both
+    // skip open_project's heavy side effects (migrations, transcript scrape,
+    // registry upsert), so the code index stays decoupled (finding M1).
+    let repo_root = fs::canonicalize(&source.repo_root)?;
+    let config = source.load_config()?;
     let matcher = PathMatcher::from_patterns(&config.deny_list.patterns)?;
 
     // `list_tracked_files` is the deny-list-filtered git set; scope it
@@ -222,28 +307,18 @@ pub fn refresh(start: &Path) -> Result<RefreshSummary> {
     )?;
 
     for path in &tracked {
-        let abs = repo_root.join(path);
-        // symlink_metadata does NOT follow links, so a tracked symlink is
-        // detected here rather than silently read by-target (finding M3),
-        // and an absent file is distinguished from a present one.
-        let meta = match fs::symlink_metadata(&abs) {
-            Ok(m) => m,
-            // Tracked but absent on disk: deleted-but-unstaged, or a sparse
-            // checkout. Do NOT remove it from `existing` — leaving it there
-            // lets the cleanup loop drop any stale row, which is the correct
-            // staleness behavior (finding P2). A re-checkout re-indexes it.
+        // A final symlink, missing/unreadable file, or an ancestor
+        // symlink/junction escaping the checkout is skipped before removing
+        // any prior row from `existing`; cleanup then drops that stale row.
+        let source_file = match resolve_source_file(&repo_root, path) {
+            Ok(file) => file,
             Err(_) => {
                 summary.skipped_files += 1;
                 continue;
             }
         };
-        if meta.file_type().is_symlink() {
-            // Never index a symlink — reading it would follow the link,
-            // possibly outside the repo. Leave it in `existing` so a row
-            // for a path that used to be a regular file is cleaned up.
-            summary.skipped_files += 1;
-            continue;
-        }
+        let abs = source_file.path;
+        let meta = source_file.metadata;
         let mtime = mtime_millis(&meta);
         let size = meta.len() as i64;
 

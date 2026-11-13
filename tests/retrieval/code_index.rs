@@ -713,3 +713,45 @@ fn tracked_symlink_is_skipped_not_indexed() {
     assert!(!file_indexed(&db, "link.rs"), "symlink must not be indexed");
     assert!(file_indexed(&db, "src/a.rs"));
 }
+
+/// A regular tracked path whose ancestor is replaced by a directory
+/// symlink/junction must not let the walker read outside the checkout.
+#[cfg(any(unix, windows))]
+#[test]
+fn tracked_path_beneath_directory_link_cannot_escape_checkout() {
+    let temp = repo_with_files(&[("src/escape.rs", "fn original_inside() {}\n")]);
+    let root = temp.path();
+    let db = code_index_db_path(root);
+    let outside = tempfile::tempdir().expect("outside");
+    fs::write(
+        outside.path().join("escape.rs"),
+        "fn outside_secret_marker() {}\n",
+    )
+    .unwrap();
+    fs::remove_dir_all(root.join("src")).unwrap();
+
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(outside.path(), root.join("src")).expect("directory symlink");
+
+    #[cfg(windows)]
+    {
+        let output = Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(root.join("src"))
+            .arg(outside.path())
+            .output()
+            .expect("create junction");
+        assert!(
+            output.status.success(),
+            "mklink failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let summary = code_index::refresh(root).expect("refresh");
+    assert_eq!(summary.skipped_files, 1);
+    assert!(
+        !file_indexed(&db, "src/escape.rs"),
+        "escaped bytes must never enter the index"
+    );
+}

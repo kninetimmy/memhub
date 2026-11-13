@@ -37,6 +37,17 @@ reuses the existing embedding model.
 The index lives at `.memhub/code_index.sqlite`, alongside but independent
 of `.memhub/project.sqlite`. Three load-bearing invariants:
 
+**Paired-root amendment (issue #436, 2026-11-13).** Before this amendment,
+“alongside” described every launch: memory and code were discovered from
+one root, so the two files occupied one checkout. After it, that remains
+true for ordinary CLI and MCP launches. An explicit paired MCP launch may
+instead keep `project.sqlite` and the live config in a primary checkout
+while each verified checkout/worktree owns its own
+`.memhub/code_index.sqlite`. No worktree project DB is initialized or
+copied. The physical separation invariant applies to every recall,
+export/import and sync operation, not only the three command spellings used
+below.
+
 1. **Isolation.** Gitignored, per-machine. Never read by recall, never
    exported, never synced. Physical separation is the mechanism that
    guarantees the locator cannot regress recall — there is no code path
@@ -155,9 +166,20 @@ embedding persistence rechecks the exact `(chunk_id, embed_text)`.
 Successful overlapping refreshes therefore converge safely; lock contention
 past the code index's busy timeout reports an error for retry. A lookup still
 observes a moving tree: enumeration, file reads, model inference, querying,
-and snippet reads do not share an atomic filesystem snapshot, so an external
-edit can cross those phases. Once the tree stops changing, a later successful
-default refresh converges.
+and returned-file verification do not share an atomic filesystem snapshot,
+so an external edit can cross those phases. Once the tree stops changing, a
+later successful default refresh converges.
+
+**Returned-content amendment (issue #436, 2026-11-13).** Before this
+amendment, a hit's snippet was reread from the working file after the query,
+so a moving/unreadable file could silently disagree with the indexed hit.
+After it, the snippet is clipped from the hash-checked indexed chunk body. A
+default locate additionally requires the selected checkout's current raw
+file hash to match the indexed file hash; otherwise the hit is omitted and
+the incomplete response counts the reason. Responses carry exact snippet,
+indexed-chunk, indexed-file and (when checked) worktree-file SHA-256 values,
+label the metadata-with-hash-on-change basis, and state that the tree
+snapshot is non-atomic. `HEAD` remains commit provenance only.
 
 ## 5. Retrieval: fusion default, reranker off (D110, D114, D122, D123)
 
@@ -227,9 +249,13 @@ nonsense-probe leaks under fusion are unchanged.
 - **MCP (the agent-first surface):** `memhub.locate(query, limit, rerank)`
   returning `path / start_line / end_line / symbol / score / snippet`,
   with full CLI-JSON parity (kind + fts/vector/rerank score components +
-  bundle meta). Read-only: clipped snippets only, never full code, never
-  edits. `rerank` defaults off, exposed so the A/B can run over MCP
-  without a rebuild.
+  bundle meta), plus launch binding, index/freshness and per-hit content
+  hashes. Clipped snippets only, never full code or source edits; its
+  default refresh can update the disposable cache. `rerank` defaults off,
+  exposed so the A/B can run over MCP without a rebuild. The server's
+  additive paired launch is `memhub serve --memory-root <primary>
+  --code-root <registered-checkout>`; roots are fixed at launch and cannot
+  be overridden by a tool request.
 - **Skill:** `/locate` (Claude Code / Codex / OpenCode).
 
 ## 7. Non-goals, deferrals, and known limitations

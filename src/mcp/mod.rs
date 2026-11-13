@@ -1,3 +1,5 @@
+mod binding;
+
 use std::future::{self, Future};
 use std::path::{Path, PathBuf};
 
@@ -18,7 +20,10 @@ use serde_json::Value;
 
 use crate::MemhubError;
 use crate::code_index;
-use crate::code_index::locate::{LocateHit, LocateOptions, LocateResponse};
+use crate::code_index::locate::{
+    LocateContentVerification, LocateFreshnessBasis, LocateHit, LocateOmissionCounts,
+    LocateOptions, LocateResponse,
+};
 use crate::commands;
 use crate::config::{PathMatcher, RetrievalMode};
 use crate::models::{
@@ -28,6 +33,7 @@ use crate::models::{
 use crate::retrieval::{
     self, RecallHit, RecallOptions, RecallResponse, RecallSurface, RecallWarning, SourceType,
 };
+use binding::{BindingEvidence, ServerBinding};
 
 /// Warm the bundled embed + rerank ONNX models: one `embed_one` plus a
 /// tiny one-doc rerank. Called on a background thread from `serve` so the
@@ -47,11 +53,20 @@ fn warm_models() {
 }
 
 pub fn serve(start: &Path) -> crate::Result<()> {
+    serve_bound(start, None, None)
+}
+
+pub fn serve_bound(
+    start: &Path,
+    memory_root: Option<&Path>,
+    code_root: Option<&Path>,
+) -> crate::Result<()> {
+    let server = MemhubServer::try_new(start, memory_root, code_root)?;
+
     // Independent of the tokio runtime below, so it never delays or
     // blocks serve startup.
     std::thread::spawn(warm_models);
 
-    let server = MemhubServer::new(start.to_path_buf());
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -132,17 +147,35 @@ impl<T: Transport<RoleServer>> Transport<RoleServer> for PreInitializeTolerance<
 
 #[derive(Clone)]
 struct MemhubServer {
-    start: PathBuf,
+    binding: ServerBinding,
     #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
 }
 
 impl MemhubServer {
+    #[cfg(test)]
     fn new(start: PathBuf) -> Self {
-        Self {
-            start,
+        Self::try_new(&start, None, None).expect("test project binding")
+    }
+
+    fn try_new(
+        start: &Path,
+        memory_root: Option<&Path>,
+        code_root: Option<&Path>,
+    ) -> crate::Result<Self> {
+        Ok(Self {
+            binding: ServerBinding::resolve(start, memory_root, code_root)?,
             tool_router: Self::build_tool_router(),
-        }
+        })
+    }
+
+    fn project_root(&self) -> std::result::Result<&Path, McpError> {
+        self.binding.revalidate().map_err(map_tool_error)?;
+        Ok(self.binding.memory_root())
+    }
+
+    fn binding_evidence(&self) -> BindingEvidence {
+        self.binding.evidence()
     }
 
     fn build_tool_router() -> ToolRouter<Self> {
@@ -158,8 +191,11 @@ impl MemhubServer {
     }
 
     async fn status_impl(&self) -> std::result::Result<Json<StatusToolResponse>, McpError> {
-        let summary = commands::status::run(&self.start).map_err(map_tool_error)?;
-        Ok(Json(StatusToolResponse::from(summary)))
+        let summary = commands::status::run(self.project_root()?).map_err(map_tool_error)?;
+        Ok(Json(StatusToolResponse::from_summary(
+            summary,
+            self.binding_evidence(),
+        )))
     }
 
     async fn search_impl(
@@ -167,8 +203,8 @@ impl MemhubServer {
         Parameters(params): Parameters<SearchParams>,
     ) -> std::result::Result<Json<SearchToolResponse>, McpError> {
         let limit = params.limit.unwrap_or(10);
-        let response =
-            commands::search::run(&self.start, &params.query, limit).map_err(map_tool_error)?;
+        let response = commands::search::run(self.project_root()?, &params.query, limit)
+            .map_err(map_tool_error)?;
         Ok(Json(SearchToolResponse {
             matcher: response.matcher,
             query: response.query,
@@ -182,8 +218,8 @@ impl MemhubServer {
     ) -> std::result::Result<Json<ListTasksToolResponse>, McpError> {
         let status = params.status.unwrap_or_else(|| "open".to_string());
         let limit = params.limit.unwrap_or(25);
-        let tasks =
-            commands::task::list_by_status(&self.start, &status, limit).map_err(map_tool_error)?;
+        let tasks = commands::task::list_by_status(self.project_root()?, &status, limit)
+            .map_err(map_tool_error)?;
         Ok(Json(ListTasksToolResponse {
             status,
             tasks: tasks.into_iter().map(TaskToolRecord::from).collect(),
@@ -195,8 +231,8 @@ impl MemhubServer {
         Parameters(params): Parameters<ListDecisionsParams>,
     ) -> std::result::Result<Json<ListDecisionsToolResponse>, McpError> {
         let limit = params.limit.unwrap_or(10);
-        let decisions =
-            commands::decision::list_active_recent(&self.start, limit).map_err(map_tool_error)?;
+        let decisions = commands::decision::list_active_recent(self.project_root()?, limit)
+            .map_err(map_tool_error)?;
         Ok(Json(ListDecisionsToolResponse {
             decisions: decisions
                 .into_iter()
@@ -209,8 +245,8 @@ impl MemhubServer {
         &self,
         Parameters(params): Parameters<GetCommandParams>,
     ) -> std::result::Result<Json<GetCommandToolResponse>, McpError> {
-        let command =
-            commands::command::latest_by_kind(&self.start, &params.kind).map_err(map_tool_error)?;
+        let command = commands::command::latest_by_kind(self.project_root()?, &params.kind)
+            .map_err(map_tool_error)?;
         Ok(Json(GetCommandToolResponse {
             command: command.map(CommandToolRecord::from),
         }))
@@ -222,7 +258,7 @@ impl MemhubServer {
         actor: ClientIdentity,
     ) -> std::result::Result<Json<RecordCommandToolResponse>, McpError> {
         let (id, created) = commands::command::verify(
-            &self.start,
+            self.project_root()?,
             &params.kind,
             &params.cmdline,
             params.exit_code,
@@ -257,7 +293,8 @@ impl MemhubServer {
             Some(requested)
         };
         let limit = params.limit.unwrap_or(commands::review::DEFAULT_LIST_LIMIT);
-        let rows = commands::review::list(&self.start, filter, limit).map_err(map_tool_error)?;
+        let rows =
+            commands::review::list(self.project_root()?, filter, limit).map_err(map_tool_error)?;
         Ok(Json(ListPendingWritesToolResponse {
             // Report the filter actually applied, never the raw parameter, so an
             // omitted status can no longer come back as `null`.
@@ -273,7 +310,7 @@ impl MemhubServer {
         provenance_json: String,
     ) -> std::result::Result<Json<ProposeFactToolResponse>, McpError> {
         let id = commands::pending_write::propose_fact_scoped(
-            &self.start,
+            self.project_root()?,
             &params.key,
             &params.value,
             &params.rationale,
@@ -308,7 +345,7 @@ impl MemhubServer {
             variant: params.variant,
         };
         let note = commands::session_note::add_with_provenance(
-            &self.start,
+            self.project_root()?,
             &params.text,
             &actor.normalized,
             &actor.raw,
@@ -336,7 +373,7 @@ impl MemhubServer {
         provenance_json: String,
     ) -> std::result::Result<Json<ProposeDecisionToolResponse>, McpError> {
         let id = commands::pending_write::propose_decision_scoped(
-            &self.start,
+            self.project_root()?,
             &params.title,
             &params.rationale,
             params.global,
@@ -362,7 +399,7 @@ impl MemhubServer {
         provenance_json: String,
     ) -> std::result::Result<Json<ProposeSupersedeToolResponse>, McpError> {
         let id = commands::pending_write::propose_supersede(
-            &self.start,
+            self.project_root()?,
             &params.target_kind,
             &params.old,
             &params.new,
@@ -390,7 +427,7 @@ impl MemhubServer {
         actor: ClientIdentity,
     ) -> std::result::Result<Json<TaskAddToolResponse>, McpError> {
         let id = commands::task::add(
-            &self.start,
+            self.project_root()?,
             &params.title,
             params.notes.as_deref(),
             &actor.normalized,
@@ -411,7 +448,8 @@ impl MemhubServer {
         Parameters(params): Parameters<TaskDoneParams>,
         actor: ClientIdentity,
     ) -> std::result::Result<Json<TaskDoneToolResponse>, McpError> {
-        commands::task::done(&self.start, params.id, &actor.normalized).map_err(map_tool_error)?;
+        commands::task::done(self.project_root()?, params.id, &actor.normalized)
+            .map_err(map_tool_error)?;
 
         Ok(Json(TaskDoneToolResponse {
             id: params.id,
@@ -434,7 +472,7 @@ impl MemhubServer {
         // `commands::doc::add` — which stays deliberately unrestricted for
         // the user-typed CLI path (see `commands::doc::prepare_doc`).
         let confined_path = {
-            let ctx = crate::db::open_project(&self.start).map_err(map_tool_error)?;
+            let ctx = crate::db::open_project(self.project_root()?).map_err(map_tool_error)?;
             confine_doc_add_path(
                 &ctx.paths.repo_root,
                 &ctx.config.doc.allowed_dirs,
@@ -445,7 +483,7 @@ impl MemhubServer {
         };
 
         let outcome = commands::doc::add(
-            &self.start,
+            self.project_root()?,
             &confined_path,
             params.title.as_deref(),
             &actor.normalized,
@@ -473,7 +511,7 @@ impl MemhubServer {
         &self,
         Parameters(params): Parameters<ListFactsParams>,
     ) -> std::result::Result<Json<ListFactsToolResponse>, McpError> {
-        let mut facts = commands::fact::list(&self.start).map_err(map_tool_error)?;
+        let mut facts = commands::fact::list(self.project_root()?).map_err(map_tool_error)?;
         if let Some(limit) = params.limit {
             facts.truncate(limit);
         }
@@ -486,14 +524,15 @@ impl MemhubServer {
         &self,
         actor: ClientIdentity,
     ) -> std::result::Result<Json<RenderToolResponse>, McpError> {
-        let result =
-            commands::render::run(&self.start, &actor.normalized).map_err(map_tool_error)?;
+        let result = commands::render::run(self.project_root()?, &actor.normalized)
+            .map_err(map_tool_error)?;
         Ok(Json(RenderToolResponse::from(result)))
     }
 
     #[cfg(feature = "metrics")]
     async fn metrics_impl(&self) -> std::result::Result<Json<MetricsToolResponse>, McpError> {
-        let data = commands::metrics::query_tool_data(&self.start).map_err(map_tool_error)?;
+        let data =
+            commands::metrics::query_tool_data(self.project_root()?).map_err(map_tool_error)?;
         Ok(Json(MetricsToolResponse::from(data)))
     }
 
@@ -532,7 +571,7 @@ impl MemhubServer {
             }
         }
         let response = retrieval::recall(
-            &self.start,
+            self.project_root()?,
             RecallOptions {
                 query: params.query,
                 mode,
@@ -550,7 +589,7 @@ impl MemhubServer {
         )
         .map_err(map_tool_error)?;
         let explain = (params.explain == Some(true)).then(|| response.explain.clone());
-        let mut out = RecallToolResponse::from(response);
+        let mut out = RecallToolResponse::from_response(response, self.binding_evidence());
         out.explain = explain;
         Ok(Json(out))
     }
@@ -560,7 +599,7 @@ impl MemhubServer {
         Parameters(params): Parameters<GetRowParams>,
     ) -> std::result::Result<Json<GetRowToolResponse>, McpError> {
         let row = retrieval::get_row(
-            &self.start,
+            self.project_root()?,
             &params.source_type,
             params.source_id,
             params
@@ -581,6 +620,7 @@ impl MemhubServer {
             superseded_by: row.superseded_by,
             source: row.source,
             kind: row.kind,
+            binding: self.binding_evidence(),
         }))
     }
 
@@ -588,20 +628,25 @@ impl MemhubServer {
         &self,
         Parameters(params): Parameters<LocateParams>,
     ) -> std::result::Result<Json<LocateToolResponse>, McpError> {
-        let response = code_index::locate::locate(
-            &self.start,
+        self.binding.revalidate().map_err(map_tool_error)?;
+        let response = code_index::locate::locate_bound(
+            self.binding.code_root(),
+            &self.binding.config_path(),
             LocateOptions {
                 query: params.query,
                 limit: params.limit.unwrap_or(0),
                 use_reranker: params.rerank.unwrap_or(false),
-                // `--no-refresh` is a CLI-only opt-in for tight repeat-call
-                // loops (issue #67); the MCP tool always keeps the
-                // lazy-freshness guarantee.
+                // `--no-refresh` remains a CLI-only opt-in. MCP always
+                // attempts refresh, then verifies each returned file hash;
+                // moving-tree mismatches are omitted and counted.
                 no_refresh: false,
             },
         )
         .map_err(map_tool_error)?;
-        Ok(Json(LocateToolResponse::from(response)))
+        Ok(Json(LocateToolResponse::from_response(
+            response,
+            self.binding_evidence(),
+        )))
     }
 
     /// Resolve a `sync_*` tool's target dir: an explicit `remote`
@@ -610,14 +655,14 @@ impl MemhubServer {
     fn resolve_sync_remote(&self, remote: Option<&str>) -> std::result::Result<PathBuf, McpError> {
         match remote {
             Some(p) if !p.trim().is_empty() => Ok(PathBuf::from(p)),
-            _ => commands::sync::default_remote_dir(&self.start).map_err(map_tool_error),
+            _ => commands::sync::default_remote_dir(self.project_root()?).map_err(map_tool_error),
         }
     }
 
     async fn sync_status_impl(
         &self,
     ) -> std::result::Result<Json<SyncStatusToolResponse>, McpError> {
-        let s = commands::sync::enablement_status(&self.start).map_err(map_tool_error)?;
+        let s = commands::sync::enablement_status(self.project_root()?).map_err(map_tool_error)?;
         Ok(Json(SyncStatusToolResponse::from(s)))
     }
 
@@ -628,9 +673,12 @@ impl MemhubServer {
         let out_dir = self.resolve_sync_remote(params.remote.as_deref())?;
         // Push-side clobber gate (F12): without `force` the snapshot refuses
         // to overwrite a remote that is drive-ahead of or diverged from local.
-        let summary =
-            commands::sync::snapshot(&self.start, &out_dir, params.force.unwrap_or(false))
-                .map_err(map_tool_error)?;
+        let summary = commands::sync::snapshot(
+            self.project_root()?,
+            &out_dir,
+            params.force.unwrap_or(false),
+        )
+        .map_err(map_tool_error)?;
         Ok(Json(SyncSnapshotToolResponse::from(summary)))
     }
 
@@ -639,7 +687,8 @@ impl MemhubServer {
         Parameters(params): Parameters<SyncRemoteParams>,
     ) -> std::result::Result<Json<SyncCheckToolResponse>, McpError> {
         let remote = self.resolve_sync_remote(params.remote.as_deref())?;
-        let report = commands::sync::check(&self.start, &remote).map_err(map_tool_error)?;
+        let report =
+            commands::sync::check(self.project_root()?, &remote).map_err(map_tool_error)?;
         Ok(Json(SyncCheckToolResponse::from((
             report,
             remote.display().to_string(),
@@ -656,7 +705,8 @@ impl MemhubServer {
         // it, return the would-change verdict so the agent surfaces it
         // to the user before any swap (decision 103: operator-gated).
         if !params.confirm.unwrap_or(false) {
-            let report = commands::sync::check(&self.start, &remote).map_err(map_tool_error)?;
+            let report =
+                commands::sync::check(self.project_root()?, &remote).map_err(map_tool_error)?;
             return Ok(Json(SyncAdoptToolResponse {
                 adopted: false,
                 reason: Some(
@@ -676,7 +726,8 @@ impl MemhubServer {
                 backup_path: None,
             }));
         }
-        let summary = commands::sync::adopt(&self.start, &remote, true).map_err(map_tool_error)?;
+        let summary =
+            commands::sync::adopt(self.project_root()?, &remote, true).map_err(map_tool_error)?;
         Ok(Json(SyncAdoptToolResponse::from(summary)))
     }
 
@@ -685,7 +736,8 @@ impl MemhubServer {
         Parameters(params): Parameters<SyncRemoteParams>,
     ) -> std::result::Result<Json<SyncCommitToolResponse>, McpError> {
         let remote = self.resolve_sync_remote(params.remote.as_deref())?;
-        let summary = commands::sync::commit(&self.start, &remote).map_err(map_tool_error)?;
+        let summary =
+            commands::sync::commit(self.project_root()?, &remote).map_err(map_tool_error)?;
         Ok(Json(SyncCommitToolResponse::from(summary)))
     }
 
@@ -726,8 +778,9 @@ impl MemhubServer {
             }));
         }
 
-        let report = commands::transcript::archive(&self.start, agent, &params.session_id, true)
-            .map_err(map_tool_error)?;
+        let report =
+            commands::transcript::archive(self.project_root()?, agent, &params.session_id, true)
+                .map_err(map_tool_error)?;
         Ok(Json(ArchiveTranscriptToolResponse::from(report)))
     }
 }
@@ -736,9 +789,12 @@ impl MemhubServer {
 impl MemhubServer {
     #[tool(
         name = "status",
-        description = "Return a summary of the current memhub project and stored record counts."
+        description = "Return the launch-bound memhub project's summary, stored record counts, and typed memory/code binding evidence."
     )]
-    async fn status(&self) -> std::result::Result<Json<StatusToolResponse>, McpError> {
+    async fn status(
+        &self,
+        Parameters(_params): Parameters<StatusParams>,
+    ) -> std::result::Result<Json<StatusToolResponse>, McpError> {
         self.status_impl().await
     }
 
@@ -942,7 +998,7 @@ impl MemhubServer {
 
     #[tool(
         name = "get_row",
-        description = "Return one row's full stored text by the source_type, source_id and scope a recall hit reports (recall hits carry at most 300 characters of text). Works for repo rows and, in a repo that enabled machine-global memory, global rows. Read-only."
+        description = "Return one row's full stored text by the source_type, source_id and scope a recall hit reports (recall hits carry at most 300 characters of text), plus launch binding evidence. Works for repo rows and, in a repo that enabled machine-global memory, global rows."
     )]
     async fn get_row(
         &self,
@@ -953,7 +1009,7 @@ impl MemhubServer {
 
     #[tool(
         name = "locate",
-        description = "Locate code in this repo by intent (M11). SQL+RAG hybrid search (FTS5 BM25 + cosine when hybrid mode is configured) over a sibling code index at .memhub/code_index.sqlite, lazily refreshed to the working tree on each call. Returns ranked breadcrumbs — {path, start_line, end_line, symbol, kind, score, snippet} — where `snippet` is a CLIPPED excerpt (≤6 lines), never the full chunk. Read-only: never returns whole files and never edits. Use this to find WHERE code lives before reading it with your own file tools. `rerank` runs the bundled cross-encoder over the candidate pool (off by default. Fusion (reranker off) is the default and wins Recall@3; rerank wins single-best-guess Recall@1 — decisions 122/123)."
+        description = "Locate code in the launch-bound checkout by intent (M11). SQL+RAG hybrid search (FTS5 BM25 + cosine when hybrid mode is configured) over that checkout's .memhub/code_index.sqlite, using the primary memory project's config and deny list. Each call attempts a lazy refresh, then returns ranked breadcrumbs with a CLIPPED indexed-body snippet (≤6 lines), typed binding/index/freshness evidence, and SHA-256 evidence; a hit whose current selected-checkout file cannot be confined/read or does not match the index is omitted and counted. The lookup is not an atomic tree snapshot, and indexed HEAD is not dirty-content identity. It never returns whole files or edits source/project memory, though refresh can update the disposable index. Use this to find WHERE code lives before reading it with your own file tools. `rerank` runs the bundled cross-encoder over the candidate pool (off by default; fusion wins Recall@3, rerank wins single-best-guess Recall@1 — decisions 122/123)."
     )]
     async fn locate(
         &self,
@@ -1095,6 +1151,10 @@ OUT OF SCOPE (use other tools):
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
+#[serde(deny_unknown_fields)]
+struct StatusParams {}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
 struct SearchParams {
     query: String,
     limit: Option<usize>,
@@ -1192,10 +1252,11 @@ struct StatusToolResponse {
     pending_writes: i64,
     writes_logged: i64,
     deny_patterns: i64,
+    binding: BindingEvidence,
 }
 
-impl From<StatusSummary> for StatusToolResponse {
-    fn from(value: StatusSummary) -> Self {
+impl StatusToolResponse {
+    fn from_summary(value: StatusSummary, binding: BindingEvidence) -> Self {
         Self {
             project_name: value.project_name,
             repo_root: value.repo_root.display().to_string(),
@@ -1214,6 +1275,7 @@ impl From<StatusSummary> for StatusToolResponse {
             pending_writes: value.pending_writes,
             writes_logged: value.writes_logged,
             deny_patterns: usize_to_i64(value.deny_patterns),
+            binding,
         }
     }
 }
@@ -1585,6 +1647,7 @@ impl From<RenderResult> for RenderToolResponse {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct RecallParams {
     query: String,
     mode: Option<String>,
@@ -1617,6 +1680,7 @@ struct RecallParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct GetRowParams {
     /// The hit's `source_type`: fact, decision, task, doc_chunk, note or
     /// arch_section (`doc` and `arch` are accepted too).
@@ -1644,6 +1708,7 @@ struct GetRowToolResponse {
     source: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     kind: Option<String>,
+    binding: BindingEvidence,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -1665,6 +1730,7 @@ struct RecallToolResponse {
     /// only when the call passed `explain: true`.
     #[serde(skip_serializing_if = "Option::is_none")]
     explain: Option<crate::retrieval::recall::RecallExplain>,
+    binding: BindingEvidence,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -1749,8 +1815,8 @@ impl From<RecallWarning> for RecallToolWarning {
     }
 }
 
-impl From<RecallResponse> for RecallToolResponse {
-    fn from(value: RecallResponse) -> Self {
+impl RecallToolResponse {
+    fn from_response(value: RecallResponse, binding: BindingEvidence) -> Self {
         let mode = match value.mode {
             RetrievalMode::Fts => "fts".to_string(),
             RetrievalMode::Hybrid => "hybrid".to_string(),
@@ -1772,6 +1838,7 @@ impl From<RecallResponse> for RecallToolResponse {
                 elapsed_ms: u128_to_i64(value.elapsed_ms),
             },
             explain: None,
+            binding,
         }
     }
 }
@@ -1779,6 +1846,7 @@ impl From<RecallResponse> for RecallToolResponse {
 // ── Code locator (M11) tool shapes ──────────────────────────────────
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct LocateParams {
     /// Natural-language description of the code you're looking for.
     query: String,
@@ -1804,6 +1872,10 @@ struct LocateToolResponse {
     chunks_total: i64,
     /// Indexed `HEAD` after the refresh, if resolvable.
     head: Option<String>,
+    /// Launch-fixed project memory and code checkout evidence.
+    binding: BindingEvidence,
+    /// Exact sibling index and honestly bounded freshness evidence.
+    index: LocateIndexEvidence,
     /// Count of `code_embeddings` rows in scope for this query whose
     /// stored vector blob was the wrong byte length (corrupt/truncated)
     /// and so were skipped for scoring. Always 0 in `fts` mode.
@@ -1831,10 +1903,95 @@ struct LocateToolHit {
     rerank_score: Option<f32>,
     /// Clipped excerpt of the chunk body — NOT the full chunk.
     snippet: String,
+    /// SHA-256 evidence tying the exact snippet to its indexed chunk and
+    /// (for MCP's refreshing path) the selected checkout file.
+    content: LocateContentEvidence,
 }
 
-impl From<LocateHit> for LocateToolHit {
-    fn from(value: LocateHit) -> Self {
+#[derive(Debug, Clone, Copy, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum LocateFreshnessBasisJson {
+    MetadataWithHashOnChange,
+    IndexedCacheOnly,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum LocateContentVerificationJson {
+    IndexedOnly,
+    WorktreeFileHash,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct LocateContentEvidence {
+    /// Hash algorithm for every field in this object.
+    algorithm: String,
+    /// SHA-256 of the exact UTF-8 bytes in `snippet`, including a clipping
+    /// ellipsis when present.
+    snippet_sha256: String,
+    /// SHA-256 stored for the full indexed chunk body.
+    indexed_chunk_sha256: String,
+    /// SHA-256 stored for the indexed source file's raw bytes.
+    indexed_file_sha256: String,
+    /// Current selected-checkout file hash. Present only when this call read
+    /// it and it matched `indexed_file_sha256`.
+    worktree_file_sha256: Option<String>,
+    verification: LocateContentVerificationJson,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct LocateOmissionsEvidence {
+    total: i64,
+    unreadable: i64,
+    changed_since_index: i64,
+    escaped_root: i64,
+    index_mismatch: i64,
+}
+
+impl From<LocateOmissionCounts> for LocateOmissionsEvidence {
+    fn from(value: LocateOmissionCounts) -> Self {
+        Self {
+            total: usize_to_i64(value.total()),
+            unreadable: usize_to_i64(value.unreadable),
+            changed_since_index: usize_to_i64(value.changed_since_index),
+            escaped_root: usize_to_i64(value.escaped_root),
+            index_mismatch: usize_to_i64(value.index_mismatch),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct LocateFreshnessEvidence {
+    basis: LocateFreshnessBasisJson,
+    /// False by design: enumeration, refresh, query, and returned-file
+    /// verification do not form one atomic filesystem snapshot.
+    atomic_tree_snapshot: bool,
+    /// Tracked paths the refresh could not safely read/index.
+    refresh_skipped_files: i64,
+    /// True when skipped refresh paths or omitted ranked hits make this a
+    /// knowingly incomplete result bundle.
+    incomplete: bool,
+    omitted_hits: LocateOmissionsEvidence,
+    limitation: String,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct LocateIndexEvidence {
+    db_path: String,
+    /// Commit recorded by the index refresh. This is provenance, not the
+    /// identity of dirty working-tree content; per-hit hashes provide that.
+    indexed_head: Option<String>,
+    freshness: LocateFreshnessEvidence,
+}
+
+impl LocateToolHit {
+    fn from_hit(value: LocateHit) -> Self {
+        let verification = match value.content.verification {
+            LocateContentVerification::IndexedOnly => LocateContentVerificationJson::IndexedOnly,
+            LocateContentVerification::WorktreeFileHash => {
+                LocateContentVerificationJson::WorktreeFileHash
+            }
+        };
         Self {
             rank: usize_to_i64(value.rank),
             path: value.path,
@@ -1847,26 +2004,63 @@ impl From<LocateHit> for LocateToolHit {
             vector_score: value.vector_score,
             rerank_score: value.rerank_score,
             snippet: value.snippet,
+            content: LocateContentEvidence {
+                algorithm: "sha256".to_string(),
+                snippet_sha256: value.content.snippet_sha256,
+                indexed_chunk_sha256: value.content.indexed_chunk_sha256,
+                indexed_file_sha256: value.content.indexed_file_sha256,
+                worktree_file_sha256: value.content.worktree_file_sha256,
+                verification,
+            },
         }
     }
 }
 
-impl From<LocateResponse> for LocateToolResponse {
-    fn from(value: LocateResponse) -> Self {
+impl LocateToolResponse {
+    fn from_response(value: LocateResponse, binding: BindingEvidence) -> Self {
         let mode = match value.mode {
             RetrievalMode::Fts => "fts".to_string(),
             RetrievalMode::Hybrid => "hybrid".to_string(),
         };
+        let basis = match value.freshness_basis {
+            LocateFreshnessBasis::MetadataWithHashOnChange => {
+                LocateFreshnessBasisJson::MetadataWithHashOnChange
+            }
+            LocateFreshnessBasis::IndexedCacheOnly => LocateFreshnessBasisJson::IndexedCacheOnly,
+        };
+        let omissions = LocateOmissionsEvidence::from(value.omissions);
+        let incomplete = value.refresh_skipped_files > 0 || omissions.total > 0;
+        let index = LocateIndexEvidence {
+            db_path: value.index_path.display().to_string(),
+            indexed_head: value.head.clone(),
+            freshness: LocateFreshnessEvidence {
+                basis,
+                atomic_tree_snapshot: value.atomic_tree_snapshot,
+                refresh_skipped_files: usize_to_i64(value.refresh_skipped_files),
+                incomplete,
+                omitted_hits: omissions,
+                limitation: "tracked-file metadata is a fast path and the lookup is not an \
+                             atomic tree snapshot; returned MCP hits are individually \
+                             hash-verified against the selected checkout"
+                    .to_string(),
+            },
+        };
         Self {
             query: value.query,
             mode,
-            results: value.results.into_iter().map(LocateToolHit::from).collect(),
+            results: value
+                .results
+                .into_iter()
+                .map(LocateToolHit::from_hit)
+                .collect(),
             candidate_count: usize_to_i64(value.candidate_count),
             returned_count: usize_to_i64(value.returned_count),
             reranked: value.reranked,
             files_total: usize_to_i64(value.files_total),
             chunks_total: usize_to_i64(value.chunks_total),
             head: value.head,
+            binding,
+            index,
             corrupt_embeddings: usize_to_i64(value.corrupt_embeddings),
             elapsed_ms: u128_to_i64(value.elapsed_ms),
         }
@@ -3322,7 +3516,9 @@ mod tests {
     /// explain object's fields.
     #[test]
     fn mcp_recall_output_schema_describes_explain_fields() {
-        let server = MemhubServer::new(PathBuf::from("."));
+        let temp = tempdir().expect("tempdir");
+        init::run(temp.path()).expect("init");
+        let server = MemhubServer::new(temp.path().to_path_buf());
         let tool = server.tool_router.get("recall").expect("recall tool");
         let schema = serde_json::to_value(tool.output_schema.as_ref().expect("output schema"))
             .expect("serialize schema");

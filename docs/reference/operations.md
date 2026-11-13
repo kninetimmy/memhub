@@ -116,6 +116,17 @@ rule would forbid. This contract covers the repo DB only: the
 machine-global store follows the opposite rule for migrations (see
 "Machine-global memory" below).
 
+**Paired MCP launches preserve this contract (issue #436).** When
+`memhub serve --memory-root <primary> --code-root <checkout>` is used,
+every memory-backed MCP operation—including `status`, `recall`, `get_row`,
+existing direct/staged writes, sync and transcript operations—passes the
+fixed primary root into the same `open_project`-using command paths as
+before. Semantic reads can therefore still migrate, upsert metadata,
+record/debounce registry or metrics maintenance, and expire proposals.
+The separate code root does not introduce a physically read-only memory
+path. `locate` is the exception it already was: it reads the primary
+config but opens only the selected checkout's disposable code cache.
+
 ## Safety backups
 
 Three operations replace data that reverting the code cannot bring
@@ -1139,15 +1150,77 @@ agent then `Read`s that exact span. It never returns code into a recall
 bundle and never edits.
 
 **Isolated by construction (decision 107).** The index is a sibling DB at
-`.memhub/code_index.sqlite` — gitignored, per-machine, and **never read by
-`memhub recall`, never in `memhub export`, never in M10 sync**. That
-physical separation is what preserves the recall eval-regression guarantee
-(mirrors M9's registry-is-not-recall rule). It is also **derivable +
-disposable**: no migration framework, just `CREATE TABLE IF NOT EXISTS` +
-a `schema_version` in `index_meta`; a version mismatch drops and rebuilds,
-so `memhub upgrade` is a no-op for it. The index set is `git ls-files`
-filtered through the existing deny-list and scoped to grammar-known source
-languages (task 69, below).
+the selected code checkout's `.memhub/code_index.sqlite` — gitignored,
+per-machine, and **never read by any recall entry point (CLI, MCP, or
+retrieval eval), never in any export/import payload, and never in any M10
+sync operation**. These restrictions apply to every operation of each
+named kind, not only the literal `memhub recall` symbol. That physical
+separation is what preserves the recall eval-regression guarantee (mirrors
+M9's registry-is-not-recall rule). It is also **derivable + disposable**:
+no migration framework, just `CREATE TABLE IF NOT EXISTS` + a
+`schema_version` in `index_meta`; a version mismatch drops and rebuilds, so
+`memhub upgrade` is a no-op for it. The index set is `git ls-files`
+filtered through the primary project's deny-list and scoped to
+grammar-known source languages (task 69, below).
+
+**Cache placement before and after issue #436 (2026-11-13).** Before,
+“sibling” always meant beside the same checkout's `project.sqlite`, because
+memory and code were rediscovered from one start path. After, ordinary CLI
+and single-checkout MCP launches retain exactly that placement, while an
+explicit paired MCP launch keeps `project.sqlite` and `config.toml` only
+under the primary memory root and places one independent
+`code_index.sqlite` under each selected checkout. No project DB or live
+config is copied to a worktree.
+
+### MCP launch binding
+
+`memhub serve` keeps its ordinary discovery mode. Its additive paired form
+is:
+
+```text
+memhub serve --memory-root <absolute-primary-root> --code-root <absolute-checkout-root>
+```
+
+The options are a pair: either both are present or neither is. Relative
+paths are resolved by the OS at launch, so consumers that need
+cwd-independent behavior pass absolute paths. The memory root must contain
+the existing `.memhub/project.sqlite`; both supplied roots must resolve to
+Git checkout roots with the same canonical common Git directory and both
+must appear in `git worktree list`. Canonical root, checkout-admin and
+common-directory filesystem identities are pinned (Unix device/inode;
+Windows volume serial/file index) and the Git relationship is rechecked
+before every tool call. A path alias is accepted only when canonicalization
+proves it is that same pinned object. Missing/replaced roots, unrelated
+repositories, deregistered worktrees, unverifiable paths, or changed Git
+identity fail before a tool accesses another project/checkout. There is
+still an unavoidable interval between revalidation and later filesystem
+operations; this is local binding validation, not an atomic OS namespace
+lease.
+
+Before issue #436, ordinary ancestor discovery could start inside a nested
+Git worktree with no local `.memhub`, find the primary checkout's metadata
+above it, and silently index/return primary-checkout code. Adding local
+metadata made code correct but created a second memory location. After,
+ordinary project-root/subdirectory discovery and non-Git memory-only
+projects still work, but a launch directory whose Git top-level differs
+from the discovered memory root fails with a binding error directing the
+caller to the paired form. Binding is fixed for the server lifetime: a
+later `.memhub` directory in the selected worktree cannot redirect it.
+
+The `status`, `recall`, `get_row`, and `locate` outputs add:
+
+- `binding.mode`: `discovered` or `explicit`;
+- canonical `binding.memory_root` and `binding.code_root`;
+- `binding.repository_relationship`: `same_checkout`,
+  `registered_worktree`, or `memory_only`;
+- `binding.git_common_dir` for verified Git bindings.
+
+Their input schemas use closed objects and reject unsupported fields,
+including attempted root overrides. Sync `remote`, doc allow-list inputs,
+proposal staging, archive/adopt confirmations, and maintained-open behavior
+keep their existing meanings; none can alter the launch binding. This
+contract scopes data only. It does not qualify child-role permissions,
+install host configuration, or automate wrap-up.
 
 **Symbol-aware chunking (decisions 108, 115–120).** A tree-sitter AST
 chunker emits one chunk per top-level item and one `Type::method` chunk per
@@ -1186,12 +1259,14 @@ them; one then failed with a duplicate `code_embeddings.chunk_id`. After
 issue #435, every production Rust entry point that requests a refresh —
 CLI `memhub locate` without `--no-refresh`, eval harness `memhub eval
 locate`, MCP `memhub.locate`, and CLI `memhub code index` — reaches these
-concurrency and recovery rules through `code_index::refresh`. The three
-locate entry points call `code_index::locate::locate` with refresh enabled;
+concurrency and recovery rules through the shared refresh implementation.
+CLI locate and `eval::run_locate` call the public
+`code_index::locate::locate`; MCP calls the additive
+`code_index::locate::locate_bound` so its roots cannot be rediscovered.
 `memhub code index` calls `code_index::refresh` directly. A CLI locate with
-`--no-refresh` skips `code_index::refresh` but still opens and bootstraps
-the sibling database before querying, so it shares the bootstrap
-serialization rule below without running the refresh/backfill rules:
+`--no-refresh` skips refresh but still opens and bootstraps the sibling
+database before querying, so it shares the bootstrap serialization rule
+below without running the refresh/backfill rules:
 
 - Schema bootstrap and the chunk/FTS refresh take SQLite's writer slot
   before reading the state they will update. Concurrent cold refreshes
@@ -1211,10 +1286,26 @@ serialization rule below without running the refresh/backfill rules:
   `.memhub/code_index.sqlite`; durable project memory, export, and sync
   contents are unchanged.
 
+**Returned-content correction (issue #436).** Before, the query selected an
+indexed chunk and then reread its line range from disk. A later edit,
+unreadable file, or metadata fast-path collision could therefore pair an
+indexed score with different/empty snippet bytes without saying so. After,
+the snippet is clipped from the exact stored chunk body and its SHA-256 is
+returned alongside the indexed chunk and file hashes. A default locate
+also confines the current file to the selected checkout, reads it, and
+requires its raw-byte hash to equal the indexed file hash. A hit that is
+unreadable, escapes through a symlink/junction, changed since the index, or
+has inconsistent index content is omitted and counted by reason under
+`index.freshness.omitted_hits`; refresh-level skipped paths are also
+reported and set `incomplete`.
+
 The limit is still observation of a moving working tree, not a filesystem
-snapshot: an external edit during enumeration/stat/read or after the index
-commit can cross those observations, and a snippet read can see later bytes.
-The next default refresh converges again.
+snapshot: enumeration, metadata/hash refresh, query and per-returned-file
+verification do not share one transaction, and an edit can occur after the
+last verification. Responses therefore say
+`freshness.basis = metadata_with_hash_on_change` and
+`atomic_tree_snapshot = false`; they never promote the indexed `HEAD` to a
+dirty-content identity. The next default refresh converges again.
 
 The first issue #435 implementation serialized schema bootstrap and refresh
 but still ran `PRAGMA journal_mode=WAL` in the connection's startup batch.
@@ -1238,7 +1329,9 @@ ls-files`, no per-file stat, no `git rev-parse HEAD` — trading convergence
 for the lowest possible latency; `files_total` / `chunks_total` / `head`
 then report the last-*indexed* state, not a fresh recount. Stale-by-choice,
 explicit opt-in; default behavior (attempt a refresh every call) is
-unchanged without the flag.
+unchanged without the flag. Its snippets now come from and are hash-checked
+against the indexed chunk (`verification = indexed_only`), so this mode
+still performs no current-file read and does not imply current bytes.
 
 **Retrieval default: fusion, reranker OFF (decisions 114, 122, 123).**
 Recall is FTS BM25 + vector fusion with the cross-encoder reranker off and
@@ -1261,8 +1354,36 @@ it indexes memhub's own (Rust) tree, so the non-Rust grammars are A/B'd by
 the polyglot fixture eval in `tests/retrieval/locate_polyglot.rs` (task 88) instead.
 
 Surfaces: `memhub locate` / `memhub code index|status|rm` (CLI) ·
-`memhub.locate` (MCP, read-only — clipped snippets only, never full code) ·
+`memhub.locate` (MCP — clipped snippets only, never full code or source
+edits; default calls may update the disposable cache) ·
 `/locate` (skill).
+
+`locate` preserves every pre-#436 response field and adds
+`index.db_path`, `index.indexed_head`, typed freshness/incomplete evidence,
+and per-hit `content` evidence:
+`algorithm = sha256`, `snippet_sha256`, `indexed_chunk_sha256`,
+`indexed_file_sha256`, optional `worktree_file_sha256`, and typed
+`verification`. `head` and `index.indexed_head` identify the commit recorded
+by the cache; only the content hashes identify dirty returned bytes.
+
+### Issue #436 blast radius
+
+| Structural element / caller | Before → after; prior behavior retained? |
+| --- | --- |
+| `TopLevelCommand::Serve`, `cli::run`, `mcp::serve` / `serve_bound` | The public one-argument `serve` and cwd discovery remain. The paired root flags, `serve_bound`, and launch validation are additive. |
+| `MemhubServer` and all MCP tool implementations | One rediscovered `start` path became one launch-fixed, per-call-revalidated binding. Every existing tool still reaches its same command/retrieval implementation and the primary memory DB; no write capability was added. |
+| MCP `status`, `recall`, `get_row`, `locate` request/response shapes | Existing fields retain their meanings. Closed request objects now reject unknown/root fields; typed `binding` is additive. Only these four project/code evidence surfaces changed; other tool schemas did not acquire a root override. |
+| Proposal, task/command/note/doc/render, sync and archive MCP paths | Their staging/direct-write split, doc confinement, remote operation inputs, and confirmation gates still hold. Their fixed project argument is now the memory root. |
+| `db::open_project` and maintenance-on-open | Unchanged. Paired semantic reads still run migrations/upserts and best-effort maintenance against the primary DB; no read-only split was added. |
+| `code_index::locate::locate` (public ordinary API) | CLI locate and `eval::run_locate` still discover one checkout/config and keep default/`no_refresh` behavior. The response adds index/freshness/content evidence; snippets now come from verified indexed bodies instead of an unchecked disk reread. |
+| `code_index::locate::locate_bound` (new API) | New MCP-only fixed-root entry point; it shares the same query implementation without a second discovery pass. |
+| `code_index::refresh` / shared refresh implementation | CLI locate, eval locate and `code index` retain ordinary discovery; MCP supplies code root + primary config. PR #437's immediate transactions, conditional delayed embedding writes, five-second WAL-transition retry, and recovery semantics are unchanged. |
+| Code cache open/bootstrap/schema | Same schema and bootstrap path, now under the selected code root. A CLI `--no-refresh` still opens/bootstrap the cache; `code status` still uses its own connection and does not create a missing cache. |
+| Code status and manual remove/rebuild | Existing behavior holds. Status still compares current/indexed HEAD; remove/rebuild remain uncoordinated with active lookups and must be retried if raced. |
+| Git walker/source scope | Still `git ls-files` ∩ primary deny-list ∩ grammar-known source. Dirty tracked bytes are included; untracked bytes remain excluded. Final symlinks and ancestor symlink/junction escapes are now both refused. |
+| `LocateResponse`, CLI JSON/human output, MCP locate output | Existing rank/path/line/scores/counts/`head` remain. Hash/freshness/omission evidence is additive; human output now warns when knowingly incomplete. |
+| Recall/export/sync isolation | The preexisting physical-separation rule still holds for every operation in those classes, not only one named function. Per-worktree caches are never durable memory, recalled, exported, imported, or synced. |
+| Non-Git memory-only and ordinary single-checkout projects | Existing status/recall/write behavior holds. Code locate still needs Git; nested-checkout ancestor drift is the intentionally removed behavior recorded above. |
 
 **Scoring config is independent of recall (R11, issue #73).** Locate's
 fusion weights and the test-path down-weight live under their own
