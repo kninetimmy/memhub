@@ -14,6 +14,8 @@ use std::sync::mpsc::{Receiver, channel};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use memhub::code_index;
+use memhub::code_index::locate::{LocateOptions, locate};
 use memhub::commands::{decision, fact, init, task};
 use memhub::config::{ProjectConfig, RetrievalMode};
 use serde_json::{Value, json};
@@ -620,6 +622,39 @@ fn structured(reply: &Value) -> &Value {
     &reply["result"]["structuredContent"]
 }
 
+#[cfg(unix)]
+fn create_directory_alias(target: &Path, alias: &Path) {
+    std::os::unix::fs::symlink(target, alias).expect("create directory symlink");
+}
+
+#[cfg(windows)]
+fn create_directory_alias(target: &Path, alias: &Path) {
+    let output = Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(alias)
+        .arg(target)
+        .output()
+        .expect("create directory junction");
+    assert!(
+        output.status.success(),
+        "mklink failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn locate_fts(root: &Path, query: &str, no_refresh: bool) -> code_index::locate::LocateResponse {
+    locate(
+        root,
+        LocateOptions {
+            query: query.to_string(),
+            limit: 10,
+            use_reranker: false,
+            no_refresh,
+        },
+    )
+    .unwrap()
+}
+
 #[test]
 fn paired_launch_shares_memory_and_isolates_dirty_worktree_code() {
     let fixture = BoundFixture::new();
@@ -933,6 +968,137 @@ fn paired_launch_rejects_unrelated_missing_and_changed_roots() {
         "{changed}"
     );
     assert!(changed["result"]["structuredContent"].is_null());
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn paired_launch_refuses_cache_directory_alias_without_touching_target() {
+    let fixture = BoundFixture::new();
+    let primary_before = locate_fts(&fixture.primary, "primary checkout marker", false);
+    assert_eq!(primary_before.results.len(), 1);
+    let mut server = LiveServer::bound(&fixture.launch, &fixture.primary, &fixture.worktree_a);
+    assert_eq!(structured(&server.call(2, "status", json!({})))["facts"], 1);
+
+    create_directory_alias(
+        &fixture.primary.join(".memhub"),
+        &fixture.worktree_a.join(".memhub"),
+    );
+    let refused = server.call(3, "locate", json!({"query": "alpha dirty worktree marker"}));
+    assert!(
+        refused.to_string().contains("code cache storage invalid"),
+        "{refused}"
+    );
+    assert!(refused.to_string().contains("metadata directory"));
+    let direct = locate(
+        &fixture.worktree_a,
+        LocateOptions {
+            query: "alpha dirty worktree marker".to_string(),
+            limit: 10,
+            use_reranker: false,
+            no_refresh: false,
+        },
+    )
+    .unwrap_err();
+    assert!(direct.to_string().contains("code cache storage invalid"));
+    drop(server);
+
+    let leaked = locate_fts(&fixture.primary, "alpha dirty worktree marker", true);
+    assert!(leaked.results.is_empty(), "{:?}", leaked.results);
+    let primary_after = locate_fts(&fixture.primary, "primary checkout marker", true);
+    assert_eq!(primary_after.results.len(), 1);
+    assert!(
+        primary_after.results[0]
+            .snippet
+            .contains("primary_checkout_marker")
+    );
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn paired_launch_refuses_hard_linked_cache_db_without_touching_target() {
+    let fixture = BoundFixture::new();
+    let primary_before = locate_fts(&fixture.primary, "primary checkout marker", false);
+    assert_eq!(primary_before.results.len(), 1);
+    let mut server = LiveServer::bound(&fixture.launch, &fixture.primary, &fixture.worktree_a);
+    assert_eq!(structured(&server.call(2, "status", json!({})))["facts"], 1);
+    let primary_db = code_index::code_index_db_path(&fixture.primary);
+    let primary_db_before = std::fs::read(&primary_db).unwrap();
+    let worktree_metadata = fixture.worktree_a.join(".memhub");
+    std::fs::create_dir(&worktree_metadata).unwrap();
+    let worktree_db = worktree_metadata.join(code_index::CODE_INDEX_DB_FILENAME);
+    std::fs::hard_link(&primary_db, &worktree_db).expect("create code-index hard link");
+
+    let refused = server.call(3, "locate", json!({"query": "alpha dirty worktree marker"}));
+    assert!(
+        refused.to_string().contains("code cache storage invalid"),
+        "{refused}"
+    );
+    assert!(refused.to_string().contains("hard links"));
+    let direct = locate(
+        &fixture.worktree_a,
+        LocateOptions {
+            query: "alpha dirty worktree marker".to_string(),
+            limit: 10,
+            use_reranker: false,
+            no_refresh: false,
+        },
+    )
+    .unwrap_err();
+    assert!(direct.to_string().contains("hard links"));
+    assert_eq!(std::fs::read(&primary_db).unwrap(), primary_db_before);
+    drop(server);
+
+    std::fs::remove_file(worktree_db).unwrap();
+    let leaked = locate_fts(&fixture.primary, "alpha dirty worktree marker", true);
+    assert!(leaked.results.is_empty(), "{:?}", leaked.results);
+    let primary_after = locate_fts(&fixture.primary, "primary checkout marker", true);
+    assert_eq!(primary_after.results.len(), 1);
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn paired_launch_refuses_indirect_primary_memory_metadata() {
+    let fixture = BoundFixture::new();
+    let mut server = LiveServer::bound(&fixture.launch, &fixture.primary, &fixture.worktree_a);
+    assert_eq!(structured(&server.call(2, "status", json!({})))["facts"], 1);
+    let relocated = fixture._temp.path().join("relocated-primary-memory");
+    std::fs::rename(fixture.primary.join(".memhub"), &relocated).unwrap();
+    let db_path = relocated.join("project.sqlite");
+    let before = std::fs::read(&db_path).unwrap();
+    create_directory_alias(&relocated, &fixture.primary.join(".memhub"));
+
+    let refused = server.call(3, "status", json!({}));
+    assert!(
+        refused.to_string().contains("memory storage invalid"),
+        "{refused}"
+    );
+    assert!(refused.to_string().contains("metadata directory"));
+    assert_eq!(std::fs::read(&db_path).unwrap(), before);
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn paired_launch_refuses_hard_linked_primary_memory_db() {
+    let fixture = BoundFixture::new();
+    let other = fixture._temp.path().join("other-memory");
+    std::fs::create_dir(&other).unwrap();
+    init::run(&other).unwrap();
+    let other_db = other.join(".memhub/project.sqlite");
+    let other_before = std::fs::read(&other_db).unwrap();
+
+    let mut server = LiveServer::bound(&fixture.launch, &fixture.primary, &fixture.worktree_a);
+    assert_eq!(structured(&server.call(2, "status", json!({})))["facts"], 1);
+    let primary_db = fixture.primary.join(".memhub/project.sqlite");
+    std::fs::remove_file(&primary_db).unwrap();
+    std::fs::hard_link(&other_db, &primary_db).expect("create project DB hard link");
+
+    let refused = server.call(3, "status", json!({}));
+    assert!(
+        refused.to_string().contains("memory storage invalid"),
+        "{refused}"
+    );
+    assert!(refused.to_string().contains("hard links"));
+    assert_eq!(std::fs::read(&other_db).unwrap(), other_before);
 }
 
 #[test]

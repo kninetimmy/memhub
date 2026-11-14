@@ -22,17 +22,19 @@ pub mod walker;
 
 use std::collections::HashMap;
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use rusqlite::{Connection, Statement, Transaction, TransactionBehavior, params};
 
-use crate::Result;
 use crate::config::{PathMatcher, ProjectConfig, RetrievalMode};
 use crate::db::{self, MEMHUB_DIR};
+use crate::fs_identity::file_info;
 use crate::retrieval::embeddings::{EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME, embed_batch};
 use crate::retrieval::util::{bytes_to_vector, sha256_hex, vector_to_le_bytes};
+use crate::{MemhubError, Result};
 
 /// Filename of the sibling code-index DB inside `.memhub/`.
 pub const CODE_INDEX_DB_FILENAME: &str = "code_index.sqlite";
@@ -43,6 +45,143 @@ const JOURNAL_MODE_RETRY_DELAY: Duration = Duration::from_millis(10);
 /// Resolve the sibling DB path for a repo root: `<root>/.memhub/code_index.sqlite`.
 pub fn code_index_db_path(repo_root: &Path) -> PathBuf {
     repo_root.join(MEMHUB_DIR).join(CODE_INDEX_DB_FILENAME)
+}
+
+const SQLITE_STORAGE_SUFFIXES: [&str; 4] = ["", "-wal", "-shm", "-journal"];
+
+/// Resolve and validate the selected checkout's physical cache storage.
+///
+/// The metadata directory and every existing SQLite file must be direct
+/// entries at their canonical expected paths. Symlink/junction targets and
+/// multiply-linked files are refused so two checkouts cannot share one live
+/// cache under different textual paths.
+pub(crate) fn validate_code_index_storage(
+    repo_root: &Path,
+    create_metadata_dir: bool,
+) -> Result<PathBuf> {
+    let repo_root = fs::canonicalize(repo_root).map_err(|error| {
+        cache_storage_error(format!(
+            "cannot resolve code root '{}': {error}",
+            repo_root.display()
+        ))
+    })?;
+    let metadata_dir = repo_root.join(MEMHUB_DIR);
+    match fs::symlink_metadata(&metadata_dir) {
+        Ok(_) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound && create_metadata_dir => {
+            match fs::create_dir(&metadata_dir) {
+                Ok(()) => {}
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+                Err(error) => {
+                    return Err(cache_storage_error(format!(
+                        "cannot create code cache metadata directory '{}': {error}",
+                        metadata_dir.display()
+                    )));
+                }
+            }
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return Ok(metadata_dir.join(CODE_INDEX_DB_FILENAME));
+        }
+        Err(error) => {
+            return Err(cache_storage_error(format!(
+                "cannot inspect code cache metadata directory '{}': {error}",
+                metadata_dir.display()
+            )));
+        }
+    }
+
+    let metadata = fs::symlink_metadata(&metadata_dir).map_err(|error| {
+        cache_storage_error(format!(
+            "cannot inspect code cache metadata directory '{}': {error}",
+            metadata_dir.display()
+        ))
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(cache_storage_error(format!(
+            "code cache metadata directory '{}' is not a direct directory",
+            metadata_dir.display()
+        )));
+    }
+    let actual_dir = fs::canonicalize(&metadata_dir).map_err(|error| {
+        cache_storage_error(format!(
+            "cannot resolve code cache metadata directory '{}': {error}",
+            metadata_dir.display()
+        ))
+    })?;
+    if actual_dir != metadata_dir {
+        return Err(cache_storage_error(format!(
+            "code cache metadata directory '{}' resolves outside its selected checkout storage \
+             to '{}'",
+            metadata_dir.display(),
+            actual_dir.display()
+        )));
+    }
+
+    let db_path = metadata_dir.join(CODE_INDEX_DB_FILENAME);
+    for suffix in SQLITE_STORAGE_SUFFIXES {
+        validate_direct_cache_file(&sqlite_path(&db_path, suffix))?;
+    }
+    Ok(db_path)
+}
+
+fn validate_direct_cache_file(path: &Path) -> Result<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(cache_storage_error(format!(
+                "cannot inspect code cache file '{}': {error}",
+                path.display()
+            )));
+        }
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(cache_storage_error(format!(
+            "code cache file '{}' is not a direct regular file",
+            path.display()
+        )));
+    }
+    let actual = fs::canonicalize(path).map_err(|error| {
+        cache_storage_error(format!(
+            "cannot resolve code cache file '{}': {error}",
+            path.display()
+        ))
+    })?;
+    if actual != path {
+        return Err(cache_storage_error(format!(
+            "code cache file '{}' resolves to '{}'",
+            path.display(),
+            actual.display()
+        )));
+    }
+    let info = file_info(path).map_err(|error| {
+        cache_storage_error(format!(
+            "cannot verify code cache file '{}': {error}",
+            path.display()
+        ))
+    })?;
+    if info.links != 1 {
+        return Err(cache_storage_error(format!(
+            "code cache file '{}' has {} hard links; cache storage must be independent",
+            path.display(),
+            info.links
+        )));
+    }
+    Ok(())
+}
+
+fn sqlite_path(db_path: &Path, suffix: &str) -> PathBuf {
+    if suffix.is_empty() {
+        return db_path.to_path_buf();
+    }
+    let mut path = db_path.as_os_str().to_os_string();
+    path.push(suffix);
+    PathBuf::from(path)
+}
+
+fn cache_storage_error(message: impl Into<String>) -> MemhubError {
+    MemhubError::Binding(format!("code cache storage invalid: {}", message.into()))
 }
 
 /// A fixed checkout/config pairing for one code-index operation. Ordinary
@@ -134,10 +273,10 @@ pub(crate) fn resolve_source_file(
     })
 }
 
-/// Open (creating + bootstrapping if necessary) the sibling code-index DB
-/// at the given path. This connection is independent of the project DB —
-/// callers must never run code-index DDL/DML against `project.sqlite`.
-pub fn open_code_index(db_path: &Path) -> Result<Connection> {
+/// Open (creating + bootstrapping if necessary) a sibling code-index DB.
+/// Production callers validate checkout-local storage before reaching this
+/// low-level connection helper.
+pub(crate) fn open_code_index(db_path: &Path) -> Result<Connection> {
     if let Some(parent) = db_path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -266,6 +405,7 @@ pub(crate) fn refresh_source(source: &CodeIndexSource) -> Result<RefreshSummary>
     // skip open_project's heavy side effects (migrations, transcript scrape,
     // registry upsert), so the code index stays decoupled (finding M1).
     let repo_root = fs::canonicalize(&source.repo_root)?;
+    let db_path = validate_code_index_storage(&repo_root, true)?;
     let config = source.load_config()?;
     let matcher = PathMatcher::from_patterns(&config.deny_list.patterns)?;
 
@@ -283,7 +423,6 @@ pub(crate) fn refresh_source(source: &CodeIndexSource) -> Result<RefreshSummary>
         .collect();
     let head = walker::current_head(&repo_root);
 
-    let db_path = code_index_db_path(&repo_root);
     let mut conn = open_code_index(&db_path)?;
     // Take the writer slot before reading the prior index state. A deferred
     // transaction could let two cold refreshes read the same empty snapshot,
@@ -496,6 +635,7 @@ impl CodeIndexStatus {
 pub fn status(start: &Path) -> Result<CodeIndexStatus> {
     let paths = db::discover_paths(start)?;
     let repo_root = paths.repo_root.clone();
+    let db_path = validate_code_index_storage(&repo_root, false)?;
     let config = if paths.config_path.exists() {
         ProjectConfig::load(&paths.config_path)?
     } else {
@@ -505,7 +645,6 @@ pub fn status(start: &Path) -> Result<CodeIndexStatus> {
             .unwrap_or("memhub");
         ProjectConfig::default_for_repo_name(repo_name)
     };
-    let db_path = code_index_db_path(&repo_root);
     let current_head = walker::current_head(&repo_root);
 
     if !db_path.exists() {
@@ -563,16 +702,10 @@ pub struct RemoveOutcome {
 /// `removed: false` means there was nothing to delete.
 pub fn remove_index(start: &Path) -> Result<RemoveOutcome> {
     let paths = db::discover_paths(start)?;
-    let db_path = code_index_db_path(&paths.repo_root);
+    let db_path = validate_code_index_storage(&paths.repo_root, false)?;
     let removed = db_path.exists();
     for suffix in ["", "-wal", "-shm"] {
-        let candidate = if suffix.is_empty() {
-            db_path.clone()
-        } else {
-            let mut name = db_path.as_os_str().to_os_string();
-            name.push(suffix);
-            PathBuf::from(name)
-        };
+        let candidate = sqlite_path(&db_path, suffix);
         if candidate.exists() {
             // A missing WAL/SHM is fine; only surface a real removal error.
             fs::remove_file(&candidate)?;

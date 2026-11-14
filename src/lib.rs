@@ -6,6 +6,7 @@ pub mod config;
 pub mod db;
 pub mod errors;
 pub mod export;
+mod fs_identity;
 pub mod logging;
 pub mod managed_block;
 pub mod mcp;

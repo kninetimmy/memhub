@@ -46,7 +46,11 @@ while each verified checkout/worktree owns its own
 `.memhub/code_index.sqlite`. No worktree project DB is initialized or
 copied. The physical separation invariant applies to every recall,
 export/import and sync operation, not only the three command spellings used
-below.
+below. A follow-up correction makes “owns” physical: the checkout's
+`.memhub` directory and SQLite database/sidecars must be direct canonical
+entries, and multiply-linked files are refused. Before that correction a
+worktree metadata junction or database hardlink could make two textual cache
+paths name one live database and contaminate the primary cache.
 
 1. **Isolation.** Gitignored, per-machine. Never read by recall, never
    exported, never synced. Physical separation is the mechanism that
@@ -180,6 +184,14 @@ the incomplete response counts the reason. Responses carry exact snippet,
 indexed-chunk, indexed-file and (when checked) worktree-file SHA-256 values,
 label the metadata-with-hash-on-change basis, and state that the tree
 snapshot is non-atomic. `HEAD` remains commit provenance only.
+
+Candidate hydration also pins the path, file hash, chunk hash and embed-text
+hash observed when that scored candidate was gathered. Current-file
+verification caches by `(path, indexed_file_hash)`, not path alone. If a
+concurrent index writer changes or reuses a candidate before its
+metadata/snippet is hydrated, the hit is counted as an index mismatch and
+omitted; a proof for an earlier file version is never relabelled as proof for
+the later one.
 
 ## 5. Retrieval: fusion default, reranker off (D110, D114, D122, D123)
 

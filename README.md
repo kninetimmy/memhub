@@ -702,7 +702,7 @@ It's a **locator, not a reader**. You (or the agent) open those exact lines with
 
 - **Symbol-aware** in Rust, Go, Python, TypeScript/JavaScript, Java, and C#. Non-source files (docs, lockfiles, config) are excluded so prose can't out-rank code.
 - **Separate from your memory.** It lives in the selected code checkout's `.memhub/code_index.sqlite`, with its own query path, so it never pollutes recall. In an ordinary checkout that is still beside `project.sqlite`; a paired MCP launch can keep memory in the primary checkout while each worktree owns an independent code cache.
-- **A throwaway cache.** It is gitignored and never exported, recalled, or synced. `memhub code rm` and rebuild anytime.
+- **A throwaway, checkout-local cache.** It is gitignored and never exported, recalled, or synced. Its `.memhub` directory and SQLite files must be direct storage under that checkout—directory junctions/symlinks and file symlinks/hardlinks are refused rather than sharing another checkout's live cache. `memhub code rm` and rebuild anytime.
 - **Bounded freshness, with hashes.** Before issue #436 this README called the index “automatically fresh” and `locate` reread snippets from disk after querying, although metadata fast paths and a moving tree could make that too strong. Now a default locate still lazily refreshes, then verifies each returned file against the indexed SHA-256 and reports per-snippet/indexed-file hashes. Mismatched, unreadable, or escaping hits are omitted and counted. The response labels the metadata-with-hash-on-change basis and `atomic_tree_snapshot: false`; `--no-refresh` remains an explicit CLI cache-only mode.
 
 Surfaces: `memhub code index|status|rm` and `memhub locate` (CLI) · `memhub.locate` (MCP) · `/locate` (skill). Details: [operations reference](docs/reference/operations.md#code-index).
@@ -956,6 +956,13 @@ or deregistered roots fail closed. An ordinary launch from a nested checkout
 with no local memory metadata also refuses instead of falling through to an
 ancestor checkout. Non-Git memory-only projects and ordinary launches from a
 project subdirectory remain supported.
+
+Root aliases are accepted only when they resolve to the same pinned root.
+Storage beneath those roots is stricter: the primary `.memhub` directory,
+project DB/config files, the selected checkout's `.memhub`, and its SQLite
+cache/sidecars must be direct, single-link entries at their expected
+canonical paths. Symlink, junction, or hardlink indirection is refused before
+opening the redirected store.
 
 All memory operations—including existing writes, maintenance-on-open, sync
 and transcript paths—use `--memory-root`; only `locate` uses `--code-root`,

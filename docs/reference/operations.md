@@ -126,6 +126,11 @@ record/debounce registry or metrics maintenance, and expire proposals.
 The separate code root does not introduce a physically read-only memory
 path. `locate` is the exception it already was: it reads the primary
 config but opens only the selected checkout's disposable code cache.
+The primary `.memhub` directory identity is pinned, while its DB may still
+be atomically replaced by the existing confirmed sync-adopt path. On each
+call the metadata directory, DB/config and SQLite sidecars must nevertheless
+remain direct, single-link files at their canonical expected locations;
+memory-directory junction/symlink or DB/config aliasing fails before open.
 
 ## Safety backups
 
@@ -1172,6 +1177,16 @@ under the primary memory root and places one independent
 `code_index.sqlite` under each selected checkout. No project DB or live
 config is copied to a worktree.
 
+The first issue #436 implementation validated checkout roots and source-file
+containment but not cache storage. A worktree `.memhub` junction could
+therefore point at the primary `.memhub`; locate reported the worktree path
+while opening and overwriting the primary cache. A database symlink/hardlink
+had the same aliasing class. The corrected contract validates cache storage
+before status/open/remove: `.memhub` must resolve to its exact canonical
+checkout path, and the database plus WAL/SHM/journal sidecars must be direct
+regular files with one hard link. Any alias refuses without touching its
+target. This applies to ordinary CLI/eval callers as well as paired MCP.
+
 ### MCP launch binding
 
 `memhub serve` keeps its ordinary discovery mode. Its additive paired form
@@ -1196,6 +1211,12 @@ identity fail before a tool accesses another project/checkout. There is
 still an unavoidable interval between revalidation and later filesystem
 operations; this is local binding validation, not an atomic OS namespace
 lease.
+
+The alias rule above covers the supplied *roots*. It does not authorize
+indirection below them. Primary-memory metadata and selected-checkout cache
+storage use the stricter direct-storage rule described above; preserving
+incidental symlink/junction/hardlink stores is intentionally removed in
+favor of fail-closed project/cache identity.
 
 Before issue #436, ordinary ancestor discovery could start inside a nested
 Git worktree with no local `.memhub`, find the primary checkout's metadata
@@ -1299,6 +1320,16 @@ has inconsistent index content is omitted and counted by reason under
 `index.freshness.omitted_hits`; refresh-level skipped paths are also
 reported and set `incomplete`.
 
+The scored candidate now carries the path, file hash, chunk hash and
+embed-text hash observed during candidate gathering. Hydration must see that
+exact identity, and the per-file verification cache is keyed by
+`(path, indexed_file_hash)`. Before this correction, two hits for one path
+could straddle a concurrent index update and the later hit could reuse the
+earlier file proof while publishing a different indexed hash. After, a
+changed/reused candidate is an explicit `index_mismatch` omission;
+internally unequal indexed/worktree hashes are never labelled
+`worktree_file_hash`.
+
 The limit is still observation of a moving working tree, not a filesystem
 snapshot: enumeration, metadata/hash refresh, query and per-returned-file
 verification do not share one transaction, and an edit can occur after the
@@ -1371,17 +1402,17 @@ by the cache; only the content hashes identify dirty returned bytes.
 | Structural element / caller | Before → after; prior behavior retained? |
 | --- | --- |
 | `TopLevelCommand::Serve`, `cli::run`, `mcp::serve` / `serve_bound` | The public one-argument `serve` and cwd discovery remain. The paired root flags, `serve_bound`, and launch validation are additive. |
-| `MemhubServer` and all MCP tool implementations | One rediscovered `start` path became one launch-fixed, per-call-revalidated binding. Every existing tool still reaches its same command/retrieval implementation and the primary memory DB; no write capability was added. |
+| `MemhubServer` and all MCP tool implementations | One rediscovered `start` path became one launch-fixed, per-call-revalidated binding. Every existing tool still reaches its same command/retrieval implementation and the primary memory DB; no write capability was added. Primary metadata indirection is now refused, while confirmed sync-adopt may still replace the direct DB file. |
 | MCP `status`, `recall`, `get_row`, `locate` request/response shapes | Existing fields retain their meanings. Closed request objects now reject unknown/root fields; typed `binding` is additive. Only these four project/code evidence surfaces changed; other tool schemas did not acquire a root override. |
 | Proposal, task/command/note/doc/render, sync and archive MCP paths | Their staging/direct-write split, doc confinement, remote operation inputs, and confirmation gates still hold. Their fixed project argument is now the memory root. |
 | `db::open_project` and maintenance-on-open | Unchanged. Paired semantic reads still run migrations/upserts and best-effort maintenance against the primary DB; no read-only split was added. |
 | `code_index::locate::locate` (public ordinary API) | CLI locate and `eval::run_locate` still discover one checkout/config and keep default/`no_refresh` behavior. The response adds index/freshness/content evidence; snippets now come from verified indexed bodies instead of an unchecked disk reread. |
 | `code_index::locate::locate_bound` (new API) | New MCP-only fixed-root entry point; it shares the same query implementation without a second discovery pass. |
 | `code_index::refresh` / shared refresh implementation | CLI locate, eval locate and `code index` retain ordinary discovery; MCP supplies code root + primary config. PR #437's immediate transactions, conditional delayed embedding writes, five-second WAL-transition retry, and recovery semantics are unchanged. |
-| Code cache open/bootstrap/schema | Same schema and bootstrap path, now under the selected code root. A CLI `--no-refresh` still opens/bootstrap the cache; `code status` still uses its own connection and does not create a missing cache. |
+| Code cache open/bootstrap/schema | Same schema and bootstrap path, now under the selected code root. Every public cache operation validates direct checkout-local storage; the raw path opener is crate-private so library callers cannot bypass that check. A CLI `--no-refresh` still opens/bootstrap the cache; `code status` still uses its own connection and does not create a missing cache. |
 | Code status and manual remove/rebuild | Existing behavior holds. Status still compares current/indexed HEAD; remove/rebuild remain uncoordinated with active lookups and must be retried if raced. |
 | Git walker/source scope | Still `git ls-files` ∩ primary deny-list ∩ grammar-known source. Dirty tracked bytes are included; untracked bytes remain excluded. Final symlinks and ancestor symlink/junction escapes are now both refused. |
-| `LocateResponse`, CLI JSON/human output, MCP locate output | Existing rank/path/line/scores/counts/`head` remain. Hash/freshness/omission evidence is additive; human output now warns when knowingly incomplete. |
+| `LocateResponse`, CLI JSON/human output, MCP locate output | Existing rank/path/line/scores/counts/`head` remain. Hash/freshness/omission evidence is additive; human output now warns when knowingly incomplete. Candidate identity is pinned through hydration, and cached file proofs are exact-version keyed. |
 | Recall/export/sync isolation | The preexisting physical-separation rule still holds for every operation in those classes, not only one named function. Per-worktree caches are never durable memory, recalled, exported, imported, or synced. |
 | Non-Git memory-only and ordinary single-checkout projects | Existing status/recall/write behavior holds. Code locate still needs Git; nested-checkout ancestor drift is the intentionally removed behavior recorded above. |
 
