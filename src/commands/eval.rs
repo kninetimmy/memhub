@@ -1662,6 +1662,13 @@ mod tests {
             vector_score: 0.0,
             rerank_score,
             snippet: String::new(),
+            content: crate::code_index::locate::LocateContentEvidence {
+                snippet_sha256: String::new(),
+                indexed_chunk_sha256: String::new(),
+                indexed_file_sha256: String::new(),
+                worktree_file_sha256: None,
+                verification: crate::code_index::locate::LocateContentVerification::IndexedOnly,
+            },
         }
     }
 
@@ -1676,6 +1683,11 @@ mod tests {
             files_total: 0,
             chunks_total: 0,
             head: None,
+            index_path: PathBuf::new(),
+            freshness_basis: crate::code_index::locate::LocateFreshnessBasis::IndexedCacheOnly,
+            atomic_tree_snapshot: false,
+            refresh_skipped_files: 0,
+            omissions: crate::code_index::locate::LocateOmissionCounts::default(),
             corrupt_embeddings: 0,
             elapsed_ms: 0,
         }

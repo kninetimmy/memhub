@@ -17,6 +17,8 @@ pub enum MemhubError {
     },
     #[error("invalid input: {0}")]
     InvalidInput(String),
+    #[error("project binding invalid: {0}")]
+    Binding(String),
     /// A single-slot safety copy (`db::write_backup_slot`) could not be
     /// written, so the change it guards was not made.
     #[error("could not write the backup {path} ({cause}); nothing was changed")]

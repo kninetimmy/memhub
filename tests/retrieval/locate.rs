@@ -6,7 +6,9 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use memhub::code_index::locate::{LocateOptions, locate};
+use memhub::code_index::locate::{
+    LocateContentVerification, LocateFreshnessBasis, LocateOptions, locate,
+};
 use memhub::code_index::{self, code_index_db_path};
 use memhub::commands::init;
 use memhub::config::{ProjectConfig, RetrievalMode};
@@ -98,6 +100,20 @@ fn locate_finds_symbol_by_name_fts() {
     assert_eq!(top.kind, "function");
     assert!(top.snippet.contains("parse_manifest"), "snippet has body");
     assert!(top.start_line >= 1);
+    assert_eq!(
+        top.content.verification,
+        LocateContentVerification::WorktreeFileHash
+    );
+    assert_eq!(
+        top.content.worktree_file_sha256.as_deref(),
+        Some(top.content.indexed_file_sha256.as_str())
+    );
+    assert!(!top.content.snippet_sha256.is_empty());
+    assert_eq!(
+        response.freshness_basis,
+        LocateFreshnessBasis::MetadataWithHashOnChange
+    );
+    assert!(!response.atomic_tree_snapshot);
 }
 
 /// A blank query is rejected as recall rejects it, even in hybrid mode where
@@ -255,9 +271,59 @@ fn locate_no_refresh_skips_the_freshness_pass() {
         "no-refresh should still serve the last-indexed (stale) symbol: {:?}",
         stale.results
     );
+    let stale_hit = stale
+        .results
+        .iter()
+        .find(|hit| hit.symbol.as_deref() == Some("original_name"))
+        .unwrap();
+    assert!(stale_hit.snippet.contains("original_name"));
+    assert!(!stale_hit.snippet.contains("renamed_symbol"));
+    assert_eq!(
+        stale_hit.content.verification,
+        LocateContentVerification::IndexedOnly
+    );
+    assert!(stale_hit.content.worktree_file_sha256.is_none());
+    assert_eq!(
+        stale.freshness_basis,
+        LocateFreshnessBasis::IndexedCacheOnly
+    );
     assert_eq!(stale.files_total, warm.files_total);
     assert_eq!(stale.chunks_total, warm.chunks_total);
     assert_eq!(stale.head, warm.head);
+}
+
+#[test]
+fn locate_omits_a_hit_when_current_bytes_disagree_with_the_index() {
+    let temp = repo_with_files(&[("src/a.rs", "pub fn hash_guard_marker() {}\n")]);
+    let root = temp.path();
+    code_index::refresh(root).expect("refresh");
+
+    // Preserve mtime/size so the normal refresh takes its documented
+    // metadata fast path, but corrupt the cached file hash. Returned-file
+    // verification must catch the disagreement rather than bless a snippet.
+    let conn = rusqlite::Connection::open(code_index_db_path(root)).unwrap();
+    conn.execute(
+        "UPDATE indexed_files SET content_hash = 'not-the-current-file-hash' \
+         WHERE path = 'src/a.rs'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let response = locate(
+        root,
+        LocateOptions {
+            query: "hash guard marker".to_string(),
+            limit: 5,
+            use_reranker: false,
+            no_refresh: false,
+        },
+    )
+    .expect("locate");
+
+    assert!(response.results.is_empty(), "{:?}", response.results);
+    assert_eq!(response.omissions.changed_since_index, 1);
+    assert_eq!(response.omissions.total(), 1);
 }
 
 /// `--no-refresh` never *populates* the sibling DB — it skips `refresh`

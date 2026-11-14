@@ -431,8 +431,11 @@ pub fn run(cli: Cli) -> Result<()> {
                 print_stats_human(&summary);
             }
         }
-        TopLevelCommand::Serve => {
-            crate::mcp::serve(&cwd)?;
+        TopLevelCommand::Serve {
+            memory_root,
+            code_root,
+        } => {
+            crate::mcp::serve_bound(&cwd, memory_root.as_deref(), code_root.as_deref())?;
         }
         TopLevelCommand::IngestGit { since } => {
             let summary = commands::ingest_git::run(&cwd, since.as_deref())?;

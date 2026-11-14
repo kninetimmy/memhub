@@ -19,11 +19,16 @@
 //! **After issue #435,** a default locate still attempts that refresh before
 //! querying, and successful concurrent refreshes converge safely; lock
 //! contention past the code index's busy timeout reports an error for retry.
-//! Enumeration, file reads, model inference, querying, and snippet reads do
-//! not share an atomic filesystem snapshot, so an external edit can cross
-//! those phases. Once the tree stops changing, a later successful default
-//! refresh converges. The PR1 staleness engine makes an unchanged tree
-//! stat-only (no read, no embed), so a warm index pays almost nothing.
+//! Enumeration, file reads, model inference, querying, and returned-file
+//! verification do not share an atomic filesystem snapshot, so an external
+//! edit can cross those phases. Issue #436 stopped rereading unchecked
+//! snippet bytes after the query: snippets now come from the exact indexed
+//! chunk body, and a default lookup returns one only when the selected
+//! checkout file's raw-byte hash still matches the index. Mismatches are
+//! omitted and counted, not presented as verified current code. Once the
+//! tree stops changing, a later successful default refresh converges. The
+//! PR1 staleness engine makes an unchanged tree stat-only until returned-hit
+//! verification (no re-chunk/embed), so a warm index stays cheap.
 //! `memhub code index` is the explicit warm-up / rebuild for callers that
 //! want to pay that cost up front.
 //! `--no-refresh` (issue #67) opts out of that pass entirely — no `git
@@ -38,18 +43,25 @@
 //! the cross-encoder.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use rusqlite::{Connection, params};
 
-use crate::config::{CodeIndexConfig, ProjectConfig, RetrievalMode};
-use crate::db;
+#[cfg(test)]
+use crate::config::ProjectConfig;
+use crate::config::{CodeIndexConfig, RetrievalMode};
 use crate::retrieval::embeddings::{EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME, embed_one};
-use crate::retrieval::util::{build_fts_match, bytes_to_vector, cosine_similarity, normalize_fts};
+use crate::retrieval::util::{
+    build_fts_match, bytes_to_vector, cosine_similarity, normalize_fts, sha256_hex,
+};
 use crate::{MemhubError, Result};
 
-use super::{code_index_db_path, open_code_index, refresh};
+use super::{
+    CodeIndexSource, SourceFileIssue, open_code_index, refresh_source, resolve_source_file,
+    validate_code_index_storage,
+};
 
 /// FTS candidates pulled before blending. Generous so the vector side can
 /// re-rank a broad keyword pool; the final list is truncated to `limit`.
@@ -104,8 +116,53 @@ pub struct LocateHit {
     pub vector_score: f64,
     /// Cross-encoder relevance logit when `--rerank` ran, else `None`.
     pub rerank_score: Option<f32>,
-    /// A short, clipped excerpt of the chunk body read from disk.
+    /// A short, clipped excerpt of the exact indexed chunk body.
     pub snippet: String,
+    /// Hash evidence for the exact returned snippet and the indexed/current
+    /// source bytes from which the hit was derived.
+    pub content: LocateContentEvidence,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocateContentVerification {
+    /// `--no-refresh`: the stored chunk was hash-checked against its index
+    /// row, but the current checkout file was deliberately not read.
+    IndexedOnly,
+    /// The current checkout file was confined to the selected root, read,
+    /// and its raw-byte SHA-256 matched the indexed file hash.
+    WorktreeFileHash,
+}
+
+#[derive(Debug, Clone)]
+pub struct LocateContentEvidence {
+    pub snippet_sha256: String,
+    pub indexed_chunk_sha256: String,
+    pub indexed_file_sha256: String,
+    pub worktree_file_sha256: Option<String>,
+    pub verification: LocateContentVerification,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocateFreshnessBasis {
+    /// Default locate: tracked-file metadata is the fast path, with content
+    /// hashing when metadata changes and per-returned-file hash verification.
+    MetadataWithHashOnChange,
+    /// `--no-refresh`: query only the last indexed cache.
+    IndexedCacheOnly,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LocateOmissionCounts {
+    pub unreadable: usize,
+    pub changed_since_index: usize,
+    pub escaped_root: usize,
+    pub index_mismatch: usize,
+}
+
+impl LocateOmissionCounts {
+    pub fn total(&self) -> usize {
+        self.unreadable + self.changed_since_index + self.escaped_root + self.index_mismatch
+    }
 }
 
 /// Locate response bundle.
@@ -124,6 +181,17 @@ pub struct LocateResponse {
     pub chunks_total: usize,
     /// Indexed `HEAD` after the refresh, if resolvable.
     pub head: Option<String>,
+    /// Exact sibling index used for this query.
+    pub index_path: PathBuf,
+    /// What freshness work this call performed. This is intentionally not
+    /// an atomic-tree-snapshot claim.
+    pub freshness_basis: LocateFreshnessBasis,
+    pub atomic_tree_snapshot: bool,
+    /// Tracked paths the refresh could not safely read/index.
+    pub refresh_skipped_files: usize,
+    /// Ranked hits omitted because current/indexed content could not be
+    /// proven consistent.
+    pub omissions: LocateOmissionCounts,
     /// Count of `code_embeddings` rows in scope for this query whose
     /// stored vector blob is the wrong byte length for
     /// `EMBEDDING_DIMENSION` -- a corrupt or truncated write. These chunks
@@ -139,6 +207,22 @@ pub struct LocateResponse {
 /// Run a code locate: unless opted out, attempt the lazy refresh pass, then
 /// blend FTS + vector candidates and return the ranked breadcrumbs.
 pub fn locate(start: &Path, options: LocateOptions) -> Result<LocateResponse> {
+    let source = CodeIndexSource::discover(start)?;
+    locate_source(source, options)
+}
+
+/// Query a launch-fixed code checkout while loading retrieval and deny-list
+/// policy from a separate primary-project config.
+pub fn locate_bound(
+    code_root: &Path,
+    config_path: &Path,
+    options: LocateOptions,
+) -> Result<LocateResponse> {
+    let source = CodeIndexSource::bound(code_root, config_path)?;
+    locate_source(source, options)
+}
+
+fn locate_source(source: CodeIndexSource, options: LocateOptions) -> Result<LocateResponse> {
     let started = Instant::now();
 
     // Same rule as recall: a blank query would otherwise embed and match every chunk.
@@ -157,22 +241,15 @@ pub fn locate(start: &Path, options: LocateOptions) -> Result<LocateResponse> {
     let summary = if options.no_refresh {
         None
     } else {
-        Some(refresh(start)?)
+        Some(refresh_source(&source)?)
     };
 
-    // Resolve repo root + config the same decoupled way refresh does — no
-    // open_project, so the code index stays independent of project.sqlite.
-    let paths = db::discover_paths(start)?;
-    let repo_root = paths.repo_root.clone();
-    let config = if paths.config_path.exists() {
-        ProjectConfig::load(&paths.config_path)?
-    } else {
-        let repo_name = repo_root
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("memhub");
-        ProjectConfig::default_for_repo_name(repo_name)
-    };
+    // Reuse the exact source selected above. In particular, never rediscover
+    // after refresh: a newly-created `.memhub` inside a bound worktree must
+    // not drift this call away from its launch-selected memory/config root.
+    let repo_root = std::fs::canonicalize(&source.repo_root)?;
+    let db_path = validate_code_index_storage(&repo_root, true)?;
+    let config = source.load_config()?;
     let mode = config.retrieval.mode;
     let scoring = &config.code_index;
 
@@ -182,7 +259,6 @@ pub fn locate(start: &Path, options: LocateOptions) -> Result<LocateResponse> {
         options.limit
     };
 
-    let db_path = code_index_db_path(&repo_root);
     let conn = open_code_index(&db_path)?;
 
     // With a refresh, its summary already carries the post-refresh counts
@@ -214,54 +290,37 @@ pub fn locate(start: &Path, options: LocateOptions) -> Result<LocateResponse> {
     if options.use_reranker && mode == RetrievalMode::Hybrid && !candidates.is_empty() {
         let pool = config.retrieval.rerank_candidate_pool.max(limit);
         let pool_len = pool.min(candidates.len());
-        let pool_texts = fetch_embed_texts(&conn, &candidates[..pool_len])?;
-        let doc_refs: Vec<String> = pool_texts.iter().map(|(_, t)| t.clone()).collect();
-        let ranked = crate::retrieval::rerank::rerank(&options.query, &doc_refs)?;
-        // ranked is (pool_index, logit) sorted descending. Rebuild the pool
-        // in that order, stamping the logit; the tail past the pool keeps
-        // its fusion order behind the reranked head.
-        let mut new_head: Vec<Candidate> = Vec::with_capacity(pool_len);
-        for (pool_idx, logit) in &ranked {
-            let mut c = candidates[*pool_idx].clone();
-            c.rerank_score = Some(*logit);
-            new_head.push(c);
+        if let Some(pool_texts) = fetch_embed_texts(&conn, &candidates[..pool_len])? {
+            let doc_refs: Vec<String> = pool_texts.iter().map(|(_, t)| t.clone()).collect();
+            let ranked = crate::retrieval::rerank::rerank(&options.query, &doc_refs)?;
+            // ranked is (pool_index, logit) sorted descending. Rebuild the
+            // pool in that order, stamping the logit; the tail past the pool
+            // keeps its fusion order behind the reranked head.
+            let mut new_head: Vec<Candidate> = Vec::with_capacity(pool_len);
+            for (pool_idx, logit) in &ranked {
+                let mut c = candidates[*pool_idx].clone();
+                c.rerank_score = Some(*logit);
+                new_head.push(c);
+            }
+            let tail = candidates.split_off(pool_len);
+            candidates = new_head;
+            candidates.extend(tail);
+            reranked = true;
         }
-        let tail = candidates.split_off(pool_len);
-        candidates = new_head;
-        candidates.extend(tail);
-        reranked = true;
     }
 
     candidates.truncate(limit);
 
-    let mut line_cache: HashMap<String, Option<Vec<String>>> = HashMap::new();
-    let mut results = Vec::with_capacity(candidates.len());
-    for (idx, c) in candidates.iter().enumerate() {
-        let meta = fetch_chunk_meta(&conn, c.chunk_id)?;
-        let Some(meta) = meta else { continue };
-        let snippet = read_snippet(
-            &repo_root,
-            &meta.path,
-            meta.start_line,
-            meta.end_line,
-            &mut line_cache,
-        );
-        results.push(LocateHit {
-            rank: idx + 1,
-            path: meta.path,
-            start_line: meta.start_line,
-            end_line: meta.end_line,
-            symbol: meta.symbol,
-            kind: meta.kind,
-            score: c.score,
-            fts_score: c.fts_score,
-            vector_score: c.vector_score,
-            rerank_score: c.rerank_score,
-            snippet,
-        });
-    }
+    let (results, omissions) =
+        hydrate_candidates(&conn, &repo_root, &candidates, options.no_refresh, |_| {
+            Ok(())
+        })?;
 
     let returned_count = results.len();
+    let refresh_skipped_files = summary
+        .as_ref()
+        .map(|summary| summary.skipped_files)
+        .unwrap_or(0);
     Ok(LocateResponse {
         query: options.query,
         mode,
@@ -272,9 +331,109 @@ pub fn locate(start: &Path, options: LocateOptions) -> Result<LocateResponse> {
         files_total,
         chunks_total,
         head,
+        index_path: db_path,
+        freshness_basis: if options.no_refresh {
+            LocateFreshnessBasis::IndexedCacheOnly
+        } else {
+            LocateFreshnessBasis::MetadataWithHashOnChange
+        },
+        atomic_tree_snapshot: false,
+        refresh_skipped_files,
+        omissions,
         corrupt_embeddings,
         elapsed_ms: started.elapsed().as_millis(),
     })
+}
+
+fn hydrate_candidates<F>(
+    conn: &Connection,
+    repo_root: &Path,
+    candidates: &[Candidate],
+    no_refresh: bool,
+    mut after_candidate: F,
+) -> Result<(Vec<LocateHit>, LocateOmissionCounts)>
+where
+    F: FnMut(usize) -> Result<()>,
+{
+    let mut file_cache: HashMap<(String, String), CurrentFileVerification> = HashMap::new();
+    let mut omissions = LocateOmissionCounts::default();
+    let mut results = Vec::with_capacity(candidates.len());
+    for (candidate_index, c) in candidates.iter().enumerate() {
+        if !c.index_consistent {
+            omissions.index_mismatch += 1;
+            after_candidate(candidate_index)?;
+            continue;
+        }
+        let meta = fetch_chunk_meta(conn, c.chunk_id)?;
+        let Some(meta) = meta else {
+            omissions.index_mismatch += 1;
+            after_candidate(candidate_index)?;
+            continue;
+        };
+        if meta.path != c.path
+            || meta.file_hash != c.file_hash
+            || meta.chunk_hash != c.chunk_hash
+            || sha256_hex(meta.embed_text.as_bytes()) != c.embed_text_hash
+        {
+            omissions.index_mismatch += 1;
+            after_candidate(candidate_index)?;
+            continue;
+        }
+        let Some(body) = indexed_chunk_body(&meta) else {
+            omissions.index_mismatch += 1;
+            after_candidate(candidate_index)?;
+            continue;
+        };
+        let (verification, worktree_file_sha256) = if no_refresh {
+            (LocateContentVerification::IndexedOnly, None)
+        } else {
+            let current = cached_current_file_verification(&mut file_cache, repo_root, &meta);
+            match current {
+                CurrentFileVerification::Verified(hash) => (
+                    LocateContentVerification::WorktreeFileHash,
+                    Some(hash.clone()),
+                ),
+                CurrentFileVerification::Unreadable => {
+                    omissions.unreadable += 1;
+                    after_candidate(candidate_index)?;
+                    continue;
+                }
+                CurrentFileVerification::Changed => {
+                    omissions.changed_since_index += 1;
+                    after_candidate(candidate_index)?;
+                    continue;
+                }
+                CurrentFileVerification::EscapedRoot => {
+                    omissions.escaped_root += 1;
+                    after_candidate(candidate_index)?;
+                    continue;
+                }
+            }
+        };
+        let snippet = clip_snippet(body);
+        results.push(LocateHit {
+            rank: results.len() + 1,
+            path: meta.path,
+            start_line: meta.start_line,
+            end_line: meta.end_line,
+            symbol: meta.symbol,
+            kind: meta.kind,
+            score: c.score,
+            fts_score: c.fts_score,
+            vector_score: c.vector_score,
+            rerank_score: c.rerank_score,
+            content: LocateContentEvidence {
+                snippet_sha256: sha256_hex(snippet.as_bytes()),
+                indexed_chunk_sha256: meta.chunk_hash,
+                indexed_file_sha256: meta.file_hash,
+                worktree_file_sha256,
+                verification,
+            },
+            snippet,
+        });
+        after_candidate(candidate_index)?;
+    }
+    Ok((results, omissions))
 }
 
 /// Read `files_total` / `chunks_total` / last-indexed `head` straight off
@@ -313,6 +472,12 @@ struct Candidate {
     /// Repo-relative forward-slashed path of the source file this chunk
     /// belongs to. Used by `score_candidates` to apply the test-path penalty.
     path: String,
+    /// Indexed identities observed while gathering this scored candidate.
+    /// Hydration must still see these exact values or omit the hit.
+    file_hash: String,
+    chunk_hash: String,
+    embed_text_hash: String,
+    index_consistent: bool,
 }
 
 /// Returns `true` when `path` is inside a top-level test / bench / example
@@ -336,7 +501,8 @@ fn gather_candidates(
 
     if let Some(match_expr) = build_fts_match(query) {
         let mut stmt = conn.prepare(
-            "SELECT c.id, bm25(code_chunks_fts) AS score, f.path \
+            "SELECT c.id, bm25(code_chunks_fts) AS score, f.path, \
+                    f.content_hash, c.content_hash, c.embed_text \
              FROM code_chunks_fts \
              JOIN code_chunks c ON c.id = code_chunks_fts.rowid \
              JOIN indexed_files f ON f.id = c.file_id \
@@ -349,13 +515,22 @@ fn gather_candidates(
                 row.get::<_, i64>(0)?,
                 row.get::<_, f64>(1)?,
                 row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
             ))
         })?;
         for row in rows {
-            let (chunk_id, bm25, path) = row?;
-            map.entry(chunk_id)
-                .or_insert_with(|| new_candidate(chunk_id, path))
-                .fts_raw = Some(bm25);
+            let (chunk_id, bm25, path, file_hash, chunk_hash, embed_text) = row?;
+            candidate_entry(
+                &mut map,
+                chunk_id,
+                path,
+                file_hash,
+                chunk_hash,
+                sha256_hex(embed_text.as_bytes()),
+            )
+            .fts_raw = Some(bm25);
         }
     }
 
@@ -363,7 +538,8 @@ fn gather_candidates(
         let query_vec = embed_one(query)?;
         if query_vec.len() == EMBEDDING_DIMENSION {
             let mut stmt = conn.prepare(
-                "SELECT e.chunk_id, e.vector, f.path \
+                "SELECT e.chunk_id, e.vector, f.path, f.content_hash, c.content_hash, \
+                        c.embed_text \
                  FROM code_embeddings e \
                  JOIN code_chunks c ON c.id = e.chunk_id \
                  JOIN indexed_files f ON f.id = c.file_id \
@@ -376,11 +552,14 @@ fn gather_candidates(
                         row.get::<_, i64>(0)?,
                         row.get::<_, Vec<u8>>(1)?,
                         row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
                     ))
                 },
             )?;
             for row in rows {
-                let (chunk_id, blob, path) = row?;
+                let (chunk_id, blob, path, file_hash, chunk_hash, embed_text) = row?;
                 if blob.len() != EMBEDDING_DIMENSION * 4 {
                     // Corrupt or truncated write: nothing to compute
                     // cosine similarity against. Skipped for scoring but
@@ -391,9 +570,15 @@ fn gather_candidates(
                     continue;
                 }
                 let cosine = cosine_similarity(&query_vec, &bytes_to_vector(&blob));
-                map.entry(chunk_id)
-                    .or_insert_with(|| new_candidate(chunk_id, path))
-                    .cosine = Some(cosine);
+                candidate_entry(
+                    &mut map,
+                    chunk_id,
+                    path,
+                    file_hash,
+                    chunk_hash,
+                    sha256_hex(embed_text.as_bytes()),
+                )
+                .cosine = Some(cosine);
             }
         }
     }
@@ -401,7 +586,45 @@ fn gather_candidates(
     Ok((map.into_values().collect(), corrupt_embeddings))
 }
 
-fn new_candidate(chunk_id: i64, path: String) -> Candidate {
+fn candidate_entry(
+    map: &mut HashMap<i64, Candidate>,
+    chunk_id: i64,
+    path: String,
+    file_hash: String,
+    chunk_hash: String,
+    embed_text_hash: String,
+) -> &mut Candidate {
+    use std::collections::hash_map::Entry;
+
+    match map.entry(chunk_id) {
+        Entry::Vacant(entry) => entry.insert(new_candidate(
+            chunk_id,
+            path,
+            file_hash,
+            chunk_hash,
+            embed_text_hash,
+        )),
+        Entry::Occupied(entry) => {
+            let candidate = entry.into_mut();
+            if candidate.path != path
+                || candidate.file_hash != file_hash
+                || candidate.chunk_hash != chunk_hash
+                || candidate.embed_text_hash != embed_text_hash
+            {
+                candidate.index_consistent = false;
+            }
+            candidate
+        }
+    }
+}
+
+fn new_candidate(
+    chunk_id: i64,
+    path: String,
+    file_hash: String,
+    chunk_hash: String,
+    embed_text_hash: String,
+) -> Candidate {
     Candidate {
         chunk_id,
         fts_raw: None,
@@ -411,6 +634,10 @@ fn new_candidate(chunk_id: i64, path: String) -> Candidate {
         score: 0.0,
         rerank_score: None,
         path,
+        file_hash,
+        chunk_hash,
+        embed_text_hash,
+        index_consistent: true,
     }
 }
 
@@ -448,14 +675,39 @@ fn score_candidates(candidates: &mut [Candidate], scoring: &CodeIndexConfig) {
 
 /// Pull `(chunk_id, embed_text)` for a slice of candidates, preserving
 /// their order so the reranker's returned indices line up.
-fn fetch_embed_texts(conn: &Connection, pool: &[Candidate]) -> Result<Vec<(i64, String)>> {
-    let mut stmt = conn.prepare("SELECT embed_text FROM code_chunks WHERE id = ?1")?;
+fn fetch_embed_texts(conn: &Connection, pool: &[Candidate]) -> Result<Option<Vec<(i64, String)>>> {
+    let mut stmt = conn.prepare(
+        "SELECT c.embed_text, c.content_hash, f.path, f.content_hash \
+         FROM code_chunks c JOIN indexed_files f ON f.id = c.file_id \
+         WHERE c.id = ?1",
+    )?;
     let mut out = Vec::with_capacity(pool.len());
     for c in pool {
-        let text: String = stmt.query_row(params![c.chunk_id], |row| row.get(0))?;
+        if !c.index_consistent {
+            return Ok(None);
+        }
+        let mut rows = stmt.query_map(params![c.chunk_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?;
+        let Some(row) = rows.next() else {
+            return Ok(None);
+        };
+        let (text, chunk_hash, path, file_hash) = row?;
+        if chunk_hash != c.chunk_hash
+            || path != c.path
+            || file_hash != c.file_hash
+            || sha256_hex(text.as_bytes()) != c.embed_text_hash
+        {
+            return Ok(None);
+        }
         out.push((c.chunk_id, text));
     }
-    Ok(out)
+    Ok(Some(out))
 }
 
 struct ChunkMeta {
@@ -464,11 +716,15 @@ struct ChunkMeta {
     end_line: usize,
     symbol: Option<String>,
     kind: String,
+    file_hash: String,
+    chunk_hash: String,
+    embed_text: String,
 }
 
 fn fetch_chunk_meta(conn: &Connection, chunk_id: i64) -> Result<Option<ChunkMeta>> {
     let mut stmt = conn.prepare(
-        "SELECT f.path, c.start_line, c.end_line, c.symbol, c.kind \
+        "SELECT f.path, c.start_line, c.end_line, c.symbol, c.kind, \
+                f.content_hash, c.content_hash, c.embed_text \
          FROM code_chunks c JOIN indexed_files f ON f.id = c.file_id \
          WHERE c.id = ?1",
     )?;
@@ -479,42 +735,27 @@ fn fetch_chunk_meta(conn: &Connection, chunk_id: i64) -> Result<Option<ChunkMeta
             end_line: row.get::<_, i64>(2)? as usize,
             symbol: row.get(3)?,
             kind: row.get(4)?,
+            file_hash: row.get(5)?,
+            chunk_hash: row.get(6)?,
+            embed_text: row.get(7)?,
         })
     })?;
     Ok(row.into_iter().next().transpose()?)
 }
 
-/// Read a clipped excerpt for `path` at the chunk's 1-indexed line range.
-/// File contents are cached across hits in the same locate; a `None` cache
-/// entry records an unreadable/absent file so it is not re-read.
-fn read_snippet(
-    repo_root: &Path,
-    path: &str,
-    start_line: usize,
-    end_line: usize,
-    cache: &mut HashMap<String, Option<Vec<String>>>,
-) -> String {
-    let lines = cache.entry(path.to_string()).or_insert_with(|| {
-        std::fs::read_to_string(repo_root.join(path))
-            .ok()
-            .map(|s| s.lines().map(|l| l.to_string()).collect())
-    });
-    let Some(lines) = lines else {
-        return String::new();
-    };
-    if start_line == 0 || start_line > lines.len() {
-        return String::new();
-    }
-    // start_line/end_line are 1-indexed inclusive; clamp end to the file.
-    let from = start_line - 1;
-    let to = end_line.min(lines.len());
+fn indexed_chunk_body(meta: &ChunkMeta) -> Option<&str> {
+    let (_, body) = meta.embed_text.split_once("\n\n")?;
+    (sha256_hex(body.as_bytes()) == meta.chunk_hash).then_some(body)
+}
+
+fn clip_snippet(body: &str) -> String {
     let mut out = String::new();
     let mut truncated = false;
-    for (i, line) in lines[from..to].iter().enumerate() {
-        if i >= SNIPPET_MAX_LINES {
-            truncated = true;
+    let mut lines = body.lines();
+    for _ in 0..SNIPPET_MAX_LINES {
+        let Some(line) = lines.next() else {
             break;
-        }
+        };
         if !out.is_empty() {
             out.push('\n');
         }
@@ -523,6 +764,9 @@ fn read_snippet(
             truncated = true;
             break;
         }
+    }
+    if lines.next().is_some() {
+        truncated = true;
     }
     if out.len() > SNIPPET_MAX_CHARS {
         // Clip on a char boundary, not a byte index.
@@ -537,6 +781,75 @@ fn read_snippet(
         out.push('…');
     }
     out
+}
+
+#[derive(Debug, Clone)]
+enum CurrentFileVerification {
+    Verified(String),
+    Unreadable,
+    Changed,
+    EscapedRoot,
+}
+
+fn cached_current_file_verification<'a>(
+    cache: &'a mut HashMap<(String, String), CurrentFileVerification>,
+    repo_root: &Path,
+    meta: &ChunkMeta,
+) -> &'a CurrentFileVerification {
+    cache
+        .entry((meta.path.clone(), meta.file_hash.clone()))
+        .or_insert_with(|| verify_current_file(repo_root, meta))
+}
+
+fn verify_current_file(repo_root: &Path, meta: &ChunkMeta) -> CurrentFileVerification {
+    let source = match resolve_source_file(repo_root, &meta.path) {
+        Ok(source) => source,
+        Err(
+            SourceFileIssue::InvalidRelativePath
+            | SourceFileIssue::Symlink
+            | SourceFileIssue::EscapesRoot
+            | SourceFileIssue::NotFile,
+        ) => return CurrentFileVerification::EscapedRoot,
+        Err(SourceFileIssue::Unreadable) => return CurrentFileVerification::Unreadable,
+    };
+    let opened_path = source.path;
+    let mut file = match std::fs::File::open(&opened_path) {
+        Ok(file) => file,
+        Err(_) => return CurrentFileVerification::Unreadable,
+    };
+    let before = match file.metadata() {
+        Ok(metadata) => metadata,
+        Err(_) => return CurrentFileVerification::Unreadable,
+    };
+    let mut bytes = Vec::new();
+    if file.read_to_end(&mut bytes).is_err() {
+        return CurrentFileVerification::Unreadable;
+    }
+    let after = match file.metadata() {
+        Ok(metadata) => metadata,
+        Err(_) => return CurrentFileVerification::Unreadable,
+    };
+    let current_path = match resolve_source_file(repo_root, &meta.path) {
+        Ok(source) => source.path,
+        Err(
+            SourceFileIssue::InvalidRelativePath
+            | SourceFileIssue::Symlink
+            | SourceFileIssue::EscapesRoot
+            | SourceFileIssue::NotFile,
+        ) => return CurrentFileVerification::EscapedRoot,
+        Err(SourceFileIssue::Unreadable) => return CurrentFileVerification::Unreadable,
+    };
+    if opened_path != current_path
+        || before.len() != after.len()
+        || before.modified().ok() != after.modified().ok()
+    {
+        return CurrentFileVerification::Changed;
+    }
+    let hash = sha256_hex(&bytes);
+    if hash != meta.file_hash {
+        return CurrentFileVerification::Changed;
+    }
+    CurrentFileVerification::Verified(hash)
 }
 
 #[cfg(test)]
@@ -671,8 +984,20 @@ log_level = "info"
     #[test]
     fn score_candidates_default_config_matches_pre_split_formula() {
         let mut candidates = vec![
-            new_candidate(1, "src/lib.rs".to_string()),
-            new_candidate(2, "tests/foo.rs".to_string()),
+            new_candidate(
+                1,
+                "src/lib.rs".to_string(),
+                "file-1".to_string(),
+                "chunk-1".to_string(),
+                "embed-1".to_string(),
+            ),
+            new_candidate(
+                2,
+                "tests/foo.rs".to_string(),
+                "file-2".to_string(),
+                "chunk-2".to_string(),
+                "embed-2".to_string(),
+            ),
         ];
         candidates[0].fts_raw = Some(-10.0); // pos = 10.0 -> fts_score 1.0
         candidates[0].cosine = Some(0.4);
@@ -701,7 +1026,13 @@ log_level = "info"
     /// path actually drove the score.
     #[test]
     fn score_candidates_uses_code_index_weights_not_retrieval_scoring() {
-        let mut candidates = vec![new_candidate(1, "src/lib.rs".to_string())];
+        let mut candidates = vec![new_candidate(
+            1,
+            "src/lib.rs".to_string(),
+            "file".to_string(),
+            "chunk".to_string(),
+            "embed".to_string(),
+        )];
         candidates[0].fts_raw = Some(0.0); // single FTS hit -> fts_score 1.0
         candidates[0].cosine = Some(0.0); // vector_score 0.0
 
@@ -716,6 +1047,136 @@ log_level = "info"
             (candidates[0].score - 1.0).abs() < 1e-9,
             "expected fts-only score of 1.0, got {}",
             candidates[0].score
+        );
+    }
+
+    #[test]
+    fn current_file_cache_is_keyed_by_exact_indexed_file_hash() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join("src")).unwrap();
+        let path = root.join("src/lib.rs");
+        let old = b"fn old_version() {}\n";
+        let new = b"fn new_version() {}\n";
+        std::fs::write(&path, old).unwrap();
+
+        let meta = |file_hash: String| ChunkMeta {
+            path: "src/lib.rs".to_string(),
+            start_line: 1,
+            end_line: 1,
+            symbol: None,
+            kind: "function".to_string(),
+            file_hash,
+            chunk_hash: String::new(),
+            embed_text: String::new(),
+        };
+        let mut cache = HashMap::new();
+        let old_hash = sha256_hex(old);
+        let old_verification =
+            cached_current_file_verification(&mut cache, &root, &meta(old_hash.clone())).clone();
+        assert!(matches!(
+            old_verification,
+            CurrentFileVerification::Verified(hash) if hash == old_hash
+        ));
+
+        std::fs::write(&path, new).unwrap();
+        let new_hash = sha256_hex(new);
+        let new_verification =
+            cached_current_file_verification(&mut cache, &root, &meta(new_hash.clone())).clone();
+        assert!(matches!(
+            new_verification,
+            CurrentFileVerification::Verified(hash) if hash == new_hash
+        ));
+        assert_eq!(cache.len(), 2, "each indexed file version gets one proof");
+    }
+
+    #[test]
+    fn hydration_omits_candidate_changed_by_interleaved_index_writer() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join("src")).unwrap();
+        let source_path = root.join("src/lib.rs");
+        let old_file = b"fn first_old() {}\nfn second_old() {}\n";
+        let new_file = b"fn first_new() {}\nfn second_new() {}\n";
+        std::fs::write(&source_path, old_file).unwrap();
+
+        let db_path = root.join("cache.sqlite");
+        let conn = Connection::open(&db_path).unwrap();
+        crate::code_index::schema::bootstrap(&conn).unwrap();
+        let old_file_hash = sha256_hex(old_file);
+        let first_body = "fn first_old() {}";
+        let second_body = "fn second_old() {}";
+        conn.execute(
+            "INSERT INTO indexed_files(id, path, mtime, size, content_hash, language) \
+             VALUES (1, 'src/lib.rs', 0, ?1, ?2, 'rust')",
+            params![old_file.len() as i64, old_file_hash],
+        )
+        .unwrap();
+        for (id, line, symbol, body) in [
+            (1, 1, "first_old", first_body),
+            (2, 2, "second_old", second_body),
+        ] {
+            conn.execute(
+                "INSERT INTO code_chunks(\
+                    id, file_id, start_line, end_line, symbol, kind, content_hash, embed_text\
+                 ) VALUES (?1, 1, ?2, ?2, ?3, 'function', ?4, ?5)",
+                params![
+                    id,
+                    line,
+                    symbol,
+                    sha256_hex(body.as_bytes()),
+                    format!("src/lib.rs\nfunction {symbol}\n\n{body}")
+                ],
+            )
+            .unwrap();
+        }
+        let candidates = vec![
+            new_candidate(
+                1,
+                "src/lib.rs".to_string(),
+                old_file_hash.clone(),
+                sha256_hex(first_body.as_bytes()),
+                sha256_hex(format!("src/lib.rs\nfunction first_old\n\n{first_body}").as_bytes()),
+            ),
+            new_candidate(
+                2,
+                "src/lib.rs".to_string(),
+                old_file_hash,
+                sha256_hex(second_body.as_bytes()),
+                sha256_hex(format!("src/lib.rs\nfunction second_old\n\n{second_body}").as_bytes()),
+            ),
+        ];
+
+        let writer = Connection::open(&db_path).unwrap();
+        let new_file_hash = sha256_hex(new_file);
+        let new_second_body = "fn second_new() {}";
+        let (results, omissions) =
+            hydrate_candidates(&conn, &root, &candidates, false, |candidate_index| {
+                if candidate_index == 0 {
+                    std::fs::write(&source_path, new_file)?;
+                    writer.execute(
+                        "UPDATE indexed_files SET size = ?1, content_hash = ?2 WHERE id = 1",
+                        params![new_file.len() as i64, new_file_hash],
+                    )?;
+                    writer.execute(
+                        "UPDATE code_chunks SET symbol = 'second_new', content_hash = ?1, \
+                         embed_text = ?2 WHERE id = 2",
+                        params![
+                            sha256_hex(new_second_body.as_bytes()),
+                            format!("src/lib.rs\nfunction second_new\n\n{new_second_body}")
+                        ],
+                    )?;
+                }
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(results.len(), 1, "the pre-change first hit stays usable");
+        assert_eq!(omissions.index_mismatch, 1);
+        assert_eq!(omissions.total(), 1);
+        assert_eq!(
+            results[0].content.indexed_file_sha256,
+            results[0].content.worktree_file_sha256.clone().unwrap()
         );
     }
 }

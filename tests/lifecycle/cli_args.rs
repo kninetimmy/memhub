@@ -68,6 +68,39 @@ fn status_without_json_defaults_to_false() {
 }
 
 #[test]
+fn serve_explicit_binding_flags_parse_only_as_a_pair() {
+    match parse(&[
+        "serve",
+        "--memory-root",
+        "primary",
+        "--code-root",
+        "worktree",
+    ]) {
+        TopLevelCommand::Serve {
+            memory_root,
+            code_root,
+        } => {
+            assert_eq!(
+                memory_root.as_deref(),
+                Some(std::path::Path::new("primary"))
+            );
+            assert_eq!(code_root.as_deref(), Some(std::path::Path::new("worktree")));
+        }
+        other => panic!("expected Serve, got {other:?}"),
+    }
+
+    for args in [
+        vec!["memhub", "serve", "--memory-root", "primary"],
+        vec!["memhub", "serve", "--code-root", "worktree"],
+    ] {
+        assert!(
+            Cli::try_parse_from(args).is_err(),
+            "one root must never form a mutable launch binding"
+        );
+    }
+}
+
+#[test]
 fn render_actor_flag_parses() {
     match parse(&["render", "--actor", "codex:wrap-up"]) {
         TopLevelCommand::Render { actor } => {

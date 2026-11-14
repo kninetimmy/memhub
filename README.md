@@ -701,9 +701,9 @@ You get ranked breadcrumbs: path, line range, symbol, and a **clipped** snippet,
 It's a **locator, not a reader**. You (or the agent) open those exact lines with your own tools. What keeps it honest and cheap:
 
 - **Symbol-aware** in Rust, Go, Python, TypeScript/JavaScript, Java, and C#. Non-source files (docs, lockfiles, config) are excluded so prose can't out-rank code.
-- **Separate from your memory.** It lives in a sibling database (`.memhub/code_index.sqlite`) with its own query path, so it never pollutes recall.
-- **A throwaway cache.** It is gitignored and never exported or synced. `memhub code rm` and rebuild anytime.
-- **Automatically fresh.** Every `locate` does a lazy staleness check, and edited files re-chunk transparently.
+- **Separate from your memory.** It lives in the selected code checkout's `.memhub/code_index.sqlite`, with its own query path, so it never pollutes recall. In an ordinary checkout that is still beside `project.sqlite`; a paired MCP launch can keep memory in the primary checkout while each worktree owns an independent code cache.
+- **A throwaway, checkout-local cache.** It is gitignored and never exported, recalled, or synced. Its `.memhub` directory and SQLite files must be direct storage under that checkout—directory junctions/symlinks and file symlinks/hardlinks are refused rather than sharing another checkout's live cache. `memhub code rm` and rebuild anytime.
+- **Bounded freshness, with hashes.** Before issue #436 this README called the index “automatically fresh” and `locate` reread snippets from disk after querying, although metadata fast paths and a moving tree could make that too strong. Now a default locate still lazily refreshes, then verifies each returned file against the indexed SHA-256 and reports per-snippet/indexed-file hashes. Mismatched, unreadable, or escaping hits are omitted and counted. The response labels the metadata-with-hash-on-change basis and `atomic_tree_snapshot: false`; `--no-refresh` remains an explicit CLI cache-only mode.
 
 Surfaces: `memhub code index|status|rm` and `memhub locate` (CLI) · `memhub.locate` (MCP) · `/locate` (skill). Details: [operations reference](docs/reference/operations.md#code-index).
 
@@ -874,7 +874,7 @@ Sync state (the `[sync]` config and the per-machine baseline marker) is wiring, 
 | `memhub sync enable/status/snapshot/check/adopt/commit` | Cross-machine sync of a whole-database snapshot ([Cross-machine sync](#cross-machine-sync)) |
 | `memhub upgrade` | Rebuild + install the binary and bring every memhub instance on this machine to head schema; resync skills; install the [session-start hook](#session-start-hook) (`--no-hooks` skips it) |
 | `memhub gc` | Reclaim stale Cargo build artifacts (memhub-owned `target/` rlibs and test binaries) |
-| `memhub serve` | Stdio MCP server for Claude Code / Codex / OpenCode / Antigravity |
+| `memhub serve [--memory-root PATH --code-root PATH]` | Stdio MCP server; optional paired roots bind primary memory to one verified checkout |
 
 Run any command with `--help` for flags. The `--global` flags are explained under [Machine-global memory](#machine-global-memory).
 
@@ -932,6 +932,51 @@ Every write records two things. `source` on facts and decisions says where a cla
 - **Write (staged for review):** `propose_fact`, `propose_decision`, `propose_supersede` (retires an outdated fact or decision by linking the row that replaces it). The first two take an optional `global` flag (see [Machine-global memory](#machine-global-memory)).
 - **Hibernated:** `metrics`, which exists only in a `--features metrics` build.
 - **Sync:** the five `sync_*` tools (see [Cross-machine sync](#cross-machine-sync)).
+
+An ordinary launch still discovers one project from its working directory:
+
+```bash
+memhub serve
+```
+
+For a primary checkout that owns memory and a separate linked worktree that
+owns code, bind both roots at launch (both flags are required together):
+
+```bash
+memhub serve \
+  --memory-root /absolute/path/to/primary \
+  --code-root /absolute/path/to/registered-worktree
+```
+
+The launch is independent of the server process's working directory. Both
+roots must exist, be checkout roots from the same Git common repository, and
+be present in `git worktree list`; canonical filesystem and Git identities are
+pinned and revalidated before every tool call. Missing, replaced, unrelated,
+or deregistered roots fail closed. An ordinary launch from a nested checkout
+with no local memory metadata also refuses instead of falling through to an
+ancestor checkout. Non-Git memory-only projects and ordinary launches from a
+project subdirectory remain supported.
+
+Root aliases are accepted only when they resolve to the same pinned root.
+Storage beneath those roots is stricter: the primary `.memhub` directory,
+project DB/config files, the selected checkout's `.memhub`, and its SQLite
+cache/sidecars must be direct, single-link entries at their expected
+canonical paths. Symlink, junction, or hardlink indirection is refused before
+opening the redirected store.
+
+All memory operations—including existing writes, maintenance-on-open, sync
+and transcript paths—use `--memory-root`; only `locate` uses `--code-root`,
+the primary config/deny list, and that checkout's disposable code cache.
+`status`, `recall`, `get_row`, and `locate` return a typed `binding` object
+with `mode`, canonical `memory_root`, canonical `code_root`,
+`repository_relationship`, and (for Git) `git_common_dir`. `locate` also
+returns `index.db_path`, `index.indexed_head`, typed freshness/incomplete
+evidence, and per-hit SHA-256 content evidence. `indexed_head` is commit
+provenance, never dirty-content identity. Those four request schemas reject
+unknown fields, including attempted per-call root overrides; a client cannot
+change the launch binding. These data-scoping fields do not grant child-role
+permissions, change proposal/archive/adopt confirmations, or automate
+wrap-up.
 
 #### Register the MCP server
 

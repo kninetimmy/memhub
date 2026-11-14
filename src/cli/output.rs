@@ -1248,6 +1248,19 @@ pub(crate) fn locate_response_to_json(response: &LocateResponse) -> serde_json::
                 "vector_score": hit.vector_score,
                 "rerank_score": hit.rerank_score,
                 "snippet": hit.snippet,
+                "content": {
+                    "algorithm": "sha256",
+                    "snippet_sha256": hit.content.snippet_sha256,
+                    "indexed_chunk_sha256": hit.content.indexed_chunk_sha256,
+                    "indexed_file_sha256": hit.content.indexed_file_sha256,
+                    "worktree_file_sha256": hit.content.worktree_file_sha256,
+                    "verification": match hit.content.verification {
+                        crate::code_index::locate::LocateContentVerification::IndexedOnly =>
+                            "indexed_only",
+                        crate::code_index::locate::LocateContentVerification::WorktreeFileHash =>
+                            "worktree_file_hash",
+                    },
+                },
             })
         })
         .collect::<Vec<_>>();
@@ -1261,6 +1274,29 @@ pub(crate) fn locate_response_to_json(response: &LocateResponse) -> serde_json::
         "files_total": response.files_total,
         "chunks_total": response.chunks_total,
         "head": response.head,
+        "index": {
+            "db_path": response.index_path,
+            "indexed_head": response.head,
+            "freshness": {
+                "basis": match response.freshness_basis {
+                    crate::code_index::locate::LocateFreshnessBasis::MetadataWithHashOnChange =>
+                        "metadata_with_hash_on_change",
+                    crate::code_index::locate::LocateFreshnessBasis::IndexedCacheOnly =>
+                        "indexed_cache_only",
+                },
+                "atomic_tree_snapshot": response.atomic_tree_snapshot,
+                "refresh_skipped_files": response.refresh_skipped_files,
+                "incomplete": response.refresh_skipped_files > 0
+                    || response.omissions.total() > 0,
+                "omitted_hits": {
+                    "total": response.omissions.total(),
+                    "unreadable": response.omissions.unreadable,
+                    "changed_since_index": response.omissions.changed_since_index,
+                    "escaped_root": response.omissions.escaped_root,
+                    "index_mismatch": response.omissions.index_mismatch,
+                },
+            },
+        },
         "corrupt_embeddings": response.corrupt_embeddings,
         "elapsed_ms": response.elapsed_ms,
     })
@@ -1279,6 +1315,13 @@ pub(crate) fn print_locate(response: &LocateResponse) {
         println!(
             "Note: {} corrupt-length embedding(s) in scope were skipped — re-run `memhub code index --rebuild` to refresh.",
             response.corrupt_embeddings,
+        );
+    }
+    if response.refresh_skipped_files > 0 || response.omissions.total() > 0 {
+        println!(
+            "Note: result is incomplete ({} refresh-skipped file(s), {} omitted hit(s)); the lookup is not an atomic tree snapshot.",
+            response.refresh_skipped_files,
+            response.omissions.total(),
         );
     }
     if response.results.is_empty() {
