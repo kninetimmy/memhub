@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use memhub::code_index;
 use memhub::code_index::locate::{LocateOptions, locate};
-use memhub::commands::{decision, fact, init, task};
+use memhub::commands::{decision, fact, init};
 use memhub::config::{ProjectConfig, RetrievalMode};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -594,15 +594,15 @@ impl BoundFixture {
             "pub fn untracked_secret_marker() {}\n",
         )
         .unwrap();
-        let fact_id = fact::add(
-            &primary,
-            "paired-memory-marker",
-            "shared primary project memory",
-            "user",
-            "cli:user",
+        let conn = rusqlite::Connection::open(primary.join(".memhub/project.sqlite")).unwrap();
+        conn.execute(
+            "INSERT INTO facts(key, value, source, verified_at) \
+             VALUES ('paired-memory-marker', 'shared primary project memory', \
+                     'user', CURRENT_TIMESTAMP)",
+            [],
         )
-        .unwrap()
-        .0;
+        .unwrap();
+        let fact_id = conn.last_insert_rowid();
         Self {
             _temp: temp,
             primary,
@@ -871,12 +871,16 @@ fn paired_launch_shares_memory_and_isolates_dirty_worktree_code() {
     }
     drop(server);
 
-    let tasks = task::list(&fixture.primary, Some("open")).unwrap();
-    assert!(
-        tasks
-            .iter()
-            .any(|task| task.title == "write targets primary memory")
-    );
+    let conn = rusqlite::Connection::open(fixture.primary.join(".memhub/project.sqlite")).unwrap();
+    let task_exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM tasks \
+             WHERE title = 'write targets primary memory' AND status = 'open')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(task_exists);
 
     let memory_alias = fixture.primary.join(".");
     let code_alias = fixture.primary.join(".");
