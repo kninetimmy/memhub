@@ -6,6 +6,7 @@ use crate::code_index;
 use crate::commands;
 use crate::commands::narrative::DEFAULT_HISTORY_LIMIT;
 use crate::config::RetrievalMode;
+use crate::mcp::ServerProfile;
 use crate::retrieval::SourceType;
 
 #[derive(Debug, Parser)]
@@ -50,6 +51,10 @@ pub enum TopLevelCommand {
         json: bool,
     },
     Serve {
+        /// MCP tool profile. `full` is the compatible default;
+        /// `lookup-only` exposes only status, recall, get_row, and locate.
+        #[arg(long, value_enum, default_value_t = ServerProfile::Full)]
+        profile: ServerProfile,
         /// Launch-fixed project root that owns `.memhub/project.sqlite`
         /// and `.memhub/config.toml`. Must be paired with `--code-root`.
         #[arg(long, value_name = "PATH", requires = "code_root")]
