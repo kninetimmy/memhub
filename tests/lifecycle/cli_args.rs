@@ -19,6 +19,7 @@ use memhub::cli::{
     RecallSourceTypeArg, TopLevelCommand,
 };
 use memhub::code_index::locate::DEFAULT_LOCATE_LIMIT;
+use memhub::mcp::ServerProfile;
 
 fn parse(args: &[&str]) -> TopLevelCommand {
     let mut full = vec!["memhub"];
@@ -77,9 +78,11 @@ fn serve_explicit_binding_flags_parse_only_as_a_pair() {
         "worktree",
     ]) {
         TopLevelCommand::Serve {
+            profile,
             memory_root,
             code_root,
         } => {
+            assert_eq!(profile, ServerProfile::Full);
             assert_eq!(
                 memory_root.as_deref(),
                 Some(std::path::Path::new("primary"))
@@ -98,6 +101,35 @@ fn serve_explicit_binding_flags_parse_only_as_a_pair() {
             "one root must never form a mutable launch binding"
         );
     }
+}
+
+#[test]
+fn serve_profile_defaults_to_full_and_rejects_unknown_values() {
+    for (args, expected) in [
+        (vec!["serve"], ServerProfile::Full),
+        (vec!["serve", "--profile", "full"], ServerProfile::Full),
+        (
+            vec!["serve", "--profile", "lookup-only"],
+            ServerProfile::LookupOnly,
+        ),
+    ] {
+        match parse(&args) {
+            TopLevelCommand::Serve {
+                profile,
+                memory_root,
+                code_root,
+            } => {
+                assert_eq!(profile, expected);
+                assert!(memory_root.is_none());
+                assert!(code_root.is_none());
+            }
+            other => panic!("expected Serve, got {other:?}"),
+        }
+    }
+
+    let error = Cli::try_parse_from(["memhub", "serve", "--profile", "admin"])
+        .expect_err("unknown profiles must fail in clap before server startup");
+    assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
 }
 
 #[test]

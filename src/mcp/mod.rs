@@ -9,6 +9,7 @@ use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
 use rmcp::model::{
     ClientJsonRpcMessage, ClientRequest, ErrorCode, Implementation, InitializeRequestParams,
     InitializeResult, Meta, RequestId, ServerCapabilities, ServerInfo, ServerJsonRpcMessage,
+    ToolAnnotations,
 };
 use rmcp::service::RequestContext;
 use rmcp::transport::{Transport, async_rw::AsyncRwTransport};
@@ -34,6 +35,15 @@ use crate::retrieval::{
     self, RecallHit, RecallOptions, RecallResponse, RecallSurface, RecallWarning, SourceType,
 };
 use binding::{BindingEvidence, ServerBinding};
+
+const LOOKUP_ONLY_TOOLS: [&str; 4] = ["status", "recall", "get_row", "locate"];
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, clap::ValueEnum)]
+pub enum ServerProfile {
+    #[default]
+    Full,
+    LookupOnly,
+}
 
 /// Warm the bundled embed + rerank ONNX models: one `embed_one` plus a
 /// tiny one-doc rerank. Called on a background thread from `serve` so the
@@ -61,7 +71,16 @@ pub fn serve_bound(
     memory_root: Option<&Path>,
     code_root: Option<&Path>,
 ) -> crate::Result<()> {
-    let server = MemhubServer::try_new(start, memory_root, code_root)?;
+    serve_bound_with_profile(start, memory_root, code_root, ServerProfile::Full)
+}
+
+pub(crate) fn serve_bound_with_profile(
+    start: &Path,
+    memory_root: Option<&Path>,
+    code_root: Option<&Path>,
+    profile: ServerProfile,
+) -> crate::Result<()> {
+    let server = MemhubServer::try_new_with_profile(start, memory_root, code_root, profile)?;
 
     // Independent of the tokio runtime below, so it never delays or
     // blocks serve startup.
@@ -148,6 +167,7 @@ impl<T: Transport<RoleServer>> Transport<RoleServer> for PreInitializeTolerance<
 #[derive(Clone)]
 struct MemhubServer {
     binding: ServerBinding,
+    profile: ServerProfile,
     #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
 }
@@ -155,17 +175,20 @@ struct MemhubServer {
 impl MemhubServer {
     #[cfg(test)]
     fn new(start: PathBuf) -> Self {
-        Self::try_new(&start, None, None).expect("test project binding")
+        Self::try_new_with_profile(&start, None, None, ServerProfile::Full)
+            .expect("test project binding")
     }
 
-    fn try_new(
+    fn try_new_with_profile(
         start: &Path,
         memory_root: Option<&Path>,
         code_root: Option<&Path>,
+        profile: ServerProfile,
     ) -> crate::Result<Self> {
         Ok(Self {
             binding: ServerBinding::resolve(start, memory_root, code_root)?,
-            tool_router: Self::build_tool_router(),
+            profile,
+            tool_router: Self::build_tool_router(profile),
         })
     }
 
@@ -178,16 +201,42 @@ impl MemhubServer {
         self.binding.evidence()
     }
 
-    fn build_tool_router() -> ToolRouter<Self> {
-        let router = Self::tool_router();
+    fn build_tool_router(profile: ServerProfile) -> ToolRouter<Self> {
+        let mut router = Self::tool_router();
         #[cfg(feature = "metrics")]
         {
-            router + Self::metrics_tool_router()
+            router += Self::metrics_tool_router();
         }
-        #[cfg(not(feature = "metrics"))]
-        {
+
+        let lookup_annotations = ToolAnnotations::new().read_only(false).idempotent(false);
+        for name in LOOKUP_ONLY_TOOLS {
             router
+                .map
+                .get_mut(name)
+                .expect("lookup-only tool route")
+                .attr
+                .annotations = Some(lookup_annotations.clone());
         }
+        router
+            .map
+            .get_mut("sync_adopt")
+            .expect("sync_adopt tool route")
+            .attr
+            .annotations = Some(ToolAnnotations::new().destructive(true));
+
+        if profile == ServerProfile::LookupOnly {
+            let excluded: Vec<_> = router
+                .map
+                .keys()
+                .filter(|name| !LOOKUP_ONLY_TOOLS.contains(&name.as_ref()))
+                .map(ToString::to_string)
+                .collect();
+            for name in excluded {
+                router.remove_route(&name);
+            }
+        }
+
+        router
     }
 
     async fn status_impl(&self) -> std::result::Result<Json<StatusToolResponse>, McpError> {
@@ -1101,9 +1150,10 @@ impl MemhubServer {
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for MemhubServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new("memhub", env!("CARGO_PKG_VERSION")))
-            .with_instructions(
+        let info = ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new("memhub", env!("CARGO_PKG_VERSION")));
+        match self.profile {
+            ServerProfile::Full => info.with_instructions(
                 r#"memhub: local-first per-repo project memory. Routing rules below are ABSOLUTE when user intent matches.
 
 INTENT → TOOL (always start here; do not fall through to Grep/Read/manual scan):
@@ -1127,7 +1177,20 @@ OUT OF SCOPE (use other tools):
 • External library / framework docs → your docs tool (e.g., context7) or web search.
 • World knowledge / general programming concepts.
 "#,
-            )
+            ),
+            ServerProfile::LookupOnly => info.with_instructions(
+                r#"memhub lookup-only MCP profile. Available tools: status, recall, get_row, and locate.
+
+Use status for the launch-bound project summary and binding evidence. Use recall for compact ranked project-memory hits, get_row for one hit's full text, and locate for code breadcrumbs from the launch-bound checkout. These four request schemas are closed and cannot override the launch binding.
+
+Write, proposal, render, sync, transcript, metrics, and other administrative capabilities are unavailable through this MCP launch. Client identity, request metadata, role claims, confirmation flags, and per-call profile arguments cannot expand the catalog.
+
+This profile is lookup-only at the MCP tool boundary, not filesystem-read-only. Project opens may apply migrations, upsert project metadata, record registry maintenance, run feature-enabled metrics maintenance, and expire aged proposals. Server startup may initialize bundled models, and locate may refresh the selected checkout's disposable code index. The four tools therefore advertise conservative false read-only and idempotent hints. MCP annotations are advisory metadata, not access control.
+
+The profile governs this server's MCP surface only. Agent-role authorization and any shell or CLI access remain owned by the host.
+"#,
+            ),
+        }
     }
 
     fn initialize(

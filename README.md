@@ -392,7 +392,7 @@ Please install memhub for me.
    already initialized, use /check-init; otherwise use /init-project
    and follow its interview and approval gates. Inspect /skills to verify
    discovery. Later skill changes can be refreshed with /skills reload.
-6. Verify an actual read-only memhub MCP tool call. Report any permission
+6. Verify an actual memhub MCP lookup call. Report any permission
    denial accurately; do not broaden permissions or claim every write
    tool works merely because it is listed.
 ```
@@ -874,7 +874,7 @@ Sync state (the `[sync]` config and the per-machine baseline marker) is wiring, 
 | `memhub sync enable/status/snapshot/check/adopt/commit` | Cross-machine sync of a whole-database snapshot ([Cross-machine sync](#cross-machine-sync)) |
 | `memhub upgrade` | Rebuild + install the binary and bring every memhub instance on this machine to head schema; resync skills; install the [session-start hook](#session-start-hook) (`--no-hooks` skips it) |
 | `memhub gc` | Reclaim stale Cargo build artifacts (memhub-owned `target/` rlibs and test binaries) |
-| `memhub serve [--memory-root PATH --code-root PATH]` | Stdio MCP server; optional paired roots bind primary memory to one verified checkout |
+| `memhub serve [--profile full\|lookup-only] [--memory-root PATH --code-root PATH]` | Stdio MCP server; defaults to the full tool catalog, with an opt-in four-tool lookup profile and optional paired roots |
 
 Run any command with `--help` for flags. The `--global` flags are explained under [Machine-global memory](#machine-global-memory).
 
@@ -911,7 +911,7 @@ memhub has two retrieval modes, and the install prompt asks you to pick one. Set
 - Interactive Antigravity asks permission before calling a memhub tool. Headless `agy -p` cannot prompt, so it denies memhub tool calls unless `permissions.allow` in `~/.gemini/antigravity-cli/settings.json` has a matching `mcp(...)` rule; its denial message suggests the exact form.
 - Before this change Antigravity had MCP and `AGENTS.md` guidance but no memhub skills. It now gets the same active skill set at `~/.gemini/config/skills/`, with `antigravity` attribution. Upgrade installs it only when `~/.gemini/antigravity-cli` is already a directory. Use `/skills` or `/skills reload` to inspect discovery.
 - The session-start hook and transcript archive remain unsupported. Read rendered `PROJECT.md` on turn 1 as `AGENTS.md` directs. At transcript verbosity, `/wrap-up` performs the non-archive flow and explicitly reports the skipped archive; it never borrows another host's identity or reads internal conversation databases.
-- The shared MCP server exposes 25 tools in a default build. Availability is not a test result: verify the needed operations. `state set`, `arch set`, and `review accept` remain CLI operations with the normal approval gates. An open MCP connection does not itself require unsandboxed CLI access.
+- The default full MCP profile exposes 25 tools in a default build; the opt-in lookup-only profile exposes exactly four. Availability is not a test result: verify the needed operations. `state set`, `arch set`, and `review accept` remain CLI operations with the normal approval gates. An open MCP connection does not itself require unsandboxed CLI access.
 
 All four share one database, and every write is tagged with who surfaced it (see [Attribution](#attribution)).
 
@@ -925,18 +925,48 @@ Every write records two things. `source` on facts and decisions says where a cla
 
 ### MCP server
 
-`memhub serve` starts a stdio MCP server. Tools:
+`memhub serve` starts a stdio MCP server. Before issue #439 every launch
+exposed the full catalog below. After issue #439, omission of `--profile` or
+an explicit `--profile full` retains that behavior, including direct/staged
+writes, attribution, and the existing sync-adopt and raw-transcript
+confirmation gates:
 
-- **Read:** `status`, `search`, `recall`, `locate`, `list_tasks`, `list_decisions`, `list_facts`, `list_pending_writes`, `get_command`
+- **Lookup/query:** `status`, `search`, `recall`, `get_row`, `locate`, `list_tasks`, `list_decisions`, `list_facts`, `list_pending_writes`, `get_command`
 - **Write (direct):** `task_add`, `task_done`, `record_command`, `log_session_note`, `render`, `doc_add`, `archive_transcript`
 - **Write (staged for review):** `propose_fact`, `propose_decision`, `propose_supersede` (retires an outdated fact or decision by linking the row that replaces it). The first two take an optional `global` flag (see [Machine-global memory](#machine-global-memory)).
 - **Hibernated:** `metrics`, which exists only in a `--features metrics` build.
 - **Sync:** the five `sync_*` tools (see [Cross-machine sync](#cross-machine-sync)).
 
+`memhub serve --profile lookup-only` instead exposes and permits exactly
+`status`, `recall`, `get_row`, and `locate`. The allowlist is fixed for the
+server lifetime and is applied to the same router used by both `tools/list`
+and `tools/call`, after feature-specific tools are registered. Every other
+registered tool (including `metrics` in a feature build) and every unknown
+tool name gets an explicit MCP error before its handler runs, even if the
+client never requested `tools/list`. Client identity, request metadata, role
+claims, confirmation flags, and attempted per-call profile or root overrides
+cannot expand access. Unknown command-line profile values are rejected before
+the server starts.
+
+Lookup-only describes the MCP tool boundary, not a filesystem-read-only
+process. Project opens still apply migrations and project metadata upserts,
+best-effort registry recording, feature-enabled metrics maintenance, and
+pending-proposal expiry. Server startup still initializes bundled models, and
+`locate` can refresh the selected checkout's disposable code cache. The four
+lookup tools therefore advertise `readOnlyHint: false` and
+`idempotentHint: false`; full-profile `sync_adopt` advertises
+`destructiveHint: true`. These annotations are advisory metadata, not the
+access-control mechanism. The host still owns agent-role authorization and
+any shell or CLI access; this profile neither grants nor restricts either.
+
 An ordinary launch still discovers one project from its working directory:
 
 ```bash
 memhub serve
+# equivalent compatible spelling:
+memhub serve --profile full
+# restricted MCP catalog:
+memhub serve --profile lookup-only
 ```
 
 For a primary checkout that owns memory and a separate linked worktree that
@@ -944,6 +974,7 @@ owns code, bind both roots at launch (both flags are required together):
 
 ```bash
 memhub serve \
+  --profile lookup-only \
   --memory-root /absolute/path/to/primary \
   --code-root /absolute/path/to/registered-worktree
 ```
@@ -964,9 +995,11 @@ cache/sidecars must be direct, single-link entries at their expected
 canonical paths. Symlink, junction, or hardlink indirection is refused before
 opening the redirected store.
 
-All memory operations—including existing writes, maintenance-on-open, sync
-and transcript paths—use `--memory-root`; only `locate` uses `--code-root`,
-the primary config/deny list, and that checkout's disposable code cache.
+In the full profile, all memory operations—including existing writes,
+maintenance-on-open, sync, and transcript paths—use `--memory-root`; the
+lookup-only profile's permitted memory operations use that same root. Only
+`locate` uses `--code-root`, the primary config/deny list, and that checkout's
+disposable code cache.
 `status`, `recall`, `get_row`, and `locate` return a typed `binding` object
 with `mode`, canonical `memory_root`, canonical `code_root`,
 `repository_relationship`, and (for Git) `git_common_dir`. `locate` also
@@ -975,8 +1008,14 @@ evidence, and per-hit SHA-256 content evidence. `indexed_head` is commit
 provenance, never dirty-content identity. Those four request schemas reject
 unknown fields, including attempted per-call root overrides; a client cannot
 change the launch binding. These data-scoping fields do not grant child-role
-permissions, change proposal/archive/adopt confirmations, or automate
-wrap-up.
+permissions, change full-profile proposal/archive/adopt confirmations, or
+automate wrap-up.
+
+The repository's protocol tests exercise the source-built server over real
+stdio, including full writes and confirmation refusals plus lookup-only
+direct-call denials. That is source-level verification only: it does not
+install a server, change host registration or role policy, or qualify a child
+host. Installed-binary and child-host trials remain separate work.
 
 #### Register the MCP server
 
@@ -1096,7 +1135,7 @@ Token metrics is fully implemented but hibernated. A default build compiles out 
 - **One per repo.** Project boundaries are repo boundaries.
 - **Boring tech.** SQLite, Rust, keyword search, brute-force vector comparison. No vector DB, no extension loading, no Python.
 - **Agents are untrusted writers.** Agent proposals stage in `pending_writes` until a human approves. The schema enforces it.
-- **Recall is read-only.** Retrieval never writes to `writes_log` or any durable table.
+- **Recall adds no semantic write.** It does not create or change facts, decisions, tasks, notes, documents, or architecture; the shared maintenance-on-open path and feature-enabled metrics can still update operational state.
 - **Narrow milestones.** Ship usable slices, and defer speculative work until a real workflow demands it.
 
 ---

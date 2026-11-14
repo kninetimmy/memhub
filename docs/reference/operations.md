@@ -116,13 +116,15 @@ rule would forbid. This contract covers the repo DB only: the
 machine-global store follows the opposite rule for migrations (see
 "Machine-global memory" below).
 
-**Paired MCP launches preserve this contract (issue #436).** When
-`memhub serve --memory-root <primary> --code-root <checkout>` is used,
-every memory-backed MCP operation—including `status`, `recall`, `get_row`,
-existing direct/staged writes, sync and transcript operations—passes the
-fixed primary root into the same `open_project`-using command paths as
-before. Semantic reads can therefore still migrate, upsert metadata,
-record/debounce registry or metrics maintenance, and expire proposals.
+**Paired MCP launches and the lookup-only profile preserve this contract
+(issues #436 and #439).** When `memhub serve --memory-root <primary>
+--code-root <checkout>` is used, every permitted memory-backed MCP operation
+passes the fixed primary root into the same `open_project`-using command paths
+as before. The full profile still includes the existing direct/staged writes,
+sync, and transcript operations; lookup-only permits `status`, `recall`, and
+`get_row`. Those semantic lookups can therefore still migrate, upsert
+metadata, record/debounce registry or metrics maintenance, and expire
+proposals.
 The separate code root does not introduce a physically read-only memory
 path. `locate` is the exception it already was: it reads the primary
 config but opens only the selected checkout's disposable code cache.
@@ -1187,6 +1189,59 @@ checkout path, and the database plus WAL/SHM/journal sidecars must be direct
 regular files with one hard link. Any alias refuses without touching its
 target. This applies to ordinary CLI/eval callers as well as paired MCP.
 
+### MCP launch profile
+
+Before issue #439, every `memhub serve` launch exposed and permitted the full
+tool catalog compiled into that build. After issue #439, that behavior remains
+the default and is also selected explicitly with `--profile full`; the
+additive restricted form is:
+
+```text
+memhub serve --profile lookup-only [--memory-root <primary> --code-root <checkout>]
+```
+
+The profile works with ordinary project discovery and with the paired binding
+below. Clap rejects any other profile value before binding or serving starts.
+The existing public `mcp::serve` and `mcp::serve_bound` functions still launch
+the full profile.
+
+Lookup-only exposes and permits exactly `status`, `recall`, `get_row`, and
+`locate`. `MemhubServer::build_tool_router` first builds the existing router,
+merges the feature-enabled `metrics` router, then removes every registered
+route outside that positive allowlist. The existing
+`#[tool_handler(router = self.tool_router)]` therefore uses the same filtered
+router for both `tools/list` and `tools/call`: excluded registered tools,
+feature tools, and unknown names all return an explicit MCP error before
+parameter deserialization or handler execution. This applies to every tool
+route outside the four-name allowlist, not only to named write methods.
+Skipping `tools/list`, changing `clientInfo`, request metadata or a claimed
+role, passing `confirm=true`, or including a per-call profile/root field cannot
+expand the launch-fixed router. A denied call performs none of its requested
+semantic/admin writes or external filesystem actions.
+
+This is lookup-only at the MCP surface, not a physically read-only server.
+The shared project-open path still applies migrations and project-row upserts
+fail-closed, and still attempts registry recording, feature-enabled metrics
+maintenance, and pending-proposal expiry best-effort. Server startup still
+warms bundled models. `locate` still reads primary config and may initialize
+or refresh the selected checkout's disposable code cache; it does not gain a
+semantic-memory write. The initialization instructions state these effects
+and the unavailable write/admin categories without directing clients to an
+unavailable tool or a shell workaround.
+
+The four lookup tools advertise conservative `readOnlyHint: false` and
+`idempotentHint: false`, because maintenance or cache refresh may change their
+environment. Full-profile `sync_adopt` advertises `destructiveHint: true`; its
+existing `confirm=true` gate remains the enforcement. All MCP annotations are
+advisory metadata and do not implement the allowlist.
+
+The profile controls one server process's MCP catalog only. The host owns
+agent-role policy and any shell/CLI access, so this feature claims neither
+authorization nor filesystem isolation outside MCP. Repository protocol
+tests spawn the source-built binary over real stdio; they do not install or
+register a binary, change host policy, or qualify a child-host launch. Those
+installed-server and child-host checks remain separate.
+
 ### MCP launch binding
 
 `memhub serve` keeps its ordinary discovery mode. Its additive paired form
@@ -1237,11 +1292,13 @@ The `status`, `recall`, `get_row`, and `locate` outputs add:
 - `binding.git_common_dir` for verified Git bindings.
 
 Their input schemas use closed objects and reject unsupported fields,
-including attempted root overrides. Sync `remote`, doc allow-list inputs,
-proposal staging, archive/adopt confirmations, and maintained-open behavior
-keep their existing meanings; none can alter the launch binding. This
-contract scopes data only. It does not qualify child-role permissions,
-install host configuration, or automate wrap-up.
+including attempted root overrides. In the full profile, sync `remote`, doc
+allow-list inputs, proposal staging, archive/adopt confirmations, and
+maintained-open behavior keep their existing meanings; none can alter the
+launch binding. Lookup-only excludes those non-lookup tool routes while
+retaining maintained-open behavior. This contract scopes data only. It does
+not qualify child-role permissions, install host configuration, or automate
+wrap-up.
 
 **Symbol-aware chunking (decisions 108, 115–120).** A tree-sitter AST
 chunker emits one chunk per top-level item and one `Type::method` chunk per
@@ -1415,6 +1472,24 @@ by the cache; only the content hashes identify dirty returned bytes.
 | `LocateResponse`, CLI JSON/human output, MCP locate output | Existing rank/path/line/scores/counts/`head` remain. Hash/freshness/omission evidence is additive; human output now warns when knowingly incomplete. Candidate identity is pinned through hydration, and cached file proofs are exact-version keyed. |
 | Recall/export/sync isolation | The preexisting physical-separation rule still holds for every operation in those classes, not only one named function. Per-worktree caches are never durable memory, recalled, exported, imported, or synced. |
 | Non-Git memory-only and ordinary single-checkout projects | Existing status/recall/write behavior holds. Code locate still needs Git; nested-checkout ancestor drift is the intentionally removed behavior recorded above. |
+
+### Issue #439 blast radius
+
+| Structural element / caller or input state | Before → after; prior behavior retained? |
+| --- | --- |
+| `TopLevelCommand::Serve`, clap parsing, and `cli::run` | Before, serve accepted only the optional paired roots and always launched the full catalog. After, `--profile full\|lookup-only` is parsed at launch; omission remains full, unknown values fail before server construction, and the roots still require each other and retain discovery/binding behavior. |
+| Public `mcp::serve` and `mcp::serve_bound`; internal `serve_bound_with_profile` | Both public entry points still select full and retain their signatures and behavior. Only the CLI's new internal call can select lookup-only. Runtime setup, stdio transport, pre-initialize tolerance, and model warm-up still run for every profile. |
+| `ServerProfile`, `MemhubServer::try_new_with_profile`, and the stored profile | The binding was already resolved once at launch and revalidated per call; that still holds. The new fixed enum selects only router contents and initialization instructions and cannot be changed by later requests. |
+| `MemhubServer::build_tool_router`, the macro-generated full router, and the feature `metrics_tool_router` | Full still merges the same build-feature routes. Lookup-only filters that already-merged router to a four-name positive allowlist, so a present or future route is excluded unless it is one of those four; this restriction covers every tool route of that kind, not only one named writer or `metrics`. |
+| `#[tool_handler(router = self.tool_router)]` for `tools/list` and `tools/call` | The existing rmcp router remains the only dispatch framework. Full listing/calls are unchanged. Lookup listing and direct calls both see the filtered router, so calls made before listing and unknown names fail before any excluded handler. |
+| Caller's `clientInfo`, request `_meta`, role/profile/root arguments, and confirmation flags | These inputs still reach handlers where their existing full-profile schemas allow them; attribution still derives from client identity. None can mutate or bypass a lookup-only router. A denied route therefore cannot perform its requested semantic/admin write or filesystem operation. |
+| MCP `status`, `recall`, `get_row`, and `locate` handlers and closed schemas | Existing command/retrieval implementations, bound roots, binding evidence, code-content hashes, omission/incomplete reporting, and root-override refusal all hold in both profiles. Only advisory annotations were added; all four conservatively advertise false read-only/idempotent hints because existing maintenance/refresh effects remain. |
+| Every other base or feature MCP handler (search/list, direct/staged writes, render/doc, sync, transcript, metrics) | Full-profile reachability, attribution, write split, confinement, and errors remain as before. Lookup-only removes route reachability before deserialization/handler execution; handler implementations themselves were not redesigned. |
+| Full-profile `sync_adopt` and `archive_transcript` | Existing confirmation refusals and confirmed behavior still hold. `sync_adopt` additionally advertises `destructiveHint: true`; the annotation is not its gate. Both routes are absent in lookup-only regardless of `confirm`. |
+| `ServerHandler::get_info` initialization instructions | Full retains the established routing instructions. Lookup-only now names only its four available tools, unavailable capability classes, maintenance/cache effects, annotation limits, and the host-owned role/shell boundary. |
+| `db::open_project`, registry/metrics maintenance, proposal expiry, and model initialization | Unchanged for every profile: migrations/project upserts fail closed; registry, feature metrics, and expiry remain best-effort; model warm-up remains launch-wide. Lookup-only did not add a read-only connection split. |
+| `code_index::locate::locate_bound` and checkout-local code cache | Existing binding, primary-config use, tracked/denied-file scope, refresh, verification, and incomplete-result behavior hold. Lookup-only permits the same refresh writes to the disposable cache and no semantic memory-write route. |
+| README/operations wire descriptions and stdio protocol fixtures | Before, broad catalog prose described all launches as full. After, the same prose records that removed lookup-only exposure as a before/after while retaining full compatibility, and tests distinguish source-level protocol verification from installation or child-host qualification. Host role policy and shell/CLI access are untouched. |
 
 **Scoring config is independent of recall (R11, issue #73).** Locate's
 fusion weights and the test-path down-weight live under their own

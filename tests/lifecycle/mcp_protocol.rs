@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use memhub::code_index;
 use memhub::code_index::locate::{LocateOptions, locate};
-use memhub::commands::{decision, fact, init};
+use memhub::commands::{decision, fact, init, pending_write};
 use memhub::config::{ProjectConfig, RetrievalMode};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -209,7 +209,23 @@ fn tools_list_exposes_full_tool_surface() {
             tool["outputSchema"]["properties"]["binding"].is_object(),
             "{name} output schema must advertise binding evidence: {tool}"
         );
+        assert_eq!(
+            tool["annotations"]["readOnlyHint"], false,
+            "{name} may perform maintenance or refresh"
+        );
+        assert_eq!(
+            tool["annotations"]["idempotentHint"], false,
+            "{name} must not promise an effect-free repeated call"
+        );
     }
+    let sync_adopt = tools
+        .iter()
+        .find(|tool| tool["name"] == json!("sync_adopt"))
+        .expect("sync_adopt tool");
+    assert_eq!(
+        sync_adopt["annotations"]["destructiveHint"], true,
+        "sync_adopt must advertise its destructive overwrite"
+    );
     let locate = tools
         .iter()
         .find(|tool| tool["name"] == json!("locate"))
@@ -388,6 +404,191 @@ fn replay_with_serve_args(
     replies
 }
 
+#[test]
+fn lookup_only_lists_exact_catalog_annotations_and_instructions() {
+    let temp = tempdir().unwrap();
+    init::run(temp.path()).unwrap();
+    let serve_args = vec!["--profile".to_string(), "lookup-only".to_string()];
+    let replies = replay_with_serve_args(
+        temp.path(),
+        &serve_args,
+        &[
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "codex", "version": "test"}
+                }
+            }),
+            json!({"jsonrpc":"2.0","method":"notifications/initialized","params":{}}),
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
+        ],
+        &[1, 2],
+    );
+
+    let instructions = replies[&1]["result"]["instructions"]
+        .as_str()
+        .expect("lookup-only initialization instructions");
+    for text in [
+        "status, recall, get_row, and locate",
+        "administrative capabilities are unavailable",
+        "not filesystem-read-only",
+        "expire aged proposals",
+        "disposable code index",
+        "annotations are advisory",
+        "shell or CLI access remain owned by the host",
+    ] {
+        assert!(
+            instructions.contains(text),
+            "lookup-only instructions omitted {text:?}: {instructions}"
+        );
+    }
+
+    let tools = replies[&2]["result"]["tools"]
+        .as_array()
+        .expect("lookup-only tools");
+    let names: Vec<_> = tools
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["get_row", "locate", "recall", "status"]);
+    for tool in tools {
+        assert_eq!(tool["annotations"]["readOnlyHint"], false, "{tool}");
+        assert_eq!(tool["annotations"]["idempotentHint"], false, "{tool}");
+        assert_eq!(tool["inputSchema"]["additionalProperties"], false, "{tool}");
+        assert!(tool["outputSchema"]["properties"]["binding"].is_object());
+    }
+}
+
+#[test]
+fn lookup_only_rejects_every_other_route_before_handlers_run() {
+    fn semantic_counts(repo: &Path) -> std::collections::BTreeMap<&'static str, i64> {
+        let conn = rusqlite::Connection::open(repo.join(".memhub/project.sqlite")).unwrap();
+        [
+            ("facts", "SELECT COUNT(*) FROM facts"),
+            ("decisions", "SELECT COUNT(*) FROM decisions"),
+            ("tasks", "SELECT COUNT(*) FROM tasks"),
+            ("pending_writes", "SELECT COUNT(*) FROM pending_writes"),
+            ("commands", "SELECT COUNT(*) FROM commands"),
+            ("session_notes", "SELECT COUNT(*) FROM session_notes"),
+            ("documents", "SELECT COUNT(*) FROM documents"),
+            ("doc_chunks", "SELECT COUNT(*) FROM doc_chunks"),
+            ("writes_log", "SELECT COUNT(*) FROM writes_log"),
+        ]
+        .into_iter()
+        .map(|(table, query)| {
+            let count = conn.query_row(query, [], |row| row.get(0)).unwrap();
+            (table, count)
+        })
+        .collect()
+    }
+
+    let temp = tempdir().unwrap();
+    init::run(temp.path()).unwrap();
+    let initialize = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "codex", "version": "test"}
+        }
+    });
+    let initialized = json!({"jsonrpc":"2.0","method":"notifications/initialized","params":{}});
+    let full = replay(
+        temp.path(),
+        &[
+            initialize,
+            initialized,
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
+        ],
+        &[1, 2],
+    );
+    let mut denied_names: Vec<String> = full[&2]["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .filter(|name| !["status", "recall", "get_row", "locate"].contains(name))
+        .map(str::to_string)
+        .collect();
+    assert!(
+        denied_names.iter().any(|name| name == "task_add"),
+        "full profile must supply a real write route"
+    );
+    if cfg!(feature = "metrics") {
+        assert!(
+            denied_names.iter().any(|name| name == "metrics"),
+            "metrics route must be denied after the feature router is merged"
+        );
+    }
+    denied_names.push("not_a_registered_tool".to_string());
+
+    let doc = temp.path().join("blocked.md");
+    std::fs::write(&doc, "# denied\n").unwrap();
+    let remote = temp.path().join("blocked-remote");
+    let transcript_dir = temp.path().join(".memhub/transcripts");
+    let rendered_project = temp.path().join(".memhub/rendered/PROJECT.md");
+    let mut server = LiveServer::lookup_only(temp.path());
+    let before_counts = semantic_counts(temp.path());
+    let transcript_existed = transcript_dir.exists();
+    let rendered_existed = rendered_project.exists();
+
+    let arguments = json!({
+        "profile": "full",
+        "role": "administrator",
+        "confirm": true,
+        "force": true,
+        "title": "blocked task",
+        "description": "blocked",
+        "id": 1,
+        "key": "blocked",
+        "value": "blocked",
+        "rationale": "blocked",
+        "kind": "test",
+        "cmdline": "blocked",
+        "exit_code": 0,
+        "text": "blocked",
+        "file": doc.display().to_string(),
+        "remote": remote.display().to_string(),
+        "agent": "codex",
+        "session_id": "codex:00000000-0000-0000-0000-000000000000"
+    });
+    for (offset, name) in denied_names.iter().enumerate() {
+        let id = i64::try_from(offset).unwrap() + 2;
+        server.send(&json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "tools/call",
+            "params": {
+                "name": name,
+                "arguments": arguments.clone(),
+                "_meta": {"profile": "full", "role": "administrator"}
+            }
+        }));
+        let reply = server.reply(id);
+        assert_eq!(
+            reply["error"]["code"], -32602,
+            "{name} reached a handler or returned a non-explicit error: {reply}"
+        );
+        assert_eq!(
+            reply["error"]["message"], "tool not found",
+            "{name}: {reply}"
+        );
+        assert!(reply["result"].is_null(), "{name}: {reply}");
+    }
+    drop(server);
+    assert_eq!(semantic_counts(temp.path()), before_counts);
+    assert!(!remote.exists(), "denied sync route touched its remote");
+    assert_eq!(transcript_dir.exists(), transcript_existed);
+    assert_eq!(rendered_project.exists(), rendered_existed);
+    assert_eq!(std::fs::read_to_string(doc).unwrap(), "# denied\n");
+}
+
 struct LiveServer {
     child: Child,
     stdin: Option<ChildStdin>,
@@ -397,16 +598,43 @@ struct LiveServer {
 
 impl LiveServer {
     fn bound(cwd: &Path, memory_root: &Path, code_root: &Path) -> Self {
+        Self::with_args(
+            cwd,
+            &[
+                "--profile".to_string(),
+                "full".to_string(),
+                "--memory-root".to_string(),
+                memory_root.display().to_string(),
+                "--code-root".to_string(),
+                code_root.display().to_string(),
+            ],
+        )
+    }
+
+    fn bound_lookup_only(cwd: &Path, memory_root: &Path, code_root: &Path) -> Self {
+        Self::with_args(
+            cwd,
+            &[
+                "--profile".to_string(),
+                "lookup-only".to_string(),
+                "--memory-root".to_string(),
+                memory_root.display().to_string(),
+                "--code-root".to_string(),
+                code_root.display().to_string(),
+            ],
+        )
+    }
+
+    fn lookup_only(cwd: &Path) -> Self {
+        Self::with_args(cwd, &["--profile".to_string(), "lookup-only".to_string()])
+    }
+
+    fn with_args(cwd: &Path, serve_args: &[String]) -> Self {
         let home = cwd.join(".test-home");
         std::fs::create_dir_all(&home).unwrap();
         let mut child = Command::new(memhub_bin())
-            .args([
-                "serve",
-                "--memory-root",
-                memory_root.to_str().unwrap(),
-                "--code-root",
-                code_root.to_str().unwrap(),
-            ])
+            .arg("serve")
+            .args(serve_args)
             .current_dir(cwd)
             .env("MEMHUB_LOG", "off")
             .env("HOME", &home)
@@ -665,7 +893,7 @@ fn paired_launch_shares_memory_and_isolates_dirty_worktree_code() {
         let primary = &fixture.primary;
         let worktree_a = &fixture.worktree_a;
         let alpha = scope.spawn(move || {
-            let mut server = LiveServer::bound(launch, primary, worktree_a);
+            let mut server = LiveServer::bound_lookup_only(launch, primary, worktree_a);
             alpha_barrier.wait();
             structured(&server.call(2, "locate", json!({"query": "alpha dirty worktree marker"})))
                 .clone()
@@ -675,7 +903,7 @@ fn paired_launch_shares_memory_and_isolates_dirty_worktree_code() {
         let primary = &fixture.primary;
         let worktree_b = &fixture.worktree_b;
         let beta = scope.spawn(move || {
-            let mut server = LiveServer::bound(launch, primary, worktree_b);
+            let mut server = LiveServer::bound_lookup_only(launch, primary, worktree_b);
             beta_barrier.wait();
             structured(&server.call(2, "locate", json!({"query": "beta dirty worktree marker"})))
                 .clone()
@@ -778,7 +1006,8 @@ fn paired_launch_shares_memory_and_isolates_dirty_worktree_code() {
         assert!(!worktree.join(".memhub/config.toml").exists());
     }
 
-    let mut server = LiveServer::bound(&fixture.launch, &fixture.primary, &fixture.worktree_a);
+    let mut server =
+        LiveServer::bound_lookup_only(&fixture.launch, &fixture.primary, &fixture.worktree_a);
     let status = server.call(2, "status", json!({}));
     assert_eq!(
         structured(&status)["binding"]["code_root"],
@@ -810,12 +1039,27 @@ fn paired_launch_shares_memory_and_isolates_dirty_worktree_code() {
         structured(&row)["binding"]["code_root"],
         BoundFixture::canonical(&fixture.worktree_a)
     );
-    let task_reply = server.call(
+    std::fs::write(
+        fixture.worktree_a.join("src/lib.rs"),
+        "pub fn alpha_refreshed_worktree_marker() {}\n",
+    )
+    .unwrap();
+    let refreshed = server.call(
         5,
-        "task_add",
-        json!({"title": "write targets primary memory"}),
+        "locate",
+        json!({"query": "alpha refreshed worktree marker"}),
     );
-    assert_eq!(structured(&task_reply)["status"], "open");
+    assert!(
+        structured(&refreshed)["results"][0]["snippet"]
+            .as_str()
+            .is_some_and(|snippet| snippet.contains("alpha_refreshed_worktree_marker")),
+        "{refreshed}"
+    );
+    assert_ne!(
+        structured(&refreshed)["results"][0]["content"]["indexed_file_sha256"],
+        alpha["results"][0]["content"]["indexed_file_sha256"],
+        "lookup-only locate must refresh changed tracked code"
+    );
 
     let untracked = server.call(6, "locate", json!({"query": "untracked secret marker"}));
     assert!(
@@ -871,6 +1115,32 @@ fn paired_launch_shares_memory_and_isolates_dirty_worktree_code() {
     }
     drop(server);
 
+    let mut full = LiveServer::bound(&fixture.launch, &fixture.primary, &fixture.worktree_a);
+    let task_reply = full.call(
+        2,
+        "task_add",
+        json!({"title": "write targets primary memory"}),
+    );
+    assert_eq!(structured(&task_reply)["status"], "open");
+    assert_eq!(structured(&task_reply)["actor"], "codex");
+    assert_eq!(structured(&task_reply)["actor_raw"], "codex");
+    let archive_refusal = full.call(
+        3,
+        "archive_transcript",
+        json!({
+            "agent": "codex",
+            "session_id": "codex:00000000-0000-0000-0000-000000000000"
+        }),
+    );
+    assert_eq!(structured(&archive_refusal)["archived"], false);
+    assert!(
+        structured(&archive_refusal)["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("confirm=true")),
+        "{archive_refusal}"
+    );
+    drop(full);
+
     let conn = rusqlite::Connection::open(fixture.primary.join(".memhub/project.sqlite")).unwrap();
     let task_exists: bool = conn
         .query_row(
@@ -884,7 +1154,8 @@ fn paired_launch_shares_memory_and_isolates_dirty_worktree_code() {
 
     let memory_alias = fixture.primary.join(".");
     let code_alias = fixture.primary.join(".");
-    let mut primary_server = LiveServer::bound(&fixture.launch, &memory_alias, &code_alias);
+    let mut primary_server =
+        LiveServer::bound_lookup_only(&fixture.launch, &memory_alias, &code_alias);
     let primary = primary_server.call(2, "locate", json!({"query": "primary checkout marker"}));
     let primary = structured(&primary);
     assert_eq!(
@@ -900,6 +1171,56 @@ fn paired_launch_shares_memory_and_isolates_dirty_worktree_code() {
 }
 
 #[test]
+fn lookup_only_status_preserves_pending_proposal_expiry() {
+    let temp = tempdir().unwrap();
+    init::run(temp.path()).unwrap();
+    let pending_id = pending_write::propose_fact(
+        temp.path(),
+        "old-proposal",
+        "blocked from becoming durable",
+        "expire through maintained open",
+        "codex",
+        "codex",
+        "{}",
+    )
+    .unwrap();
+
+    let mut server = LiveServer::lookup_only(temp.path());
+    let conn = rusqlite::Connection::open(temp.path().join(".memhub/project.sqlite")).unwrap();
+    conn.execute(
+        "UPDATE pending_writes SET created_at = datetime('now', '-45 days') WHERE id = ?1",
+        [pending_id],
+    )
+    .unwrap();
+    drop(conn);
+
+    let status = server.call(2, "status", json!({}));
+    assert_eq!(structured(&status)["pending_writes"], 0, "{status}");
+    drop(server);
+
+    let conn = rusqlite::Connection::open(temp.path().join(".memhub/project.sqlite")).unwrap();
+    let (proposal_status, reviewed_at): (String, Option<String>) = conn
+        .query_row(
+            "SELECT status, reviewed_at FROM pending_writes WHERE id = ?1",
+            [pending_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(proposal_status, "expired");
+    assert!(reviewed_at.is_some());
+    let actor: String = conn
+        .query_row(
+            "SELECT actor FROM writes_log \
+             WHERE table_name = 'pending_writes' AND action = 'update' \
+             ORDER BY id DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(actor, "review:auto_expire");
+}
+
+#[test]
 fn paired_launch_rejects_unrelated_missing_and_changed_roots() {
     let fixture = BoundFixture::new();
     let unrelated = fixture._temp.path().join("unrelated");
@@ -909,6 +1230,8 @@ fn paired_launch_rejects_unrelated_missing_and_changed_roots() {
     let output = Command::new(memhub_bin())
         .args([
             "serve",
+            "--profile",
+            "lookup-only",
             "--memory-root",
             fixture.primary.to_str().unwrap(),
             "--code-root",
@@ -944,6 +1267,8 @@ fn paired_launch_rejects_unrelated_missing_and_changed_roots() {
     let output = Command::new(memhub_bin())
         .args([
             "serve",
+            "--profile",
+            "lookup-only",
             "--memory-root",
             fixture.primary.to_str().unwrap(),
             "--code-root",
@@ -961,7 +1286,8 @@ fn paired_launch_rejects_unrelated_missing_and_changed_roots() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let mut server = LiveServer::bound(&fixture.launch, &fixture.primary, &fixture.worktree_b);
+    let mut server =
+        LiveServer::bound_lookup_only(&fixture.launch, &fixture.primary, &fixture.worktree_b);
     assert_eq!(structured(&server.call(2, "status", json!({})))["facts"], 1);
     let moved = fixture._temp.path().join("worktree-b-moved");
     std::fs::rename(&fixture.worktree_b, &moved).unwrap();
