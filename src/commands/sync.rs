@@ -1333,12 +1333,14 @@ pub struct AdoptSummary {
 /// original DB intact:
 /// 1. stage the remote snapshot into `.memhub/project.sqlite.incoming`;
 /// 2. hash the *staged* copy and verify it against the manifest;
-/// 3. start an in-place SQLite online-backup restore with a zero-page step,
+/// 3. open the staged copy as SQLite and refuse malformed or zero-page input
+///    before opening a destination backup session or replacing a safety slot;
+/// 4. start an in-place SQLite online-backup restore with a zero-page step,
 ///    acquiring the destination write lock without changing the DB;
-/// 4. while that lock is held, copy the current DB to
+/// 5. while that lock is held, copy the current DB to
 ///    `.memhub/backups/sync/last-replaced.sqlite` via `VACUUM INTO`, so
 ///    it captures committed WAL state (a raw file copy could miss it);
-/// 5. restore the staged snapshot's pages through that same online-backup
+/// 6. restore the staged snapshot's pages through that same online-backup
 ///    session (see [`restore_into_live_db`]). No DB file is ever deleted or
 ///    renamed under a process that may hold it open, and no writer can
 ///    commit between the safety copy and replacement.
@@ -2592,6 +2594,88 @@ mod tests {
             vec!["keeper"],
             "restore copied nothing into the locked DB"
         );
+    }
+
+    #[test]
+    fn malformed_and_zero_page_sources_keep_local_db_and_earlier_backup() {
+        // BEFORE issue #441: a checksum-matching non-SQLite snapshot passed
+        // staging, replaced the pre-adopt safety slot, and only then failed
+        // during restore. AFTER: `PRAGMA page_count` validates the staged
+        // source before the destination backup session or slot write, so
+        // malformed and zero-page sources leave both prior layers untouched.
+        let local = new_synced_repo();
+        fact::add(local.path(), "earlier", "1", "user", "cli:user").expect("earlier fact");
+        let backup_path = local
+            .path()
+            .join(".memhub")
+            .join("backups")
+            .join("sync")
+            .join("last-replaced.sqlite");
+        {
+            let ctx = db::open_project(local.path()).expect("open local");
+            db::write_backup_slot(&ctx.conn, &backup_path).expect("seed earlier slot");
+        }
+        fact::add(local.path(), "latest", "2", "user", "cli:user").expect("latest fact");
+
+        for (case, bytes) in [
+            ("malformed", b"not a sqlite database".as_slice()),
+            ("zero-page", b"".as_slice()),
+        ] {
+            let drive = local.path().join(case);
+            fs::create_dir_all(&drive).expect("create remote");
+            let snapshot = drive.join(SNAPSHOT_FILENAME);
+            fs::write(&snapshot, bytes).expect("write invalid snapshot");
+            let (logical_version, schema_version) = local_state(local.path());
+            let manifest = Manifest {
+                manifest_version: MANIFEST_VERSION,
+                project_id: "test-proj-abcd1234".into(),
+                schema_version,
+                logical_version,
+                file_sha256: sha256_file(&snapshot).expect("hash invalid snapshot"),
+                snapshot_filename: String::new(),
+                machine_id: "other-machine".into(),
+                created_at: "2026-05-22 00:00:00".into(),
+                memhub_version: "0.1.0".into(),
+            };
+            fs::write(
+                drive.join(MANIFEST_FILENAME),
+                serde_json::to_string_pretty(&manifest).unwrap(),
+            )
+            .expect("write manifest");
+
+            let err = adopt(local.path(), &drive, true)
+                .expect_err("malformed or zero-page snapshot must refuse");
+            assert!(
+                matches!(err, MemhubError::Sqlite(_) | MemhubError::InvalidInput(_)),
+                "{case} source returned an unexpected error: {err:?}"
+            );
+            assert_eq!(
+                fact_keys(local.path()),
+                vec!["earlier", "latest"],
+                "{case} refusal changed the local DB"
+            );
+            let earlier = Connection::open(&backup_path).expect("open earlier slot");
+            let copied: Vec<String> = earlier
+                .prepare("SELECT key FROM facts ORDER BY key")
+                .unwrap()
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<std::result::Result<_, _>>()
+                .unwrap();
+            assert_eq!(
+                copied,
+                vec!["earlier"],
+                "{case} refusal replaced the earlier backup slot"
+            );
+            assert!(
+                !local
+                    .path()
+                    .join(".memhub")
+                    .join(INCOMING_FILENAME)
+                    .exists(),
+                "{case} refusal left the transient stage behind"
+            );
+        }
     }
 
     #[test]
