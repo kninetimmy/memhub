@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Transaction, params};
+use rusqlite::{Transaction, TransactionBehavior, params};
 
 use crate::commands::{index, narrative, search};
 use crate::config::RetrievalMode;
@@ -65,28 +65,40 @@ pub fn run(start: &Path, source: &Path, force: bool) -> Result<ImportSummary> {
     }
 
     let mut ctx = db::open_project(start)?;
+    let paths = ctx.paths.clone();
+    let mode = ctx.config.retrieval.mode;
 
-    let retained_doc_chunks = count_doc_chunks(&ctx.conn)?;
-    // Snapshot BEFORE the wipe -- this is what the import is about to
-    // destroy, whether or not `--force` was needed to get here.
-    let overwritten_writes_log = count_writes_log(&ctx.conn)?;
+    #[cfg(test)]
+    tests::before_lock(&paths.repo_root);
 
-    let durable = count_durable_rows(&ctx.conn)?;
+    // One protected state governs the emptiness decision, reported counts,
+    // safety copy and replacement. A writer that commits before this lock is
+    // included; one that arrives later waits (or hits its bounded timeout)
+    // until the import commits.
+    let tx = ctx
+        .conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let retained_doc_chunks = count_doc_chunks(&tx)?;
+    let overwritten_writes_log = count_writes_log(&tx)?;
+    let durable = count_durable_rows(&tx)?;
     if !force && durable > 0 {
         return Err(MemhubError::InvalidInput(format!(
             "target memhub project at {} has {} durable row(s); pass --force to overwrite",
-            ctx.paths.repo_root.display(),
+            paths.repo_root.display(),
             durable
         )));
     }
 
-    // Copy the target before the wipe removes any row of it, outside the
-    // transaction (`VACUUM INTO` cannot run inside one). `arch_sections`
-    // rows cascade from `project_arch`, so they are covered by `durable`.
+    // `VACUUM INTO` cannot run on `tx`, so an independent reader copies the
+    // last committed state while this transaction keeps other writers out.
+    // `arch_sections` rows cascade from `project_arch`, so they are covered
+    // by `durable`.
     let backup_path =
-        if durable > 0 || overwritten_writes_log > 0 || count_decision_chunks(&ctx.conn)? > 0 {
-            let path = import_backup_path(&ctx.paths);
-            db::write_backup_slot(&ctx.conn, &path)?;
+        if durable > 0 || overwritten_writes_log > 0 || count_decision_chunks(&tx)? > 0 {
+            let path = import_backup_path(&paths);
+            db::write_backup_slot_from_path(&paths.db_path, &path)?;
+            #[cfg(test)]
+            tests::after_copy(&tx, &path);
             Some(path)
         } else {
             None
@@ -104,8 +116,6 @@ pub fn run(start: &Path, source: &Path, force: bool) -> Result<ImportSummary> {
         payload.project_arch.len(),
     );
 
-    let mode = ctx.config.retrieval.mode;
-    let tx = ctx.conn.transaction()?;
     tx.execute_batch("PRAGMA defer_foreign_keys = ON")?;
 
     wipe_durable_tables(&tx)?;
@@ -151,7 +161,7 @@ pub fn run(start: &Path, source: &Path, force: bool) -> Result<ImportSummary> {
 
     Ok(ImportSummary {
         source: source.to_path_buf(),
-        target_root: ctx.paths.repo_root.clone(),
+        target_root: paths.repo_root,
         forced: force,
         facts: summary_counts.0,
         decisions: summary_counts.1,
@@ -418,4 +428,121 @@ fn insert_narrative(tx: &Transaction<'_>, table: &str, rows: &[v1::NarrativeEntr
         ])?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::{export, fact, init};
+    use rusqlite::{Connection, ErrorCode};
+
+    type AfterCopyHook = fn(&Connection, &Path);
+
+    thread_local! {
+        static BEFORE_LOCK: std::cell::Cell<Option<fn(&Path)>> =
+            const { std::cell::Cell::new(None) };
+        static AFTER_COPY: std::cell::Cell<Option<AfterCopyHook>> =
+            const { std::cell::Cell::new(None) };
+    }
+
+    pub(super) fn before_lock(root: &Path) {
+        if let Some(hook) = BEFORE_LOCK.with(|h| h.take()) {
+            hook(root);
+        }
+    }
+
+    pub(super) fn after_copy(tx: &Connection, slot: &Path) {
+        if let Some(hook) = AFTER_COPY.with(|h| h.take()) {
+            hook(tx, slot);
+        }
+    }
+
+    fn source_export() -> (tempfile::TempDir, PathBuf) {
+        let source = tempfile::tempdir().expect("source");
+        init::run(source.path()).expect("init source");
+        fact::add(source.path(), "incoming", "1", "user", "cli:user").expect("seed source");
+        let export_path = source.path().join("export.json");
+        export::run(source.path(), &export_path).expect("export");
+        (source, export_path)
+    }
+
+    fn use_fts(root: &Path) {
+        let path = root.join(".memhub").join("config.toml");
+        let mut config = crate::config::ProjectConfig::load(&path).expect("load config");
+        config.retrieval.mode = RetrievalMode::Fts;
+        config.save(&path).expect("save config");
+    }
+
+    fn commit_competing_fact(root: &Path) {
+        fact::add(root, "raced", "1", "user", "cli:user").expect("competing write commits");
+    }
+
+    fn assert_copy_blocks_competing_write(tx: &Connection, slot: &Path) {
+        let copy = Connection::open(slot).expect("open safety copy");
+        let copied: i64 = copy
+            .query_row(
+                "SELECT COUNT(*) FROM facts WHERE key = 'preexisting'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("inspect copy");
+        assert_eq!(copied, 1, "copy includes the protected state");
+
+        let intruder = Connection::open(tx.path().unwrap()).expect("independent writer");
+        intruder.busy_timeout(std::time::Duration::ZERO).unwrap();
+        let err = intruder
+            .execute_batch("CREATE TABLE import_intruder(x)")
+            .expect_err("the import keeps its write lock after the copy");
+        assert!(matches!(
+            err.sqlite_error_code(),
+            Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
+        ));
+    }
+
+    #[test]
+    fn no_force_rechecks_emptiness_after_a_competing_commit() {
+        let (_source, export_path) = source_export();
+        let target = tempfile::tempdir().expect("target");
+        init::run(target.path()).expect("init target");
+
+        BEFORE_LOCK.with(|h| h.set(Some(commit_competing_fact)));
+        let err = match run(target.path(), &export_path, false) {
+            Err(err) => err,
+            Ok(_) => panic!("must refuse"),
+        };
+
+        assert!(BEFORE_LOCK.with(|h| h.get().is_none()), "hook ran");
+        assert!(matches!(err, MemhubError::InvalidInput(_)));
+        let keys: Vec<String> = fact::list(target.path())
+            .expect("list target")
+            .into_iter()
+            .map(|row| row.key)
+            .collect();
+        assert_eq!(keys, vec!["raced"]);
+        assert!(
+            !import_backup_path(&db::ProjectPaths::for_repo_root(target.path())).exists(),
+            "a refused import publishes no new safety copy"
+        );
+    }
+
+    #[test]
+    fn competing_writer_cannot_commit_between_import_copy_and_replacement() {
+        let (_source, export_path) = source_export();
+        let target = tempfile::tempdir().expect("target");
+        init::run(target.path()).expect("init target");
+        use_fts(target.path());
+        fact::add(target.path(), "preexisting", "1", "user", "cli:user").expect("seed target");
+
+        AFTER_COPY.with(|h| h.set(Some(assert_copy_blocks_competing_write)));
+        let summary = run(target.path(), &export_path, true).expect("forced import");
+
+        assert!(AFTER_COPY.with(|h| h.get().is_none()), "hook ran");
+        assert!(summary.backup_path.is_some());
+        let keys: Vec<String> = fact::list(target.path())
+            .expect("list target")
+            .into_iter()
+            .map(|row| row.key)
+            .collect();
+        assert_eq!(keys, vec!["incoming"]);
+    }
 }
