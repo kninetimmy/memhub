@@ -185,12 +185,32 @@ fn existing_db_has_pending(conn: &Connection) -> Result<bool> {
     Ok(applied && pending)
 }
 
-/// Apply every pending migration in one transaction. With `backup`, an
+/// Apply every pending migration in one transaction. With `backup`, the
+/// transaction takes the write lock before its final schema check, and an
 /// existing DB that has a pending migration is first copied to that single
-/// slot, replacing any earlier copy; if the copy fails nothing is applied.
-/// `None` is for in-memory connections, which have no directory.
+/// slot. If the copy fails nothing is applied. `None` is for in-memory
+/// connections, which have no directory.
 pub fn apply_all(conn: &mut Connection, backup: Option<&Path>) -> Result<Vec<String>> {
-    conn.execute(
+    #[cfg(test)]
+    tests::before_lock(conn);
+    apply_locked(conn, backup)
+}
+
+/// The migration transaction. Every caller with a backup path (all
+/// production file-backed migration opens) takes the write lock up front,
+/// then checks both the schema ceiling and pending migrations.
+/// It copies only if a migration is pending under that lock (another process
+/// may have migrated first; then the slot keeps that process's copy). The
+/// lock is held from the copy to the commit, so no other connection can
+/// commit a write the copy would miss.
+fn apply_locked(conn: &mut Connection, backup: Option<&Path>) -> Result<Vec<String>> {
+    let behavior = if backup.is_some() {
+        TransactionBehavior::Immediate
+    } else {
+        TransactionBehavior::Deferred
+    };
+    let tx = conn.transaction_with_behavior(behavior)?;
+    tx.execute(
         "CREATE TABLE IF NOT EXISTS schema_migrations (
             version TEXT PRIMARY KEY,
             applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -198,13 +218,10 @@ pub fn apply_all(conn: &mut Connection, backup: Option<&Path>) -> Result<Vec<Str
         [],
     )?;
 
-    // Refuse to touch a DB written by a newer binary. If `schema_migrations`
-    // records a version this build does not know (a higher ordinal than the
-    // newest compiled migration), an older binary would otherwise write into
-    // a schema it doesn't understand — silent forward-incompatible corruption.
-    // Fail closed and point at the fix. (Sync adopt has an equivalent guard;
-    // this covers every other open path.)
-    if let Some(newer) = newer_than_compiled(conn)? {
+    // Refuse to touch a DB written by a newer binary. This check is under
+    // the same lock as migration so a concurrent in-place restore cannot
+    // replace an earlier observation with a newer schema before we write.
+    if let Some(newer) = newer_than_compiled(&tx)? {
         return Err(crate::MemhubError::InvalidInput(format!(
             "this database was written by a newer memhub (schema '{newer}' is \
              unknown to this build, newest known is '{}'); refusing to open it \
@@ -213,41 +230,21 @@ pub fn apply_all(conn: &mut Connection, backup: Option<&Path>) -> Result<Vec<Str
         )));
     }
 
-    let backup = match backup {
-        Some(slot) if existing_db_has_pending(conn)? => Some(slot),
-        _ => None,
-    };
-    apply_locked(conn, backup)
-}
-
-/// The migration transaction. With `backup` it takes the write lock up
-/// front and copies the DB only if a migration is still pending under that
-/// lock (another process may have migrated first; then the slot keeps that
-/// process's copy). The lock is held from the copy to the commit, so no
-/// other connection can commit a write the copy would miss.
-fn apply_locked(conn: &mut Connection, backup: Option<&Path>) -> Result<Vec<String>> {
-    let behavior = if backup.is_some() {
-        TransactionBehavior::Immediate
-    } else {
-        TransactionBehavior::Deferred
-    };
-    let tx = conn.transaction_with_behavior(behavior)?;
     if let Some(slot) = backup
         && existing_db_has_pending(&tx)?
     {
         // `VACUUM INTO` cannot run inside a transaction, so a second
         // connection reads the last committed state while `tx` holds the
         // write lock.
-        let reader = tx
+        let db_path = tx
             .path()
             .filter(|path| !path.is_empty())
             .ok_or_else(|| MemhubError::InvalidInput("the DB has no file to copy".into()))
-            .and_then(|path| Ok(Connection::open(path)?))
             .map_err(|e| MemhubError::BackupFailed {
                 path: slot.to_path_buf(),
                 cause: Box::new(e),
             })?;
-        super::write_backup_slot(&reader, slot)?;
+        super::write_backup_slot_from_path(Path::new(db_path), slot)?;
         // Logged, not printed, so stdout (--json, the MCP stdio stream) is
         // untouched.
         log::info!("wrote pre-migration backup {}", slot.display());
@@ -711,8 +708,16 @@ mod tests {
     }
 
     thread_local! {
+        static BEFORE_LOCK: std::cell::Cell<Option<fn(&Connection)>> =
+            const { std::cell::Cell::new(None) };
         static AFTER_COPY: std::cell::Cell<Option<fn(&Connection)>> =
             const { std::cell::Cell::new(None) };
+    }
+
+    pub(super) fn before_lock(conn: &Connection) {
+        if let Some(hook) = BEFORE_LOCK.with(|h| h.take()) {
+            hook(conn);
+        }
     }
 
     /// Called by `apply_locked` right after the pre-migration copy enters
@@ -804,7 +809,7 @@ mod tests {
         fs::create_dir_all(slot.parent().unwrap()).expect("mkdir");
         fs::write(&slot, "the other process's copy").expect("seed slot");
 
-        let applied = apply_locked(&mut conn, Some(&slot)).expect("apply");
+        let applied = apply_all(&mut conn, Some(&slot)).expect("apply");
         assert!(applied.is_empty());
         assert_eq!(
             fs::read_to_string(&slot).unwrap(),
@@ -816,26 +821,17 @@ mod tests {
         );
     }
 
-    /// Issue #407: temp copies left by killed attempts, one of them at the
-    /// path this attempt would use (a reused pid), neither stop the
-    /// migration nor remain afterwards.
+    /// Issue #407: temp copies left by killed attempts neither stop the
+    /// migration nor remain afterwards. The exact reused-name case is
+    /// covered directly by `db::tests::reused_backup_temp_name_is_removed_before_copy`.
     #[test]
     fn stale_temp_copies_neither_stop_the_migration_nor_remain() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (mut conn, slot) = behind_by_one(dir.path());
         let backups = slot.parent().unwrap();
         fs::create_dir_all(backups).expect("mkdir");
-        // The next names this process can pick, plus a foreign pid's.
-        let next = crate::db::BACKUP_TMP_SEQ.load(std::sync::atomic::Ordering::Relaxed);
-        let pid = std::process::id();
-        for seq in next..next + 16 {
-            fs::write(
-                backups.join(format!(".pre-migration.sqlite.{pid}.{seq}.tmp")),
-                "stale",
-            )
-            .expect("plant");
-        }
         fs::write(backups.join(".pre-migration.sqlite.4242.0.tmp"), "stale").expect("plant");
+        fs::write(backups.join(".pre-migration.sqlite.4242.1.tmp"), "stale").expect("plant");
 
         let applied = apply_all(&mut conn, Some(&slot)).expect("apply");
         assert_eq!(applied, vec![PROBE.to_string()]);
@@ -860,5 +856,70 @@ mod tests {
             entries(slot.parent().unwrap()),
             vec!["pre-migration.sqlite"]
         );
+    }
+
+    /// A competing connection can make a migration pending after an
+    /// earlier head observation. The final check under the write lock must
+    /// still copy that committed state before applying the migration.
+    #[test]
+    fn migration_appearing_before_the_lock_is_backed_up() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("db.sqlite");
+        let mut conn = Connection::open(&db_path).expect("open");
+        conn.execute_batch("PRAGMA journal_mode = WAL;")
+            .expect("wal");
+        apply_all(&mut conn, None).expect("to head");
+        assert!(
+            !existing_db_has_pending(&conn).expect("observe head"),
+            "the earlier observation sees no pending migration"
+        );
+        let slot = dir.path().join("backups").join("pre-migration.sqlite");
+
+        BEFORE_LOCK.with(|h| {
+            h.set(Some(|conn: &Connection| {
+                let intruder = Connection::open(conn.path().unwrap()).expect("independent opener");
+                intruder
+                    .execute("DELETE FROM schema_migrations WHERE version = ?1", [PROBE])
+                    .expect("commit a new migration gap");
+            }))
+        });
+
+        let applied = apply_all(&mut conn, Some(&slot)).expect("apply");
+        assert!(BEFORE_LOCK.with(|h| h.get().is_none()), "hook ran");
+        assert_eq!(applied, vec![PROBE.to_string()]);
+        assert!(has_version(&conn, PROBE));
+        let copy = Connection::open(&slot).expect("open copy");
+        assert!(
+            !has_version(&copy, PROBE),
+            "the copy contains the committed pre-migration state"
+        );
+    }
+
+    #[test]
+    fn newer_schema_arriving_before_the_lock_still_refuses() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("db.sqlite");
+        let mut conn = Connection::open(&db_path).expect("open");
+        conn.execute_batch("PRAGMA journal_mode = WAL;")
+            .expect("wal");
+        apply_all(&mut conn, None).expect("to head");
+        let slot = dir.path().join("backups").join("pre-migration.sqlite");
+
+        BEFORE_LOCK.with(|h| {
+            h.set(Some(|conn: &Connection| {
+                let intruder = Connection::open(conn.path().unwrap()).expect("independent opener");
+                intruder
+                    .execute(
+                        "INSERT INTO schema_migrations(version) VALUES ('9999_from_the_future')",
+                        [],
+                    )
+                    .expect("commit future schema");
+            }))
+        });
+
+        let err = apply_all(&mut conn, Some(&slot)).expect_err("must refuse");
+        assert!(BEFORE_LOCK.with(|h| h.get().is_none()), "hook ran");
+        assert!(err.to_string().contains("newer memhub"));
+        assert!(!slot.exists(), "a refusal does not publish a backup");
     }
 }

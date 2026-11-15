@@ -4,6 +4,7 @@ pub mod registry;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use log::debug;
 use rusqlite::{Connection, params};
@@ -286,6 +287,8 @@ pub fn vacuum_into(conn: &Connection, dest: &Path) -> Result<()> {
 /// Makes each `write_backup_slot` temp name unique within this process.
 static BACKUP_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
+const BACKUP_READER_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Copy `conn`'s DB to the single backup slot `path`, replacing any earlier
 /// copy there only once the new copy is complete: it is written to a unique
 /// temp sibling, then renamed over the slot, so a failed copy leaves the
@@ -299,32 +302,69 @@ pub fn write_backup_slot(conn: &Connection, path: &Path) -> Result<()> {
         std::process::id(),
         BACKUP_TMP_SEQ.fetch_add(1, Ordering::Relaxed)
     ));
+    write_backup_slot_to_temp(conn, path, &tmp, &prefix)
+}
+
+fn write_backup_slot_to_temp(
+    conn: &Connection,
+    path: &Path,
+    tmp: &Path,
+    prefix: &str,
+) -> Result<()> {
     let write = || -> Result<()> {
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir)?;
-            // Temp copies left by killed attempts, including one at `tmp`
-            // (a reused pid), which `VACUUM INTO` would refuse to overwrite.
-            // A live one, possible only where two DBs share a slot, makes
-            // that attempt fail closed instead.
+            // Remove every matching temp, including an exact reused name
+            // that `VACUUM INTO` would refuse. If one is still live, an OS
+            // that permits unlinking it makes its owner fail closed at
+            // publish; an OS that denies removal leaves it alone.
             for entry in fs::read_dir(dir)?.flatten() {
                 let file = entry.file_name();
                 let file = file.to_string_lossy();
-                if file.starts_with(&prefix) && file.ends_with(".tmp") {
+                if file.starts_with(prefix) && file.ends_with(".tmp") {
                     let _ = fs::remove_file(entry.path());
                 }
             }
         }
-        vacuum_into(conn, &tmp)?;
-        fs::rename(&tmp, path)?;
+        vacuum_into(conn, tmp)?;
+        #[cfg(test)]
+        tests::before_backup_publish(tmp);
+        fs::rename(tmp, path)?;
         Ok(())
     };
     write().map_err(|e| {
-        let _ = fs::remove_file(&tmp);
+        let _ = fs::remove_file(tmp);
         MemhubError::BackupFailed {
             path: path.to_path_buf(),
             cause: Box::new(e),
         }
     })
+}
+
+/// Copy a file-backed DB through an independent reader. Callers already
+/// hold that DB's SQLite write lock, so the reader sees the last committed
+/// state while no writer can commit between this copy and the guarded
+/// transaction. Its wait is explicitly bounded like ordinary memhub opens.
+pub(crate) fn write_backup_slot_from_path(db_path: &Path, slot: &Path) -> Result<()> {
+    let reader = open_backup_reader(db_path, slot)?;
+    write_backup_slot(&reader, slot)
+}
+
+fn open_backup_reader(db_path: &Path, slot: &Path) -> Result<Connection> {
+    (|| -> Result<Connection> {
+        let reader = Connection::open(db_path)?;
+        reader.busy_timeout(BACKUP_READER_BUSY_TIMEOUT)?;
+        Ok(reader)
+    })()
+    .map_err(|cause| MemhubError::BackupFailed {
+        path: slot.to_path_buf(),
+        cause: Box::new(cause),
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_backup_publish_for_test() {
+    tests::fail_next_backup_publish();
 }
 
 fn upsert_project(conn: &Connection, repo_root: &Path) -> Result<()> {
@@ -619,6 +659,25 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    thread_local! {
+        static BEFORE_BACKUP_PUBLISH: std::cell::Cell<Option<fn(&Path)>> =
+            const { std::cell::Cell::new(None) };
+    }
+
+    pub(super) fn before_backup_publish(tmp: &Path) {
+        if let Some(hook) = BEFORE_BACKUP_PUBLISH.with(|h| h.take()) {
+            hook(tmp);
+        }
+    }
+
+    pub(super) fn fail_next_backup_publish() {
+        BEFORE_BACKUP_PUBLISH.with(|h| {
+            h.set(Some(|tmp| {
+                fs::remove_file(tmp).expect("remove completed temp")
+            }))
+        });
+    }
+
     #[test]
     fn open_connection_sets_synchronous_normal() {
         // D5/Q35: WAL is paired with `synchronous = NORMAL` (decision 140)
@@ -657,5 +716,53 @@ mod tests {
         write_backup_slot(&conn, &slot).expect("copy succeeds");
         assert!(fs::read(&slot).unwrap().starts_with(b"SQLite format 3\0"));
         assert_eq!(fs::read_dir(slot.parent().unwrap()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn reused_backup_temp_name_is_removed_before_copy() {
+        let temp = tempdir().expect("tempdir");
+        let conn = open_connection(&temp.path().join("project.sqlite")).expect("open");
+        let slot = temp.path().join("backups").join("last-replaced.sqlite");
+        fs::create_dir_all(slot.parent().unwrap()).expect("mkdir");
+        let prefix = ".last-replaced.sqlite.";
+        let tmp = slot.with_file_name(format!("{prefix}reused.tmp"));
+        fs::write(&tmp, "stale").expect("plant exact temp");
+
+        write_backup_slot_to_temp(&conn, &slot, &tmp, prefix).expect("copy");
+
+        assert!(fs::read(&slot).unwrap().starts_with(b"SQLite format 3\0"));
+        assert_eq!(fs::read_dir(slot.parent().unwrap()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn failed_backup_publish_keeps_the_earlier_slot() {
+        let temp = tempdir().expect("tempdir");
+        let conn = open_connection(&temp.path().join("project.sqlite")).expect("open");
+        let slot = temp.path().join("backups").join("last-replaced.sqlite");
+        fs::create_dir_all(slot.parent().unwrap()).expect("mkdir");
+        fs::write(&slot, "an earlier copy").expect("seed slot");
+
+        fail_next_backup_publish();
+        let err = write_backup_slot(&conn, &slot).expect_err("publish must fail");
+
+        assert!(BEFORE_BACKUP_PUBLISH.with(|h| h.get().is_none()));
+        assert!(matches!(&err, MemhubError::BackupFailed { path, .. } if *path == slot));
+        assert_eq!(fs::read_to_string(&slot).unwrap(), "an earlier copy");
+        assert_eq!(fs::read_dir(slot.parent().unwrap()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn independent_backup_reader_has_a_bounded_busy_timeout() {
+        let temp = tempdir().expect("tempdir");
+        let db_path = temp.path().join("project.sqlite");
+        let _writer = open_connection(&db_path).expect("open");
+        let slot = temp.path().join("backups").join("last-replaced.sqlite");
+
+        let reader = open_backup_reader(&db_path, &slot).expect("reader");
+        let timeout_ms: i64 = reader
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .expect("query timeout");
+
+        assert_eq!(timeout_ms, BACKUP_READER_BUSY_TIMEOUT.as_millis() as i64);
     }
 }

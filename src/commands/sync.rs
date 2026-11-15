@@ -1187,8 +1187,11 @@ const RESTORE_BUSY_PAUSE: Duration = Duration::from_millis(100);
 
 /// Restore the pages of the staged snapshot into the live DB **in place**
 /// via SQLite's online-backup API, instead of deleting/renaming the DB
-/// file out from under any process that holds it open. This is the
-/// cross-process-safe swap (F4/X6):
+/// file out from under any process that holds it open. The first zero-page
+/// step takes the destination write lock without changing it. While that
+/// lock is held, `backup_reader` copies the committed local state into the
+/// safety slot; the same backup session then restores the staged pages.
+/// This is the cross-process-safe swap (F4/X6):
 ///
 /// * **Windows:** a DB file another `memhub` process (a CLI invocation or
 ///   the long-lived MCP server) holds open cannot be renamed or deleted —
@@ -1202,43 +1205,66 @@ const RESTORE_BUSY_PAUSE: Duration = Duration::from_millis(100);
 ///   keep writing to a WAL that no longer matches the DB — a silent
 ///   divergence. Writing through the backup API avoids both.
 ///
-/// A single `step(-1)` copies every page in one operation, holding the
-/// destination's write lock for its duration, so other connections
-/// observe either the pre- or post-restore DB, never a partial mix. If
-/// the destination is locked, `step` copies nothing and reports BUSY; we
-/// retry a bounded number of times and then refuse cleanly, leaving the
-/// original DB untouched.
-fn restore_into_live_db(staged: &Path, dest_path: &Path) -> Result<()> {
+/// A single `step(-1)` copies every page in one operation while retaining
+/// the lock acquired before the safety copy, so no writer can commit in
+/// between and other connections observe either the pre- or post-restore
+/// DB, never a partial mix. If a backup step stays BUSY/LOCKED, we retry a
+/// bounded number of times and then refuse; SQLite rolls back the
+/// incomplete destination transaction, leaving the original DB intact.
+fn restore_into_live_db(
+    staged: &Path,
+    dest_path: &Path,
+    backup_reader: &Connection,
+    backup_path: &Path,
+) -> Result<()> {
     // Source read-only: the backup only reads it, and read-only opening
     // avoids leaving a stray rollback journal beside the staged file.
     let src = Connection::open_with_flags(staged, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    // Destination opened plain (default `busy_timeout` = 0) so each locked
-    // step returns BUSY immediately and our own bounded loop — not an
-    // unbounded internal wait — governs the retry budget.
+    src.busy_timeout(Duration::ZERO)?;
+    let page_count: i64 = src.query_row("PRAGMA page_count", [], |row| row.get(0))?;
+    if page_count == 0 {
+        return Err(MemhubError::InvalidInput(
+            "the staged snapshot has no SQLite pages; refusing to adopt it".into(),
+        ));
+    }
+    // Both backup connections use a zero SQLite busy timeout so each locked
+    // step returns immediately and our own bounded loop — not a nested
+    // internal wait — is the only retry budget.
     let mut dest = Connection::open(dest_path)?;
+    dest.busy_timeout(Duration::ZERO)?;
 
     let backup = Backup::new(&src, &mut dest)?;
-    let mut attempts = 0u32;
+    match backup_step_with_retry(&backup, 0, dest_path)? {
+        StepResult::More => {}
+        StepResult::Done => {
+            return Err(MemhubError::InvalidInput(
+                "the staged snapshot unexpectedly completed a zero-page restore; \
+                 refusing to continue"
+                    .into(),
+            ));
+        }
+        other => {
+            return Err(MemhubError::InvalidInput(format!(
+                "online-backup lock step returned an unrecognized result ({other:?}); \
+                 refusing to continue"
+            )));
+        }
+    }
+
+    // The zero-page step holds SQLite's destination write lock. This reader
+    // therefore sees the final committed local state, and no writer can
+    // commit between the completed copy and the restore below.
+    db::write_backup_slot(backup_reader, backup_path)?;
+    #[cfg(test)]
+    tests::after_adopt_copy(staged, dest_path, backup_path);
+
     loop {
         // `-1` copies all remaining pages in a single locked step.
-        match backup.step(-1)? {
+        match backup_step_with_retry(&backup, -1, dest_path)? {
             StepResult::Done => break,
             // Cannot occur for `step(-1)`, but treat it as "keep copying"
             // rather than assume completion.
             StepResult::More => continue,
-            StepResult::Busy | StepResult::Locked => {
-                attempts += 1;
-                if attempts >= RESTORE_BUSY_RETRIES {
-                    return Err(MemhubError::InvalidInput(format!(
-                        "the local DB at {} is held open by another memhub process; adopt \
-                         retried {RESTORE_BUSY_RETRIES} times without writing anything and \
-                         gave up. The DB is unchanged — close other memhub processes and \
-                         retry `sync adopt`.",
-                        dest_path.display()
-                    )));
-                }
-                std::thread::sleep(RESTORE_BUSY_PAUSE);
-            }
             // `StepResult` is `#[non_exhaustive]`; a future rusqlite variant
             // we do not understand must fail loudly rather than be treated
             // as success — the DB may be in an unknown state, so refuse.
@@ -1251,6 +1277,32 @@ fn restore_into_live_db(staged: &Path, dest_path: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn backup_step_with_retry(
+    backup: &Backup<'_, '_>,
+    pages: i32,
+    dest_path: &Path,
+) -> Result<StepResult> {
+    let mut attempts = 0u32;
+    loop {
+        match backup.step(pages)? {
+            StepResult::Busy | StepResult::Locked => {
+                attempts += 1;
+                if attempts >= RESTORE_BUSY_RETRIES {
+                    return Err(MemhubError::InvalidInput(format!(
+                        "the local DB at {} stayed busy or locked for \
+                         {RESTORE_BUSY_RETRIES} online-backup attempts; adopt gave up. \
+                         SQLite left the DB unchanged — close other memhub processes and \
+                         retry `sync adopt`.",
+                        dest_path.display()
+                    )));
+                }
+                std::thread::sleep(RESTORE_BUSY_PAUSE);
+            }
+            result => return Ok(result),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1281,14 +1333,17 @@ pub struct AdoptSummary {
 /// original DB intact:
 /// 1. stage the remote snapshot into `.memhub/project.sqlite.incoming`;
 /// 2. hash the *staged* copy and verify it against the manifest;
-/// 3. take a pre-adopt safety copy of the current DB to
+/// 3. open the staged copy as SQLite and refuse malformed or zero-page input
+///    before opening a destination backup session or replacing a safety slot;
+/// 4. start an in-place SQLite online-backup restore with a zero-page step,
+///    acquiring the destination write lock without changing the DB;
+/// 5. while that lock is held, copy the current DB to
 ///    `.memhub/backups/sync/last-replaced.sqlite` via `VACUUM INTO`, so
 ///    it captures committed WAL state (a raw file copy could miss it);
-/// 4. restore the staged snapshot's pages into the live DB through
-///    SQLite's online-backup API (see [`restore_into_live_db`]) — no DB
-///    file is ever deleted or renamed under a process that may hold it
-///    open, and concurrent memhub processes serialize through SQLite's
-///    own locking.
+/// 6. restore the staged snapshot's pages through that same online-backup
+///    session (see [`restore_into_live_db`]). No DB file is ever deleted or
+///    renamed under a process that may hold it open, and no writer can
+///    commit between the safety copy and replacement.
 pub fn adopt(start: &Path, remote: &Path, force: bool) -> Result<AdoptSummary> {
     let manifest = read_remote_manifest(remote)?.ok_or_else(|| {
         MemhubError::InvalidInput("no snapshot manifest found at the given path".into())
@@ -1376,28 +1431,18 @@ pub fn adopt(start: &Path, remote: &Path, force: bool) -> Result<AdoptSummary> {
         ));
     }
 
-    // ── Pre-adopt safety copy of the DB being replaced ───────────────
-    // `VACUUM INTO` from the still-open connection captures committed WAL
-    // state that a raw `fs::copy` of `project.sqlite` alone could miss.
+    // ── Locked safety copy + in-place restore ─────────────────────────
     let backup_path = memhub_dir
         .join("backups")
         .join("sync")
         .join("last-replaced.sqlite");
-    if let Err(e) = db::write_backup_slot(&ctx.conn, &backup_path) {
-        let _ = fs::remove_file(&incoming);
-        return Err(e);
-    }
-
-    // Close our own connection so the in-place restore serializes only
-    // against *other* processes, not this one.
+    // The restore's zero-page first step acquires the destination write
+    // lock. The still-open project connection then takes the WAL-inclusive
+    // copy while that lock excludes competing writers, and the same online
+    // backup session performs the replacement. The live DB/-wal/-shm files
+    // are never deleted or renamed.
+    let restore_result = restore_into_live_db(&incoming, &db_path, &ctx.conn, &backup_path);
     drop(ctx);
-
-    // ── Restore the staged snapshot into the live DB in place ────────
-    // Never deletes or renames the DB/-wal/-shm; writes through SQLite's
-    // locking so a concurrent process cannot observe a torn DB. On a
-    // busy/locked destination this refuses cleanly with the original DB
-    // (and the WAL-inclusive backup above) intact.
-    let restore_result = restore_into_live_db(&incoming, &db_path);
     // The stage is transient either way.
     let _ = fs::remove_file(&incoming);
     restore_result?;
@@ -1829,6 +1874,51 @@ mod tests {
     use super::*;
     use crate::commands::{doc, fact, init};
     use tempfile::tempdir;
+
+    type AfterAdoptCopyHook = fn(&Path, &Path, &Path);
+
+    thread_local! {
+        static AFTER_ADOPT_COPY: std::cell::Cell<Option<AfterAdoptCopyHook>> =
+            const { std::cell::Cell::new(None) };
+        static STAGED_BLOCKER: std::cell::RefCell<Option<Connection>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    pub(super) fn after_adopt_copy(staged: &Path, dest: &Path, backup: &Path) {
+        if let Some(hook) = AFTER_ADOPT_COPY.with(|h| h.take()) {
+            hook(staged, dest, backup);
+        }
+    }
+
+    fn assert_adopt_copy_blocks_competing_write(_staged: &Path, dest: &Path, backup: &Path) {
+        let copy = Connection::open(backup).expect("open safety copy");
+        let copied: i64 = copy
+            .query_row("SELECT COUNT(*) FROM facts WHERE key = 'beta'", [], |row| {
+                row.get(0)
+            })
+            .expect("inspect safety copy");
+        assert_eq!(copied, 1, "copy includes the protected local state");
+
+        let intruder = Connection::open(dest).expect("independent writer");
+        intruder.busy_timeout(Duration::ZERO).unwrap();
+        let err = intruder
+            .execute_batch("CREATE TABLE adopt_intruder(x)")
+            .expect_err("the restore keeps its write lock after the copy");
+        assert!(matches!(
+            err.sqlite_error_code(),
+            Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+        ));
+    }
+
+    fn lock_staged_source(staged: &Path, _dest: &Path, _backup: &Path) {
+        let blocker = Connection::open(staged).expect("open staged blocker");
+        blocker
+            .execute_batch("PRAGMA locking_mode = EXCLUSIVE; BEGIN EXCLUSIVE;")
+            .expect("lock staged source after safety copy");
+        STAGED_BLOCKER.with(|slot| {
+            assert!(slot.borrow_mut().replace(blocker).is_none());
+        });
+    }
 
     fn enable_sync(repo: &Path) {
         let ctx = db::open_project(repo).expect("open");
@@ -2322,7 +2412,9 @@ mod tests {
             SyncVerdict::Diverged
         );
 
+        AFTER_ADOPT_COPY.with(|h| h.set(Some(assert_adopt_copy_blocks_competing_write)));
         let summary = adopt(b.path(), &drive, true).expect("adopt");
+        assert!(AFTER_ADOPT_COPY.with(|h| h.get().is_none()), "hook ran");
         assert!(summary.backup_path.exists(), "replaced DB was backed up");
 
         // b now holds a's content, not its own.
@@ -2480,18 +2572,21 @@ mod tests {
             let src = db::open_project(other.path()).expect("open other");
             db::vacuum_into(&src.conn, &staged).expect("stage snapshot");
         }
+        let ctx = db::open_project(dest.path()).expect("open backup reader");
+        let backup_path = dest.path().join("last-replaced.sqlite");
 
         let blocker = Connection::open(&db_path).expect("second client");
         blocker
             .execute_batch("BEGIN IMMEDIATE;")
             .expect("hold the write lock");
 
-        let err =
-            restore_into_live_db(&staged, &db_path).expect_err("a locked destination must refuse");
+        let err = restore_into_live_db(&staged, &db_path, &ctx.conn, &backup_path)
+            .expect_err("a locked destination must refuse");
         assert!(matches!(err, MemhubError::InvalidInput(_)));
 
         blocker.execute_batch("ROLLBACK;").expect("release");
         drop(blocker);
+        drop(ctx);
 
         // The destination still holds its ORIGINAL content, untouched.
         assert_eq!(
@@ -2502,82 +2597,175 @@ mod tests {
     }
 
     #[test]
-    fn adopt_failure_during_restore_keeps_original_db_and_backup() {
-        // A "snapshot" that clears every pre-restore gate but is not a
-        // valid SQLite DB, so the online-backup restore itself fails
-        // *after* the pre-adopt backup is taken. This proves two things at
-        // once: (a) the checksum is computed on the STAGED copy and that
-        // same copy is what the restore reads (the manifest hash is set to
-        // the staged garbage's hash, so the gate passes only because
-        // staged bytes == hashed bytes); and (b) a failure past the backup
-        // step leaves the original DB intact plus a usable WAL-inclusive
-        // backup.
-        let b = new_synced_repo();
-        fact::add(b.path(), "beta", "2", "user", "cli:user").expect("fact");
-
-        let drive = b.path().join("drive");
-        fs::create_dir_all(&drive).expect("mkdir");
-        let snap = drive.join(SNAPSHOT_FILENAME);
-        fs::write(&snap, b"this is emphatically not a sqlite database").expect("write garbage");
-        let garbage_sha = sha256_file(&snap).expect("hash garbage");
-
-        let (local, schema) = local_state(b.path());
-        let manifest = Manifest {
-            manifest_version: MANIFEST_VERSION,
-            project_id: "test-proj-abcd1234".into(),
-            schema_version: schema,
-            logical_version: local,
-            file_sha256: garbage_sha,
-            // Legacy-shaped: the garbage snapshot is written at the bare
-            // SNAPSHOT_FILENAME, so an empty field resolves adopt to it.
-            snapshot_filename: String::new(),
-            machine_id: "other-machine".into(),
-            created_at: "2026-05-22 00:00:00".into(),
-            memhub_version: "0.1.0".into(),
-        };
-        fs::write(
-            drive.join(MANIFEST_FILENAME),
-            serde_json::to_string_pretty(&manifest).unwrap(),
-        )
-        .expect("write manifest");
-
-        let err = adopt(b.path(), &drive, true).expect_err("restore of a non-DB must fail");
-        assert!(matches!(
-            err,
-            MemhubError::Sqlite(_)
-                | MemhubError::InvalidInput(_)
-                | MemhubError::DatabaseBusy { .. }
-        ));
-
-        // Original DB intact.
-        assert_eq!(
-            fact_keys(b.path()),
-            vec!["beta"],
-            "failed restore left b intact"
-        );
-
-        // The pre-adopt backup was taken before the doomed restore and is
-        // a real, VACUUM-INTO'd SQLite file (WAL-inclusive), and the
-        // transient stage was cleaned up.
-        let backup = b
+    fn malformed_and_zero_page_sources_keep_local_db_and_earlier_backup() {
+        // BEFORE issue #441: a checksum-matching non-SQLite snapshot passed
+        // staging, replaced the pre-adopt safety slot, and only then failed
+        // during restore. AFTER: `PRAGMA page_count` validates the staged
+        // source before the destination backup session or slot write, so
+        // malformed and zero-page sources leave both prior layers untouched.
+        let local = new_synced_repo();
+        fact::add(local.path(), "earlier", "1", "user", "cli:user").expect("earlier fact");
+        let backup_path = local
             .path()
             .join(".memhub")
             .join("backups")
             .join("sync")
             .join("last-replaced.sqlite");
-        assert!(
-            backup.exists(),
-            "pre-adopt backup survives a failed restore"
+        {
+            let ctx = db::open_project(local.path()).expect("open local");
+            db::write_backup_slot(&ctx.conn, &backup_path).expect("seed earlier slot");
+        }
+        fact::add(local.path(), "latest", "2", "user", "cli:user").expect("latest fact");
+
+        for (case, bytes) in [
+            ("malformed", b"not a sqlite database".as_slice()),
+            ("zero-page", b"".as_slice()),
+        ] {
+            let drive = local.path().join(case);
+            fs::create_dir_all(&drive).expect("create remote");
+            let snapshot = drive.join(SNAPSHOT_FILENAME);
+            fs::write(&snapshot, bytes).expect("write invalid snapshot");
+            let (logical_version, schema_version) = local_state(local.path());
+            let manifest = Manifest {
+                manifest_version: MANIFEST_VERSION,
+                project_id: "test-proj-abcd1234".into(),
+                schema_version,
+                logical_version,
+                file_sha256: sha256_file(&snapshot).expect("hash invalid snapshot"),
+                snapshot_filename: String::new(),
+                machine_id: "other-machine".into(),
+                created_at: "2026-05-22 00:00:00".into(),
+                memhub_version: "0.1.0".into(),
+            };
+            fs::write(
+                drive.join(MANIFEST_FILENAME),
+                serde_json::to_string_pretty(&manifest).unwrap(),
+            )
+            .expect("write manifest");
+
+            let err = adopt(local.path(), &drive, true)
+                .expect_err("malformed or zero-page snapshot must refuse");
+            assert!(
+                matches!(err, MemhubError::Sqlite(_) | MemhubError::InvalidInput(_)),
+                "{case} source returned an unexpected error: {err:?}"
+            );
+            assert_eq!(
+                fact_keys(local.path()),
+                vec!["earlier", "latest"],
+                "{case} refusal changed the local DB"
+            );
+            let earlier = Connection::open(&backup_path).expect("open earlier slot");
+            let copied: Vec<String> = earlier
+                .prepare("SELECT key FROM facts ORDER BY key")
+                .unwrap()
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<std::result::Result<_, _>>()
+                .unwrap();
+            assert_eq!(
+                copied,
+                vec!["earlier"],
+                "{case} refusal replaced the earlier backup slot"
+            );
+            assert!(
+                !local
+                    .path()
+                    .join(".memhub")
+                    .join(INCOMING_FILENAME)
+                    .exists(),
+                "{case} refusal left the transient stage behind"
+            );
+        }
+    }
+
+    #[test]
+    fn backup_publish_failure_prevents_restore_and_keeps_earlier_slot() {
+        let dest = tempdir().expect("dest");
+        init::run(dest.path()).expect("init dest");
+        fact::add(dest.path(), "earlier", "1", "user", "cli:user").expect("fact");
+        let db_path = dest.path().join(".memhub").join("project.sqlite");
+        let backup_path = dest.path().join("last-replaced.sqlite");
+        {
+            let ctx = db::open_project(dest.path()).expect("open dest");
+            db::write_backup_slot(&ctx.conn, &backup_path).expect("seed earlier slot");
+        }
+        fact::add(dest.path(), "latest", "2", "user", "cli:user").expect("fact");
+
+        let other = tempdir().expect("source");
+        init::run(other.path()).expect("init source");
+        fact::add(other.path(), "incoming", "3", "user", "cli:user").expect("fact");
+        let staged = dest.path().join("staged.sqlite");
+        {
+            let src = db::open_project(other.path()).expect("open source");
+            db::vacuum_into(&src.conn, &staged).expect("stage snapshot");
+        }
+
+        let ctx = db::open_project(dest.path()).expect("open backup reader");
+        db::fail_next_backup_publish_for_test();
+        let err = restore_into_live_db(&staged, &db_path, &ctx.conn, &backup_path)
+            .expect_err("backup publish must fail");
+        assert!(matches!(err, MemhubError::BackupFailed { .. }));
+        drop(ctx);
+
+        assert_eq!(
+            fact_keys(dest.path()),
+            vec!["earlier", "latest"],
+            "the guarded restore did not run"
         );
-        let head = fs::read(&backup).expect("read backup");
-        assert!(
-            head.starts_with(b"SQLite format 3\0"),
-            "backup is a valid sqlite file"
+        let copy = Connection::open(&backup_path).expect("open earlier slot");
+        let copied: Vec<String> = copy
+            .prepare("SELECT key FROM facts ORDER BY key")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        assert_eq!(copied, vec!["earlier"], "the earlier slot stayed intact");
+    }
+
+    #[test]
+    fn restore_failure_after_the_copy_keeps_original_db_and_backup() {
+        let dest = tempdir().expect("dest");
+        init::run(dest.path()).expect("init dest");
+        fact::add(dest.path(), "keeper", "1", "user", "cli:user").expect("fact");
+        let db_path = dest.path().join(".memhub").join("project.sqlite");
+        let backup_path = dest.path().join("last-replaced.sqlite");
+
+        let other = tempdir().expect("source");
+        init::run(other.path()).expect("init source");
+        fact::add(other.path(), "incoming", "2", "user", "cli:user").expect("fact");
+        let staged = dest.path().join("staged.sqlite");
+        {
+            let src = db::open_project(other.path()).expect("open source");
+            db::vacuum_into(&src.conn, &staged).expect("stage snapshot");
+        }
+
+        let ctx = db::open_project(dest.path()).expect("open backup reader");
+        AFTER_ADOPT_COPY.with(|h| h.set(Some(lock_staged_source)));
+        let err = restore_into_live_db(&staged, &db_path, &ctx.conn, &backup_path)
+            .expect_err("locked source must make restore fail");
+        assert!(matches!(err, MemhubError::InvalidInput(_)));
+        assert!(AFTER_ADOPT_COPY.with(|h| h.get().is_none()), "hook ran");
+
+        let blocker = STAGED_BLOCKER.with(|slot| slot.borrow_mut().take().expect("blocker"));
+        blocker.execute_batch("ROLLBACK;").expect("release source");
+        drop(blocker);
+        drop(ctx);
+
+        assert_eq!(
+            fact_keys(dest.path()),
+            vec!["keeper"],
+            "failed restore rolls the destination back"
         );
-        assert!(
-            !b.path().join(".memhub").join(INCOMING_FILENAME).exists(),
-            "transient stage cleaned up after a failed restore"
-        );
+        let copy = Connection::open(&backup_path).expect("open safety copy");
+        let copied: i64 = copy
+            .query_row(
+                "SELECT COUNT(*) FROM facts WHERE key = 'keeper'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("inspect safety copy");
+        assert_eq!(copied, 1, "failed restore leaves a valid safety copy");
     }
 
     #[test]

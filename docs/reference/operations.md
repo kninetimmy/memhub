@@ -25,7 +25,13 @@ migrations are idempotent against `schema_migrations`, so no manual
 step is needed even if the schema bumped on another machine. Before
 issue #405 an open with a pending migration migrated the DB in place
 and kept no copy; it now first copies the DB to its pre-migration
-backup (see "Safety backups" below).
+backup (see "Safety backups" below). Before issue #441 an unlocked
+pre-check could report no pending migration, then a concurrent restore
+could install an older schema before the migration transaction's first
+read; those newly pending migrations ran without a copy. Now every
+file-backed caller of `apply_all` (repo opens and migration-capable
+global opens, not `open_global_unmigrated`) takes SQLite's write lock
+before the final schema checks, so that race is covered.
 
 **To carry memory between machines (e.g. continue on Windows what you
 started on Mac):**
@@ -49,7 +55,10 @@ memhub init --from-backup ~/transfer/memhub-<repo>-<date>.json
 Before issue #405 an import that wiped the target's rows (`--force` on
 a populated target, or a target holding only `writes_log` rows) kept no
 copy of what it removed. It now first copies the target to its import
-backup and prints that path (see "Safety backups" below).
+backup and prints that path (see "Safety backups" below). Before issue
+#441 the emptiness/count checks and copy preceded a deferred import
+transaction, so a concurrent committed row could be wiped while absent
+from the copy. They now share one write-locked transaction.
 
 Before issue #382, after import the target's embeddings were not yet
 built (only the rows). You ran `memhub index` to populate them — the
@@ -148,28 +157,56 @@ names the backup path. `memhub gc` prunes only `backups/rendered/` and
 `backups/markdown/`, so it never prunes any of these three; delete one
 by hand once you no longer need it.
 
-All three write the same way. The copy first goes to a temp file beside
-its slot, named `.<slot file name>.<process id>.<n>.tmp`, and is renamed
-over the slot only once it is complete, so a copy that fails (a full
-disk, say) leaves the earlier copy in the slot. Before issue #407 sync
-adopt and import deleted the earlier copy before writing the new one, so
-a failed copy left no copy at all; only the pre-migration copy went
-through a temp file. Each attempt also first deletes the temp files that
-killed attempts left beside the same slot. Before issue #407 nothing
-deleted them, and one left at the exact name a later pre-migration
-attempt picked (its process id reused) made that open fail.
+All three call `db::write_backup_slot` and therefore write the same way.
+The copy first goes to a temp file beside its slot, named `.<slot file
+name>.<process id>.<n>.tmp`, and is renamed over the slot only once it
+is complete. A copy or publish failure leaves the earlier slot intact.
+Before issue #407 sync adopt and import deleted the earlier copy before
+writing the new one, so a failed copy left no copy at all; only the
+pre-migration copy went through a temp file.
+
+Before each copy, `write_backup_slot` attempts to remove **every**
+matching temp sibling; the name alone cannot distinguish a killed
+attempt from a live copy. Before issue #407 nothing removed abandoned
+temps, and one at an exactly reused name made that open fail. Where the
+OS permits unlinking an open file, cleanup can also remove a matching
+live temp from a concurrent copy into the same slot; that copy later
+cannot publish and its guarded operation fails closed. Where the OS
+refuses to remove the open file (notably Windows), cleanup leaves it
+alone. Same-DB import, adopt and migration copies are now serialized by
+SQLite, so a live collision requires distinct DBs sharing one slot (the
+home-root edge case below) or another direct caller. These cleanup and
+fail-closed rules apply to every `write_backup_slot` caller, not only
+pre-migration copies.
 
 - **Sync adopt:** `backups/sync/last-replaced.sqlite`, written by `memhub
-  sync adopt` (and the MCP `sync_adopt` with `confirm=true`) just before
-  it restores the staged snapshot over the repo DB. Adopt reports the
-  path (`backup_path`). This was the only one of the three before issue
-  #405.
+  sync adopt` (and the MCP `sync_adopt` with `confirm=true`) while the
+  staged snapshot's in-place restore holds SQLite's destination write
+  lock. Adopt starts the online-backup session with a zero-page step,
+  copies the committed local DB, then restores through that same session.
+  A writer that committed before the lock is in the copy; a later writer
+  waits or gets the existing bounded contention error. Before issue #441
+  adopt copied first, dropped that connection, then opened a separate
+  restore, so a write could commit in between and be absent from both the
+  replacement and copy. A copy failure performs no restore and preserves
+  the earlier slot. A restore failure rolls SQLite's destination
+  transaction back and leaves the completed copy. Adopt reports the path
+  (`backup_path`). This was the only one of the three before issue #405.
 - **Import:** `backups/import/last-replaced.sqlite`, written by `memhub
-  import` just before its wipe, whenever the wipe would remove at least
-  one existing row of the target (a durable row, a `writes_log` row or a
-  decision chunk). The import output prints the path. An import that
+  import` under the import transaction's `BEGIN IMMEDIATE`, just before
+  its wipe, whenever the wipe would remove at least one existing row of
+  the target (a durable row, a `writes_log` row or a decision chunk).
+  The no-`--force` decision, retained-doc and overwritten-audit counts,
+  copy decision, copy and wipe all observe that protected state. A writer
+  that commits first is counted and copied (or makes no-force import
+  refuse); a later writer waits or gets the ordinary 5-second contention
+  error, then may retry after replacement. Before issue #441 those reads
+  and the copy happened before a deferred transaction, leaving a
+  copy-to-wipe gap. The import output prints the path. An import that
   removes nothing, such as `memhub init --from-backup` into its freshly
-  created DB, writes none.
+  created DB, writes none. This applies to every
+  `commands::import::run` path, including CLI import and
+  `init --from-backup`.
 - **Pre-migration:** `backups/migrations/pre-migration.sqlite`, written
   when a repo DB or the machine-global store that already has at least
   one applied migration is opened with one or more migrations pending
@@ -178,19 +215,30 @@ attempt picked (its process id reused) made that open fail.
   every repo command, `memhub init` on an existing DB, `memhub upgrade`,
   the MCP server and the global writes. Opening a DB at head or creating
   a new one writes none. The copy is logged to stderr only, so `--json`
-  output and the MCP server's stdout are unchanged. The open first takes
-  the DB's write lock, then copies the DB only if a migration is still
-  pending under that lock, and the migrations run in that same
-  transaction. So no other process can commit a write between the copy
-  and the migration, and when two processes open the same DB at once the
-  one that loses the race takes no copy instead of overwriting the
-  other's pre-migration copy with an already-migrated DB. While the copy
-  is written another process's write waits for the lock (up to its
-  5-second busy timeout). Before issue #407 the copy was written to its
-  temp file before the write lock was taken and moved into the slot only
-  if a migration was still pending once the lock was held, so a write
-  another process committed between the copy and the lock was missing
-  from the copy. A repo rooted at your home directory shares
+  output and the MCP server's stdout are unchanged. Every file-backed
+  caller of `apply_all` now first takes the DB's write lock, refuses a
+  newer-than-supported schema and checks for pending migrations under
+  that lock; migrations run in the same transaction. This covers every
+  repo open and migration-capable global open, while the deliberately
+  unmigrated global read path does not call `apply_all`. The independent
+  reader used for the copy has an explicit 5-second busy timeout. So no
+  other process can commit a write between the copy and migration, and
+  when two processes open the same DB at once the loser takes no copy
+  instead of overwriting the winner's pre-migration state with an
+  already-migrated DB. Before issue #441 an unlocked pending check
+  discarded the backup path and selected a deferred transaction when it
+  saw a head DB. That made no-pending opens avoid this lock, but a
+  concurrent older-schema restore before the first transaction read
+  could then trigger an unbacked migration. After issue #441 even a
+  no-pending file-backed `apply_all` call briefly takes the write lock;
+  another writer waits up to its 5-second busy timeout, then fails
+  explicitly. Fresh file DBs remain supported and write no pre-migration
+  copy; in-memory migration callers still pass no backup path and use a
+  deferred transaction. Before issue #407 the copy was written to its temp
+  file before the write lock was taken and moved into the slot only if a
+  migration was still pending once the lock was held, so a write another
+  process committed between the copy and the lock was missing from the
+  copy. A repo rooted at your home directory shares
   `~/.memhub/` with the global store, so their two pre-migration copies
   share one slot there; if both are copied at the same moment, one may
   delete the other's temp file, and that open then fails closed with
@@ -291,18 +339,23 @@ How `adopt` installs the snapshot (F4/X6): it stages the remote
 snapshot into a local `.memhub/project.sqlite.incoming` copy, hashes
 **that** copy, and verifies it against the manifest — so a snapshot
 Drive rewrites between hashing and install can never be installed
-unverified. It then takes a `VACUUM INTO` safety copy of the current DB
-to `.memhub/backups/sync/last-replaced.sqlite` (single slot,
-WAL-inclusive; see "Safety backups" above) and restores the staged snapshot's pages into the live
-DB **in place** through SQLite's online-backup API. It never deletes or
-renames the DB (or its `-wal`/`-shm`) out from under a process that may
-hold it open: on Windows that would raise a sharing violation; on POSIX
-it would silently orphan another connection onto a stale inode/WAL.
-Concurrent memhub processes therefore serialize through SQLite's own
-locking. If the live DB is held open by another writer for the whole
-restore window, adopt retries briefly and then refuses cleanly, leaving
-the original DB — and the pre-adopt backup — intact; nothing torn or
-half-replaced is ever observable.
+unverified. It then starts SQLite's online-backup restore with a
+zero-page step, which takes the live DB's destination write lock without
+changing pages. While that lock is held, it writes the current committed
+DB to `.memhub/backups/sync/last-replaced.sqlite` (single slot,
+WAL-inclusive; see "Safety backups" above), then restores the staged
+pages through the same backup session. Before issue #441 the copy and
+restore were separate sessions, so a local write could commit in
+between and be lost from both. It never deletes or renames the DB (or
+its `-wal`/`-shm`) out from under a process that may hold it open: on
+Windows that would raise a sharing violation; on POSIX it would silently
+orphan another connection onto a stale inode/WAL. Concurrent memhub
+processes therefore serialize through SQLite's own locking. Both backup
+connections use zero SQLite busy timeouts and the restore has one
+bounded retry loop (20 attempts, 100 ms apart). If contention persists,
+adopt refuses cleanly before replacement; if restore fails after the
+copy, SQLite rolls back the original DB and the valid copy remains.
+Nothing torn or half-replaced is observable.
 
 **Remote layout and publication atomicity (audit F6/X5).** A push no
 longer overwrites a single fixed `project.sqlite`. It writes an
