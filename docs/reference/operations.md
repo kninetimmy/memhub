@@ -1959,6 +1959,31 @@ OS-agnostic (macOS + Windows). Intentionally not a skill — ops
 housekeeping like `upgrade` itself, surfaced via the CLI and the
 upgrade flow.
 
+## Reviewing proposed facts and decisions
+
+`memhub review accept <id>` makes a proposal durable. For repo proposals:
+
+- A fact with a **different key** can trigger one similarity warning naming
+  the existing row. Similarity can flag compatible observations as well as
+  potential conflicts; it does not establish a contradiction. The accept
+  succeeds without creating a supersession link or changing prior links.
+  The warning does not recommend a supersession. If you independently
+  determine that the proposed fact replaces another, you can explicitly
+  select that row with `review accept <id> --supersede <old-id-or-key>`.
+- If an active fact has the **same key but a different value**, a plain
+  accept refuses without changing the fact or accepting the proposal. Use
+  `--force` to overwrite intentionally; the prior value is recorded in
+  `writes_log`. A fact cannot supersede itself.
+- A similar existing decision still blocks a plain accept. Use `--force` to
+  keep both decisions or `--supersede <decision-id>` to link the old one to
+  its replacement. The similarity checks for both facts and decisions are
+  skipped when the reranker is disabled or either flag is supplied.
+
+Similarity warnings are best-effort on stderr, including with `--json`;
+failure to print a warning does not affect acceptance or the success
+output on stdout. Global-targeted accepts do not run the repo checks and
+still reject `--supersede`.
+
 ## Attribution
 
 Two columns split the work. `source` on `facts` and `decisions` is the

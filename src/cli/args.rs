@@ -844,22 +844,23 @@ pub enum ReviewCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Accept a pending write.
+    ///
+    /// For repo proposals, different-key fact similarity only warns and
+    /// creates no supersession link. A different value for an active fact's
+    /// key or a similar existing decision still blocks a plain accept.
     Accept {
         id: i64,
         #[arg(long)]
         json: bool,
         #[arg(long)]
         actor: Option<String>,
-        /// Acknowledge a detected contradiction by retiring the named row in
-        /// favor of this write (L3 demote-with-link). A fact id or key; a
-        /// numeric decision id. Also the escape when the accept-time probe
-        /// (issue #48) blocks on a reranked conflict.
+        /// Retire the named repo row in favor of this write (fact id or key,
+        /// or numeric decision id). A fact cannot supersede itself.
         #[arg(long)]
         supersede: Option<String>,
-        /// Proceed even if the accept-time probe detects a contradiction
-        /// (overwrite/insert as-is; for a same-key fact the prior value is
-        /// logged to writes_log). The escape for a same-key overwrite, where
-        /// --supersede cannot apply.
+        /// Skip repo accept-time checks. A same-key overwrite logs the prior
+        /// value to writes_log.
         #[arg(long)]
         force: bool,
     },

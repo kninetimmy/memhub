@@ -29,24 +29,14 @@ const AUTO_EXPIRE_ACTOR: &str = "review:auto_expire";
 /// upkeep that comes with one).
 pub const DONE_TASK_STALE_DAYS: i64 = 30;
 
-/// Cross-encoder relevance logit at/above which an existing durable row is
-/// treated as a contradiction candidate for the payload being accepted (Wave
-/// 3 L5, issue #48). Calibrated against the bundled ms-marco-MiniLM reranker:
-/// a genuine near-duplicate / same-subject row scores ~+5.6 (facts) to ~+9.0
-/// (decisions), while merely-related or unrelated rows sit near −10, so 2.0 —
-/// the value recall's since-retired relevance floor used — lands in that
-/// wide gap with margin on both sides. Because the model
-/// scores lexical+semantic *overlap*, this reliably catches restatements and
-/// near-duplicates; it is not a general contradiction classifier (a rephrased
-/// conflict that shares few tokens will not trip it). A plain constant, not a
-/// config knob: like [`DONE_TASK_STALE_DAYS`] it never feeds recall scoring,
-/// so it doesn't warrant a config surface (or the doctor baseline upkeep a
-/// knob brings). The probe is advisory — a hit only yields a single refusal.
-/// Re-verified under the int8-quantized reranker (issue #75 / decision 147,
-/// a reranker swap): the reranked-contradiction accept tests still pass, so
-/// contradictory rows stay at/above 2.0 and unrelated rows well below it.
-/// Unchanged.
-const CONTRADICTION_RERANK_THRESHOLD: f32 = 2.0;
+/// Cross-encoder relevance cutoff for the accept-time probe. The original L5
+/// calibration (issue #48, decision 147) used 2.0 for the bundled
+/// ms-marco-MiniLM reranker, re-verified under int8 (issue #75). Re-verify
+/// it on a model swap. The model scores overlap, not contradiction:
+/// compatible same-subject rows can also clear the cutoff. Before #443,
+/// reranked hits blocked plain fact and decision accepts. Now a fact hit
+/// warns; a decision hit still blocks. This cutoff does not feed recall.
+const ACCEPT_SIMILARITY_RERANK_THRESHOLD: f32 = 2.0;
 
 /// Upper bound on same-kind rows the reranked probe scores at accept time.
 /// Accept is human-gated and infrequent, but a pathologically large corpus
@@ -124,62 +114,31 @@ pub struct AcceptOutcome {
     pub kind: String,
     pub durable_id: i64,
     pub durable_table: &'static str,
+    pub fact_similarity_warning: Option<String>,
 }
 
-// ---------------------------------------------------------------------
-// Accept-time contradiction probe (Wave 3 L5, issue #48). Advisory only:
-// it never mutates state and never auto-resolves — a detected conflict
-// yields ONE refusal naming the row, and the operator re-runs `review
-// accept` with `--supersede <id>` (retire the old row, reusing L3's
-// demote-with-link) or `--force` (proceed anyway; for facts the prior
-// value is logged by `fact::add_in_tx`). Reuses the existing cross-encoder
-// reranker seam rather than a new model.
-// ---------------------------------------------------------------------
-
-/// How an accepted payload collided with an existing durable row.
-#[derive(Debug, Clone, Copy)]
-enum ContradictionKind {
-    /// A fact with the same key already holds a *different* value. Accepting
-    /// silently overwrites it (last-writer-wins). `--supersede` cannot apply
-    /// (a row cannot supersede itself), so `--force` is the escape.
-    SameKey,
-    /// A *different* existing same-kind row reranked at/above
-    /// [`CONTRADICTION_RERANK_THRESHOLD`] against the incoming payload — a
-    /// near-duplicate / same-subject candidate. `--supersede <id>` (retire it
-    /// in favor of this write) or `--force` (keep both) proceeds.
-    Reranked,
-}
-
-/// A single conflicting row surfaced by [`probe_contradiction`].
-#[derive(Debug)]
-struct Contradiction {
-    kind: ContradictionKind,
-    source_id: i64,
-    /// Human label naming the conflicting row, e.g. `fact 'deploy-cmd' (#3)`.
-    label: String,
-}
-
-impl Contradiction {
-    /// The single advisory message a blocked accept returns (spec: "refuse
-    /// with a single advisory prompt naming the conflicting row"). One shot,
-    /// never a loop — the operator re-runs with a flag.
-    fn advisory(&self, pending_id: i64) -> String {
-        match self.kind {
-            ContradictionKind::SameKey => format!(
-                "accept blocked: {} already holds a different value, so accepting pending write \
-                 {pending_id} would silently overwrite it. Re-run `memhub review accept \
-                 {pending_id} --force` to overwrite anyway (the prior value is logged), or reject \
-                 this proposal.",
-                self.label
-            ),
-            ContradictionKind::Reranked => format!(
-                "accept blocked: pending write {pending_id} looks like it contradicts existing {}. \
-                 Re-run `memhub review accept {pending_id} --supersede {}` to retire that row in \
-                 favor of this write, or `--force` to keep both.",
-                self.label, self.source_id
-            ),
-        }
+/// Protect a plain fact accept from overwriting a different value under the
+/// same active key. Exact and model-free; runs before any similarity probe.
+fn check_same_key_overwrite(tx: &Transaction<'_>, id: i64, key: &str, value: &str) -> Result<()> {
+    let existing: Option<(i64, String)> = tx
+        .query_row(
+            "SELECT id, value FROM facts
+             WHERE project_id = 1 AND key = ?1 AND superseded_by IS NULL",
+            params![key],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    if let Some((existing_id, existing_value)) = existing
+        && existing_value != value
+    {
+        return Err(MemhubError::InvalidInput(format!(
+            "accept blocked: fact '{key}' (#{existing_id}) already holds a different value, so \
+             accepting pending write {id} would silently overwrite it. Re-run `memhub review \
+             accept {id} --force` to overwrite anyway (the prior value is logged), or reject \
+             this proposal."
+        )));
     }
+    Ok(())
 }
 
 /// One existing row the reranked probe scores the incoming payload against.
@@ -191,49 +150,19 @@ struct ProbeCandidate {
     label: String,
 }
 
-/// Probe the incoming payload against existing durable rows for a likely
-/// contradiction. Returns the first conflict found (same-key beats reranked)
-/// or `None`. Pure read: prepares SELECTs and may run the reranker, but never
-/// writes.
-///
-/// `same_key` is `Some((key, value))` for facts (enables the exact same-key
-/// signal) and `None` for decisions. The reranked signal is gated on
-/// `use_reranker` so an operator who disabled the cross-encoder for recall is
-/// not forced to load it here; the same-key signal always runs.
-fn probe_contradiction(
+/// Find the single best same-kind match if it clears the relevance cutoff.
+/// This is a read-only probe and is skipped if the reranker is disabled.
+fn probe_similarity(
     tx: &Transaction<'_>,
     kind: &str,
     incoming_query: &str,
-    same_key: Option<(&str, &str)>,
+    exclude_fact_key: Option<&str>,
     use_reranker: bool,
-) -> Result<Option<Contradiction>> {
-    // 1. Same-key (facts): an existing, non-superseded fact with this key but
-    //    a different value. Exact and model-free — the strongest signal.
-    if let Some((key, value)) = same_key {
-        let existing: Option<(i64, String)> = tx
-            .query_row(
-                "SELECT id, value FROM facts
-                 WHERE project_id = 1 AND key = ?1 AND superseded_by IS NULL",
-                params![key],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?;
-        if let Some((existing_id, existing_value)) = existing
-            && existing_value != value
-        {
-            return Ok(Some(Contradiction {
-                kind: ContradictionKind::SameKey,
-                source_id: existing_id,
-                label: format!("fact '{key}' (#{existing_id})"),
-            }));
-        }
-    }
-
-    // 2. Reranked semantic signal over the remaining same-kind rows.
+) -> Result<Option<ProbeCandidate>> {
     if !use_reranker {
         return Ok(None);
     }
-    let candidates = gather_probe_candidates(tx, kind, same_key.map(|(k, _)| k))?;
+    let candidates = gather_probe_candidates(tx, kind, exclude_fact_key)?;
     if candidates.is_empty() {
         return Ok(None);
     }
@@ -242,14 +171,9 @@ fn probe_contradiction(
     // so the first entry is the best-matching existing row.
     let scored = rerank::rerank(incoming_query, &docs)?;
     if let Some(&(idx, score)) = scored.first()
-        && score >= CONTRADICTION_RERANK_THRESHOLD
-        && let Some(candidate) = candidates.get(idx)
+        && score >= ACCEPT_SIMILARITY_RERANK_THRESHOLD
     {
-        return Ok(Some(Contradiction {
-            kind: ContradictionKind::Reranked,
-            source_id: candidate.source_id,
-            label: candidate.label.clone(),
-        }));
+        return Ok(candidates.into_iter().nth(idx));
     }
     Ok(None)
 }
@@ -286,7 +210,7 @@ fn gather_probe_candidates(
                 out.push(ProbeCandidate {
                     source_id: row_id,
                     text: crate::retrieval::fact_embed_text(&key, &value),
-                    label: format!("fact '{key}' (#{row_id})"),
+                    label: format!("fact {key:?} (#{row_id})"),
                 });
             }
         }
@@ -323,12 +247,10 @@ fn gather_probe_candidates(
     Ok(out)
 }
 
-/// Accept a pending write. `supersede` (a fact id/key or a decision id) and
-/// `force` are the two escapes for the accept-time contradiction probe (issue
-/// #48): with neither, a detected conflict blocks the accept with a single
-/// advisory error; `--force` proceeds as-is; `--supersede <id>` proceeds and
-/// additionally demotes-with-link the named row (L3) in favor of this write.
-/// `--supersede` is honored whenever supplied, contradiction or not.
+/// Accept a pending write. On plain repo accepts, exact fact overwrites and
+/// similar decisions block; similar facts under different keys only warn.
+/// `--force` skips those checks; `--supersede` also links the named repo row
+/// to its replacement, whether or not the probe would have matched it.
 pub fn accept(
     start: &Path,
     id: i64,
@@ -379,7 +301,7 @@ pub fn accept(
     // returns the already-written row instead of duplicating it.
     let target_global = payload.get("target").and_then(Value::as_str) == Some("global");
 
-    // The contradiction probe and its `--supersede` link are repo-scoped
+    // The accept-time checks and the `--supersede` link are repo-scoped
     // (issue #48). Rather than silently ignore a `--supersede` handed to a
     // global-targeted accept, refuse loudly so the operator isn't misled into
     // thinking a global row was retired.
@@ -390,6 +312,7 @@ pub fn accept(
         )));
     }
 
+    let mut fact_similarity_warning = None;
     let (durable_id, durable_table) = if target_global {
         write_durable_global(
             &config,
@@ -417,22 +340,27 @@ pub fn accept(
                 // field existed, which `Value::as_str` on a missing key
                 // already treats as `None`.
                 let kind = payload.get("kind").and_then(Value::as_str);
-                // Probe only when we might block — an explicit --force or
-                // --supersede is already the operator's acknowledgement.
-                if !force
-                    && supersede.is_none()
-                    && let Some(conflict) = probe_contradiction(
+                let similar_fact = if !force && supersede.is_none() {
+                    check_same_key_overwrite(&tx, id, key, value)?;
+                    probe_similarity(
                         &tx,
                         "fact",
                         &crate::retrieval::fact_embed_text(key, value),
-                        Some((key, value)),
+                        Some(key),
                         config.retrieval.use_reranker,
                     )?
-                {
-                    return Err(MemhubError::InvalidInput(conflict.advisory(id)));
-                }
+                } else {
+                    None
+                };
                 let (fact_id, _) =
                     fact::add_with_kind_in_tx(&tx, key, value, kind, &derived_source, actor, mode)?;
+                if let Some(candidate) = similar_fact {
+                    fact_similarity_warning = Some(format!(
+                        "similarity match with existing {} (different key); \
+                         no supersession link was created.",
+                        candidate.label
+                    ));
+                }
                 // Honor --supersede whenever supplied: retire the named row in
                 // favor of the fact just written (L3 demote-with-link). A
                 // same-key overwrite yields the same row id, which
@@ -449,12 +377,12 @@ pub fn accept(
                     .and_then(Value::as_str)
                     .ok_or_else(|| missing_payload_field(id, "title"))?;
                 // Decisions have no natural key, so only the reranked signal
-                // applies (same_key = None). The cross-encoder catches
+                // applies. The cross-encoder catches
                 // near-duplicate decisions; a divergently-worded conflict may
                 // not trip it — advisory, best-effort.
                 if !force
                     && supersede.is_none()
-                    && let Some(conflict) = probe_contradiction(
+                    && let Some(candidate) = probe_similarity(
                         &tx,
                         "decision",
                         &crate::retrieval::decision_embed_text(title, &pending.rationale, None),
@@ -462,7 +390,12 @@ pub fn accept(
                         config.retrieval.use_reranker,
                     )?
                 {
-                    return Err(MemhubError::InvalidInput(conflict.advisory(id)));
+                    return Err(MemhubError::InvalidInput(format!(
+                        "accept blocked: pending write {id} looks like it contradicts existing {}. \
+                         Re-run `memhub review accept {id} --supersede {}` to retire that row in \
+                         favor of this write, or `--force` to keep both.",
+                        candidate.label, candidate.source_id
+                    )));
                 }
                 let decision_id = decision::add_with_decided_at_in_tx(
                     &tx,
@@ -560,6 +493,7 @@ pub fn accept(
         kind: pending.kind,
         durable_id,
         durable_table,
+        fact_similarity_warning,
     })
 }
 
@@ -1284,10 +1218,10 @@ mod tests {
         assert_eq!(old.superseded_by, Some(new_id));
     }
 
-    // -- accept-time contradiction probe (Wave 3 L5, issue #48) ---------
+    // -- accept-time overwrite protection and similarity probe ---------
 
     // Same-key signal (deterministic, model-free): an existing fact with the
-    // same key but a different value blocks the accept unless a flag is given.
+    // same key but a different value blocks a plain accept.
     #[test]
     fn accept_blocks_on_same_key_fact_contradiction() {
         use crate::commands::{fact, init, pending_write};
@@ -1311,6 +1245,15 @@ mod tests {
             "{}",
         )
         .expect("propose");
+        let ctx = db::open_project(temp.path()).expect("open");
+        let write_count = || {
+            ctx.conn
+                .query_row("SELECT count(*) FROM writes_log", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .expect("count writes")
+        };
+        let before = write_count();
 
         let err = super::accept(temp.path(), pid, "cli:user", None, false)
             .expect_err("same-key contradiction must block");
@@ -1325,6 +1268,7 @@ mod tests {
         );
 
         // Durable value untouched, and the proposal stays pending (retryable).
+        assert_eq!(write_count(), before);
         assert_eq!(
             fact::list(temp.path())
                 .expect("list")
@@ -1369,6 +1313,7 @@ mod tests {
         let outcome =
             super::accept(temp.path(), pid, "cli:user", None, true).expect("force accept");
         assert_eq!(outcome.durable_table, "facts");
+        assert!(outcome.fact_similarity_warning.is_none());
         assert_eq!(
             fact::list(temp.path())
                 .expect("list")
@@ -1394,11 +1339,10 @@ mod tests {
         );
     }
 
-    // Reranked signal (bundled cross-encoder): a different-key fact about the
-    // same subject blocks; `--supersede <old>` then proceeds and applies the
-    // L3 demote-with-link. Loads the reranker model.
+    // Explicit --supersede still applies the L3 demote-with-link and skips
+    // the similarity probe.
     #[test]
-    fn accept_blocks_on_reranked_fact_contradiction_then_supersede_links() {
+    fn accept_fact_with_supersede_applies_link() {
         use crate::commands::{fact, init, pending_write};
         let temp = tempfile::tempdir().expect("tempdir");
         init::run(temp.path()).expect("init");
@@ -1421,20 +1365,6 @@ mod tests {
         )
         .expect("propose");
 
-        // Block branch: reranked conflict, no flags.
-        let err = super::accept(temp.path(), pid, "cli:user", None, false)
-            .expect_err("reranked contradiction must block");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("prod-db-host"),
-            "advisory must name the conflicting row: {msg}"
-        );
-        assert!(
-            msg.contains("--supersede"),
-            "reranked advisory must offer --supersede: {msg}"
-        );
-
-        // Proceed branch: acknowledge by retiring the old row in favor of this.
         let outcome = super::accept(
             temp.path(),
             pid,
@@ -1444,6 +1374,7 @@ mod tests {
         )
         .expect("supersede accept");
         assert_eq!(outcome.durable_table, "facts");
+        assert!(outcome.fact_similarity_warning.is_none());
         let facts = fact::list(temp.path()).expect("list");
         let new = facts
             .iter()
@@ -1460,9 +1391,7 @@ mod tests {
         );
     }
 
-    // False-positive guard: an unrelated proposal must NOT be blocked — the
-    // probe is a single advisory on a real conflict, not a hard gate on every
-    // accept. Loads the reranker model.
+    // An unrelated fact must not warn. Loads the bundled reranker.
     #[test]
     fn accept_unrelated_fact_proceeds_without_flags() {
         use crate::commands::{fact, init, pending_write};
@@ -1491,6 +1420,7 @@ mod tests {
         let outcome = super::accept(temp.path(), pid, "cli:user", None, false)
             .expect("an unrelated proposal must proceed");
         assert_eq!(outcome.durable_table, "facts");
+        assert!(outcome.fact_similarity_warning.is_none());
         assert!(
             fact::list(temp.path())
                 .expect("list")
