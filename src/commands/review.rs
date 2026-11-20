@@ -210,7 +210,7 @@ fn gather_probe_candidates(
                 out.push(ProbeCandidate {
                     source_id: row_id,
                     text: crate::retrieval::fact_embed_text(&key, &value),
-                    label: format!("fact '{key}' (#{row_id})"),
+                    label: format!("fact {key:?} (#{row_id})"),
                 });
             }
         }
@@ -356,9 +356,9 @@ pub fn accept(
                     fact::add_with_kind_in_tx(&tx, key, value, kind, &derived_source, actor, mode)?;
                 if let Some(candidate) = similar_fact {
                     fact_similarity_warning = Some(format!(
-                        "similarity match with existing {} (different key); no fact was superseded. \
-                         If the new fact replaces it, run `memhub fact supersede {} --by {fact_id}`.",
-                        candidate.label, candidate.source_id
+                        "similarity match with existing {} (different key); \
+                         no supersession link was created.",
+                        candidate.label
                     ));
                 }
                 // Honor --supersede whenever supplied: retire the named row in

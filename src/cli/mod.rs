@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
 use std::process;
 
@@ -1378,7 +1379,8 @@ pub fn run(cli: Cli) -> Result<()> {
                 let outcome =
                     commands::review::accept(&cwd, id, &actor, supersede.as_deref(), force)?;
                 if let Some(warning) = &outcome.fact_similarity_warning {
-                    eprintln!("Warning: {warning}");
+                    // The accept already committed; a stderr error must not hide success.
+                    let _ = writeln!(std::io::stderr().lock(), "Warning: {warning}");
                 }
                 if as_json {
                     let payload = json!({

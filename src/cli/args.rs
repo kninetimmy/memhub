@@ -846,9 +846,9 @@ pub enum ReviewCommand {
     },
     /// Accept a pending write.
     ///
-    /// For repo proposals, different-key fact similarity only warns; it does
-    /// not supersede either fact. A same-key fact with a different value or
-    /// a similar existing decision still blocks a plain accept.
+    /// For repo proposals, different-key fact similarity only warns and
+    /// creates no supersession link. A different value for an active fact's
+    /// key or a similar existing decision still blocks a plain accept.
     Accept {
         id: i64,
         #[arg(long)]

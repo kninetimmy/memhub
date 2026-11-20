@@ -193,17 +193,12 @@ fn review_accept_warns_but_keeps_different_key_facts_active() {
             "accepted"
         );
 
-        assert!(
-            stderr.contains(&format!(
-                "Warning: similarity match with existing fact '{old_key}' (#{old_id})"
-            )),
-            "{stderr}"
-        );
-        assert!(stderr.contains("no fact was superseded"), "{stderr}");
-        assert!(!stderr.contains("contradict"), "{stderr}");
-        assert!(
-            stderr.contains(&format!("memhub fact supersede {old_id} --by {}", new.id)),
-            "{stderr}"
+        assert_eq!(
+            stderr.trim_end(),
+            format!(
+                "Warning: similarity match with existing fact \"{old_key}\" (#{old_id}) \
+                 (different key); no supersession link was created."
+            )
         );
         if json {
             assert_eq!(
@@ -224,6 +219,92 @@ fn review_accept_warns_but_keeps_different_key_facts_active() {
                 )
             );
         }
+    }
+}
+
+#[test]
+fn review_accept_warning_is_terminal_safe_and_best_effort() {
+    use std::fs::File;
+    use std::process::Command;
+
+    let repo = tempdir().expect("repo tempdir");
+    let home = tempdir().expect("home tempdir");
+    let path = repo.path();
+    init::run(path).expect("init");
+    let (related_id, _) = fact::add(
+        path,
+        "prod-db-host\x1b\n\u{2028}",
+        "db-alpha.example.com",
+        "user",
+        "cli:user",
+    )
+    .expect("seed related fact");
+    let (retired_id, _) = fact::add(
+        path,
+        "database-host",
+        "db-obsolete.example.com",
+        "user",
+        "cli:user",
+    )
+    .expect("seed fact to retire");
+    fact::supersede(
+        path,
+        &retired_id.to_string(),
+        &related_id.to_string(),
+        "cli:user",
+    )
+    .expect("retire fact");
+
+    for stderr_writable in [true, false] {
+        let pid = stage_fact(path, "database-host", "db-beta.example.com", "New probe.");
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_memhub"));
+        cmd.args(["review", "accept", &pid.to_string()])
+            .current_dir(path)
+            .env("HOME", home.path())
+            .env("USERPROFILE", home.path())
+            .env("MEMHUB_LOG", "off");
+        if !stderr_writable {
+            // Redirect stderr to a valid handle that rejects writes, not to a null sink.
+            let sink = tempfile::NamedTempFile::new().expect("stderr sink");
+            cmd.stderr(File::open(sink.path()).expect("open read-only stderr"));
+        }
+        let out = cmd.output().expect("spawn memhub");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success(),
+            "accept failed: {}: {stderr}",
+            out.status
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim_end(),
+            format!("Accepted pending write {pid} (fact) -> facts row {retired_id}")
+        );
+        assert_eq!(
+            review::show(path, pid).expect("show proposal").status,
+            "accepted"
+        );
+        if stderr_writable {
+            assert_eq!(
+                stderr.trim_end(),
+                format!(
+                    r#"Warning: similarity match with existing fact "prod-db-host\u{{1b}}\n\u{{2028}}" (#{related_id}) (different key); no supersession link was created."#
+                )
+            );
+        }
+
+        let facts = fact::list(path).expect("list facts");
+        assert_eq!(facts.len(), 2);
+        let retired = facts
+            .iter()
+            .find(|f| f.id == retired_id)
+            .expect("retired fact");
+        assert_eq!(retired.value, "db-beta.example.com");
+        assert_eq!(retired.superseded_by, Some(related_id));
+        let related = facts
+            .iter()
+            .find(|f| f.id == related_id)
+            .expect("related fact");
+        assert!(related.superseded_by.is_none());
     }
 }
 

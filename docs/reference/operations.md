@@ -1966,10 +1966,10 @@ upgrade flow.
 - A fact with a **different key** can trigger one similarity warning naming
   the existing row. Similarity can flag compatible observations as well as
   potential conflicts; it does not establish a contradiction. The accept
-  succeeds and neither fact is superseded. If the new fact replaces the old
-  one, run the suggested `memhub fact supersede <old-id> --by <new-id>` after
-  checking both rows, or use `review accept <id> --supersede <old-id-or-key>`
-  before accepting.
+  succeeds without creating a supersession link or changing prior links.
+  The warning does not recommend a supersession. If you independently
+  determine that the proposed fact replaces another, you can explicitly
+  select that row with `review accept <id> --supersede <old-id-or-key>`.
 - If an active fact has the **same key but a different value**, a plain
   accept refuses without changing the fact or accepting the proposal. Use
   `--force` to overwrite intentionally; the prior value is recorded in
@@ -1979,9 +1979,10 @@ upgrade flow.
   its replacement. The similarity checks for both facts and decisions are
   skipped when the reranker is disabled or either flag is supplied.
 
-Similarity warnings are printed on stderr, including with `--json`; the
-success output on stdout is unchanged. Global-targeted accepts do not run
-the repo checks and still reject `--supersede`.
+Similarity warnings are best-effort on stderr, including with `--json`;
+failure to print a warning does not affect acceptance or the success
+output on stdout. Global-targeted accepts do not run the repo checks and
+still reject `--supersede`.
 
 ## Attribution
 
