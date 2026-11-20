@@ -164,6 +164,12 @@ hardcode `is_stale: false`.
 Also: retire or repurpose the vestigial confidence field (§11 Q5), and make
 pending-write expiry automatic at `open_project` (§11 Q6).
 
+**L5 follow-up (#443).** Before: an above-threshold rerank hit blocked plain
+accept for both facts under different keys and decisions. After: only the
+decision hit still blocks; a different-key fact hit warns without linking or
+retiring either fact. The exact same-key overwrite check and prior-value
+logging are unchanged. See the [current review guidance](../reference/operations.md#reviewing-proposed-facts-and-decisions).
+
 ---
 
 ## 3. Wrap-up policy, category granularity, verbosity knob — `[U]`, confidence High

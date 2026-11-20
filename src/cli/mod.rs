@@ -1377,6 +1377,9 @@ pub fn run(cli: Cli) -> Result<()> {
                 let actor = resolve_actor(actor.as_deref())?;
                 let outcome =
                     commands::review::accept(&cwd, id, &actor, supersede.as_deref(), force)?;
+                if let Some(warning) = &outcome.fact_similarity_warning {
+                    eprintln!("Warning: {warning}");
+                }
                 if as_json {
                     let payload = json!({
                         "pending_id": outcome.pending_id,

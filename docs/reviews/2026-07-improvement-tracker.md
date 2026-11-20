@@ -303,6 +303,11 @@ pre-flighted with a throwaway local merge + full suite before the canonical squa
   block; agents stay untrusted writers). tier:opus. Full-suite pre-flight 679 green. **Decision 147:
   the 2.0 rerank threshold must be re-verified on any reranker swap (A4/R7).**
   — 2026-07-07, PR #62 / 27a9033 (issue #48).
+  **#443 follow-up:** Before, a relevance hit on a different fact key gave a
+  single refusal unless explicitly bypassed. After, that same hit names the
+  existing fact in a nonblocking warning; plain accept keeps both facts.
+  The 2.0 cutoff, same-key overwrite protection, explicit supersession,
+  decision refusal, and global routing are unchanged.
 - [x] L6 optional age decay (default-off) — `[retrieval.scoring] age_half_life_days = 0` (0 = off);
   when >0, multiplies blended relevance by `2^(-age_days/half_life)` keyed on `verified_at` (facts) /
   `updated_at` (done tasks); **decisions + doc chunks excluded** (Q2/decision 145). Default-off is a

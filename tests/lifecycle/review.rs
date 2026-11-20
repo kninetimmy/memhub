@@ -140,6 +140,94 @@ fn review_accept_promotes_fact_and_marks_pending_accepted() {
 }
 
 #[test]
+fn review_accept_warns_but_keeps_different_key_facts_active() {
+    // Both pairs clear the bundled reranker's threshold: one is compatible
+    // and one might conflict. The XP paths are fixture text, never opened.
+    for ((old_key, old_value), (new_key, new_value), json) in [
+        (
+            (
+                "xp-rtm-qemu-probe-evidence",
+                r"F:\QEMU\probe-xp-rtm-01 contains RESULTS.txt and 16 screenshots for x86 XP RTM build 2600.xpclient.010817-1148, including actual unsimulated waveOut=0.",
+            ),
+            (
+                "xp-sp3-qemu-probe-evidence",
+                r"F:\QEMU\probe-xp-sp3-01\RESULTS.txt records the unchanged probe passing on x86 XP Professional SP3 build 2600.xpsp.080413-2111; the RTM backing disk SHA-256 was unchanged after the overlay run.",
+            ),
+            false,
+        ),
+        (
+            ("prod-db-host", "db-alpha.example.com"),
+            ("database-host", "db-beta.example.com"),
+            true,
+        ),
+    ] {
+        let repo = tempdir().expect("repo tempdir");
+        let home = tempdir().expect("home tempdir");
+        let path = repo.path();
+        init::run(path).expect("init");
+        let (old_id, _) =
+            fact::add(path, old_key, old_value, "user", "cli:user").expect("seed fact");
+        let pid = stage_fact(path, new_key, new_value, "Observed in a probe.");
+
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_memhub"))
+            .args(["review", "accept", &pid.to_string()])
+            .args(json.then_some("--json"))
+            .current_dir(path)
+            .env("HOME", home.path())
+            .env("USERPROFILE", home.path())
+            .env("MEMHUB_LOG", "off")
+            .output()
+            .expect("spawn memhub");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "accept {new_key} failed: {stderr}");
+
+        let facts = fact::list(path).expect("list facts");
+        assert_eq!(facts.len(), 2);
+        assert!(facts.iter().all(|f| f.superseded_by.is_none()));
+        let old = facts.iter().find(|f| f.id == old_id).expect("old fact");
+        assert_eq!(old.value, old_value);
+        let new = facts.iter().find(|f| f.key == new_key).expect("new fact");
+        assert_eq!(new.value, new_value);
+        assert_eq!(
+            review::show(path, pid).expect("show proposal").status,
+            "accepted"
+        );
+
+        assert!(
+            stderr.contains(&format!(
+                "Warning: similarity match with existing fact '{old_key}' (#{old_id})"
+            )),
+            "{stderr}"
+        );
+        assert!(stderr.contains("no fact was superseded"), "{stderr}");
+        assert!(!stderr.contains("contradict"), "{stderr}");
+        assert!(
+            stderr.contains(&format!("memhub fact supersede {old_id} --by {}", new.id)),
+            "{stderr}"
+        );
+        if json {
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&out.stdout).expect("JSON stdout"),
+                serde_json::json!({
+                    "pending_id": pid,
+                    "kind": "fact",
+                    "durable_table": "facts",
+                    "durable_id": new.id,
+                })
+            );
+        } else {
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout).trim_end(),
+                format!(
+                    "Accepted pending write {pid} (fact) -> facts row {}",
+                    new.id
+                )
+            );
+        }
+    }
+}
+
+#[test]
 fn review_accept_preserves_opencode_source() {
     let temp = tempdir().expect("tempdir");
     init::run(temp.path()).expect("init");
