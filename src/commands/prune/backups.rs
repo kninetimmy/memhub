@@ -46,7 +46,7 @@ impl Group {
         #[cfg(windows)]
         let unavailable = self
             .cleanup_blocker
-            .or_else(|| windows::check_storage(&self.directory).err())
+            .or_else(|| windows::storage_path(&self.directory, &self.directory_identity).err())
             .map(|e| format!("Backup cleanup unavailable: {e}"));
         #[cfg(not(windows))]
         let unavailable = Some(REPORT_ONLY.to_owned());
@@ -97,7 +97,29 @@ fn display_path(path: &Path) -> String {
         }
         escaped
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        use std::fmt::Write;
+        use std::os::windows::ffi::OsStrExt;
+
+        // Leave path separators intact. Doubling a literal '%' reserves
+        // %uNNNN for otherwise unprintable native UTF-16 units.
+        let mut escaped = String::new();
+        for unit in char::decode_utf16(path.as_os_str().encode_wide()) {
+            match unit {
+                Ok('%') => escaped.push_str("%%"),
+                Ok(c) if c.is_control() => {
+                    write!(escaped, "%u{:04x}", u32::from(c)).expect("write to string");
+                }
+                Ok(c) => escaped.push(c),
+                Err(e) => {
+                    write!(escaped, "%u{:04x}", e.unpaired_surrogate()).expect("write to string");
+                }
+            }
+        }
+        escaped
+    }
+    #[cfg(not(any(unix, windows)))]
     path.display().to_string()
 }
 
@@ -206,7 +228,10 @@ fn inspect_directory(
             }
             #[cfg(windows)]
             if cleanup_blocker.is_none() {
-                cleanup_blocker = windows::check_file(&file, &actual, &path, index >= RETAIN).err();
+                use std::os::windows::fs::MetadataExt;
+                cleanup_blocker =
+                    windows::check_file(&file, actual.file_attributes(), &path, index >= RETAIN)
+                        .err();
             }
             let hash = sha256_reader(&file).map_err(|err| {
                 MemhubError::InvalidInput(format!(
@@ -280,9 +305,6 @@ pub(super) fn delete(paths: &ProjectPaths, candidate: &str) -> Result<usize> {
                 "no current surplus backup candidate '{candidate}'; run `memhub prune scan` again{detail}"
             ))
         })?;
-    if let Some(blocker) = group.cleanup_blocker {
-        return Err(blocker);
-    }
     windows::delete(group)
 }
 

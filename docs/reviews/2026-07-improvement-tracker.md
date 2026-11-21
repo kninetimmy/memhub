@@ -304,6 +304,12 @@ pre-flighted with a throwaway local merge + full suite before the canonical squa
   idle open or blocked tasks, drifted non-archived docs, and surplus backups.
   Done tasks and expired proposals are no longer queue items; the
   `review_stale` JSON envelope stays, with the prune report inside it.
+  The old queue used read-only queries after a maintained open, which could
+  back up and migrate an initialized pre-0026 DB on the 0026 binary. The
+  alias now refuses pre-0026 schemas and points to `memhub upgrade`.
+  The old document check followed links at or above the recorded file;
+  the scan and CLI status now report those paths as unreadable without
+  reading their targets.
 - [x] L5 accept-time contradiction probe — MCP `review accept` compares an incoming fact/decision
   against the current durable value and logs a `prior_value` on change (advisory probe, not a hard
   block; agents stay untrusted writers). tier:opus. Full-suite pre-flight 679 green. **Decision 147:

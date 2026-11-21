@@ -480,7 +480,7 @@ enum DocumentFile {
     Linked(Vec<u8>, Option<Vec<u8>>, Option<Timestamp>),
     Unreadable(
         Option<i32>,
-        Option<String>,
+        Option<(String, FileIdentity)>,
         Option<(u64, Option<Timestamp>)>,
     ),
 }
@@ -554,7 +554,9 @@ fn document_file(root: &Path, path: &Path) -> DocumentFile {
                         identity,
                     }
                 }
-                Ok((_, bytes)) => DocumentFile::Unreadable(None, Some(sha256_hex(&bytes)), stamp),
+                Ok((identity, bytes)) => {
+                    DocumentFile::Unreadable(None, Some((sha256_hex(&bytes), identity)), stamp)
+                }
                 Err(e) => DocumentFile::Unreadable(e.raw_os_error(), None, stamp),
             };
         }

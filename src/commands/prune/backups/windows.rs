@@ -4,14 +4,16 @@ use std::ffi::c_void;
 use std::fs::File;
 use std::io;
 use std::os::windows::ffi::OsStrExt;
-use std::os::windows::fs::OpenOptionsExt;
+use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 use std::path::{Component, Path, PathBuf, Prefix};
 use std::ptr::null_mut;
 
-use super::{Backup, Group, RETAIN, at_path, changed};
+use super::{Backup, Group, RETAIN, at_path, changed, display_path};
 use crate::commands::sync::sha256_reader;
-use crate::fs_identity::{file_info_from_handle, final_path, is_link_or_reparse_point};
+use crate::fs_identity::{
+    FileIdentity, file_info_from_handle, final_path, is_link_or_reparse_point,
+};
 use crate::{MemhubError, Result};
 
 const INVALID_HANDLE: RawHandle = -1isize as RawHandle;
@@ -21,6 +23,8 @@ const GENERIC_READ: u32 = 0x8000_0000;
 const WRITE_ATTRIBUTES: u32 = 0x100;
 const DELETE: u32 = 0x0001_0000;
 const OPEN_EXISTING: u32 = 3;
+const FILE_ATTRIBUTE_READONLY: u32 = 0x0001;
+const FILE_ATTRIBUTE_ENCRYPTED: u32 = 0x4000;
 const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
 const BACKUP_SEMANTICS: u32 = 0x0200_0000;
 const VOLUME_NAME_GUID: u32 = 1;
@@ -119,17 +123,27 @@ fn own(raw: RawHandle) -> io::Result<OwnedHandle> {
 fn unsupported(path: &Path) -> MemhubError {
     MemhubError::InvalidInput(format!(
         "'{}' requires local fixed NTFS with transactional locking",
-        path.display()
+        display_path(path)
     ))
 }
 
-fn storage_path(dir: &Path, handle: &File) -> Result<PathBuf> {
+pub(super) fn storage_path(dir: &Path, identity: &FileIdentity) -> Result<PathBuf> {
     if !matches!(dir.components().next(), Some(Component::Prefix(p)) if matches!(p.kind(), Prefix::VerbatimDisk(_)))
     {
         return Err(unsupported(dir));
     }
-    let guid = final_path(handle, VOLUME_NAME_GUID).map_err(|_| unsupported(dir))?;
-    let root = wide(&volume_root(&guid).ok_or_else(|| unsupported(dir))?)?;
+    let handle = directory(dir, SHARE_ALL)?;
+    let physical = final_path(&handle, VOLUME_NAME_GUID).map_err(|_| unsupported(dir))?;
+    let root = volume_root(&physical).ok_or_else(|| unsupported(dir))?;
+    // Derive the reviewed physical path by changing only the volume prefix.
+    // A handle's GUID path must not supply different directory components.
+    let mut parts = dir.components();
+    parts.next(); // Checked verbatim drive prefix above.
+    if parts.next() != Some(Component::RootDir) || root.join(parts.as_path()) != physical {
+        return Err(changed(dir));
+    }
+    verify_directory(&handle, dir, identity)?;
+    let root = wide(&root)?;
     let mut fs_name = [0u16; 16];
     let mut flags = 0;
     // SAFETY: `root` is a NUL-terminated volume root and `handle` is live.
@@ -153,7 +167,7 @@ fn storage_path(dir: &Path, handle: &File) -> Result<PathBuf> {
     {
         return Err(unsupported(dir));
     }
-    Ok(guid)
+    Ok(physical)
 }
 
 fn volume_root(guid: &Path) -> Option<PathBuf> {
@@ -185,9 +199,16 @@ fn directory(path: &Path, share: u32) -> Result<File> {
     Ok(handle)
 }
 
-pub(super) fn check_storage(dir: &Path) -> Result<()> {
-    let handle = directory(dir, SHARE_ALL)?;
-    storage_path(dir, &handle).map(|_| ())
+fn verify_directory(handle: &File, reviewed: &Path, identity: &FileIdentity) -> Result<()> {
+    if final_path(handle, 0).map_err(|e| at_path(reviewed, e))? != reviewed
+        || file_info_from_handle(handle)
+            .map_err(|e| at_path(reviewed, e))?
+            .identity
+            != *identity
+    {
+        return Err(changed(reviewed));
+    }
+    Ok(())
 }
 
 fn pin_directory(path: &Path) -> Result<File> {
@@ -234,19 +255,21 @@ fn verify(file: &File, path: &Path, expected: &Backup, remove: bool) -> Result<(
     {
         return Err(changed(&expected.path));
     }
-    check_file(file, &meta, path, remove)
+    check_file(file, meta.file_attributes(), path, remove)
 }
 
-pub(super) fn check_file(
-    file: &File,
-    meta: &std::fs::Metadata,
-    path: &Path,
-    remove: bool,
-) -> Result<()> {
-    if meta.permissions().readonly() {
+pub(super) fn check_file(file: &File, attributes: u32, path: &Path, remove: bool) -> Result<()> {
+    // Neither targets nor retention witnesses can enter TxF when EFS is set.
+    if attributes & FILE_ATTRIBUTE_ENCRYPTED != 0 {
+        return Err(MemhubError::InvalidInput(format!(
+            "backup '{}' uses NTFS encryption; refusing cleanup",
+            display_path(path)
+        )));
+    }
+    if attributes & FILE_ATTRIBUTE_READONLY != 0 {
         return Err(MemhubError::InvalidInput(format!(
             "backup '{}' is read-only; refusing cleanup",
-            path.display()
+            display_path(path)
         )));
     }
     if remove {
@@ -284,7 +307,7 @@ fn verify_only_default_stream(file: &File, path: &Path) -> Result<()> {
     if ok == 0 {
         return Err(MemhubError::InvalidInput(format!(
             "cannot verify that backup '{}' has no unreviewed streams; refusing cleanup: {}",
-            path.display(),
+            display_path(path),
             io::Error::last_os_error()
         )));
     }
@@ -294,7 +317,7 @@ fn verify_only_default_stream(file: &File, path: &Path) -> Result<()> {
     {
         return Err(MemhubError::InvalidInput(format!(
             "backup '{}' has unreviewed streams; refusing cleanup",
-            path.display()
+            display_path(path)
         )));
     }
     Ok(())
@@ -335,7 +358,7 @@ fn verify_unlinked(tx: &OwnedHandle, path: &Path) -> Result<()> {
     unsafe { FindClose(search) };
     Err(MemhubError::InvalidInput(format!(
         "backup '{}' is still present inside the transaction (possibly open elsewhere); refusing cleanup",
-        path.display()
+        display_path(path)
     )))
 }
 
@@ -346,14 +369,12 @@ fn transaction(path: &Path) -> Result<OwnedHandle> {
         .map_err(|e| at_path(path, e))
 }
 
-pub(super) fn delete(group: Group) -> Result<usize> {
-    let selected = directory(&group.directory, SHARE_ALL)?;
-    if final_path(&selected, 0)? != group.directory {
-        return Err(changed(&group.directory));
-    }
-    // Anchor to the physical volume, not a mutable drive-letter alias.
-    let physical = storage_path(&group.directory, &selected)?;
-    let mut path = volume_root(&physical).ok_or_else(|| unsupported(&group.directory))?;
+fn pin_reviewed_directory(
+    physical: &Path,
+    reviewed: &Path,
+    identity: &FileIdentity,
+) -> Result<Vec<File>> {
+    let mut path = volume_root(physical).ok_or_else(|| unsupported(reviewed))?;
     // Pin each ancestor before opening its child. The read-only share mask
     // excludes directory opens with write-data or rename/delete access.
     let mut dirs = vec![pin_directory(&path)?];
@@ -362,15 +383,30 @@ pub(super) fn delete(group: Group) -> Result<usize> {
         .filter(|part| !matches!(part, Component::Prefix(_) | Component::RootDir))
     {
         let Component::Normal(name) = component else {
-            return Err(changed(&group.directory));
+            return Err(changed(reviewed));
         };
         path.push(name);
         dirs.push(pin_directory(&path)?);
     }
-    let dir = dirs.last().ok_or_else(|| changed(&group.directory))?;
-    if file_info_from_handle(dir)?.identity != group.directory_identity {
-        return Err(changed(&group.directory));
+    // Every handle has matched its exact volume-GUID path without following
+    // a reparse point. Require the pinned leaf to prove both the reviewed
+    // location and identity, not just the identity of an earlier probe.
+    verify_directory(
+        dirs.last().expect("volume root is pinned"),
+        reviewed,
+        identity,
+    )?;
+    Ok(dirs)
+}
+
+pub(super) fn delete(group: Group) -> Result<usize> {
+    if let Some(blocker) = group.cleanup_blocker {
+        return Err(blocker);
     }
+    let physical = storage_path(&group.directory, &group.directory_identity)?;
+    // Address the verified volume by GUID, not by its mutable drive letter.
+    // Keep the verified chain pinned until commit or rollback.
+    let _dirs = pin_reviewed_directory(&physical, &group.directory, &group.directory_identity)?;
     let tx = transaction(&group.directory)?;
     let mut files = Vec::new();
     for (index, expected) in group.files.iter().enumerate() {
@@ -425,6 +461,65 @@ mod tests {
     use super::*;
     use std::fs::{self, FileTimes};
     use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn directory_pin_requires_both_reviewed_location_and_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        fs::create_dir(&first).unwrap();
+        fs::create_dir(&second).unwrap();
+        let first = fs::canonicalize(first).unwrap();
+        let second = fs::canonicalize(second).unwrap();
+        let first_id = crate::fs_identity::file_identity(&first).unwrap();
+        let second_id = crate::fs_identity::file_identity(&second).unwrap();
+        assert_ne!(first_id, second_id);
+        let physical = storage_path(&first, &first_id).unwrap();
+
+        let pins = pin_reviewed_directory(&physical, &first, &first_id).unwrap();
+        assert_eq!(pins.len(), physical.ancestors().count());
+        let open_for_delete = |path: &Path| {
+            File::options()
+                .access_mode(DELETE)
+                .share_mode(SHARE_ALL)
+                .custom_flags(BACKUP_SEMANTICS)
+                .open(path)
+        };
+        for path in [&first, first.parent().unwrap()] {
+            assert_eq!(
+                open_for_delete(path).unwrap_err().raw_os_error(),
+                Some(32) // ERROR_SHARING_VIOLATION
+            );
+        }
+        drop(pins);
+        for path in [&first, first.parent().unwrap()] {
+            open_for_delete(path).unwrap();
+        }
+        for (wrong_path, wrong_id) in [(&second, &first_id), (&first, &second_id)] {
+            let err = pin_reviewed_directory(&physical, wrong_path, wrong_id).unwrap_err();
+            assert!(
+                err.to_string().contains("changed or is not a direct path"),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn encrypted_metadata_blocks_both_targets_and_retention_witnesses() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("backup.bak");
+        fs::write(&path, "fixture").unwrap();
+        let file = File::open(&path).unwrap();
+        let attributes = file.metadata().unwrap().file_attributes();
+        for remove in [false, true] {
+            check_file(&file, attributes, &path, remove).unwrap();
+            // Exercise the shared eligibility rule without changing host EFS
+            // policy or generating a user encryption certificate.
+            let err = check_file(&file, attributes | FILE_ATTRIBUTE_ENCRYPTED, &path, remove)
+                .unwrap_err();
+            assert!(err.to_string().contains("uses NTFS encryption"), "{err}");
+        }
+    }
 
     #[test]
     fn retention_lock_protects_against_metadata_only_updates() {

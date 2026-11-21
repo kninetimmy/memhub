@@ -402,6 +402,38 @@ fn scan_reads_0026_without_migrating_and_dismiss_uses_the_standard_migration_bac
 }
 
 #[test]
+fn scan_and_review_stale_refuse_a_pre_0026_ledger_without_migrating() {
+    let f = Fixture::new();
+    f.db()
+        .execute_batch(
+            "DROP TABLE prune_dismissals;
+             DELETE FROM schema_migrations WHERE version IN
+                 ('0026_memory_lifecycle', '0027_prune_dismissals');
+             UPDATE projects SET schema_version = '0025_arch_sections';",
+        )
+        .unwrap();
+    let db_file = f.repo.join(".memhub/project.sqlite");
+    let before = fs::read(&db_file).unwrap();
+    for args in [["prune", "scan", "--json"], ["review", "stale", "--json"]] {
+        let out = f.run(&args);
+        assert!(!out.status.success(), "{out:?}");
+        assert!(out.stdout.is_empty(), "{out:?}");
+        let error = String::from_utf8(out.stderr).unwrap();
+        assert!(
+            error.contains("cannot read schema 0025_arch_sections"),
+            "{error}"
+        );
+        assert!(error.contains("memhub upgrade"), "{error}");
+    }
+    assert_eq!(fs::read(db_file).unwrap(), before);
+    assert!(
+        !f.repo
+            .join(".memhub/backups/migrations/pre-migration.sqlite")
+            .exists()
+    );
+}
+
+#[test]
 fn scan_uses_missing_config_fallback_without_creating_a_live_config() {
     let f = Fixture::new();
     f.db()
@@ -433,10 +465,20 @@ fn scan_uses_missing_config_fallback_without_creating_a_live_config() {
 
 #[test]
 fn replacing_a_drifted_document_with_identical_bytes_invalidates_its_dismissal() {
+    assert_replacement_reopens_dismissal(b"# Changed", "changed since ingest");
+}
+
+#[test]
+fn replacing_an_invalid_utf8_document_with_identical_bytes_invalidates_its_dismissal() {
+    assert_replacement_reopens_dismissal(b"\xff", "unreadable");
+}
+
+fn assert_replacement_reopens_dismissal(bytes: &[u8], reason: &str) {
     let f = Fixture::new();
-    f.document("changed.md", Some(b"# Changed"), false);
+    f.document("changed.md", Some(bytes), false);
     let report = f.scan();
     let previous = row_item(&report, "out_of_date_document", 1);
+    assert!(previous["reason"].as_str().unwrap().contains(reason));
     f.ok(&action(previous, "keep"));
     assert_eq!(f.scan()["total"], 0);
 
@@ -451,6 +493,10 @@ fn replacing_a_drifted_document_with_identical_bytes_invalidates_its_dismissal()
             FileTimes::new().set_modified(fs::metadata(&source).unwrap().modified().unwrap()),
         )
         .unwrap();
+    assert_eq!(
+        fs::metadata(&source).unwrap().modified().unwrap(),
+        fs::metadata(&replacement).unwrap().modified().unwrap()
+    );
     fs::rename(&source, f.temp.path().join("old.md")).unwrap();
     fs::rename(&replacement, &source).unwrap();
     let after = f.scan();
@@ -690,6 +736,40 @@ fn scan_distinguishes_invalid_utf8_from_literal_escape_and_replacement_character
 
 #[cfg(windows)]
 #[test]
+fn scan_distinguishes_unpaired_utf16_from_literal_escape_and_replacement_character() {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+
+    let f = Fixture::new();
+    let dir = f.backups("rendered", 23);
+    let mut unpaired = vec![0xd800];
+    unpaired.extend(".bak".encode_utf16());
+    for (i, name) in [
+        OsString::from_wide(&unpaired),
+        "%ud800.bak".into(),
+        "�.bak".into(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        fs::rename(dir.join(format!("{i:02}.bak")), dir.join(name)).unwrap();
+    }
+    let scan = f.scan();
+    let files = items(&scan)[0]["subjects"][0]["files"].as_array().unwrap();
+    let human = String::from_utf8(f.ok(&["prune", "scan"])).unwrap();
+    assert_eq!(files.len(), 3);
+    for name in [r"\%ud800.bak", r"\%%ud800.bak", r"\�.bak"] {
+        let displayed = files
+            .iter()
+            .find_map(|file| file.as_str().filter(|path| path.ends_with(name)))
+            .unwrap_or_else(|| panic!("no distinct path ending in {name:?}: {files:?}"));
+        assert!(human.contains(&format!("{displayed:?}")), "{human}");
+    }
+    assert_eq!(file_count(&dir), 23);
+}
+
+#[cfg(windows)]
+#[test]
 fn backup_cleanup_requires_confirmation_and_only_removes_reviewed_surplus() {
     let f = Fixture::new();
     let rendered = f.backups("rendered", 23);
@@ -764,7 +844,8 @@ fn backup_cleanup_requires_confirmation_and_only_removes_reviewed_surplus() {
         "scoped action must not act on other batches"
     );
     for file in first["subjects"][0]["files"].as_array().unwrap() {
-        assert!(!Path::new(file.as_str().unwrap()).exists(), "{file}");
+        let name = Path::new(file.as_str().unwrap()).file_name().unwrap();
+        assert!(!rendered.join(name).exists(), "{file}");
     }
     let report = f.scan();
     assert_eq!(report["total"], 1);
