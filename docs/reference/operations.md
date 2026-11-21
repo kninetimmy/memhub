@@ -1204,6 +1204,13 @@ default and doc-scoped recall (including `available_docs` and
 `--explain`'s `docs_not_searched`); re-ingest refuses an archived path until it
 is unarchived. The same rule applies to CLI and MCP ingestion.
 
+**Drift hints in `memhub review stale`.** Before archiving, this command
+reported changed or unreadable ingested files and suggested `memhub doc add
+<path>` to re-ingest them once available. It still reports drift and prints
+the same hint, including for archived documents. Now re-ingest refuses an
+archived path: to restore and re-ingest it, first run `memhub doc unarchive
+<id-or-path>` and make sure the file is readable.
+
 Doc content is **excluded from `memhub export`** — it is a disk-backed,
 re-ingestable cache. On another machine, re-run `doc add` against the
 same file. Embeddings populate only in `hybrid` mode; `fts` mode
@@ -2041,14 +2048,13 @@ not change its sync baseline.
   and their filters still work. Marking a dropped task done replaces
   its dropped status and clears the saved undo data; the old drop stays
   in the audit log.
-- **Keep a task:** `memhub task keep <id>` refreshes only the last-updated
-  time shown for an open or blocked task. **Before:** keep was audited but
-  had no timestamp undo. **After:** keep saves the previous time, and
-  `memhub task unkeep <id>` restores it and logs the undo. Only the latest
-  keep can be undone; unkeep refuses when there is no saved time or the
-  current time no longer matches the keep. Dropping the task suspends
-  unkeep until undrop restores the kept state. Marking it done clears
-  the saved keep.
+- **Keep a task:** `memhub task keep <id>` and `memhub task unkeep <id>` are
+  both new. Keep refreshes the last-updated time shown for an open or
+  blocked task and saves the previous time. Unkeep restores that time and
+  logs the undo. Only the latest keep can be undone; unkeep refuses when
+  there is no saved time or the current time no longer matches the keep.
+  Dropping the task suspends unkeep until undrop restores the kept state.
+  Marking it done clears the saved keep.
 
 ## Attribution
 

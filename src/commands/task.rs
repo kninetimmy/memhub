@@ -17,7 +17,13 @@ pub fn add_with_status(
     status: &str,
     actor: &str,
 ) -> Result<i64> {
-    if !matches!(status, "open" | "done" | "blocked" | "dropped") {
+    if status == "dropped" {
+        return Err(MemhubError::InvalidInput(
+            "add the task before using `memhub task drop` to record its reason and prior state"
+                .into(),
+        ));
+    }
+    if !matches!(status, "open" | "done" | "blocked") {
         return Err(MemhubError::InvalidInput(format!(
             "unsupported task status '{status}'"
         )));

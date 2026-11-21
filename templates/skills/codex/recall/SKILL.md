@@ -55,6 +55,9 @@ ahead of every other hit and exempt from the cutoff (it is an explicit
 lookup, not ranking), when that row exists and the filters allow it
 (`accepted_only` drops a task); it takes one of the `max_results`
 slots, and the other hits fill the rest.
+Before fact retirement, this applied to any otherwise eligible repo
+fact. Now every retired fact is excluded even if named or requested
+with a source-type filter; use `memhub.get_row` by ID to inspect it.
 Shorthand such as `D17` and a number after any other word (`issue 290`,
 `PR #328`) is not treated as a row id.
 
@@ -161,7 +164,7 @@ above is trimmed to what you need day to day (issue #72).
   `agent:X`, `git`, `observed`). Cite it when the user asks where a
   claim came from.
 - `available_docs` (integer) counts ingested reference-doc chunks that
-  did not surface this call — see below.
+  did not surface this call, excluding archived documents — see below.
 - Empty `results` is a real answer, not a failure — see below.
 
 ## Reaching for ingested docs
@@ -170,10 +173,12 @@ After the first `memhub doc add` in a repo, `[retrieval]
 include_docs_in_default` auto-enables (decision 90): plain recall
 already ranks doc chunks with facts, decisions and tasks (at most
 `[retrieval] rerank_doc_cap` chunks are re-ranked per call) — no
-scoping needed. The `available_docs` count is chunks that did **not**
-surface this call. When it is **> 0** and the question is
-design/spec/architecture/style-flavored, a doc-scoped follow-up can
-still be worth running:
+scoping needed. Before doc archiving, any ingested chunk could surface
+in recall or count toward `available_docs` if it did **not** surface.
+Now chunks from archived docs are excluded from both the count and
+recall, even with an explicit doc filter. When the count is **> 0** and
+the question is design/spec/architecture/style-flavored, a doc-scoped
+follow-up can still be worth running:
 
 ```
 memhub.recall(query="<same or refined question>", source_types=["doc"])

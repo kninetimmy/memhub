@@ -280,6 +280,71 @@ fn memory_lifecycle_task_keep_drop_show_and_portable_export() {
 }
 
 #[test]
+fn task_add_with_status_cannot_bypass_drop() {
+    use memhub::commands::task;
+
+    let repo = Repo::new();
+    let err = task::add_with_status(repo.path(), "bad task", None, "dropped", "test:add")
+        .expect_err("use the drop command to save the reason and prior state");
+    assert!(err.to_string().contains("memhub task drop"));
+    assert!(
+        task::list_by_status(repo.path(), "dropped", 10)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn task_import_refuses_inconsistent_undo_without_replacing_target() {
+    let source = Repo::new();
+    source.ok(&["fact", "add", "incoming", "new value"]);
+    let task = source.json(&["task", "add", "task to restore", "--json"]);
+    let id = task["id"].to_string();
+    source.ok(&["task", "keep", &id]);
+    source.ok(&["task", "drop", &id, "--reason", "obsolete"]);
+    let export_path = source.path().join("export.json");
+    let path = export_path.to_str().unwrap();
+    source.ok(&["export", path]);
+    let export: Value = serde_json::from_slice(&fs::read(&export_path).unwrap()).unwrap();
+
+    let target = Repo::new();
+    target.ok(&["fact", "add", "original", "old value"]);
+    let original = target.json(&["fact", "list", "--json"]);
+    for (field, value, action) in [
+        ("dropped_reason", Value::Null, "drop"),
+        ("dropped_reason", "  ".into(), "drop"),
+        ("pre_drop_status", Value::Null, "drop"),
+        ("pre_drop_status", "done".into(), "drop"),
+        ("pre_drop_updated_at", Value::Null, "drop"),
+        ("status", "open".into(), "drop"),
+        ("pre_keep_updated_at", Value::Null, "keep"),
+        ("kept_at", Value::Null, "keep"),
+        ("kept_at", "2000-01-01 00:00:00".into(), "keep"),
+    ] {
+        let mut invalid = export.clone();
+        let row = invalid["tasks"][0].as_object_mut().unwrap();
+        if value.is_null() {
+            row.remove(field);
+        } else {
+            row.insert(field.into(), value);
+        }
+        fs::write(&export_path, invalid.to_string()).unwrap();
+        target.fails_with(
+            &["import", path, "--force"],
+            &format!("task {id} has invalid {action} metadata"),
+        );
+        assert_eq!(target.json(&["fact", "list", "--json"]), original);
+        assert!(!target.path().join(".memhub/backups/import").exists());
+        assert!(
+            target.json(&["task", "list", "--status", "all", "--json"])["tasks"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+#[test]
 fn task_unkeep_refuses_after_later_changes_and_undoes_only_the_latest_keep() {
     let repo = Repo::new();
     let task = repo.json(&["task", "add", "idle task", "--json"]);

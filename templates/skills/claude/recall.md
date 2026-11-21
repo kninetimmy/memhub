@@ -50,6 +50,9 @@ ahead of every other hit and exempt from the cutoff (it is an explicit
 lookup, not ranking), when that row exists and the filters allow it
 (`accepted_only` drops a task); it takes one of the `max_results`
 slots, and the other hits fill the rest.
+Before fact retirement, this applied to any otherwise eligible repo
+fact. Now every retired fact is excluded even if named or requested
+with a source-type filter; use `memhub.get_row` by ID to inspect it.
 Shorthand such as `D17` and a number after any other word (`issue 290`,
 `PR #328`) is not treated as a row id.
 
@@ -155,7 +158,8 @@ above is trimmed to what you need day to day (issue #72).
   `agent:X`, `git`, `observed`). Cite it when the user asks where a
   claim came from.
 - `available_docs` (integer) counts ingested reference-doc chunks that
-  did NOT surface this call — see "Reaching for ingested docs".
+  did NOT surface this call, excluding archived documents — see
+  "Reaching for ingested docs".
 - Empty `results` is a real answer, not a failure — see below.
 
 ## Reaching for ingested docs
@@ -167,8 +171,10 @@ call already ranks doc chunks with facts, decisions and tasks (at most
 on-topic chunk surfaces alongside them while an off-topic one scores
 under the cutoff or below the other hits — no scoping needed.
 
-The `available_docs` count is chunks that did **not** surface this
-call — the long tail. When it is **> 0** and the user's question is
+Before doc archiving, any ingested chunk could surface in recall or
+count toward `available_docs` if it did **not** surface. Now chunks
+from archived docs are excluded from both the count and recall, even
+with an explicit doc filter. When the count is **> 0** and the question is
 design/spec/architecture/style-flavored, a doc-scoped follow-up can
 still be worth running:
 
@@ -179,8 +185,8 @@ memhub.recall(query="<same or refined question>", source_types=["doc"])
 Use judgment, not reflex: this is a per-question decision, not an
 every-turn one. A question clearly answerable from facts/decisions, or
 one already well-covered by the first bundle, does not need the
-doc pass. When `available_docs` is 0 there are either no ingested docs
-or every chunk already made this bundle — do nothing extra.
+doc pass. When `available_docs` is 0 there are no remaining
+non-archived chunks to reach for — do nothing extra.
 
 Doc hits come back with `source_type: "doc_chunk"` and a `title` of
 `<document title> — <section breadcrumb>`; cite the document and

@@ -56,6 +56,9 @@ pub struct ImportSummary {
 pub fn run(start: &Path, source: &Path, force: bool) -> Result<ImportSummary> {
     let raw = fs::read_to_string(source)?;
     let payload = decode(&raw)?;
+    for task in &payload.tasks {
+        validate_task_undo(task)?;
+    }
 
     let mut ctx = db::open_project(start)?;
     let paths = ctx.paths.clone();
@@ -298,6 +301,53 @@ fn insert_decisions(tx: &Transaction<'_>, rows: &[v1::Decision]) -> Result<()> {
             decision.source,
             decision.summary,
         ])?;
+    }
+    Ok(())
+}
+
+fn validate_task_undo(task: &v2::Task) -> Result<()> {
+    let present = |value: Option<&str>| value.is_some_and(|value| !value.trim().is_empty());
+    let invalid = |detail: &str| {
+        MemhubError::InvalidInput(format!("task {} has invalid {detail}", task.base.id))
+    };
+    let dropped = task.base.status == "dropped";
+    if dropped {
+        if !present(task.dropped_reason.as_deref())
+            || !matches!(task.pre_drop_status.as_deref(), Some("open" | "blocked"))
+            || !present(task.pre_drop_updated_at.as_deref())
+        {
+            return Err(invalid(
+                "drop metadata: expected a nonblank reason, an open or blocked prior status, \
+                 and a prior update time",
+            ));
+        }
+    } else if task.dropped_reason.is_some()
+        || task.pre_drop_status.is_some()
+        || task.pre_drop_updated_at.is_some()
+    {
+        return Err(invalid("drop metadata: only dropped tasks can carry it"));
+    }
+
+    // A drop suspends keep undo until undrop restores the kept timestamp.
+    let kept_update_time = if dropped {
+        task.pre_drop_updated_at.as_deref()
+    } else {
+        Some(task.base.updated_at.as_str())
+    };
+    let keep_is_valid = match (task.pre_keep_updated_at.as_deref(), task.kept_at.as_deref()) {
+        (None, None) => true,
+        (prior, kept_at) => {
+            matches!(task.base.status.as_str(), "open" | "blocked" | "dropped")
+                && present(prior)
+                && present(kept_at)
+                && kept_at == kept_update_time
+        }
+    };
+    if !keep_is_valid {
+        return Err(invalid(
+            "keep metadata: expected both keep timestamps on an open, blocked, or dropped task, \
+             with kept_at matching its current or pre-drop update time",
+        ));
     }
     Ok(())
 }

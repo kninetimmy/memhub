@@ -1525,8 +1525,8 @@ struct CandidateRow {
     created_at: String,
     /// Decay-eligible age in days (Wave 3 L6): `julianday('now') -
     /// julianday(verified_at)` for facts, `... - julianday(updated_at)` for
-    /// *done* tasks. `None` for decisions, doc chunks, open/blocked tasks,
-    /// and never-verified facts — rows that carry no age and so never decay.
+    /// *done* tasks. `None` for decisions, doc chunks, open/blocked/dropped
+    /// tasks, and never-verified facts — rows with no age decay.
     /// Drives the `age_half_life_days` multiplier in `score()`.
     age_days: Option<f64>,
     /// Optional, unenforced classifier tag (Wave 6 W4, migration 0021),

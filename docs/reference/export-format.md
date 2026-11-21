@@ -102,13 +102,18 @@ decisions supersede older ones.
 }
 ```
 
-In version `1`, `status` was one of `open`, `done`, `blocked`.
-Version `2` also accepts `dropped`. Dropped tasks carry `dropped_reason`,
-`pre_drop_status`, and `pre_drop_updated_at`, so they can be restored
-with `task undrop` after import. Tasks with a saved keep also carry
-`pre_keep_updated_at` and `kept_at`, so `task unkeep` remains available
-after restore. These fields are optional in version `2`; version `1`
-restores tasks with their original status and no lifecycle metadata.
+In version `1`, `status` was one of `open`, `done`, `blocked`. Those
+tasks still import without lifecycle metadata. Version `2` also accepts
+`dropped`, which requires a nonblank `dropped_reason`, `pre_drop_status`
+of `open` or `blocked`, and a nonblank `pre_drop_updated_at`. Other
+statuses must omit the drop metadata (or set it to null).
+
+A saved keep requires nonblank `pre_keep_updated_at` and `kept_at`
+together, and is only valid for open, blocked, or dropped tasks. `kept_at`
+must match `updated_at`, or `pre_drop_updated_at` for a dropped task.
+This allows `task unkeep` after restore (after `task undrop` if dropped).
+Import rejects inconsistent undo metadata, naming the task, before
+changing target rows or replacing the import safety backup.
 
 ### Command
 
