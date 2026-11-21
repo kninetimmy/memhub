@@ -26,7 +26,7 @@ impl Summary {
         Self::from_report(root, prune::scan(root))
     }
 
-    pub(super) fn preview(root: &Path, files: &prune::UpgradeFiles) -> Self {
+    pub(super) fn preview(root: &Path, files: &mut prune::UpgradeFiles) -> Self {
         Self::from_report(root, prune::preview_upgrade(root, files))
     }
 

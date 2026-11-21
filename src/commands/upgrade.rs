@@ -178,9 +178,9 @@ pub fn run(cwd: &Path, args: UpgradeArgs) -> Result<()> {
         return finish_phase(cwd, &args);
     }
 
-    // Windows-only self-replace gate. Best-effort sweep first so an
-    // earlier run's abandoned shim never accumulates.
-    if cfg!(windows) && !args.staged {
+    // Windows-only self-replace gate. Real upgrades sweep first so a
+    // previous run's abandoned shim doesn't accumulate.
+    if cfg!(windows) && !args.staged && !args.dry_run {
         sweep_stale_staging();
     }
     let in_conflict =
@@ -411,24 +411,8 @@ fn staged_relaunch_command(shim: &Path, cwd: &Path, args: &UpgradeArgs) -> Comma
 /// upgrade; the live shim of the current staged run stays locked and is
 /// simply skipped (best-effort, never fatal).
 fn sweep_stale_staging() {
-    let Ok(rd) = std::fs::read_dir(std::env::temp_dir()) else {
-        return;
-    };
-    let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
-    for entry in rd.flatten() {
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if !(name.starts_with("memhub-upgrade-") && name.ends_with(".exe")) {
-            continue;
-        }
-        let old = entry
-            .metadata()
-            .and_then(|m| m.modified())
-            .map(|m| m < cutoff)
-            .unwrap_or(false);
-        if old {
-            let _ = std::fs::remove_file(entry.path());
-        }
+    for (path, _) in super::gc::stale_staging_files(&std::env::temp_dir()) {
+        let _ = std::fs::remove_file(path);
     }
 }
 
@@ -1151,22 +1135,14 @@ fn cleanup_stale_sync_md_twins(root: &Path) -> Vec<PathBuf> {
 }
 
 fn stale_sync_md_twins(root: &Path) -> Vec<PathBuf> {
-    use crate::fs_identity::{is_link_or_reparse_point, open_direct_file};
+    use crate::fs_identity::{direct_subdirectory, open_direct_file};
 
     let Ok(root) = root.canonicalize() else {
         return Vec::new();
     };
-    let rendered_dir = root.join(".memhub").join("rendered");
-    // Canonicalize only the selected root. Every descendant must be a direct
-    // directory/file, not a redirect or a special file opened for content.
-    for dir in [root.join(".memhub"), rendered_dir.clone()] {
-        let Ok(meta) = std::fs::symlink_metadata(&dir) else {
-            return Vec::new();
-        };
-        if !meta.is_dir() || is_link_or_reparse_point(&meta) {
-            return Vec::new();
-        }
-    }
+    let Ok(rendered_dir) = direct_subdirectory(&root, Path::new(".memhub/rendered")) else {
+        return Vec::new();
+    };
     ["AGENTS.md", "CLAUDE.md"]
         .iter()
         .filter_map(|name| {
@@ -1721,29 +1697,33 @@ fn upgrade_roots(cwd: &Path, args: &UpgradeArgs, warnings: &mut Vec<String>) -> 
 fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()> {
     let head = db::latest_schema_version().to_string();
     let mut warnings: Vec<String> = Vec::new();
-    let roots = upgrade_roots(cwd, args, &mut warnings);
-
-    // GC precedes all repo scans; twins and config rewrites precede only
-    // their own repo's verification/scan. Accumulate effects in that order.
+    // GC precedes every scan. Reuse its dry-run selections, including
+    // removed build trees which can contain external document sources.
+    let gc =
+        (!args.no_gc && (!args.json || !args.no_prune_scan)).then(|| super::gc::run(cwd, true));
     let mut files = super::prune::UpgradeFiles::default();
-    if !args.no_prune_scan
-        && !args.no_gc
-        && super::gc::load_gc_config_best_effort(cwd)
-            .0
-            .delete_stale_backups
-    {
-        files.removed.extend(
-            super::gc::stale_backup_files(cwd)
-                .into_iter()
-                .flat_map(|(_, files)| files.into_iter().map(|(path, _)| path))
-                .filter_map(|path| path.canonicalize().ok()),
-        );
+    if !args.no_prune_scan {
+        if let Some(Ok(gc)) = &gc {
+            files.removed.extend(gc.planned_removals.iter().cloned());
+        } else if cfg!(windows) && !args.staged {
+            files.removed.extend(
+                super::gc::stale_staging_files(&std::env::temp_dir())
+                    .into_iter()
+                    .map(|(path, _)| path),
+            );
+        }
     }
+    let roots = upgrade_roots(cwd, args, &mut warnings);
 
     let mut previews: Vec<(String, Option<String>, &'static str, FillPreview)> = Vec::new();
     let mut retired: Vec<RetiredSettings> = Vec::new();
     let mut prune_scans: Vec<prune_report::Summary> = Vec::new();
     for root in &roots {
+        // Even a root with no database can own an external document source
+        // used by a repo later in the traversal (e.g. the source checkout).
+        if !args.no_prune_scan {
+            files.removed.extend(stale_sync_md_twins(root));
+        }
         let cleanup = clean_retired_settings(root, false);
         if let Some(report) = cleanup {
             if !args.no_prune_scan
@@ -1758,13 +1738,12 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
             retired.push(report);
         }
         let db_path = root.join(".memhub").join("project.sqlite");
-        if !db_path.exists() {
+        if !db_path.exists()
+            || (!args.no_prune_scan && db_path.canonicalize().is_ok_and(|p| files.removes(&p)))
+        {
             // Dead registry rows are summarized by `would_prune`; don't
             // flood the preview with one line per vanished tempdir.
             continue;
-        }
-        if !args.no_prune_scan {
-            files.removed.extend(stale_sync_md_twins(root));
         }
         let cur = db::probe_schema_version(&db_path).ok().flatten();
         let verdict = if cur.as_deref() == Some(head.as_str()) {
@@ -1776,7 +1755,7 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
         let fill =
             repo_would_fill(root).then(|| preview_fill(&db_path, verdict, &label, &mut warnings));
         if !args.no_prune_scan {
-            prune_scans.push(prune_report::Summary::preview(root, &files));
+            prune_scans.push(prune_report::Summary::preview(root, &mut files));
         }
         previews.push((label, cur, verdict, fill));
     }
@@ -1924,13 +1903,10 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
     for w in &warnings {
         println!("  warning:      {w}");
     }
-    if args.no_gc {
-        println!("  target gc:    skipped (--no-gc)");
-    } else {
-        match crate::commands::gc::run(cwd, true) {
-            Ok(out) => println!("  target gc:    {}", out.summary()),
-            Err(e) => println!("  target gc:    skipped ({e})"),
-        }
+    match gc {
+        None => println!("  target gc:    skipped (--no-gc)"),
+        Some(Ok(out)) => println!("  target gc:    {}", out.summary()),
+        Some(Err(e)) => println!("  target gc:    skipped ({e})"),
     }
     Ok(())
 }

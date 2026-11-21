@@ -227,18 +227,24 @@ fn create_config_if_missing(
     if config_path.exists() {
         return Ok(false);
     }
+    fs::write(config_path, config_seed_text(memhub_dir, repo_name)?)?;
+    Ok(true)
+}
 
+/// Exact bytes a maintained project open writes to a missing config.
+pub(crate) fn config_seed_text(memhub_dir: &Path, repo_name: &str) -> Result<String> {
     let example_path = memhub_dir.join(CONFIG_EXAMPLE_FILENAME);
     if example_path.exists() {
         let raw = fs::read_to_string(&example_path)?;
         // Validate so a corrupt example doesn't write nonsense that errors
         // on the very next `ProjectConfig::load` call.
         let _: ProjectConfig = toml::from_str(&raw)?;
-        fs::write(config_path, raw)?;
+        Ok(raw)
     } else {
-        ProjectConfig::default_for_repo_name(repo_name).save(config_path)?;
+        Ok(toml::to_string_pretty(
+            &ProjectConfig::default_for_repo_name(repo_name),
+        )?)
     }
-    Ok(true)
 }
 
 /// Where an existing DB is copied before a pending migration runs: one

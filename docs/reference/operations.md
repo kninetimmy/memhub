@@ -1890,26 +1890,31 @@ Both real and dry-run JSON carry `prune_scan`, an array of
 category names to their totals. A scan failure produces that repo's
 `error` instead of counts; partial backup inspection adds `warning`.
 Neither stops other scans nor changes upgrade's success/failure outcome.
-`--dry-run` reports the same counts using an in-memory SQLite backup,
-including migrations needed by an older or blank database. It reads files
-at their original paths but overlays the existing retired-settings rewrite
-plan (both typed config and ingested document bytes), and treats planned
-generated-twin removals and source-repo backup GC deletions as absent.
-Preview shares the real source/registry/`--also` order, including registration
-eligibility: GC precedes all scans; each repo's twin cleanup and config
-rewrite precede its own scan, not earlier repos' scans of external documents.
-Twin inspection reads only confined, direct regular UTF-8 files and skips
-redirects, special files and non-repos in preview. `--no-gc` and the existing
-`[gc] delete_stale_backups` opt-in still control that GC plan; twin cleanup
-is independent of GC. Counts assume planned cleanup succeeds and the source
-does not change during preview. The SQLite backup API includes committed WAL
-data; no live database files are copied by pathname. SQLite read-only opens
+`--dry-run` previews the counts using an in-memory SQLite backup,
+including migrations needed by an older or blank database. It uses the GC
+selection for planned removals (including build directories), the same
+retired-settings rewrite and config seed bytes as upgrade, and the same
+generated-twin inspection. GC precedes all scans. Twin cleanup also runs
+at source or explicit roots without a database; each root's twin and
+config changes apply to its scan and later scans of external documents,
+not earlier ones. GC inspects direct build and backup directories, not
+redirected trees; it still honors `--no-gc` and `[gc] delete_stale_backups`.
+Windows dry-run leaves abandoned staging shims in place.
+
+Counts assume the planned changes succeed and do not predict unrelated
+file changes from building, installing, resyncing skills or maintained
+opens. Replacing a file can invalidate its current dismissal even if
+its bytes return to a previously reviewed version. The preview does not
+guess a new file identity: if a historical dismissal could affect a
+count after a planned write, that repo reports a preview error instead
+of a count. Other repos are still scanned. The SQLite backup API includes
+committed WAL data; no live database files are copied by pathname. SQLite read-only opens
 can still create empty WAL/shared-memory sidecars or update shared-memory
 read marks, so this is not a byte-for-byte filesystem immutability promise.
 `--no-prune-scan` skips this step (no text counts,
 an empty JSON array). Before this change upgrade reported no prune work.
-The scan never changes a memory row, dismisses an item or deletes a file;
-existing upgrade migration, maintenance and GC behavior is unchanged.
+The scan never changes a memory row, dismisses an item or deletes a file.
+It is separate from upgrade migration, maintenance and GC.
 
 `--dry-run` previews both. Before this change it listed each instance's
 schema and verdict only; it now also prints the `would remove` / `left`

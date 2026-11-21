@@ -129,17 +129,35 @@ pub(super) struct UpgradeFiles {
     pub rewritten: BTreeMap<PathBuf, String>,
 }
 
+impl UpgradeFiles {
+    pub(super) fn removes(&self, path: &Path) -> bool {
+        self.removed.iter().any(|removed| path.starts_with(removed))
+    }
+}
+
 pub fn scan(start: &Path) -> Result<Report> {
-    scan_readonly(start, false, &UpgradeFiles::default())
+    scan_readonly(&db::discover_paths(start)?, false, &UpgradeFiles::default())
 }
 
-pub(super) fn preview_upgrade(start: &Path, files: &UpgradeFiles) -> Result<Report> {
-    scan_readonly(start, true, files)
-}
-
-fn scan_readonly(start: &Path, preview: bool, files: &UpgradeFiles) -> Result<Report> {
+pub(super) fn preview_upgrade(start: &Path, files: &mut UpgradeFiles) -> Result<Report> {
     let paths = db::discover_paths(start)?;
-    let config = scan_config(&paths, files)?;
+    let config_path = &paths.config_path;
+    if fs::symlink_metadata(config_path).is_err_and(|e| e.kind() == ErrorKind::NotFound) {
+        let target = paths.memhub_dir.canonicalize()?.join(db::CONFIG_FILENAME);
+        if let std::collections::btree_map::Entry::Vacant(seed) = files.rewritten.entry(target) {
+            let name = paths
+                .repo_root
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("memhub");
+            seed.insert(db::config_seed_text(&paths.memhub_dir, name)?);
+        }
+    }
+    scan_readonly(&paths, true, files)
+}
+
+fn scan_readonly(paths: &ProjectPaths, preview: bool, files: &UpgradeFiles) -> Result<Report> {
+    let config = scan_config(paths, files)?;
     let mut conn = Connection::open_with_flags(&paths.db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     // apply_all also initializes blank databases with no migration ledger.
     if preview {
@@ -159,24 +177,34 @@ fn scan_readonly(start: &Path, preview: bool, files: &UpgradeFiles) -> Result<Re
             )));
         }
     };
-    scan_in(&tx, &paths, &config, has_dismissals, files)
+    scan_in(&tx, paths, &config, has_dismissals, files)
 }
 
 fn scan_config(paths: &ProjectPaths, files: &UpgradeFiles) -> Result<ProjectConfig> {
     // Match maintained-open precedence without materializing a live config.
     // A broken link is not an absent config and must not trigger fallback.
     let example = paths.memhub_dir.join(db::CONFIG_EXAMPLE_FILENAME);
+    if !files.rewritten.is_empty()
+        && let Some(text) = paths
+            .config_path
+            .canonicalize()
+            .ok()
+            .or_else(|| {
+                Some(
+                    paths
+                        .memhub_dir
+                        .canonicalize()
+                        .ok()?
+                        .join(db::CONFIG_FILENAME),
+                )
+            })
+            .and_then(|path| files.rewritten.get(&path))
+    {
+        return Ok(toml::from_str(text)?);
+    }
     for path in [&paths.config_path, &example] {
         match fs::symlink_metadata(path) {
-            Ok(_) => {
-                if let Some(text) = fs::canonicalize(path)
-                    .ok()
-                    .and_then(|path| files.rewritten.get(&path))
-                {
-                    return Ok(toml::from_str(text)?);
-                }
-                return ProjectConfig::load(path);
-            }
+            Ok(_) => return ProjectConfig::load(path),
             Err(err) if err.kind() == ErrorKind::NotFound => {}
             Err(err) => return Err(err.into()),
         }
@@ -209,6 +237,11 @@ fn scan_in(
     } else {
         HashSet::new()
     };
+    let mut unmatched = if files.rewritten.is_empty() {
+        HashSet::new()
+    } else {
+        dismissed.clone()
+    };
     let mut report = Report {
         total: 0,
         counts: Category::ALL
@@ -218,10 +251,29 @@ fn scan_in(
         items: Vec::new(),
         backup_warning: None,
     };
-    report.backup_warning = visit_candidates(conn, paths, config, files, |item| {
-        if dismissed.contains(&item.id) {
-            return;
-        }
+    let mut new_documents = Vec::new();
+    report.backup_warning = visit_candidates(conn, paths, config, files, |candidate| {
+        let item = match candidate {
+            Candidate::Existing(item) if dismissed.contains(&item.id) => {
+                unmatched.remove(&item.id);
+                return;
+            }
+            Candidate::Existing(item) => item,
+            Candidate::AfterFileWrite {
+                path,
+                before,
+                old_identity,
+            } => {
+                unmatched.remove(&before);
+                if let Some(old_identity) = old_identity {
+                    unmatched.remove(&old_identity);
+                }
+                if let Some(path) = path {
+                    new_documents.push(path);
+                }
+                return;
+            }
+        };
         let count = report
             .counts
             .get_mut(&item.category)
@@ -234,6 +286,22 @@ fn scan_in(
             count.overflow += 1;
         }
     })?;
+    if let Some(path) = new_documents.first()
+        && !unmatched.is_empty()
+    {
+        // Historical identifiers are opaque digests. Only the live write
+        // can establish whether the new identity matches any of them.
+        return Err(MemhubError::InvalidInput(format!(
+            "cannot predict whether a historical dismissal applies after writing {path}"
+        )));
+    }
+    let count = report
+        .counts
+        .get_mut(&Category::OutOfDateDocument)
+        .expect("all categories");
+    count.total += new_documents.len();
+    count.overflow = count.total.saturating_sub(CATEGORY_LIMIT);
+    report.total += new_documents.len();
     Ok(report)
 }
 
@@ -248,7 +316,11 @@ pub fn dismiss(start: &Path, id: &str, actor: &str) -> Result<()> {
         &ctx.paths,
         &ctx.config,
         &UpgradeFiles::default(),
-        |item| found |= item.id == id,
+        |candidate| {
+            if let Candidate::Existing(item) = candidate {
+                found |= item.id == id;
+            }
+        },
     )?;
     if !found {
         let detail = warning.map_or_else(String::new, |warning| format!("; {warning}"));
@@ -293,20 +365,32 @@ pub fn delete_backups(start: &Path, candidate: Option<&str>) -> Result<usize> {
     }
 }
 
+enum Candidate {
+    Existing(Item),
+    /// The new file state cannot reuse the currently observed identifier.
+    /// Counts-only preview never constructs an identifier for a future file.
+    AfterFileWrite {
+        path: Option<String>,
+        before: String,
+        old_identity: Option<String>,
+    },
+}
+
 fn visit_candidates(
     conn: &Connection,
     paths: &ProjectPaths,
     config: &ProjectConfig,
     files: &UpgradeFiles,
-    mut visit: impl FnMut(Item),
+    mut visit: impl FnMut(Candidate),
 ) -> Result<Option<String>> {
-    facts(conn, config.retrieval.fact_stale_after_days, &mut visit)?;
-    tasks(conn, &mut visit)?;
+    let mut existing = |item| visit(Candidate::Existing(item));
+    facts(conn, config.retrieval.fact_stale_after_days, &mut existing)?;
+    tasks(conn, &mut existing)?;
     documents(conn, &paths.repo_root, files, &mut visit)?;
     match backups::surplus(paths, &files.removed) {
         Ok((groups, warnings)) => {
             for group in groups {
-                visit(group.item());
+                visit(Candidate::Existing(group.item()));
             }
             Ok(backups::warning(warnings))
         }
@@ -453,7 +537,7 @@ fn documents(
     conn: &Connection,
     root: &Path,
     files: &UpgradeFiles,
-    visit: &mut impl FnMut(Item),
+    visit: &mut impl FnMut(Candidate),
 ) -> Result<()> {
     let mut stmt = conn.prepare(
         "SELECT id, path, title, content_hash,
@@ -467,21 +551,41 @@ fn documents(
         let title: String = row.get(2)?;
         let ingested_hash: String = row.get(3)?;
         let state: String = row.get(4)?;
-        let recorded = Path::new(&path);
-        let mut on_disk = document_file(root, recorded);
-        // Only overlay paths the ordinary scanner can safely read. Keep unsafe
-        // paths fail-closed rather than making a projected rewrite readable.
-        if let DocumentFile::Readable { hash, .. } = &mut on_disk
-            && let Ok(root) = fs::canonicalize(root)
-        {
-            let expected = root.join(recorded);
-            if files.removed.contains(&expected) {
-                on_disk = DocumentFile::Missing;
-            } else if let Some(text) = files.rewritten.get(&expected) {
-                *hash = sha256_hex(text.as_bytes());
-            }
-        }
+        let expected = document_path(root, Path::new(&path));
+        let on_disk = expected.as_deref().map_or_else(
+            || DocumentFile::Unreadable(None, None, None, None),
+            |expected| document_file(expected, files),
+        );
+        let category = Category::OutOfDateDocument;
         let (reason, action) = match &on_disk {
+            DocumentFile::AfterWrite(hash) => {
+                let previous = document_file(
+                    expected.as_deref().expect("projected path"),
+                    &UpgradeFiles::default(),
+                );
+                // Even if these bytes were dismissed on the current file
+                // in the past, a replacement is not that same file.
+                let old_identity = if let DocumentFile::Readable { identity, .. } = &previous {
+                    Some(identifier(
+                        category,
+                        (
+                            &state,
+                            DocumentFile::Readable {
+                                hash: hash.clone(),
+                                identity: identity.clone(),
+                            },
+                        ),
+                    )?)
+                } else {
+                    None
+                };
+                visit(Candidate::AfterFileWrite {
+                    path: (*hash != ingested_hash).then_some(path),
+                    before: identifier(category, (state, previous))?,
+                    old_identity,
+                });
+                continue;
+            }
             DocumentFile::Readable { hash, .. } if *hash == ingested_hash => continue,
             DocumentFile::Readable { .. } => (
                 "File content changed since ingest.",
@@ -509,16 +613,15 @@ fn documents(
                 ),
             ),
         };
-        let category = Category::OutOfDateDocument;
         let id = identifier(category, (state, on_disk))?;
         let actions = vec![action, Action::keep(&id)];
-        visit(Item {
+        visit(Candidate::Existing(Item {
             id,
             category,
             subjects: vec![Subject::Document { id: row_id, path }],
             reason: reason.into(),
             actions,
-        });
+        }));
     }
     Ok(())
 }
@@ -543,35 +646,44 @@ enum DocumentFile {
         // Used when there is no content hash and identity from a read handle.
         #[serde(skip_serializing_if = "Option::is_none")] Option<FileIdentity>,
     ),
+    AfterWrite(String),
 }
 
-fn document_file(root: &Path, path: &Path) -> DocumentFile {
+fn document_path(root: &Path, path: &Path) -> Option<PathBuf> {
     // Ingestion explicitly allows external files and records their canonical
     // path. That exact path is the boundary, not a new symlink target.
-    let expected = if path.is_absolute() {
+    if path.is_absolute() {
         if path
             .components()
             .any(|c| c == std::path::Component::ParentDir)
         {
-            return DocumentFile::Unreadable(None, None, None, None);
+            return None;
         }
-        path.to_path_buf()
+        Some(path.to_path_buf())
     } else {
-        let Ok(root) = fs::canonicalize(root) else {
-            return DocumentFile::Unreadable(None, None, None, None);
-        };
         if path
             .components()
             .any(|c| !matches!(c, std::path::Component::Normal(_)))
         {
-            return DocumentFile::Unreadable(None, None, None, None);
+            return None;
         }
-        root.join(path)
-    };
+        Some(fs::canonicalize(root).ok()?.join(path))
+    }
+}
+
+fn document_file(expected: &Path, files: &UpgradeFiles) -> DocumentFile {
     // Inspect from the root down. If a component is a link, record the
     // entry and its link text, not metadata from the destination.
     let ancestors: Vec<_> = expected.ancestors().filter(|p| p.has_root()).collect();
     for component in ancestors.into_iter().rev() {
+        if files.removes(component) {
+            return DocumentFile::Missing;
+        }
+        if component == expected
+            && let Some(text) = files.rewritten.get(component)
+        {
+            return DocumentFile::AfterWrite(sha256_hex(text.as_bytes()));
+        }
         let meta = match fs::symlink_metadata(component) {
             Ok(meta) => meta,
             Err(e) if e.kind() == ErrorKind::NotFound => return DocumentFile::Missing,
@@ -591,7 +703,7 @@ fn document_file(root: &Path, path: &Path) -> DocumentFile {
         if component == expected {
             let stamp = Some((meta.len(), modified));
             // Keep the existing exact-path check before reading an ordinary file.
-            if !meta.is_file() || fs::canonicalize(&expected).ok().as_ref() != Some(&expected) {
+            if !meta.is_file() || fs::canonicalize(expected).ok().as_deref() != Some(expected) {
                 return DocumentFile::Unreadable(
                     None,
                     None,
@@ -603,9 +715,9 @@ fn document_file(root: &Path, path: &Path) -> DocumentFile {
             let mut read = || -> std::io::Result<_> {
                 use std::io::Read;
 
-                let mut file = open_direct_file(&expected, &meta)?;
+                let mut file = open_direct_file(expected, &meta)?;
                 let identity = file_info_from_handle(&file)?.identity;
-                if fs::canonicalize(&expected)? != expected {
+                if fs::canonicalize(expected)? != expected {
                     return Err(std::io::Error::other(
                         "document path changed before reading",
                     ));

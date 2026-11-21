@@ -1,6 +1,6 @@
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 pub(crate) fn is_link_or_reparse_point(meta: &fs::Metadata) -> bool {
     #[cfg(windows)]
@@ -13,6 +13,31 @@ pub(crate) fn is_link_or_reparse_point(meta: &fs::Metadata) -> bool {
     {
         meta.file_type().is_symlink()
     }
+}
+
+/// Resolve a descendant directory without inspecting a redirected subtree.
+/// The selected root must already be canonical; inspect each component before
+/// descending. This is an inspection check, not a lock on the directory tree.
+pub(crate) fn direct_subdirectory(root: &Path, relative: &Path) -> io::Result<PathBuf> {
+    let mut path = root.to_path_buf();
+    for part in relative.components() {
+        let Component::Normal(name) = part else {
+            return Err(io::Error::other(
+                "not a relative directory beneath the root",
+            ));
+        };
+        path.push(name);
+        let metadata = fs::symlink_metadata(&path)?;
+        if !metadata.is_dir() || is_link_or_reparse_point(&metadata) {
+            return Err(io::Error::other("not a direct regular directory"));
+        }
+    }
+    if path.canonicalize()? != path {
+        return Err(io::Error::other(
+            "directory resolved outside its checked path",
+        ));
+    }
+    Ok(path)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -248,6 +273,19 @@ pub(crate) fn file_info_from_handle(_file: &fs::File) -> io::Result<FileInfo> {
 mod tests {
     use super::*;
     use std::os::fd::AsRawFd;
+
+    #[test]
+    fn direct_subdirectory_rejects_a_link_even_within_the_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        fs::create_dir_all(root.join("ordinary/nested")).unwrap();
+        std::os::unix::fs::symlink("ordinary", root.join("redirected")).unwrap();
+        assert_eq!(
+            direct_subdirectory(&root, Path::new("ordinary/nested")).unwrap(),
+            root.join("ordinary/nested")
+        );
+        assert!(direct_subdirectory(&root, Path::new("redirected/nested")).is_err());
+    }
 
     #[test]
     fn prune_content_open_is_nonblocking_and_reads_regular_files() {

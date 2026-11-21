@@ -71,6 +71,7 @@ use std::time::{Duration, SystemTime};
 
 use super::prune::BACKUPS_RETENTION_COUNT;
 use crate::config::{GcConfig, ProjectConfig};
+use crate::fs_identity::{direct_subdirectory, is_link_or_reparse_point};
 use crate::{MemhubError, Result};
 
 /// Cargo profiles whose `deps/` accumulate stale hashes.
@@ -135,6 +136,9 @@ pub struct GcOutcome {
     /// above, since it covers a different tree (`.memhub/backups/`,
     /// not `target/`).
     pub backups: BackupsReport,
+    /// Child paths selected by a dry-run, including whole directory trees.
+    #[serde(skip)]
+    pub(super) planned_removals: Vec<PathBuf>,
 }
 
 #[derive(Debug, Default, serde::Serialize)]
@@ -154,6 +158,22 @@ pub struct BackupDirOutcome {
 }
 
 impl GcOutcome {
+    fn remove(&mut self, path: &Path, is_dir: bool) {
+        if self.dry_run {
+            self.planned_removals.push(path.to_path_buf());
+            return;
+        }
+        let result = if is_dir {
+            fs::remove_dir_all(path)
+        } else {
+            fs::remove_file(path)
+        };
+        if let Err(e) = result {
+            self.details
+                .push(format!("warn: could not remove {}: {e}", path.display()));
+        }
+    }
+
     /// One-line summary for the `memhub upgrade` table and the CLI.
     pub fn summary(&self) -> String {
         if self.groups_pruned == 0 {
@@ -237,13 +257,12 @@ fn dir_size(path: &Path) -> u64 {
     let mut total = 0;
     for entry in rd.flatten() {
         let p = entry.path();
-        match entry.file_type() {
-            Ok(ft) if ft.is_dir() => total += dir_size(&p),
-            _ => {
-                if let Ok(md) = fs::symlink_metadata(&p) {
-                    total += md.len();
-                }
-            }
+        if let Ok(md) = entry.metadata() {
+            total += if md.is_dir() && !is_link_or_reparse_point(&md) {
+                dir_size(&p)
+            } else {
+                md.len()
+            };
         }
     }
     total
@@ -282,7 +301,6 @@ fn finalize_groups(
     profile: &str,
     groups: BTreeMap<String, BTreeMap<String, Vec<Artifact>>>,
     fingerprint: Option<&Path>,
-    dry_run: bool,
     out: &mut GcOutcome,
 ) {
     for (stem, by_hash) in groups {
@@ -316,28 +334,17 @@ fn finalize_groups(
                 } else {
                     group_files += 1;
                 }
-                if !dry_run {
-                    let res = if a.is_dir {
-                        fs::remove_dir_all(&a.path)
-                    } else {
-                        fs::remove_file(&a.path)
-                    };
-                    if let Err(e) = res {
-                        out.details
-                            .push(format!("warn: could not remove {}: {e}", a.path.display()));
-                    }
-                }
+                out.remove(&a.path, a.is_dir);
             }
             // The matching .fingerprint/<stem>-<hash> dir, if present.
             if let Some(fp_root) = fingerprint {
                 let fp = fp_root.join(format!("{stem}-{hash}"));
-                if fp.is_dir() {
+                if fs::symlink_metadata(&fp)
+                    .is_ok_and(|meta| meta.is_dir() && !is_link_or_reparse_point(&meta))
+                {
                     group_bytes += dir_size(&fp);
                     group_dirs += 1;
-                    if !dry_run && let Err(e) = fs::remove_dir_all(&fp) {
-                        out.details
-                            .push(format!("warn: could not remove {}: {e}", fp.display()));
-                    }
+                    out.remove(&fp, true);
                 }
             }
         }
@@ -348,7 +355,11 @@ fn finalize_groups(
         out.groups_pruned += 1;
         out.details.push(format!(
             "{profile}/{dir_label}/{stem}: kept {keep}, {} {} stale hash(es) ({})",
-            if dry_run { "would remove" } else { "removed" },
+            if out.dry_run {
+                "would remove"
+            } else {
+                "removed"
+            },
             by_hash.len() - 1,
             human_bytes(group_bytes),
         ));
@@ -363,10 +374,9 @@ fn finalize_groups(
 fn prune_profile(
     profile: &str,
     deps: &Path,
-    fingerprint: &Path,
+    fingerprint: Option<&Path>,
     owned: &BTreeSet<String>,
     prune_large_thirdparty: bool,
-    dry_run: bool,
     out: &mut GcOutcome,
 ) {
     // stem -> hash -> [artifacts]
@@ -392,6 +402,9 @@ fn prune_profile(
             Ok(m) => m,
             Err(_) => continue,
         };
+        if is_link_or_reparse_point(&md) {
+            continue;
+        }
         let is_dir = md.is_dir();
         let size = if is_dir { dir_size(&path) } else { md.len() };
         let mtime = md.modified().unwrap_or(SystemTime::UNIX_EPOCH);
@@ -424,7 +437,7 @@ fn prune_profile(
         });
     }
 
-    finalize_groups("deps", profile, groups, Some(fingerprint), dry_run, out);
+    finalize_groups("deps", profile, groups, fingerprint, out);
 }
 
 /// U2: sweep `target/<profile>/build/<stem>-<hash>/` OUT_DIRs for owned
@@ -440,9 +453,8 @@ fn prune_profile(
 fn prune_build(
     profile: &str,
     build: &Path,
-    fingerprint: &Path,
+    fingerprint: Option<&Path>,
     owned: &BTreeSet<String>,
-    dry_run: bool,
     out: &mut GcOutcome,
 ) {
     let mut groups: BTreeMap<String, BTreeMap<String, Vec<Artifact>>> = BTreeMap::new();
@@ -465,7 +477,7 @@ fn prune_build(
             Ok(m) => m,
             Err(_) => continue,
         };
-        if !md.is_dir() {
+        if !md.is_dir() || is_link_or_reparse_point(&md) {
             continue; // build/ entries of interest are always OUT_DIRs
         }
         let size = dir_size(&path);
@@ -483,7 +495,7 @@ fn prune_build(
             });
     }
 
-    finalize_groups("build", profile, groups, Some(fingerprint), dry_run, out);
+    finalize_groups("build", profile, groups, fingerprint, out);
 }
 
 /// U2: sweep `target/<profile>/examples/` hash-suffixed byproducts
@@ -494,7 +506,7 @@ fn prune_build(
 /// un-hashed `<stem>.exe` / `.pdb` / `.lib` / `.exp` that cargo
 /// overwrites in place on every rebuild is left alone: it has no hash
 /// suffix, so `parse_artifact` already skips it.
-fn prune_examples(profile: &str, examples: &Path, dry_run: bool, out: &mut GcOutcome) {
+fn prune_examples(profile: &str, examples: &Path, out: &mut GcOutcome) {
     let mut groups: BTreeMap<String, BTreeMap<String, Vec<Artifact>>> = BTreeMap::new();
 
     let Ok(rd) = fs::read_dir(examples) else {
@@ -512,6 +524,9 @@ fn prune_examples(profile: &str, examples: &Path, dry_run: bool, out: &mut GcOut
             Ok(m) => m,
             Err(_) => continue,
         };
+        if is_link_or_reparse_point(&md) {
+            continue;
+        }
         let is_dir = md.is_dir();
         let size = if is_dir { dir_size(&path) } else { md.len() };
         let mtime = md.modified().unwrap_or(SystemTime::UNIX_EPOCH);
@@ -528,7 +543,7 @@ fn prune_examples(profile: &str, examples: &Path, dry_run: bool, out: &mut GcOut
             });
     }
 
-    finalize_groups("examples", profile, groups, None, dry_run, out);
+    finalize_groups("examples", profile, groups, None, out);
 }
 
 /// U5(a) (decision Q12), opt-in: prune superseded
@@ -542,7 +557,7 @@ fn prune_examples(profile: &str, examples: &Path, dry_run: bool, out: &mut GcOut
 /// owned-stem set: test/bench incremental caches are KB-scale, while
 /// `memhub`'s own routinely reaches multiple GB per generation (the
 /// July review measured 14+ GiB total across superseded generations).
-fn prune_incremental(profile: &str, incremental: &Path, dry_run: bool, out: &mut GcOutcome) {
+fn prune_incremental(profile: &str, incremental: &Path, out: &mut GcOutcome) {
     let mut sessions: Vec<Artifact> = Vec::new();
 
     let Ok(rd) = fs::read_dir(incremental) else {
@@ -563,7 +578,7 @@ fn prune_incremental(profile: &str, incremental: &Path, dry_run: bool, out: &mut
             Ok(m) => m,
             Err(_) => continue,
         };
-        if !md.is_dir() {
+        if !md.is_dir() || is_link_or_reparse_point(&md) {
             continue;
         }
         let size = dir_size(&path);
@@ -583,7 +598,7 @@ fn prune_incremental(profile: &str, incremental: &Path, dry_run: bool, out: &mut
     let keep_idx = sessions
         .iter()
         .enumerate()
-        .max_by_key(|(_, a)| a.mtime)
+        .max_by_key(|(_, a)| (a.mtime, a.path.as_path()))
         .map(|(i, _)| i)
         .unwrap_or(0);
 
@@ -595,10 +610,7 @@ fn prune_incremental(profile: &str, incremental: &Path, dry_run: bool, out: &mut
         }
         group_bytes += a.size;
         group_dirs += 1;
-        if !dry_run && let Err(e) = fs::remove_dir_all(&a.path) {
-            out.details
-                .push(format!("warn: could not remove {}: {e}", a.path.display()));
-        }
+        out.remove(&a.path, true);
     }
 
     out.bytes_freed += group_bytes;
@@ -606,7 +618,7 @@ fn prune_incremental(profile: &str, incremental: &Path, dry_run: bool, out: &mut
     out.groups_pruned += 1;
     out.details.push(format!(
         "{profile}/incremental/{INCREMENTAL_OWNED_STEM}: kept newest session, {} {} superseded session(s) ({})",
-        if dry_run { "would remove" } else { "removed" },
+        if out.dry_run { "would remove" } else { "removed" },
         sessions.len() - 1,
         human_bytes(group_bytes),
     ));
@@ -625,35 +637,32 @@ fn prune_incremental(profile: &str, incremental: &Path, dry_run: bool, out: &mut
 /// parameter (rather than reading `std::env::temp_dir()` internally)
 /// so tests exercise this against a fixture directory instead of the
 /// real, process-global OS temp dir.
-fn sweep_stale_staging(temp_dir: &Path, dry_run: bool, out: &mut GcOutcome) {
-    let Ok(rd) = fs::read_dir(temp_dir) else {
-        return;
+pub(super) fn stale_staging_files(temp_dir: &Path) -> Vec<(PathBuf, u64)> {
+    let Ok(rd) = temp_dir.canonicalize().and_then(fs::read_dir) else {
+        return Vec::new();
     };
     let cutoff = SystemTime::now() - Duration::from_secs(3600);
+    rd.flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let meta = entry.metadata().ok()?;
+            (name.starts_with("memhub-upgrade-")
+                && name.ends_with(".exe")
+                && !meta.is_dir()
+                && meta.modified().ok()? < cutoff)
+                .then(|| (entry.path(), meta.len()))
+        })
+        .collect()
+}
 
-    let mut count = 0u64;
-    let mut bytes = 0u64;
-    for entry in rd.flatten() {
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if !(name.starts_with("memhub-upgrade-") && name.ends_with(".exe")) {
-            continue;
-        }
-        let Ok(md) = entry.metadata() else {
-            continue;
-        };
-        let old = md.modified().map(|m| m < cutoff).unwrap_or(false);
-        if !old {
-            continue;
-        }
-        count += 1;
-        bytes += md.len();
-        if !dry_run && let Err(e) = fs::remove_file(entry.path()) {
-            out.details.push(format!(
-                "warn: could not remove {}: {e}",
-                entry.path().display()
-            ));
-        }
+fn sweep_stale_staging(temp_dir: &Path, out: &mut GcOutcome) {
+    let files = stale_staging_files(temp_dir);
+    let count = files.len() as u64;
+    let mut bytes = 0;
+    for (path, size) in files {
+        bytes += size;
+        out.remove(&path, false);
     }
 
     if count > 0 {
@@ -662,7 +671,11 @@ fn sweep_stale_staging(temp_dir: &Path, dry_run: bool, out: &mut GcOutcome) {
         out.groups_pruned += 1;
         out.details.push(format!(
             "staging: {} {} abandoned upgrade shim(s) ({})",
-            if dry_run { "would remove" } else { "removed" },
+            if out.dry_run {
+                "would remove"
+            } else {
+                "removed"
+            },
             count,
             human_bytes(bytes),
         ));
@@ -670,11 +683,16 @@ fn sweep_stale_staging(temp_dir: &Path, dry_run: bool, out: &mut GcOutcome) {
 }
 
 /// Shared retention selection for GC and upgrade's read-only prune preview.
-pub(super) fn stale_backup_files(root: &Path) -> Vec<(PathBuf, Vec<(PathBuf, u64)>)> {
-    let backups_dir = root.join(".memhub/backups");
+fn stale_backup_files(root: &Path) -> Vec<(PathBuf, Vec<(PathBuf, u64)>)> {
+    let Ok(canonical_root) = root.canonicalize() else {
+        return Vec::new();
+    };
     let mut groups = Vec::new();
     for subdir in ["rendered", "markdown"] {
-        let dir = backups_dir.join(subdir);
+        let relative = Path::new(".memhub/backups").join(subdir);
+        let Ok(dir) = direct_subdirectory(&canonical_root, &relative) else {
+            continue;
+        };
         let Ok(rd) = fs::read_dir(&dir) else {
             continue;
         };
@@ -685,7 +703,7 @@ pub(super) fn stale_backup_files(root: &Path) -> Vec<(PathBuf, Vec<(PathBuf, u64
             let Ok(md) = fs::symlink_metadata(&path) else {
                 continue;
             };
-            if !md.is_file() {
+            if !md.is_file() || is_link_or_reparse_point(&md) {
                 continue;
             }
             let mtime = md.modified().unwrap_or(SystemTime::UNIX_EPOCH);
@@ -697,9 +715,9 @@ pub(super) fn stale_backup_files(root: &Path) -> Vec<(PathBuf, Vec<(PathBuf, u64
         }
 
         // Newest first; the tail beyond the retention count is stale.
-        files.sort_by_key(|f| std::cmp::Reverse(f.1));
+        files.sort_by(|a, b| (std::cmp::Reverse(a.1), &a.0).cmp(&(std::cmp::Reverse(b.1), &b.0)));
         groups.push((
-            dir,
+            root.join(relative),
             files
                 .into_iter()
                 .skip(BACKUPS_RETENTION_COUNT)
@@ -718,9 +736,9 @@ pub(super) fn stale_backup_files(root: &Path) -> Vec<(PathBuf, Vec<(PathBuf, u64
 /// existed). Also flags — but never deletes — the legacy one-time
 /// `project.sqlite.k9-bootstrap-backup` left behind by the
 /// K9-to-memhub-primary migration, if still present.
-fn backups_retention(root: &Path, dry_run: bool, delete: bool, out: &mut GcOutcome) {
+fn backups_retention(root: &Path, delete: bool, out: &mut GcOutcome) {
     let memhub_dir = root.join(".memhub");
-    let will_delete = delete && !dry_run;
+    let will_delete = delete && !out.dry_run;
 
     for (dir, stale) in stale_backup_files(root) {
         let subdir = dir
@@ -729,13 +747,12 @@ fn backups_retention(root: &Path, dry_run: bool, delete: bool, out: &mut GcOutco
             .to_string_lossy();
         let stale_bytes: u64 = stale.iter().map(|(_, len)| len).sum();
 
-        if will_delete {
+        if delete {
             for (path, _) in &stale {
-                if let Err(e) = fs::remove_file(path) {
-                    out.details
-                        .push(format!("warn: could not remove {}: {e}", path.display()));
-                }
+                out.remove(path, false);
             }
+        }
+        if will_delete {
             // Faithful reporting: only REAL deletions count toward the
             // headline totals `summary()` reads — mirrors
             // `finalize_groups`/`sweep_stale_staging`, which roll their
@@ -796,7 +813,7 @@ fn backups_retention(root: &Path, dry_run: bool, delete: bool, out: &mut GcOutco
 /// a breadcrumb in the returned `Option<String>` (fail-loud nit: a
 /// malformed config silently disabling an intended
 /// `delete_stale_backups = true` should say so, not go quiet).
-pub(super) fn load_gc_config_best_effort(root: &Path) -> (GcConfig, Option<String>) {
+fn load_gc_config_best_effort(root: &Path) -> (GcConfig, Option<String>) {
     let config_path = root.join(".memhub").join("config.toml");
     if !config_path.is_file() {
         return (GcConfig::default(), None);
@@ -863,67 +880,52 @@ fn run_with_options_in_temp(
         groups_pruned: 0,
         details: Vec::new(),
         backups: BackupsReport::default(),
+        planned_removals: Vec::new(),
     };
     if let Some(warning) = gc_config_warning {
         out.details.push(warning);
     }
 
-    let target = root.join("target");
+    let canonical_root = root.canonicalize()?;
     for profile in PROFILES {
-        let profile_dir = target.join(profile);
-        let fingerprint = profile_dir.join(".fingerprint");
+        let profile_dir = Path::new("target").join(profile);
+        let child = |name| direct_subdirectory(&canonical_root, &profile_dir.join(name)).ok();
+        let fingerprint = child(".fingerprint");
 
-        let deps = profile_dir.join("deps");
-        if deps.is_dir() {
+        if let Some(deps) = child("deps") {
             prune_profile(
                 profile,
                 &deps,
-                &fingerprint,
+                fingerprint.as_deref(),
                 &owned,
                 options.prune_large_thirdparty,
-                options.dry_run,
                 &mut out,
             );
         }
 
         // U2: build/<stem>-<hash> OUT_DIRs — always on, owned stems only.
-        let build = profile_dir.join("build");
-        if build.is_dir() {
-            prune_build(
-                profile,
-                &build,
-                &fingerprint,
-                &owned,
-                options.dry_run,
-                &mut out,
-            );
+        if let Some(build) = child("build") {
+            prune_build(profile, &build, fingerprint.as_deref(), &owned, &mut out);
         }
 
         // U2: examples/ hash-suffixed byproducts — always on.
-        let examples = profile_dir.join("examples");
-        if examples.is_dir() {
-            prune_examples(profile, &examples, options.dry_run, &mut out);
+        if let Some(examples) = child("examples") {
+            prune_examples(profile, &examples, &mut out);
         }
 
         // U5(a): superseded incremental/memhub-* sessions — opt-in.
-        if options.prune_superseded_incremental {
-            let incremental = profile_dir.join("incremental");
-            if incremental.is_dir() {
-                prune_incremental(profile, &incremental, options.dry_run, &mut out);
-            }
+        if options.prune_superseded_incremental
+            && let Some(incremental) = child("incremental")
+        {
+            prune_incremental(profile, &incremental, &mut out);
         }
     }
 
     // U3: sweep abandoned upgrade-staging shims — always on.
-    sweep_stale_staging(temp_dir, options.dry_run, &mut out);
+    sweep_stale_staging(temp_dir, &mut out);
 
     // U8: backups retention — report-only unless delete_stale_backups.
-    backups_retention(
-        &root,
-        options.dry_run,
-        options.delete_stale_backups,
-        &mut out,
-    );
+    backups_retention(&root, options.delete_stale_backups, &mut out);
 
     Ok(out)
 }

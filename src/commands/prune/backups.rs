@@ -8,8 +8,8 @@ use super::{Action, Category, Item, Subject, identifier, timestamp};
 use crate::commands::sync::sha256_reader;
 use crate::db::{MEMHUB_DIR, ProjectPaths};
 use crate::fs_identity::{
-    FileIdentity, file_identity, file_info, file_info_from_handle, is_link_or_reparse_point,
-    open_direct_file,
+    FileIdentity, direct_subdirectory, file_identity, file_info, file_info_from_handle,
+    is_link_or_reparse_point, open_direct_file,
 };
 use crate::{MemhubError, Result};
 
@@ -130,12 +130,12 @@ pub(super) fn surplus(
 ) -> Result<(Vec<Group>, Vec<String>)> {
     let root = fs::canonicalize(&paths.repo_root).map_err(|err| at_path(&paths.repo_root, err))?;
     let memhub = root.join(MEMHUB_DIR);
-    require_directory(&memhub)?;
+    require_directory(&root, &memhub)?;
     let backups = memhub.join("backups");
     match fs::symlink_metadata(&backups) {
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok((Vec::new(), Vec::new())),
         Err(err) => return Err(at_path(&backups, err)),
-        Ok(_) => require_directory(&backups)?,
+        Ok(_) => require_directory(&root, &backups)?,
     }
 
     let mut groups = Vec::new();
@@ -160,7 +160,7 @@ fn inspect_directory(
     removed: &[PathBuf],
     dirs: &mut Vec<PathBuf>,
 ) -> Result<Option<Group>> {
-    require_directory(dir)?;
+    require_directory(root, dir)?;
     let directory_identity = file_identity(dir).map_err(|err| at_path(dir, err))?;
     let mut files = Vec::new();
     let mut error = None;
@@ -177,7 +177,7 @@ fn inspect_directory(
             }
         };
         let path = entry.path();
-        if removed.contains(&path) {
+        if removed.iter().any(|removed| path.starts_with(removed)) {
             continue;
         }
         if is_link_or_reparse_point(&meta) {
@@ -305,8 +305,9 @@ fn inspect_directory(
 pub(super) fn delete(paths: &ProjectPaths, candidate: &str) -> Result<usize> {
     // Do not open the database: even ordinary maintained opens can modify the
     // DB, replace the migration backup, and expire proposals.
-    let memhub = fs::canonicalize(&paths.repo_root)?.join(MEMHUB_DIR);
-    require_directory(&memhub)?;
+    let root = fs::canonicalize(&paths.repo_root)?;
+    let memhub = root.join(MEMHUB_DIR);
+    require_directory(&root, &memhub)?;
     let database = memhub.join(crate::db::DB_FILENAME);
     require_direct(&database)?;
     if !fs::symlink_metadata(&database)?.is_file() {
@@ -341,15 +342,11 @@ fn require_direct(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn require_directory(path: &Path) -> Result<()> {
-    require_direct(path)?;
-    if !fs::symlink_metadata(path)
-        .map_err(|err| at_path(path, err))?
-        .is_dir()
-    {
-        return Err(changed(path));
-    }
-    Ok(())
+fn require_directory(root: &Path, path: &Path) -> Result<()> {
+    let relative = path.strip_prefix(root).map_err(|_| changed(path))?;
+    direct_subdirectory(root, relative)
+        .map(|_| ())
+        .map_err(|err| at_path(path, err))
 }
 
 fn changed(path: &Path) -> MemhubError {

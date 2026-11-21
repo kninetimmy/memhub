@@ -43,7 +43,7 @@ impl Fixture {
             .env("USERPROFILE", &self.home)
             .env("CARGO_HOME", self.home.join(".cargo"))
             .env_remove("CARGO_INSTALL_ROOT")
-            // Upgrade sweeps staging shims even on Windows dry-runs.
+            // Never let fixture upgrade or GC inspect real staging shims.
             .env("TEMP", self.home.join("tmp"))
             .env("TMP", self.home.join("tmp"))
             .env("TMPDIR", self.home.join("tmp"))
@@ -419,9 +419,10 @@ fn upgrade_prune_preview_accounts_for_source_gc_only_when_permitted() {
 #[test]
 fn upgrade_prune_preview_marks_ingested_generated_twins_missing_even_without_gc() {
     let f = Fixture::new();
-    let repo = f.repo("generated-twin");
+    let repo = f.repo("twin-observer");
     f.register(&repo);
-    let rendered = repo.join(".memhub/rendered");
+    // Finish cleans the source before it checks for a database there.
+    let rendered = f.source.join(".memhub/rendered");
     fs::create_dir_all(&rendered).unwrap();
     let twin = rendered.join("AGENTS.md");
     fs::write(
@@ -438,12 +439,240 @@ fn upgrade_prune_preview_marks_ingested_generated_twins_missing_even_without_gc(
     let before_memory = memory(&repo);
     let preview = body(&f.upgrade_ok("--dry-run", &["--json"]));
     assert_eq!(entry(&preview, &repo)["counts"]["out_of_date_document"], 1);
-    assert_eq!(files(&repo), before, "preview removed the twin");
+    assert!(twin.is_file(), "preview removed the twin");
+    assert_eq!(files(&repo), before);
     assert_eq!(memory(&repo), before_memory);
     let actual = body(&f.upgrade_ok("--finish", &["--json"]));
     assert_eq!(entry(&actual, &repo), entry(&preview, &repo));
     assert!(!twin.exists());
     assert_eq!(memory(&repo), before_memory);
+}
+
+#[test]
+fn upgrade_prune_preview_applies_gc_removals_to_external_build_documents() {
+    let f = Fixture::new();
+    let repo = f.repo("build-observer");
+    f.register(&repo);
+    let build = f.source.join("target/debug/build");
+    let old = build.join("memhub-11111111");
+    let new = build.join("memhub-22222222");
+    let doc = old.join("out/generated.md");
+    fs::create_dir_all(doc.parent().unwrap()).unwrap();
+    fs::create_dir_all(&new).unwrap();
+    fs::write(&doc, "Generated").unwrap();
+    let stamp = std::time::SystemTime::now() - std::time::Duration::from_secs(86_400);
+    let mut options = fs::File::options();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // FILE_WRITE_ATTRIBUTES, FILE_FLAG_BACKUP_SEMANTICS (directory).
+        options.access_mode(0x0100).custom_flags(0x0200_0000);
+    }
+    options.open(&old).unwrap().set_modified(stamp).unwrap();
+    f.ok(&repo, &["doc", "add", doc.to_str().unwrap()]);
+    let skipped = body(&f.upgrade_ok("--dry-run", &["--json"]));
+    assert_eq!(entry(&skipped, &repo)["counts"]["out_of_date_document"], 0);
+    let preview = body(&f.ok(
+        &f.source,
+        &[
+            "upgrade",
+            "--dry-run",
+            "--no-skills",
+            "--no-hooks",
+            "--json",
+        ],
+    ));
+    let summary = entry(&preview, &repo);
+    assert_eq!(summary["counts"]["out_of_date_document"], 1);
+    assert!(doc.is_file());
+    f.ok(&f.source, &["gc", "--json"]);
+    let actual = body(&f.upgrade_ok("--finish", &["--json"]));
+    assert_eq!(entry(&actual, &repo), summary);
+    assert!(!old.exists());
+    assert!(new.is_dir());
+}
+
+#[test]
+fn upgrade_prune_preview_does_not_project_gc_through_redirected_backups() {
+    let f = Fixture::new();
+    f.ok(&f.source, &["init"]);
+    let config = f.source.join(".memhub/config.toml");
+    let mut cfg = ProjectConfig::load(&config).unwrap();
+    cfg.retrieval.mode = RetrievalMode::Fts;
+    cfg.gc.delete_stale_backups = true;
+    cfg.save(&config).unwrap();
+    let repo = f.repo("backup-observer");
+    f.register(&repo);
+    let shared = f.temp.path().join("backup-target");
+    fs::create_dir(&shared).unwrap();
+    let backup = shared.join("20.bak");
+    for i in 0..21 {
+        fs::write(shared.join(format!("{i:02}.bak")), "Backup").unwrap();
+    }
+    f.ok(&repo, &["doc", "add", backup.to_str().unwrap()]);
+    let backups = f.source.join(".memhub/backups");
+    fs::create_dir_all(&backups).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&shared, backups.join("rendered")).unwrap();
+    #[cfg(windows)]
+    {
+        let out = Command::new("cmd")
+            .current_dir(&backups)
+            .args(["/C", "mklink", "/J", "rendered", r"..\..\..\backup-target"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+    }
+    assert!(backups.join("rendered/20.bak").is_file());
+    let preview = body(&f.ok(
+        &f.source,
+        &[
+            "upgrade",
+            "--dry-run",
+            "--no-skills",
+            "--no-hooks",
+            "--json",
+        ],
+    ));
+    assert_eq!(entry(&preview, &repo)["counts"]["out_of_date_document"], 0);
+    let gc = body(&f.ok(&f.source, &["gc", "--json"]));
+    assert_eq!(gc["backups"]["checked_dirs"], json!([]), "{gc}");
+    let actual = body(&f.upgrade_ok("--finish", &["--json"]));
+    assert_eq!(entry(&actual, &repo), entry(&preview, &repo));
+    assert_eq!(fs::read_dir(shared).unwrap().count(), 21);
+}
+
+#[test]
+fn upgrade_prune_preview_uses_config_seed_bytes_in_later_repos() {
+    for example in [true, false] {
+        let f = Fixture::new();
+        let owner = f.repo("a-config-owner");
+        let observer = f.repo("z-config-observer");
+        f.register(&owner);
+        f.register(&observer);
+        let config = owner.join(".memhub/config.toml");
+        let mut seed = ProjectConfig::default_for_repo_name("a-config-owner");
+        if example {
+            seed.project_name = "Name from example".into();
+            seed.retrieval.mode = RetrievalMode::Fts;
+        }
+        seed.save(&config).unwrap();
+        f.ok(&observer, &["doc", "add", config.to_str().unwrap()]);
+        if example {
+            fs::rename(&config, owner.join(".memhub/config.example.toml")).unwrap();
+        } else {
+            fs::remove_file(&config).unwrap();
+        }
+        let before = files(&owner);
+        let preview = body(&f.upgrade_ok("--dry-run", &["--json"]));
+        let summary = entry(&preview, &observer);
+        assert_eq!(summary["counts"]["out_of_date_document"], 0);
+        assert_eq!(files(&owner), before, "preview seeded a real config");
+        let actual = body(&f.upgrade_ok("--finish", &["--json"]));
+        assert_eq!(entry(&actual, &observer), summary);
+        assert!(config.is_file());
+    }
+}
+
+#[test]
+fn upgrade_prune_preview_reopens_a_dismissal_tied_to_the_replaced_config() {
+    let f = Fixture::new();
+    let repo = f.repo("config-dismissal");
+    f.register(&repo);
+    let config = repo.join(".memhub/config.toml");
+    let original = fs::read_to_string(&config).unwrap();
+    fs::write(&config, format!("# Ingested\n{original}")).unwrap();
+    f.ok(&repo, &["doc", "add", config.to_str().unwrap()]);
+    fs::write(&config, &original).unwrap();
+    let scan = body(&f.ok(&repo, &["prune", "scan", "--json"]));
+    let id = scan["prune_scan"]["items"][0]["id"].as_str().unwrap();
+    f.ok(&repo, &["prune", "dismiss", id]);
+    assert_eq!(
+        body(&f.ok(&repo, &["prune", "scan", "--json"]))["prune_scan"]["total"],
+        0
+    );
+    let retired = original.replace(
+        "[retrieval]\n",
+        "[retrieval]\ninclude_stale_by_default = true\n",
+    );
+    fs::write(&config, &retired).unwrap();
+    let preview = body(&f.upgrade_ok("--dry-run", &["--json"]));
+    let summary = entry(&preview, &repo);
+    assert_eq!(summary["counts"]["out_of_date_document"], 1, "{summary}");
+    assert_eq!(fs::read_to_string(&config).unwrap(), retired);
+    let actual = body(&f.upgrade_ok("--finish", &["--json"]));
+    assert_eq!(entry(&actual, &repo), summary);
+    assert_eq!(fs::read_to_string(&config).unwrap(), original);
+}
+
+#[test]
+fn upgrade_prune_preview_does_not_guess_an_opaque_historical_dismissal() {
+    let f = Fixture::new();
+    let repo = f.repo("a-historical-dismissal");
+    let healthy = f.repo("z-healthy");
+    f.register(&repo);
+    f.register(&healthy);
+    let config = repo.join(".memhub/config.toml");
+    let original = fs::read_to_string(&config).unwrap();
+    fs::write(&config, format!("# Ingested\n{original}")).unwrap();
+    f.ok(&repo, &["doc", "add", config.to_str().unwrap()]);
+    fs::write(&config, &original).unwrap();
+    let scan = body(&f.ok(&repo, &["prune", "scan", "--json"]));
+    f.ok(
+        &repo,
+        &[
+            "prune",
+            "dismiss",
+            scan["prune_scan"]["items"][0]["id"].as_str().unwrap(),
+        ],
+    );
+    let retired = original.replace(
+        "[retrieval]\n",
+        "[retrieval]\ninclude_stale_by_default = true\n",
+    );
+    let replacement = config.with_file_name("replacement.toml");
+    fs::write(&replacement, retired).unwrap();
+    fs::rename(replacement, &config).unwrap();
+    let before = files(&repo);
+    let preview = body(&f.upgrade_ok("--dry-run", &["--json"]));
+    let summary = entry(&preview, &repo);
+    assert!(
+        summary["error"]
+            .as_str()
+            .unwrap()
+            .contains("historical dismissal")
+    );
+    assert!(summary.get("counts").is_none(), "{summary}");
+    assert_eq!(entry(&preview, &healthy)["total"], 0);
+    assert_eq!(files(&repo), before);
+    let actual = body(&f.upgrade_ok("--finish", &["--json"]));
+    assert!(entry(&actual, &repo)["counts"].is_object());
+    assert_eq!(entry(&actual, &healthy)["total"], 0);
+}
+
+#[cfg(windows)]
+#[test]
+fn upgrade_prune_preview_leaves_eligible_staging_shims_on_disk() {
+    let f = Fixture::new();
+    let repo = f.repo("staging-observer");
+    f.register(&repo);
+    let shim = f.home.join("tmp/memhub-upgrade-old.exe");
+    let mut fixture = fs::File::create(&shim).unwrap();
+    use std::io::Write;
+    fixture
+        .write_all(b"ASCII text for the document fixture")
+        .unwrap();
+    fixture
+        .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(86_400))
+        .unwrap();
+    drop(fixture);
+    f.ok(&repo, &["doc", "add", shim.to_str().unwrap()]);
+    let preview = body(&f.upgrade_ok("--dry-run", &["--json"]));
+    assert_eq!(entry(&preview, &repo)["counts"]["out_of_date_document"], 1);
+    assert!(shim.is_file());
+    f.upgrade_ok("--dry-run", &["--json", "--no-prune-scan"]);
+    assert!(shim.is_file());
 }
 
 #[test]
