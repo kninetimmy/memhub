@@ -5,13 +5,16 @@ pub(super) use backups::RETAIN as BACKUPS_RETENTION_COUNT;
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::io::ErrorKind;
+use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OpenFlags, TransactionBehavior};
 use serde::Serialize;
 
 use crate::config::ProjectConfig;
 use crate::db::{self, ProjectPaths};
+use crate::fs_identity::is_link_or_reparse_point;
 use crate::retrieval::util::sha256_hex;
 use crate::{MemhubError, Result};
 
@@ -113,11 +116,13 @@ pub struct Report {
     pub total: usize,
     pub counts: BTreeMap<Category, CategoryCount>,
     pub items: Vec<Item>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backup_warning: Option<String>,
 }
 
 pub fn scan(start: &Path) -> Result<Report> {
     let paths = db::discover_paths(start)?;
-    let config = ProjectConfig::load(&paths.config_path)?;
+    let config = scan_config(&paths)?;
     let mut conn = Connection::open_with_flags(&paths.db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let tx = conn.transaction()?;
     let schema = db::ledger_schema(&tx)?;
@@ -134,6 +139,25 @@ pub fn scan(start: &Path) -> Result<Report> {
         }
     };
     scan_in(&tx, &paths, &config, has_dismissals)
+}
+
+fn scan_config(paths: &ProjectPaths) -> Result<ProjectConfig> {
+    // Match maintained-open precedence without materializing a live config.
+    // A broken link is not an absent config and must not trigger fallback.
+    let example = paths.memhub_dir.join(db::CONFIG_EXAMPLE_FILENAME);
+    for path in [&paths.config_path, &example] {
+        match fs::symlink_metadata(path) {
+            Ok(_) => return ProjectConfig::load(path),
+            Err(err) if err.kind() == ErrorKind::NotFound => {}
+            Err(err) => return Err(err.into()),
+        }
+    }
+    let name = paths
+        .repo_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("memhub");
+    Ok(ProjectConfig::default_for_repo_name(name))
 }
 
 /// Status already has a maintained open; reuse it without another open.
@@ -162,8 +186,9 @@ fn scan_in(
             .map(|category| (category, CategoryCount::default()))
             .collect(),
         items: Vec::new(),
+        backup_warning: None,
     };
-    visit_candidates(conn, paths, config, |item| {
+    report.backup_warning = visit_candidates(conn, paths, config, |item| {
         if dismissed.contains(&item.id) {
             return;
         }
@@ -188,10 +213,11 @@ pub fn dismiss(start: &Path, id: &str, actor: &str) -> Result<()> {
         .conn
         .transaction_with_behavior(TransactionBehavior::Immediate)?;
     let mut found = false;
-    visit_candidates(&tx, &ctx.paths, &ctx.config, |item| found |= item.id == id)?;
+    let warning = visit_candidates(&tx, &ctx.paths, &ctx.config, |item| found |= item.id == id)?;
     if !found {
+        let detail = warning.map_or_else(String::new, |warning| format!("; {warning}"));
         return Err(MemhubError::InvalidInput(format!(
-            "no current prune candidate '{id}'; run `memhub prune scan` again"
+            "no current prune candidate '{id}'; run `memhub prune scan` again{detail}"
         )));
     }
     if tx.execute(
@@ -222,14 +248,41 @@ fn visit_candidates(
     paths: &ProjectPaths,
     config: &ProjectConfig,
     mut visit: impl FnMut(Item),
-) -> Result<()> {
+) -> Result<Option<String>> {
     facts(conn, config.retrieval.fact_stale_after_days, &mut visit)?;
     tasks(conn, &mut visit)?;
     documents(conn, &paths.repo_root, &mut visit)?;
-    for group in backups::surplus(paths)? {
-        visit(group.item());
+    match backups::surplus(paths) {
+        Ok(groups) => {
+            for group in groups {
+                visit(group.item());
+            }
+            Ok(None)
+        }
+        Err(err) => Ok(Some(format!("Surplus backups not counted: {err}"))),
     }
-    Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum Timestamp {
+    SinceEpoch(SystemTime),
+    BeforeEpoch {
+        secs_before_epoch: u64,
+        nanos_before_epoch: u32,
+    },
+}
+
+fn timestamp(time: SystemTime) -> Timestamp {
+    // Preserve the existing fingerprint for ordinary timestamps. Serde
+    // only needs a different representation for dates before the epoch.
+    match time.duration_since(UNIX_EPOCH) {
+        Ok(_) => Timestamp::SinceEpoch(time),
+        Err(err) => Timestamp::BeforeEpoch {
+            secs_before_epoch: err.duration().as_secs(),
+            nanos_before_epoch: err.duration().subsec_nanos(),
+        },
+    }
 }
 
 /// Fingerprint the candidate's source state, not current time, report text,
@@ -405,10 +458,11 @@ fn documents(conn: &Connection, root: &Path, visit: &mut impl FnMut(Item)) -> Re
 enum DocumentFile {
     Readable(String),
     Missing,
+    Linked(Vec<u8>, Option<Vec<u8>>, Option<Timestamp>),
     Unreadable(
         Option<i32>,
         Option<String>,
-        Option<(u64, Option<std::time::SystemTime>)>,
+        Option<(u64, Option<Timestamp>)>,
     ),
 }
 
@@ -416,6 +470,12 @@ fn document_file(root: &Path, path: &Path) -> DocumentFile {
     // Ingestion explicitly allows external files and records their canonical
     // path. That exact path is the boundary, not a new symlink target.
     let expected = if path.is_absolute() {
+        if path
+            .components()
+            .any(|c| c == std::path::Component::ParentDir)
+        {
+            return DocumentFile::Unreadable(None, None, None);
+        }
         path.to_path_buf()
     } else {
         let Ok(root) = fs::canonicalize(root) else {
@@ -429,26 +489,39 @@ fn document_file(root: &Path, path: &Path) -> DocumentFile {
         }
         root.join(path)
     };
-    let inspect = || -> std::io::Result<(PathBuf, fs::Metadata)> {
-        let actual = fs::canonicalize(&expected)?;
-        let meta = fs::symlink_metadata(&expected)?;
-        Ok((actual, meta))
-    };
-    match inspect() {
-        Ok((actual, meta)) => {
-            let stamp = Some((meta.len(), meta.modified().ok()));
-            if actual != expected || !meta.is_file() {
+    // Inspect from the root down. If a component is a link, record the
+    // entry and its link text, not metadata from the destination.
+    let ancestors: Vec<_> = expected.ancestors().filter(|p| p.has_root()).collect();
+    for component in ancestors.into_iter().rev() {
+        let meta = match fs::symlink_metadata(component) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == ErrorKind::NotFound => return DocumentFile::Missing,
+            Err(e) => return DocumentFile::Unreadable(e.raw_os_error(), None, None),
+        };
+        let modified = meta.modified().ok().map(timestamp);
+        if is_link_or_reparse_point(&meta) {
+            return DocumentFile::Linked(
+                component.as_os_str().as_encoded_bytes().to_vec(),
+                fs::read_link(component)
+                    .ok()
+                    .map(|target| target.as_os_str().as_encoded_bytes().to_vec()),
+                modified,
+            );
+        }
+        if component == expected {
+            let stamp = Some((meta.len(), modified));
+            // Keep the existing exact-path check before reading an ordinary file.
+            if !meta.is_file() || fs::canonicalize(&expected).ok().as_ref() != Some(&expected) {
                 return DocumentFile::Unreadable(None, None, stamp);
             }
-            match fs::read(&actual) {
+            return match fs::read(&expected) {
                 Ok(bytes) if std::str::from_utf8(&bytes).is_ok() => {
                     DocumentFile::Readable(sha256_hex(&bytes))
                 }
                 Ok(bytes) => DocumentFile::Unreadable(None, Some(sha256_hex(&bytes)), stamp),
                 Err(e) => DocumentFile::Unreadable(e.raw_os_error(), None, stamp),
-            }
+            };
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => DocumentFile::Missing,
-        Err(e) => DocumentFile::Unreadable(e.raw_os_error(), None, None),
     }
+    DocumentFile::Unreadable(None, None, None)
 }

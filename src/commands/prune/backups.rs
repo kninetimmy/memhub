@@ -4,10 +4,10 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use super::{Action, Category, Item, Subject, identifier};
+use super::{Action, Category, Item, Subject, identifier, timestamp};
 use crate::commands::sync::sha256_file;
 use crate::db::{DB_FILENAME, MEMHUB_DIR, ProjectPaths};
-use crate::fs_identity::{FileIdentity, file_identity, file_info};
+use crate::fs_identity::{FileIdentity, file_identity, file_info, is_link_or_reparse_point};
 use crate::{MemhubError, Result};
 
 pub(crate) const RETAIN: usize = 20;
@@ -74,7 +74,7 @@ pub(super) fn surplus(paths: &ProjectPaths) -> Result<Vec<Group>> {
             let entry = entry.map_err(|err| at_path(&dir, err))?;
             let path = entry.path();
             let meta = fs::symlink_metadata(&path).map_err(|err| at_path(&path, err))?;
-            if linked(&meta) {
+            if is_link_or_reparse_point(&meta) {
                 continue;
             }
             if meta.is_dir() {
@@ -117,7 +117,7 @@ pub(super) fn surplus(paths: &ProjectPaths) -> Result<Vec<Group>> {
             .map(|f| {
                 (
                     f.path.file_name().expect("entry name").as_encoded_bytes(),
-                    f.modified,
+                    timestamp(f.modified),
                     f.bytes,
                     &f.hash,
                 )
@@ -170,7 +170,7 @@ pub(super) fn delete(paths: &ProjectPaths, candidate: Option<&str>) -> Result<us
             require_direct(&file.path)?;
             let meta = fs::symlink_metadata(&file.path).map_err(|err| at_path(&file.path, err))?;
             let info = file_info(&file.path).map_err(|err| at_path(&file.path, err))?;
-            if linked(&meta)
+            if is_link_or_reparse_point(&meta)
                 || !meta.is_file()
                 || info.links != 1
                 || info.identity != file.identity
@@ -196,22 +196,8 @@ fn validate_group(group: &Group) -> Result<()> {
     Ok(())
 }
 
-fn linked(meta: &fs::Metadata) -> bool {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        // Includes junctions and other reparse points, not just symlinks.
-        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
-        meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-    }
-    #[cfg(not(windows))]
-    {
-        meta.file_type().is_symlink()
-    }
-}
-
 fn require_direct(path: &Path) -> Result<()> {
-    if linked(&fs::symlink_metadata(path).map_err(|err| at_path(path, err))?)
+    if is_link_or_reparse_point(&fs::symlink_metadata(path).map_err(|err| at_path(path, err))?)
         || fs::canonicalize(path).map_err(|err| at_path(path, err))? != path
     {
         return Err(changed(path));

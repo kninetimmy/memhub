@@ -378,12 +378,15 @@ pub fn run(cli: Cli) -> Result<()> {
             }
         },
         TopLevelCommand::Status { json: as_json } => {
-            let (summary, prune_review_count) = commands::status::run_with_prune(&cwd)?;
+            let (summary, prune) = commands::status::run_with_prune(&cwd)?;
             // Cheap subsystem-state checks (issue #22) — a subset of
             // `doctor`'s own checks, reused rather than duplicated.
             let checks = commands::status::checks(&cwd)?;
             if as_json {
-                let mut status_json = status_summary_to_json(&summary, prune_review_count);
+                let mut status_json = status_summary_to_json(&summary, prune.total);
+                if let Some(warning) = prune.backup_warning {
+                    status_json["prune_backup_warning"] = json!(warning);
+                }
                 status_json["checks"] = status_checks_to_json(&checks);
                 println!("{}", json!({ "status": status_json }));
             } else {
@@ -405,7 +408,10 @@ pub fn run(cli: Cli) -> Result<()> {
                 println!("Pending writes: {}", summary.pending_writes);
                 println!("Writes logged: {}", summary.writes_logged);
                 println!("Deny patterns: {}", summary.deny_patterns);
-                println!("Prune review: {prune_review_count}");
+                println!("Prune review: {}", prune.total);
+                if let Some(warning) = prune.backup_warning {
+                    println!("  {}", warning.escape_debug());
+                }
                 // Subsystem-state lines (issue #22): schema, render
                 // freshness, retrieval mode, embeddings, sync (when
                 // enabled), metrics (when enabled).

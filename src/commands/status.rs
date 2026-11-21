@@ -13,10 +13,10 @@ pub fn run(start: &Path) -> Result<StatusSummary> {
 }
 
 /// CLI status includes the prune review; MCP status exposes only memory counts.
-pub fn run_with_prune(start: &Path) -> Result<(StatusSummary, usize)> {
+pub(crate) fn run_with_prune(start: &Path) -> Result<(StatusSummary, prune::Report)> {
     let ctx = db::open_project(start)?;
-    let count = prune::scan_project(&ctx)?.total;
-    Ok((summarize(start, ctx)?, count))
+    let report = prune::scan_project(&ctx)?;
+    Ok((summarize(start, ctx)?, report))
 }
 
 fn summarize(start: &Path, ctx: db::ProjectContext) -> Result<StatusSummary> {
@@ -127,8 +127,8 @@ mod tests {
         let temp = tempdir().expect("tempdir");
         init::run(temp.path()).expect("init");
 
-        let (_, count) = run_with_prune(temp.path()).expect("status");
-        assert_eq!(count, 0);
+        let (_, report) = run_with_prune(temp.path()).expect("status");
+        assert_eq!(report.total, 0);
     }
 
     #[test]
@@ -146,9 +146,9 @@ mod tests {
             .expect("backdate");
         drop(ctx);
 
-        let (_, count) = run_with_prune(temp.path()).expect("status");
+        let (_, status_report) = run_with_prune(temp.path()).expect("status");
         let report = prune::scan(temp.path()).expect("scan");
-        assert_eq!(count, report.total);
-        assert_eq!(count, 1);
+        assert_eq!(status_report.total, report.total);
+        assert_eq!(status_report.total, 1);
     }
 }

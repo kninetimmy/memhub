@@ -108,6 +108,10 @@ This is intentional, not an oversight: before prune review even `review
 stale` went through the same `open_project` path as `recall`, `status`,
 `doctor`, and `eval`. Now `prune scan` and its `review stale` alias use
 an explicitly read-only SQLite connection and bypass all open maintenance.
+Before, `review stale` seeded a missing `config.toml` during its maintained
+open. Both scan entry points now use `config.example.toml` in place when
+the live config is absent, or the built-in defaults when both are absent.
+Neither entry point writes a config file or falls back from a broken config.
 `recall`, `status`, `doctor`, and `eval` still use `open_project`, so they
 perform the same maintenance a write command would. The migration apply
 and the `projects` upsert are
@@ -138,6 +142,10 @@ sync, and transcript operations; lookup-only permits `status`, `recall`, and
 `get_row`. Those semantic lookups can therefore still migrate, upsert
 metadata, record/debounce registry or metrics maintenance, and expire
 proposals.
+Before prune review, MCP `status` also computed the old CLI stale queue,
+including reading ingested document files, without exposing that count.
+Now MCP `status` does neither; its response fields and maintained open
+are unchanged in both MCP profiles.
 The separate code root does not introduce a physically read-only memory
 path. `locate` is the exception it already was: it reads the primary
 config but opens only the selected checkout's disposable code cache.
@@ -2219,6 +2227,9 @@ stable identifier, and its available actions. An action's `command` is
 an argument array including `memhub`; run it as separate arguments, not
 through a shell. An action with `replace` needs the human's new value in
 place of that argument. No action is run by the scan.
+Human output quotes commands for PowerShell on Windows (including Windows
+PowerShell 5.1) and for a POSIX shell elsewhere. Arguments containing
+control characters are displayed as exact argv rather than a shell line.
 
 | Category | Before in `review stale` | Now in both commands |
 |---|---|---|
@@ -2234,11 +2245,26 @@ for the rest. `total` counts all undismissed items, including overflow.
 same report, including in JSON under its existing `review_stale` key.
 Previously its items exposed an integer `id`, `message`, and one `verb`;
 now they expose an opaque string `id`, `subjects`, `reason`, and `actions`.
+JSON consumers should read `review_stale.total` instead of
+`review_stale.counts.total`; `counts` now contains per-category totals
+and overflow.
 CLI `memhub status` replaces `Stale queue:` with `Prune review:` and adds
 `prune_review_count` in JSON; the old `stale_queue` key mirrors the new
 count. The CLI's separate stale-fact count and all other counts and checks
 keep their existing definitions. MCP `status` still returns stored counts
 and exposes neither the prune count nor any prune action.
+The public Rust `StatusSummary` previously exposed `stale_queue`; it no
+longer has that field. Use `commands::prune::scan` for a read-only total.
+The old Rust `commands::review` queue entry points (`stale` and
+`count_stale_queue`), `DONE_TASK_STALE_DAYS`, and `StaleCategory`,
+`StaleItem`, `StaleCounts`, and `StaleReport` are also removed. The
+replacement scanner and report types live under `commands::prune`.
+When backups cannot be safely inspected (for example, a linked backup
+root), both scan entry points and CLI status still report the other
+categories once the project has opened. Human output names the omission;
+JSON carries `backup_warning` in the scan report or `prune_backup_warning`
+in `status`. This only changes the review count, not the maintained
+open or its pre-migration backup.
 
 `memhub prune dismiss <identifier> [--actor <actor>]` records a keep
 decision without editing the source row or file. It matches a current
@@ -2247,6 +2273,8 @@ in the same transaction. Repeating an unchanged dismissal does not log
 twice. The ID fingerprints the current row and, where applicable, the
 on-disk file state. A changed source state still eligible for review
 gets a new ID; presenting an old ID does not dismiss that changed item.
+In particular, a dangling link at a previously missing document path is
+an unreadable entry with a different ID; the link target is not inspected.
 Returning to exactly the dismissed state matches the same ID again.
 The scan does not prune or otherwise edit old dismissal records. It
 reads schema 0026 or 0027 without applying migrations; `dismiss` and
@@ -2255,24 +2283,25 @@ use the existing render Recent Activity and freshness, doctor recency,
 status and stats write counts, and sync audit readers. Drive snapshots
 carry the table; JSON export/import do not transfer dismissal state.
 
-`memhub prune backups --yes` deletes only the surplus backups in the
+`memhub prune backups --yes` attempts to delete surplus backups in the
 current repo and works without a `Cargo.toml`. Eligible files are regular,
 single-link `.bak` files under `.memhub/backups/`, the extension used by
 render and the former markdown backup writer. Retention keeps the
-newest 20 per directory by modified time, with filename breaking ties.
-The scan's delete action includes `--candidate <identifier>` to limit
-deletion to the reviewed directory and file set; it refuses if the set
-has changed. The identifier covers kept files as well, since their state
-determines which files are surplus. Omitting `--candidate` explicitly cleans every eligible
-directory, regardless of dismissals. Neither form opens the database,
-follows linked paths, or removes directories, unrelated files, the
-legacy K9 copy, or files in `backups/{sync,import,migrations}`. These
-restrictions apply to both forms of `prune backups`, not to all cleanup
+newest 20 per directory by modified time, including times before 1970,
+with filename breaking ties.
+The scan's delete action includes `--candidate <identifier>`; it requires
+a matching batch fingerprint at the start of cleanup. The identifier
+covers kept files as well, since their state determines which files are
+surplus. Omitting `--candidate` selects all eligible batches, regardless
+of dismissals. Neither form opens the database.
+Both exclude linked paths, directories, unrelated files, the legacy K9
+copy, and files in `backups/{sync,import,migrations}` during selection.
+These restrictions apply to both forms of `prune backups`, not to all cleanup
 commands: `memhub gc` retains its existing Rust-project requirement,
 scope and `[gc] delete_stale_backups`/`--dry-run` behavior.
-Cleanup rechecks paths and file identity before each unlink. It is not
-an atomic filesystem snapshot; avoid moving or editing the backup tree
-while it runs.
+Cleanup rechecks paths and file identity before each unlink. These
+checks do not pin the file through the final pathname unlink, so the
+deletion guarantee is not met if the backup tree can change concurrently.
 
 ## Attribution
 

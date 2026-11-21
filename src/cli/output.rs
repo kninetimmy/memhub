@@ -1555,6 +1555,9 @@ pub(crate) fn print_prune_report(r: &PruneReport, as_json: bool, envelope: &str)
     }
 
     println!("Prune review: {} candidate(s)", r.total);
+    if let Some(warning) = &r.backup_warning {
+        println!("  {}", warning.escape_debug());
+    }
     for (&category, count) in r.counts.iter().filter(|(_, count)| count.total != 0) {
         println!(
             "\n{} ({}, {} more)",
@@ -1586,17 +1589,56 @@ pub(crate) fn print_prune_report(r: &PruneReport, as_json: bool, envelope: &str)
                 {
                     format!("argv {}", json!(action.command))
                 } else {
-                    action
-                        .command
-                        .iter()
-                        .map(|arg| quote_prune_arg(arg))
-                        .collect::<Vec<_>>()
-                        .join(" ")
+                    render_prune_command(&action.command)
                 };
                 println!("    {}: {command}", action.action);
             }
         }
     }
+}
+
+fn render_prune_command(argv: &[String]) -> String {
+    let command = argv
+        .iter()
+        .map(|arg| quote_prune_arg(arg))
+        .collect::<Vec<_>>()
+        .join(" ");
+    #[cfg(windows)]
+    if argv.iter().any(|arg| needs_legacy_native_quotes(arg)) {
+        // Only the enclosing script block uses legacy native argv conversion.
+        // 5.1 always does so; PowerShell 7 otherwise preserves the extra quotes.
+        return format!("& {{ $PSNativeCommandArgumentPassing = 'Legacy'; {command} }}");
+    }
+    command
+}
+
+#[cfg(windows)]
+fn needs_legacy_native_quotes(arg: &str) -> bool {
+    arg.is_empty()
+        || arg.contains('"')
+        || arg.eq_ignore_ascii_case("--%")
+        || (arg.ends_with('\\') && arg.chars().any(char::is_whitespace))
+}
+
+#[cfg(windows)]
+fn quote_legacy_native_arg(arg: &str) -> String {
+    // Encode one Windows native argv element before quoting the result for
+    // PowerShell's parser. Double runs of slashes before quotes or the end.
+    let mut encoded = String::from("\"");
+    let mut slashes = 0;
+    for c in arg.chars() {
+        if c == '\\' {
+            slashes += 1;
+        } else {
+            let count = if c == '"' { slashes * 2 + 1 } else { slashes };
+            encoded.extend(std::iter::repeat_n('\\', count));
+            encoded.push(c);
+            slashes = 0;
+        }
+    }
+    encoded.extend(std::iter::repeat_n('\\', slashes * 2));
+    encoded.push('"');
+    encoded
 }
 
 fn quote_prune_arg(arg: &str) -> String {
@@ -1608,10 +1650,21 @@ fn quote_prune_arg(arg: &str) -> String {
         return arg.into();
     }
     #[cfg(windows)]
-    let escaped = arg
-        .replace('\'', "''")
-        .replace('‘', "‘‘")
-        .replace('’', "’’");
+    let escaped = {
+        let native = if needs_legacy_native_quotes(arg) {
+            quote_legacy_native_arg(arg)
+        } else {
+            arg.into()
+        };
+        let mut escaped = String::new();
+        for c in native.chars() {
+            if matches!(c, '\'' | '‘' | '’' | '‚' | '‛') {
+                escaped.push(c);
+            }
+            escaped.push(c);
+        }
+        escaped
+    };
     #[cfg(not(windows))]
     let escaped = arg.replace('\'', "'\\''");
     format!("'{escaped}'")

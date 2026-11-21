@@ -27,13 +27,19 @@ impl Fixture {
         this
     }
 
-    fn run(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_memhub"))
-            .args(args)
+    fn command(&self, program: &str) -> Command {
+        let mut command = Command::new(program);
+        command
             .current_dir(&self.repo)
             .env("MEMHUB_LOG", "off")
             .env("HOME", self.temp.path())
-            .env("USERPROFILE", self.temp.path())
+            .env("USERPROFILE", self.temp.path());
+        command
+    }
+
+    fn run(&self, args: &[&str]) -> Output {
+        self.command(env!("CARGO_BIN_EXE_memhub"))
+            .args(args)
             .output()
             .unwrap()
     }
@@ -390,10 +396,152 @@ fn scan_reads_0026_without_migrating_and_dismiss_uses_the_standard_migration_bac
 }
 
 #[test]
+fn scan_uses_missing_config_fallback_without_creating_a_live_config() {
+    let f = Fixture::new();
+    f.db()
+        .execute(
+            "INSERT INTO facts(key,value,verified_at) VALUES
+             ('aging','value',datetime('now','-20 days'))",
+            [],
+        )
+        .unwrap();
+    let live = f.repo.join(".memhub/config.toml");
+    let example = f.repo.join(".memhub/config.example.toml");
+    fs::rename(&live, &example).unwrap(); // The example has a 10-day horizon.
+    let before = fs::read(&example).unwrap();
+    let scan = f.scan();
+    assert_eq!(scan["total"], 1);
+    assert_eq!(f.json(&["review", "stale", "--json"])["review_stale"], scan);
+    assert!(!live.exists());
+    assert_eq!(fs::read(&example).unwrap(), before);
+
+    fs::write(&live, "broken = [").unwrap();
+    assert!(!f.run(&["prune", "scan"]).status.success());
+    fs::write(&example, "broken = [").unwrap();
+    fs::remove_file(&live).unwrap();
+    assert!(!f.run(&["prune", "scan"]).status.success());
+    fs::remove_file(&example).unwrap();
+    assert_eq!(f.scan()["total"], 0, "built-in horizon applies");
+    assert!(!live.exists());
+}
+
+#[test]
+fn a_dangling_document_link_does_not_match_a_missing_file_dismissal() {
+    let f = Fixture::new();
+    f.document("gone.md", None, false);
+    let report = f.scan();
+    let missing = row_item(&report, "out_of_date_document", 1);
+    f.ok(&action(missing, "keep"));
+    assert_eq!(f.scan()["total"], 0);
+
+    let target = f.temp.path().join("link-target");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&target, f.temp.path().join("gone.md")).unwrap();
+    #[cfg(windows)]
+    {
+        // Junctions require no symlink privilege and carry reparse metadata.
+        let out = Command::new("cmd")
+            .current_dir(f.temp.path())
+            .args(["/C", "mklink", "/J", "gone.md", "link-target"])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    assert!(!target.exists());
+    let report = f.scan();
+    let linked = row_item(&report, "out_of_date_document", 1);
+    assert_ne!(missing["id"], linked["id"]);
+    assert!(linked["reason"].as_str().unwrap().contains("unreadable"));
+    assert_eq!(&action(linked, "archive")[..3], ["doc", "archive", "1"]);
+
+    #[cfg(unix)]
+    fs::write(&target, "# Different content").unwrap();
+    #[cfg(windows)]
+    fs::create_dir(&target).unwrap();
+    assert_eq!(
+        f.scan(),
+        report,
+        "the target is not part of the fingerprint"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn human_action_updates_the_quoted_fact_in_windows_powershell() {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    const KEY: &str = r#"-a "quoted" key's\"#;
+    const PRINTED: &str = r#"& { $PSNativeCommandArgumentPassing = 'Legacy'; memhub fact add -- '"-a \"quoted\" key''s\\"' '<new-value>' }"#;
+    // Use a fixed, trusted script matching PRINTED, with only the placeholder
+    // replaced. Do not evaluate text read from the program's output.
+    const SCRIPT: &str = r#"
+if ($PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne 1) { exit 99 }
+Set-Alias memhub $env:TEST_MEMHUB_EXE
+& { $PSNativeCommandArgumentPassing = 'Legacy'; memhub fact add -- '"-a \"quoted\" key''s\\"' 'updated' }
+exit $LASTEXITCODE
+"#;
+    let f = Fixture::new();
+    f.db()
+        .execute("INSERT INTO facts(key,value) VALUES (?1,'old')", [KEY])
+        .unwrap();
+    let human = String::from_utf8(f.ok(&["prune", "scan"])).unwrap();
+    assert_eq!(
+        human
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("update_value: ")),
+        Some(PRINTED)
+    );
+
+    let mut shell = f
+        .command("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", "-"])
+        .env("TEST_MEMHUB_EXE", env!("CARGO_BIN_EXE_memhub"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    shell
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(SCRIPT.as_bytes())
+        .unwrap();
+    let out = shell.wait_with_output().unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let db = f.db();
+    let rows: Vec<(String, String)> = db
+        .prepare("SELECT key,value FROM facts")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(rows, [(KEY.into(), "updated".into())]);
+}
+
+#[test]
 fn backup_cleanup_requires_confirmation_and_only_removes_reviewed_surplus() {
     let f = Fixture::new();
     let rendered = f.backups("rendered", 23);
     let markdown = f.backups("legacy/nested", 22);
+    let oldest = markdown.join("00.bak");
+    let pre_epoch = SystemTime::UNIX_EPOCH - Duration::from_secs(1);
+    File::options()
+        .write(true)
+        .open(&oldest)
+        .unwrap()
+        .set_times(FileTimes::new().set_modified(pre_epoch))
+        .unwrap();
+    assert_eq!(
+        fs::metadata(&oldest).unwrap().modified().unwrap(),
+        pre_epoch
+    );
     let safety = f.backups("migrations", 21);
     let unrelated = rendered.join("readme.txt");
     fs::write(&unrelated, "not a backup").unwrap();
@@ -403,6 +551,10 @@ fn backup_cleanup_requires_confirmation_and_only_removes_reviewed_surplus() {
     assert!(!f.run(&["prune", "backups"]).status.success());
     let report = f.scan();
     assert_eq!(report["total"], 2);
+    assert_eq!(
+        f.json(&["status", "--json"])["status"]["prune_review_count"],
+        2
+    );
     let first = items(&report)
         .iter()
         .find(|item| {
@@ -477,6 +629,32 @@ fn backup_cleanup_skips_linked_children_and_refuses_a_linked_backup_root() {
     let tree = f.repo.join(".memhub/backups");
     fs::rename(&tree, f.repo.join(".memhub/original")).unwrap();
     directory_alias(&outside, &tree);
+    f.db()
+        .execute("INSERT INTO facts(key,value) VALUES ('aging','value')", [])
+        .unwrap();
+    let report = f.scan();
+    assert_eq!(report["total"], 1);
+    assert_eq!(report["counts"]["surplus_backups"]["total"], 0);
+    assert_eq!(
+        row_item(&report, "stale_fact", 1)["subjects"][0]["key"],
+        "aging"
+    );
+    assert_eq!(
+        f.json(&["review", "stale", "--json"])["review_stale"],
+        report
+    );
+    let human = String::from_utf8(f.ok(&["prune", "scan"])).unwrap();
+    assert!(human.contains("Surplus backups not counted"));
+    let status = f.json(&["status", "--json"]);
+    assert_eq!(status["status"]["prune_review_count"], report["total"]);
+    assert_eq!(
+        status["status"]["prune_backup_warning"],
+        report["backup_warning"]
+    );
+    let human = String::from_utf8(f.ok(&["status"])).unwrap();
+    assert!(human.contains("Surplus backups not counted"));
+    let id = row_item(&report, "stale_fact", 1)["id"].as_str().unwrap();
+    f.ok(&["prune", "dismiss", id]);
     assert!(!f.run(&["prune", "backups", "--yes"]).status.success());
     assert_eq!(fs::read_to_string(&victim).unwrap(), "outside");
     assert_eq!(file_count(&outside), 22);
