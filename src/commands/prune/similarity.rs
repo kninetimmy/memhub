@@ -10,8 +10,8 @@ use chrono::{DateTime, NaiveDate};
 use rusqlite::Connection;
 
 use super::{
-    Action, ArchitectureSource, Category, CorrectionExcerpts, DocumentFile, Item, SourceExcerpt,
-    Subject, document_file, identifier, re_ingest_action,
+    Action, ArchitectureSource, Category, DocumentFile, Item, PairExcerpts, SourceExcerpt, Subject,
+    document_file, identifier, re_ingest_action,
 };
 use crate::Result;
 use crate::commands::review::ACCEPT_SIMILARITY_RERANK_THRESHOLD;
@@ -27,6 +27,22 @@ struct Row {
     active: bool,
     replacement: Option<i64>,
     document_file: Option<DocumentFile>,
+}
+
+impl Row {
+    fn match_text(&self) -> String {
+        let text = &self.excerpt.text;
+        match &self.subject {
+            Subject::Fact { key, .. } => fact_embed_text(key, text),
+            Subject::Decision { title, .. } => {
+                decision_embed_text(title, text, self.excerpt.summary.as_deref())
+            }
+            Subject::Task { .. } => task_embed_text(text, self.excerpt.notes.as_deref()),
+            Subject::ArchitectureSection { heading, .. } => arch_section_embed_text(heading, text),
+            Subject::DocumentChunk { heading, .. } => doc_chunk_embed_text(heading, text),
+            _ => unreachable!("only similarity source types"),
+        }
+    }
 }
 
 pub(super) fn visit(
@@ -78,12 +94,12 @@ fn visit_matching(
                 candidates.push(target);
             }
         }
-        for target in matches(&source.excerpt.text, &candidates)? {
+        for target in matches(&source.match_text(), &candidates)? {
             let id = identifier(category, (&source.state, &target.state))?;
             let mut reason = "Textual overlap with an old claim; not evidence of contradiction. Check version qualifiers before choosing keep or correcting the row.".to_string();
             let mut actions = correction_actions(target).unwrap_or_else(|why| {
-                reason.push_str(" Edit and re-ingest unavailable: ");
-                reason.push_str(why);
+                reason.push(' ');
+                reason.push_str(&why);
                 Vec::new()
             });
             actions.push(Action::keep(&id));
@@ -94,7 +110,7 @@ fn visit_matching(
                     subjects: vec![source.subject.clone(), target.subject.clone()],
                     reason,
                     actions,
-                    excerpts: Some(CorrectionExcerpts {
+                    excerpts: Some(PairExcerpts::Correction {
                         old_claim: source.excerpt.clone(),
                         possible_restatement: target.excerpt.clone(),
                     }),
@@ -135,15 +151,7 @@ fn matches<'a>(query: &str, candidates: &[&'a Row]) -> Result<Vec<&'a Row>> {
     if candidates.is_empty() {
         return Ok(candidates.to_vec());
     }
-    let docs: Vec<_> = candidates
-        .iter()
-        .map(|row| match &row.subject {
-            Subject::ArchitectureSection { heading, .. } => {
-                arch_section_embed_text(heading, &row.excerpt.text)
-            }
-            _ => row.excerpt.text.clone(),
-        })
-        .collect();
+    let docs: Vec<_> = candidates.iter().map(|row| row.match_text()).collect();
     let mut scored = rerank::rerank(query, &docs)?;
     // Stable source order, independent of score ordering or result caps.
     scored.sort_by_key(|&(index, _)| index);
@@ -171,11 +179,11 @@ fn pairs(
         };
         active.push((time, row));
     }
-    active.sort_by_key(|(time, row)| (*time, row.excerpt.source_id));
-    let unknown: HashSet<_> = active
+    // ID only stabilizes enumeration and fingerprints; it is never evidence of order.
+    active.sort_by_key(|(time, row)| (time.map(|t| t.start), row.excerpt.source_id));
+    let times: HashMap<_, _> = active
         .iter()
-        .take_while(|(time, _)| time.is_none())
-        .map(|(_, row)| row.excerpt.source_id)
+        .map(|&(time, row)| (row.excerpt.source_id, time))
         .collect();
     for (i, &(later_time, later)) in active.iter().enumerate() {
         let mut earlier_rows = Vec::new();
@@ -188,36 +196,45 @@ fn pairs(
                 earlier_rows.push(earlier);
             }
         }
-        for earlier in matches(&later.excerpt.text, &earlier_rows)? {
+        for earlier in matches(&later.match_text(), &earlier_rows)? {
             let id = identifier(category, (&earlier.state, &later.state))?;
             let mut reason = "Textual overlap meets the accept-time similarity cutoff; not evidence of contradiction.".to_string();
             let keep = Action::new("keep_both", ["prune", "dismiss", &id]);
-            let actions = if category == Category::DuplicateFacts {
-                vec![
-                    retire("retire_earlier", earlier.excerpt.source_id),
-                    retire("retire_later", later.excerpt.source_id),
-                    keep,
-                ]
-            } else if later_time.is_some() && !unknown.contains(&earlier.excerpt.source_id) {
-                vec![
-                    Action::new(
-                        "supersede_earlier",
-                        [
-                            "decision",
-                            "supersede",
-                            &earlier.excerpt.source_id.to_string(),
-                            "--by",
-                            &later.excerpt.source_id.to_string(),
-                        ],
-                    ),
-                    keep,
-                ]
-            } else {
+            let a = earlier.excerpt.source_id;
+            let b = later.excerpt.source_id;
+            let mut actions = Vec::new();
+            if category == Category::DuplicateFacts {
+                for (action, id) in [("retire_earlier", a), ("retire_later", b)] {
+                    if id < 0 {
+                        reason.push_str(&format!(
+                            " Retire unavailable for fact #{id}: negative IDs are not offered as CLI operands."
+                        ));
+                    } else {
+                        actions.push(retire(action, id));
+                    }
+                }
+            } else if !times[&a]
+                .zip(later_time)
+                .is_some_and(|(a, b)| a.is_before(b))
+            {
+                reason.push_str(" Decision chronology is unknown (missing, equal, or overlapping); no supersession command is offered.");
+            } else if a < 0 || b < 0 {
                 reason.push_str(
-                    " Decision chronology is unknown; no supersession command is offered.",
+                    " Supersession unavailable: negative IDs are not offered as CLI operands.",
                 );
-                vec![keep]
-            };
+            } else {
+                actions.push(Action::new(
+                    "supersede_earlier",
+                    [
+                        "decision",
+                        "supersede",
+                        &a.to_string(),
+                        "--by",
+                        &b.to_string(),
+                    ],
+                ));
+            }
+            actions.push(keep);
             visit(
                 Item {
                     id,
@@ -225,7 +242,10 @@ fn pairs(
                     subjects: vec![earlier.subject.clone(), later.subject.clone()],
                     reason,
                     actions,
-                    excerpts: None,
+                    excerpts: Some(PairExcerpts::Comparison {
+                        first: earlier.excerpt.clone(),
+                        second: later.excerpt.clone(),
+                    }),
                 },
                 earlier,
                 later,
@@ -248,8 +268,14 @@ fn retire(action: &'static str, id: i64) -> Action {
     )
 }
 
-fn correction_actions(row: &Row) -> std::result::Result<Vec<Action>, &'static str> {
+fn correction_actions(row: &Row) -> std::result::Result<Vec<Action>, String> {
     Ok(match &row.subject {
+        Subject::Fact { id, .. } | Subject::Task { id, .. } if *id < 0 => {
+            return Err(
+                "Correction commands unavailable: negative IDs are not offered as CLI operands."
+                    .into(),
+            );
+        }
         Subject::Fact { id, .. } => vec![retire("retire", *id)],
         Subject::Task { id, .. } => vec![
             Action::new(
@@ -266,14 +292,25 @@ fn correction_actions(row: &Row) -> std::result::Result<Vec<Action>, &'static st
         ],
         Subject::DocumentChunk { path, title, .. } => {
             // Editing is human work, not an invented memhub edit verb.
-            vec![re_ingest_action(
-                "edit_and_re_ingest",
-                row.document_file.as_ref().expect("document file state"),
-                path,
-                title,
-            )?]
+            vec![
+                re_ingest_action(
+                    "edit_and_re_ingest",
+                    row.document_file.as_ref().expect("document file state"),
+                    path,
+                    title,
+                )
+                .map_err(|why| format!("Edit and re-ingest unavailable: {why}"))?,
+            ]
         }
         Subject::ArchitectureSection { .. } => {
+            if !row
+                .excerpt
+                .architecture_source
+                .as_ref()
+                .is_some_and(|arch| arch.rewrite_supported)
+            {
+                return Err("Rewrite unavailable: an appended architecture is not guaranteed to become current under the stored timestamp and ID ordering.".into());
+            }
             let mut action = Action::new(
                 "rewrite",
                 [
@@ -313,7 +350,10 @@ fn facts(conn: &Connection, id: Option<i64>) -> Result<Vec<Row>> {
                     source_type: "fact",
                     source_id: id,
                     recorded_at: r.get(3)?,
-                    text: fact_embed_text(&key, &r.get::<_, String>(2)?),
+                    text: r.get(2)?,
+                    summary: None,
+                    notes: None,
+                    original_wording_unavailable: None,
                     architecture_source: None,
                 },
                 subject: Subject::Fact { id, key },
@@ -347,11 +387,10 @@ fn decisions(conn: &Connection, id: Option<i64>) -> Result<Vec<Row>> {
                     source_type: "decision",
                     source_id: id,
                     recorded_at: r.get(4)?,
-                    text: decision_embed_text(
-                        &title,
-                        &r.get::<_, String>(2)?,
-                        r.get::<_, Option<String>>(3)?.as_deref(),
-                    ),
+                    text: r.get(2)?,
+                    summary: r.get(3)?,
+                    notes: None,
+                    original_wording_unavailable: None,
                     architecture_source: None,
                 },
                 subject: Subject::Decision { id, title },
@@ -366,7 +405,22 @@ fn decisions(conn: &Connection, id: Option<i64>) -> Result<Vec<Row>> {
 
 // Order by UTC second (including leap seconds), then the exact decimal
 // fraction: the parsers' built-in subsecond precision can round or truncate.
-type DecisionTime<'a> = (i64, bool, &'a str);
+type Instant<'a> = (i64, bool, &'a str);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DecisionTime<'a> {
+    start: Instant<'a>,
+    end_second: Option<i64>,
+}
+
+impl DecisionTime<'_> {
+    fn is_before(self, other: Self) -> bool {
+        match self.end_second {
+            Some(end) => end <= other.start.0,
+            None => self.start < other.start,
+        }
+    }
+}
 
 fn decision_time<'a>(conn: &Connection, date: &'a str) -> Result<Option<DecisionTime<'a>>> {
     let date = date.trim();
@@ -376,11 +430,14 @@ fn decision_time<'a>(conn: &Connection, date: &'a str) -> Result<Option<Decision
     });
     let fraction = decimal.map_or("", |(_, digits, _)| digits.trim_end_matches('0'));
     if let Ok(time) = DateTime::parse_from_rfc3339(date) {
-        return Ok(Some((
-            time.timestamp(),
-            time.timestamp_subsec_nanos() >= 1_000_000_000,
-            fraction,
-        )));
+        return Ok(Some(DecisionTime {
+            start: (
+                time.timestamp(),
+                time.timestamp_subsec_nanos() >= 1_000_000_000,
+                fraction,
+            ),
+            end_second: None,
+        }));
     }
 
     // Use SQLite for its native calendar-bearing layouts. Reject invalid
@@ -401,7 +458,18 @@ fn decision_time<'a>(conn: &Connection, date: &'a str) -> Result<Option<Decision
         [whole.as_deref().unwrap_or(date)],
         |r| r.get(0),
     )?;
-    Ok(seconds.map(|seconds| (seconds, false, fraction)))
+    // SQLite fills in missing fields with zeroes, but an imported day or
+    // minute is not evidence of the exact instant those zeroes imply.
+    let uncertainty = if date.len() == 10 {
+        Some(86_400)
+    } else {
+        let clock = date[10..].split(['+', '-', 'Z', 'z']).next().unwrap_or("");
+        (clock.matches(':').count() == 1).then_some(60)
+    };
+    Ok(seconds.map(|seconds| DecisionTime {
+        start: (seconds, false, fraction),
+        end_second: uncertainty.map(|width| seconds + width),
+    }))
 }
 
 fn correction_targets(
@@ -415,7 +483,9 @@ fn correction_targets(
             "SELECT s.id, s.heading_path, s.body, a.created_at,
                 json_array('arch_section', s.id, s.arch_id, s.ord, s.heading_path, s.body,
                            s.created_at, a.body, a.actor, a.actor_raw, a.created_at),
-                 a.body, a.id, s.ord
+                a.body, a.id, s.ord,
+                (a.created_at < CURRENT_TIMESTAMP OR (a.created_at = CURRENT_TIMESTAMP
+                 AND (SELECT max(id) FROM project_arch) < 9223372036854775807))
          FROM arch_sections s JOIN project_arch a ON a.id = s.arch_id
          WHERE s.project_id = 1 AND a.id = (
              SELECT id FROM project_arch WHERE project_id = 1
@@ -432,16 +502,25 @@ fn correction_targets(
             |r| {
                 let id = r.get(0)?;
                 let heading: String = r.get(1)?;
+                let text: String = r.get(2)?;
+                let original: String = r.get(5)?;
+                let original_wording_unavailable = (!original.contains(&text)).then_some(
+                    "The indexed section is not a verbatim slice of the retained architecture. See the full retained source.",
+                );
                 Ok(Row {
                     excerpt: SourceExcerpt {
                         source_type: "arch_section",
                         source_id: id,
                         recorded_at: r.get(3)?,
-                        text: r.get(2)?,
+                        text,
+                        summary: None,
+                        notes: None,
+                        original_wording_unavailable,
                         architecture_source: Some(ArchitectureSource {
-                            text: r.get(5)?,
+                            text: original,
                             architecture_id: r.get(6)?,
                             section_ordinal: r.get(7)?,
+                            rewrite_supported: r.get(8)?,
                         }),
                     },
                     subject: Subject::ArchitectureSection { id, heading },
@@ -480,7 +559,12 @@ fn correction_targets(
                         source_type: "doc_chunk",
                         source_id: id,
                         recorded_at: r.get(3)?,
-                        text: doc_chunk_embed_text(&heading, &r.get::<_, String>(2)?),
+                        text: r.get(2)?,
+                        summary: None,
+                        notes: None,
+                        original_wording_unavailable: Some(
+                            "The original document and exact ancestor headings are not retained with this chunk.",
+                        ),
                         architecture_source: None,
                     },
                     subject: Subject::DocumentChunk {
@@ -526,7 +610,10 @@ fn correction_targets(
                         source_type: "task",
                         source_id: id,
                         recorded_at: r.get(3)?,
-                        text: task_embed_text(&title, r.get::<_, Option<String>>(2)?.as_deref()),
+                        text: title.clone(),
+                        summary: None,
+                        notes: r.get(2)?,
+                        original_wording_unavailable: None,
                         architecture_source: None,
                     },
                     subject: Subject::Task { id, title },
@@ -570,8 +657,10 @@ mod tests {
             ("2016-12-31T23:59:60.999Z", "2017-01-01T00:00:00Z"),
         ] {
             assert!(
-                decision_time(&conn, earlier).unwrap().unwrap()
-                    < decision_time(&conn, later).unwrap().unwrap(),
+                decision_time(&conn, earlier)
+                    .unwrap()
+                    .unwrap()
+                    .is_before(decision_time(&conn, later).unwrap().unwrap()),
                 "{earlier} < {later}"
             );
         }
@@ -584,14 +673,27 @@ mod tests {
                 decision_time(&conn, "2025-01-01T00:00:00.0001Z").unwrap()
             );
         }
-        assert_eq!(
-            decision_time(&conn, "2025-01-01 01:00+01:00")
-                .unwrap()
-                .unwrap(),
-            decision_time(&conn, "2025-01-01").unwrap().unwrap(),
-        );
         for unknown in ["unset", "now", "00:00:00", "2025-02-30 00:00:00"] {
             assert_eq!(decision_time(&conn, unknown).unwrap(), None, "{unknown}");
         }
+    }
+
+    #[test]
+    fn decision_order_requires_non_overlapping_times() {
+        let conn = Connection::open_in_memory().unwrap();
+        let time = |date| decision_time(&conn, date).unwrap().unwrap();
+        let day = time("2025-01-01");
+        let minute = time("2025-01-01 01:00+01:00");
+        let instant = time("2025-01-01T00:00:00.1Z");
+        for (a, b) in [
+            (day, instant),
+            (day, day),
+            (minute, instant),
+            (instant, instant),
+        ] {
+            assert!(!a.is_before(b) && !b.is_before(a));
+        }
+        assert!(day.is_before(time("2025-01-02T00:00:00Z")));
+        assert!(minute.is_before(time("2025-01-01T00:01:00Z")));
     }
 }

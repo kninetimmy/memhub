@@ -2343,13 +2343,15 @@ still report all model-free categories and explicitly state that similarity
 checks were skipped (`similarity_warning` in JSON).
 
 - `duplicate_facts`: pairs of active, non-retired facts under different
-  keys. Retire either fact, or keep both by dismissing the pair.
+  keys. Keep both by dismissing the pair, or retire either fact whose ID
+  can be used safely in the command.
 - `unlinked_decisions`: pairs of active decisions without supersession
-  links. Compare the later decision against the earlier one, ordered by
-  the recorded instant (including offset and fractional seconds), with
-  row ID as the tie-breaker for equal instants. Mark the earlier decision
-  superseded by the later one, or keep both. If either date cannot establish
-  an instant, the overlap is reportable but only keep is offered.
+  links. The supersede command requires a clear earlier and later decision
+  and usable IDs. Date-only values cover the whole UTC day, not midnight;
+  times include their offset and recorded precision. Missing or unrecognized
+  dates, equal instants and overlapping date ranges leave order unknown.
+  Row ID never establishes chronology. These pairs are still shown and can
+  be kept or dismissed.
 - `correction_sweep`: for every superseded fact or decision and every
   retired fact, list active, non-retired facts, current architecture
   sections, non-archived document chunks and open tasks that still overlap
@@ -2361,23 +2363,35 @@ checks were skipped (`similarity_warning` in JSON).
 
 A match measures **textual overlap, not contradiction**. Compatible claims
 about different versions can match. Every correction pair includes both
-complete, unabridged source texts together, labeled **old claim** and
-**possible restatement**, with source type, row ID and recorded date when
-known. JSON carries them in `excerpts.old_claim` and
-`excerpts.possible_restatement` (`source_type`, `source_id`, `recorded_at`,
-`text`). Titles, headings, rationale/summary, notes and version qualifiers
-are preserved, not replaced with a model-generated explanation.
-Architecture pairs show the exact stored section plus its full original
-Markdown, not headings reconstructed from the recall index. JSON attaches
-the original Markdown as `architecture_source.text` beside the stored
-section, with `architecture_id` and the zero-based `section_ordinal` to
-identify the match even when headings repeat or legacy sections are present.
+sets of retained evidence together, labeled **old claim** and **possible
+restatement**, with source type, row ID and recorded date when known. JSON
+carries them in `excerpts.old_claim` and `excerpts.possible_restatement`.
+`text` contains the stored fact value, decision rationale, task title,
+indexed architecture section, or document chunk as applicable. Decision
+summaries and task notes are separate fields; keys and titles also appear
+in `subjects`. Duplicate fact and decision pairs show their evidence in
+`excerpts.first` and `excerpts.second`.
 
-Correction actions are retire for a fact; edit the source file then run
-the provided title-preserving `doc add` command for a document; rewrite
-the **complete** architecture using the provided `arch set --from-file` command
-(not just the matching section); or drop/refresh a task with `task drop`
-or `task keep`. Every pair also offers keep through `prune dismiss`.
+Document chunks can retain a heading line in their stored text, but the
+normalized `heading_context` is context, not a quotation. The scan says
+when original document wording, such as an exact ancestor heading, is
+unavailable. It does not reconstruct it or quote a local file as the
+original. Architecture pairs show the stored indexed section and attach
+the full retained Markdown as `architecture_source.text`, with
+`architecture_id` and the zero-based `section_ordinal` to identify the
+match even when headings repeat or legacy sections are present. Use the
+full retained source for exact wording when the indexed section is not
+a verbatim slice.
+
+Where supported, correction actions are retire for a fact; edit the
+source file then run the title-preserving `doc add` command for a document;
+rewrite the **complete** architecture with `arch set --from-file` (not
+just the matching section); or drop/refresh a task with `task drop` or
+`task keep`. Negative fact, decision and task IDs are shown as evidence
+but not used as command targets. Architecture rewrite is not offered if
+a new row with the normal timestamp cannot reliably become current under
+the existing timestamp and ID ordering. Every pair also offers keep
+through `prune dismiss`.
 Editing a file or composing replacement architecture is human work;
 the scanner never performs it or invents an edit command.
 Stored document matches remain reviewable when the recorded path is missing,
@@ -2399,6 +2413,7 @@ pairs are scored during scans; the cap limits the display, not the search.
 This exhaustive manual review can take longer on
 large corpora, but loads no embedding model and writes no memory, index,
 query log or file. The four original categories retain their IDs.
+`memhub status` counts only those four categories, not similarity matches.
 Dismissal resolves model-free matches first, in a read snapshot. Only
 if none matches does it look for and score the requested similarity pair.
 After the usual maintained open, no writer transaction starts for an

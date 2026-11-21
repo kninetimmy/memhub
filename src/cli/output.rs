@@ -1579,7 +1579,7 @@ pub(crate) fn print_prune_report(r: &PruneReport, as_json: bool, envelope: &str)
                         println!("    decision #{id}: {title:?}")
                     }
                     PruneSubject::ArchitectureSection { id, heading } => {
-                        println!("    arch_section #{id}: {heading:?}");
+                        println!("    arch_section #{id} heading context (derived): {heading:?}");
                     }
                     PruneSubject::DocumentChunk {
                         id,
@@ -1589,7 +1589,7 @@ pub(crate) fn print_prune_report(r: &PruneReport, as_json: bool, envelope: &str)
                         heading,
                     } => {
                         println!(
-                            "    doc_chunk #{id} (document #{document_id}, {title:?}): {path:?}, {heading:?}"
+                            "    doc_chunk #{id} (document #{document_id}, title {title:?}): {path:?}; heading context (derived): {heading:?}"
                         );
                     }
                     PruneSubject::BackupFiles { directory, files } => {
@@ -1601,10 +1601,7 @@ pub(crate) fn print_prune_report(r: &PruneReport, as_json: bool, envelope: &str)
                 }
             }
             if let Some(excerpts) = &item.excerpts {
-                for (label, source) in [
-                    ("old claim", &excerpts.old_claim),
-                    ("possible restatement", &excerpts.possible_restatement),
-                ] {
+                for (label, source) in excerpts.labeled() {
                     println!(
                         "    {label} ({} #{}, recorded {}):",
                         source.source_type,
@@ -1615,9 +1612,22 @@ pub(crate) fn print_prune_report(r: &PruneReport, as_json: bool, envelope: &str)
                             .unwrap_or("unknown")
                             .escape_debug(),
                     );
-                    // No clipping: version qualifiers can occur anywhere in the source.
-                    for line in source.text.split('\n') {
-                        println!("      {}", line.escape_debug());
+                    if let Some(why) = source.original_wording_unavailable {
+                        println!("      Original wording unavailable: {why}");
+                    }
+                    let field = match source.source_type {
+                        "fact" => "Stored value",
+                        "decision" => "Stored rationale",
+                        "task" => "Stored title",
+                        "arch_section" => "Stored indexed section",
+                        _ => "Stored chunk",
+                    };
+                    print_prune_text(field, &source.text);
+                    if let Some(summary) = &source.summary {
+                        print_prune_text("Stored summary", summary);
+                    }
+                    if let Some(notes) = &source.notes {
+                        print_prune_text("Stored notes", notes);
                     }
                     if let Some(arch) = &source.architecture_source {
                         println!(
@@ -1648,6 +1658,14 @@ pub(crate) fn print_prune_report(r: &PruneReport, as_json: bool, envelope: &str)
                 println!("    {}: {command}", action.action);
             }
         }
+    }
+}
+
+fn print_prune_text(field: &str, text: &str) {
+    println!("      {field}:");
+    // No clipping: version qualifiers can occur anywhere in a stored field.
+    for line in text.split('\n') {
+        println!("      {}", line.escape_debug());
     }
 }
 

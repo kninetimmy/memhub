@@ -156,9 +156,11 @@ fn similarity_categories_filter_sources_and_preserve_exact_paired_excerpts_witho
         }
         if old["source_type"] == "decision" {
             assert_ne!(old["source_id"], 4, "draft decisions are not old claims");
+            assert_eq!(old["text"], CLAIM);
+            assert_eq!(old["summary"], "Version 1.0 only");
             assert_eq!(
-                old["text"],
-                format!("Version 1.0 only\n\nAdopt Postgres as the datastore\n\n{CLAIM}")
+                item["subjects"][0]["title"],
+                "Adopt Postgres as the datastore"
             );
         }
     }
@@ -185,10 +187,10 @@ fn similarity_categories_filter_sources_and_preserve_exact_paired_excerpts_witho
         );
     }
     for (kind, expected_text) in [
-        ("fact", format!("datastore: {CLAIM}")),
+        ("fact", CLAIM.to_owned()),
         ("doc_chunk", body.clone()),
         ("arch_section", body.clone()),
-        ("task", format!("{CLAIM}\n\nVersion 1.0 only")),
+        ("task", CLAIM.to_owned()),
     ] {
         let hit = sweep
             .iter()
@@ -220,6 +222,10 @@ fn similarity_categories_filter_sources_and_preserve_exact_paired_excerpts_witho
                 ]
             ),
             "task" => {
+                assert_eq!(
+                    hit["excerpts"]["possible_restatement"]["notes"],
+                    "Version 1.0 only"
+                );
                 assert_eq!(&action(hit, "drop")[..3], ["task", "drop", "1"]);
                 assert_eq!(action(hit, "keep_task"), ["task", "keep", "1"]);
             }
@@ -281,13 +287,12 @@ fn imported_architecture(f: &Fixture) -> String {
 }
 
 #[test]
-fn imported_decisions_use_exact_chronology_offsets_and_id_only_for_true_ties() {
+fn imported_decisions_offer_supersession_only_for_non_overlapping_chronology() {
     let f = fixture();
-    // Each pair reverses insertion/ID order, except the true instant tie.
     for (id, date) in [
         (1, "2025-01-01t00:00:00.0000000002z"),
         (2, "2025-01-01 00:00:00.0000000001"),
-        (3, "2025-01-02T00:00:00.0001Z"),
+        (3, "2025-01-03"),
         (4, "2025-01-02T01:00:00.0001+02:00"),
         (5, "2025-01-03T00:00:00.00010Z"),
         (6, "2025-01-03 01:00:00.000100+01:00"),
@@ -305,7 +310,7 @@ fn imported_decisions_use_exact_chronology_offsets_and_id_only_for_true_ties() {
     f.ok(&["export", export.to_str().unwrap()]);
     f.ok(&["import", export.to_str().unwrap(), "--force"]);
     let report = f.scan();
-    for (earlier, later) in [(2, 1), (4, 3), (5, 6)] {
+    for (earlier, later) in [(2, 1), (4, 3)] {
         let pair = category(&report, "unlinked_decisions")
             .into_iter()
             .find(|item| item["subjects"][0]["id"] == earlier && item["subjects"][1]["id"] == later)
@@ -326,14 +331,12 @@ fn imported_decisions_use_exact_chronology_offsets_and_id_only_for_true_ties() {
     let unknown: Vec<_> = decisions
         .into_iter()
         .filter(|pair| {
-            pair["subjects"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|s| s["id"] == 7)
+            let a = pair["subjects"][0]["id"].as_i64().unwrap();
+            let b = pair["subjects"][1]["id"].as_i64().unwrap();
+            a == 7 || b == 7 || matches!((a, b), (3, 5) | (3, 6) | (5, 6))
         })
         .collect();
-    assert_eq!(unknown.len(), 6);
+    assert_eq!(unknown.len(), 9);
     for pair in unknown {
         assert_eq!(pair["actions"].as_array().unwrap().len(), 1);
         assert_eq!(&action(pair, "keep_both")[..2], ["prune", "dismiss"]);
@@ -345,6 +348,67 @@ fn imported_decisions_use_exact_chronology_offsets_and_id_only_for_true_ties() {
         );
     }
     assert_eq!(f.scan(), report);
+}
+
+#[test]
+fn unusable_imported_targets_stay_reviewable_without_corrective_commands() {
+    let f = fixture();
+    f.db()
+        .execute_batch(&format!(
+            "INSERT INTO facts(id,key,value,verified_at,retired_at) VALUES
+               (-1,'database','{CLAIM}',CURRENT_TIMESTAMP,NULL),
+               (1,'datastore','{CLAIM}',CURRENT_TIMESTAMP,NULL),
+               (2,'old','{CLAIM}',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+             INSERT INTO tasks(id,title) VALUES (-1,'{CLAIM}');
+             INSERT INTO decisions(id,title,rationale,decided_at) VALUES
+               (1,'Adopt Postgres as the datastore','{CLAIM}','2025-01-01'),
+               (-1,'Adopt Postgres as the datastore','{CLAIM}','2025-01-02');
+             INSERT INTO project_arch(body,actor,actor_raw,created_at) VALUES
+               ('{CLAIM}','fixture','fixture','9999-01-01T00:00:00Z');"
+        ))
+        .unwrap();
+    let export = f.repo.join("legacy.json");
+    f.ok(&["export", export.to_str().unwrap()]);
+    f.ok(&["import", export.to_str().unwrap(), "--force"]);
+    let report = f.scan();
+    let duplicate = category(&report, "duplicate_facts")[0];
+    assert_eq!(
+        &action(duplicate, "retire_later")[..3],
+        ["fact", "retire", "1"],
+    );
+    assert_eq!(duplicate["actions"].as_array().unwrap().len(), 2);
+    assert!(
+        duplicate["reason"]
+            .as_str()
+            .unwrap()
+            .contains("negative ID")
+    );
+    let decision = category(&report, "unlinked_decisions")[0];
+    assert_eq!(decision["actions"].as_array().unwrap().len(), 1);
+    assert!(decision["reason"].as_str().unwrap().contains("negative ID"));
+    assert_eq!(decision["excerpts"]["second"]["source_id"], -1);
+    for (kind, id, reason) in [
+        ("fact", -1, "negative ID"),
+        ("task", -1, "negative ID"),
+        ("arch_section", 1, "not guaranteed to become current"),
+    ] {
+        let hit = category(&report, "correction_sweep")
+            .into_iter()
+            .find(|item| {
+                let target = &item["excerpts"]["possible_restatement"];
+                target["source_type"] == kind && target["source_id"] == id
+            })
+            .unwrap_or_else(|| panic!("missing {kind} #{id} in {report}"));
+        assert_eq!(hit["actions"].as_array().unwrap().len(), 1, "{hit}");
+        assert!(hit["reason"].as_str().unwrap().contains(reason), "{hit}");
+        assert!(
+            hit["excerpts"]["possible_restatement"]["text"]
+                .as_str()
+                .unwrap()
+                .contains(CLAIM)
+        );
+        f.ok(&action(hit, "keep"));
+    }
 }
 
 #[test]
@@ -540,7 +604,11 @@ fn stored_document_matches_survive_redirected_paths_without_unsafe_reingest_acti
     fs::create_dir(&source).unwrap();
     fs::create_dir(&target).unwrap();
     let doc = source.join("guide.md");
-    fs::write(&doc, format!("# Guide v1.0 only\n\n{CLAIM}")).unwrap();
+    fs::write(
+        &doc,
+        format!("# Guide v1.0 only ###\n\n## Storage for C#\n\n{CLAIM}"),
+    )
+    .unwrap();
     f.ok(&["doc", "add", doc.to_str().unwrap()]);
     f.db()
         .execute(
@@ -579,18 +647,25 @@ fn stored_document_matches_survive_redirected_paths_without_unsafe_reingest_acti
     let hits = category(&report, "correction_sweep");
     let hit = hits[0];
     assert_ne!(hit["id"], before_hit["id"]);
-    assert!(
-        hit["excerpts"]["possible_restatement"]["text"]
-            .as_str()
-            .unwrap()
-            .contains("Guide v1.0 only")
+    assert_eq!(
+        hit["subjects"][1]["heading_context"],
+        "Guide v1.0 only > Storage for C"
+    );
+    assert_eq!(
+        hit["excerpts"]["possible_restatement"]["text"],
+        format!("## Storage for C#\n\n{CLAIM}"),
     );
     assert!(
-        hit["excerpts"]["possible_restatement"]["text"]
+        hit["excerpts"]["possible_restatement"]["original_wording_unavailable"]
             .as_str()
             .unwrap()
-            .contains(CLAIM)
+            .contains("exact ancestor headings")
     );
+    let human = String::from_utf8(f.ok(&["prune", "scan"])).unwrap();
+    assert!(human.contains("heading context (derived)"));
+    assert!(human.contains("Original wording unavailable"));
+    assert!(human.contains("## Storage for C#"));
+    assert!(!human.contains("# Guide v1.0 only ###"));
     assert_eq!(hit["actions"].as_array().unwrap().len(), 1);
     assert_eq!(&action(hit, "keep")[..2], ["prune", "dismiss"]);
     assert!(

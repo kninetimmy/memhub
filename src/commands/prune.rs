@@ -85,6 +85,7 @@ pub enum Subject {
     },
     ArchitectureSection {
         id: i64,
+        #[serde(rename = "heading_context")]
         heading: String,
     },
     DocumentChunk {
@@ -92,6 +93,7 @@ pub enum Subject {
         document_id: i64,
         path: String,
         title: String,
+        #[serde(rename = "heading_context")]
         heading: String,
     },
     BackupFiles {
@@ -135,7 +137,7 @@ pub struct Item {
     pub reason: String,
     pub actions: Vec<Action>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub excerpts: Option<CorrectionExcerpts>,
+    pub excerpts: Option<PairExcerpts>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -144,8 +146,14 @@ pub struct SourceExcerpt {
     pub source_id: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recorded_at: Option<String>,
-    /// Stored text, not a model-truncated or paraphrased snippet.
+    /// Retained text as stored, not the combined text sent to the model.
     pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub original_wording_unavailable: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub architecture_source: Option<ArchitectureSource>,
 }
@@ -157,12 +165,38 @@ pub struct ArchitectureSource {
     pub section_ordinal: i64,
     /// Original architecture Markdown, not a reconstructed heading breadcrumb.
     pub text: String,
+    #[serde(skip)]
+    rewrite_supported: bool,
 }
 
 #[derive(Debug, Serialize)]
-pub struct CorrectionExcerpts {
-    pub old_claim: SourceExcerpt,
-    pub possible_restatement: SourceExcerpt,
+#[serde(untagged)]
+pub enum PairExcerpts {
+    Correction {
+        old_claim: SourceExcerpt,
+        possible_restatement: SourceExcerpt,
+    },
+    Comparison {
+        first: SourceExcerpt,
+        second: SourceExcerpt,
+    },
+}
+
+impl PairExcerpts {
+    pub fn labeled(&self) -> [(&'static str, &SourceExcerpt); 2] {
+        match self {
+            Self::Correction {
+                old_claim,
+                possible_restatement,
+            } => [
+                ("old claim", old_claim),
+                ("possible restatement", possible_restatement),
+            ],
+            Self::Comparison { first, second } => {
+                [("first match", first), ("second match", second)]
+            }
+        }
+    }
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -596,6 +630,9 @@ fn re_ingest_action(
         return Err(
             "the recorded path does not match the canonical row key `doc add` would use. Review the stored row before re-ingesting.",
         );
+    }
+    if title.trim().is_empty() || title.contains('\0') {
+        return Err("`doc add` cannot preserve the stored title as a command argument.");
     }
     Ok(Action::new(
         action,
