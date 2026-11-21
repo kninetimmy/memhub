@@ -6,7 +6,7 @@ pub(super) use backups::RETAIN as BACKUPS_RETENTION_COUNT;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::ErrorKind;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OpenFlags, TransactionBehavior};
@@ -123,18 +123,19 @@ pub struct Report {
 }
 
 pub fn scan(start: &Path) -> Result<Report> {
-    scan_readonly(start, false)
+    scan_readonly(start, false, &[])
 }
 
-pub(super) fn preview_upgrade(start: &Path) -> Result<Report> {
-    scan_readonly(start, true)
+pub(super) fn preview_upgrade(start: &Path, removed: &[PathBuf]) -> Result<Report> {
+    scan_readonly(start, true, removed)
 }
 
-fn scan_readonly(start: &Path, preview: bool) -> Result<Report> {
+fn scan_readonly(start: &Path, preview: bool, removed: &[PathBuf]) -> Result<Report> {
     let paths = db::discover_paths(start)?;
     let config = scan_config(&paths)?;
     let mut conn = Connection::open_with_flags(&paths.db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    if preview && db::ledger_schema(&conn)?.as_deref() != Some(db::latest_schema_version()) {
+    // apply_all also initializes blank databases with no migration ledger.
+    if preview {
         conn = db::migrated_memory_copy(&conn)?;
     }
     let tx = conn.transaction()?;
@@ -151,7 +152,7 @@ fn scan_readonly(start: &Path, preview: bool) -> Result<Report> {
             )));
         }
     };
-    scan_in(&tx, &paths, &config, has_dismissals)
+    scan_in(&tx, &paths, &config, has_dismissals, removed)
 }
 
 fn scan_config(paths: &ProjectPaths) -> Result<ProjectConfig> {
@@ -176,7 +177,7 @@ fn scan_config(paths: &ProjectPaths) -> Result<ProjectConfig> {
 /// Status already has a maintained open; reuse it without another open.
 pub(super) fn scan_project(ctx: &db::ProjectContext) -> Result<Report> {
     let tx = ctx.conn.unchecked_transaction()?;
-    scan_in(&tx, &ctx.paths, &ctx.config, true)
+    scan_in(&tx, &ctx.paths, &ctx.config, true, &[])
 }
 
 fn scan_in(
@@ -184,6 +185,7 @@ fn scan_in(
     paths: &ProjectPaths,
     config: &ProjectConfig,
     has_dismissals: bool,
+    removed: &[PathBuf],
 ) -> Result<Report> {
     let dismissed = if has_dismissals {
         conn.prepare("SELECT identifier FROM prune_dismissals WHERE project_id = 1")?
@@ -201,7 +203,7 @@ fn scan_in(
         items: Vec::new(),
         backup_warning: None,
     };
-    report.backup_warning = visit_candidates(conn, paths, config, |item| {
+    report.backup_warning = visit_candidates(conn, paths, config, removed, |item| {
         if dismissed.contains(&item.id) {
             return;
         }
@@ -226,7 +228,9 @@ pub fn dismiss(start: &Path, id: &str, actor: &str) -> Result<()> {
         .conn
         .transaction_with_behavior(TransactionBehavior::Immediate)?;
     let mut found = false;
-    let warning = visit_candidates(&tx, &ctx.paths, &ctx.config, |item| found |= item.id == id)?;
+    let warning = visit_candidates(&tx, &ctx.paths, &ctx.config, &[], |item| {
+        found |= item.id == id
+    })?;
     if !found {
         let detail = warning.map_or_else(String::new, |warning| format!("; {warning}"));
         return Err(MemhubError::InvalidInput(format!(
@@ -274,12 +278,13 @@ fn visit_candidates(
     conn: &Connection,
     paths: &ProjectPaths,
     config: &ProjectConfig,
+    removed: &[PathBuf],
     mut visit: impl FnMut(Item),
 ) -> Result<Option<String>> {
     facts(conn, config.retrieval.fact_stale_after_days, &mut visit)?;
     tasks(conn, &mut visit)?;
-    documents(conn, &paths.repo_root, &mut visit)?;
-    match backups::surplus(paths) {
+    documents(conn, &paths.repo_root, removed, &mut visit)?;
+    match backups::surplus(paths, removed) {
         Ok((groups, warnings)) => {
             for group in groups {
                 visit(group.item());
@@ -425,7 +430,12 @@ fn tasks(conn: &Connection, visit: &mut impl FnMut(Item)) -> Result<()> {
     Ok(())
 }
 
-fn documents(conn: &Connection, root: &Path, visit: &mut impl FnMut(Item)) -> Result<()> {
+fn documents(
+    conn: &Connection,
+    root: &Path,
+    removed: &[PathBuf],
+    visit: &mut impl FnMut(Item),
+) -> Result<()> {
     let mut stmt = conn.prepare(
         "SELECT id, path, title, content_hash,
                 json_array(id, path, title, content_hash, byte_len, source, ingested_at)
@@ -438,7 +448,16 @@ fn documents(conn: &Connection, root: &Path, visit: &mut impl FnMut(Item)) -> Re
         let title: String = row.get(2)?;
         let ingested_hash: String = row.get(3)?;
         let state: String = row.get(4)?;
-        let on_disk = document_file(root, Path::new(&path));
+        let recorded = Path::new(&path);
+        let absent = !removed.is_empty()
+            && fs::canonicalize(root)
+                .ok()
+                .is_some_and(|root| removed.contains(&root.join(recorded)));
+        let on_disk = if absent {
+            DocumentFile::Missing
+        } else {
+            document_file(root, recorded)
+        };
         let (reason, action) = match &on_disk {
             DocumentFile::Readable { hash, .. } if *hash == ingested_hash => continue,
             DocumentFile::Readable { .. } => (

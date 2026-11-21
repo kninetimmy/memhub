@@ -1890,9 +1890,17 @@ Both real and dry-run JSON carry `prune_scan`, an array of
 category names to their totals. A scan failure produces that repo's
 `error` instead of counts; partial backup inspection adds `warning`.
 Neither stops other scans nor changes upgrade's success/failure outcome.
-`--dry-run` reports the same counts without writing: for an older schema
-it migrates an in-memory SQLite backup and scans that copy, reading files
-at their original paths. `--no-prune-scan` skips this step (no text counts,
+`--dry-run` reports the same counts using an in-memory SQLite backup,
+including migrations needed by an older or blank database. It reads files
+at their original paths but treats planned generated-twin removals and
+source-repo backup GC deletions as absent. `--no-gc` and the existing
+`[gc] delete_stale_backups` opt-in still control that GC plan; twin cleanup
+is independent of GC. Counts assume planned cleanup succeeds and the source
+does not change during preview. The SQLite backup API includes committed WAL
+data; no live database files are copied by pathname. SQLite read-only opens
+can still create empty WAL/shared-memory sidecars or update shared-memory
+read marks, so this is not a byte-for-byte filesystem immutability promise.
+`--no-prune-scan` skips this step (no text counts,
 an empty JSON array). Before this change upgrade reported no prune work.
 The scan never changes a memory row, dismisses an item or deletes a file;
 existing upgrade migration, maintenance and GC behavior is unchanged.

@@ -124,7 +124,10 @@ fn display_path(path: &Path) -> String {
     path.display().to_string()
 }
 
-pub(super) fn surplus(paths: &ProjectPaths) -> Result<(Vec<Group>, Vec<String>)> {
+pub(super) fn surplus(
+    paths: &ProjectPaths,
+    removed: &[PathBuf],
+) -> Result<(Vec<Group>, Vec<String>)> {
     let root = fs::canonicalize(&paths.repo_root).map_err(|err| at_path(&paths.repo_root, err))?;
     let memhub = root.join(MEMHUB_DIR);
     require_directory(&memhub)?;
@@ -139,7 +142,7 @@ pub(super) fn surplus(paths: &ProjectPaths) -> Result<(Vec<Group>, Vec<String>)>
     let mut warnings = Vec::new();
     let mut dirs = vec![backups.clone()];
     while let Some(dir) = dirs.pop() {
-        match inspect_directory(&root, &backups, &dir, &mut dirs) {
+        match inspect_directory(&root, &backups, &dir, removed, &mut dirs) {
             Ok(Some(group)) => groups.push(group),
             Ok(None) => {}
             Err(err) => warnings.push(format!("'{}': {err}", display_path(&dir))),
@@ -154,6 +157,7 @@ fn inspect_directory(
     root: &Path,
     backups: &Path,
     dir: &Path,
+    removed: &[PathBuf],
     dirs: &mut Vec<PathBuf>,
 ) -> Result<Option<Group>> {
     require_directory(dir)?;
@@ -173,6 +177,9 @@ fn inspect_directory(
             }
         };
         let path = entry.path();
+        if removed.contains(&path) {
+            continue;
+        }
         if is_link_or_reparse_point(&meta) {
             continue;
         }
@@ -308,7 +315,7 @@ pub(super) fn delete(paths: &ProjectPaths, candidate: &str) -> Result<usize> {
             database.display()
         )));
     }
-    let (groups, warnings) = surplus(paths)?;
+    let (groups, warnings) = surplus(paths, &[])?;
     let group = groups
         .into_iter()
         .find(|group| group.id == candidate)

@@ -669,19 +669,10 @@ fn sweep_stale_staging(temp_dir: &Path, dry_run: bool, out: &mut GcOutcome) {
     }
 }
 
-/// U8 (decision Q16): `.memhub/backups/{rendered,markdown}` retention.
-/// Report-only unless `delete` (and never when `dry_run`, which always
-/// wins); `backups/sync/`, `backups/import/` and `backups/migrations/`
-/// are already single-slot (one fixed file each, never accumulates) and
-/// are deliberately left alone (before issue #405 only `backups/sync/`
-/// existed). Also flags — but never deletes — the legacy one-time
-/// `project.sqlite.k9-bootstrap-backup` left behind by the
-/// K9-to-memhub-primary migration, if still present.
-fn backups_retention(root: &Path, dry_run: bool, delete: bool, out: &mut GcOutcome) {
-    let memhub_dir = root.join(".memhub");
-    let backups_dir = memhub_dir.join("backups");
-    let will_delete = delete && !dry_run;
-
+/// Shared retention selection for GC and upgrade's read-only prune preview.
+pub(super) fn stale_backup_files(root: &Path) -> Vec<(PathBuf, Vec<(PathBuf, u64)>)> {
+    let backups_dir = root.join(".memhub/backups");
+    let mut groups = Vec::new();
     for subdir in ["rendered", "markdown"] {
         let dir = backups_dir.join(subdir);
         let Ok(rd) = fs::read_dir(&dir) else {
@@ -707,11 +698,39 @@ fn backups_retention(root: &Path, dry_run: bool, delete: bool, out: &mut GcOutco
 
         // Newest first; the tail beyond the retention count is stale.
         files.sort_by_key(|f| std::cmp::Reverse(f.1));
-        let stale = &files[BACKUPS_RETENTION_COUNT..];
-        let stale_bytes: u64 = stale.iter().map(|(_, _, len)| len).sum();
+        groups.push((
+            dir,
+            files
+                .into_iter()
+                .skip(BACKUPS_RETENTION_COUNT)
+                .map(|(path, _, len)| (path, len))
+                .collect(),
+        ));
+    }
+    groups
+}
+
+/// U8 (decision Q16): `.memhub/backups/{rendered,markdown}` retention.
+/// Report-only unless `delete` (and never when `dry_run`, which always
+/// wins); `backups/sync/`, `backups/import/` and `backups/migrations/`
+/// are already single-slot (one fixed file each, never accumulates) and
+/// are deliberately left alone (before issue #405 only `backups/sync/`
+/// existed). Also flags — but never deletes — the legacy one-time
+/// `project.sqlite.k9-bootstrap-backup` left behind by the
+/// K9-to-memhub-primary migration, if still present.
+fn backups_retention(root: &Path, dry_run: bool, delete: bool, out: &mut GcOutcome) {
+    let memhub_dir = root.join(".memhub");
+    let will_delete = delete && !dry_run;
+
+    for (dir, stale) in stale_backup_files(root) {
+        let subdir = dir
+            .file_name()
+            .expect("backup subdirectory")
+            .to_string_lossy();
+        let stale_bytes: u64 = stale.iter().map(|(_, len)| len).sum();
 
         if will_delete {
-            for (path, _, _) in stale {
+            for (path, _) in &stale {
                 if let Err(e) = fs::remove_file(path) {
                     out.details
                         .push(format!("warn: could not remove {}: {e}", path.display()));
@@ -777,7 +796,7 @@ fn backups_retention(root: &Path, dry_run: bool, delete: bool, out: &mut GcOutco
 /// a breadcrumb in the returned `Option<String>` (fail-loud nit: a
 /// malformed config silently disabling an intended
 /// `delete_stale_backups = true` should say so, not go quiet).
-fn load_gc_config_best_effort(root: &Path) -> (GcConfig, Option<String>) {
+pub(super) fn load_gc_config_best_effort(root: &Path) -> (GcConfig, Option<String>) {
     let config_path = root.join(".memhub").join("config.toml");
     if !config_path.is_file() {
         return (GcConfig::default(), None);

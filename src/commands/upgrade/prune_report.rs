@@ -22,7 +22,15 @@ pub(super) struct Summary {
 }
 
 impl Summary {
-    pub(super) fn scan(root: &Path, preview: bool) -> Self {
+    pub(super) fn scan(root: &Path) -> Self {
+        Self::from_report(root, prune::scan(root))
+    }
+
+    pub(super) fn preview(root: &Path, removed: &[std::path::PathBuf]) -> Self {
+        Self::from_report(root, prune::preview_upgrade(root, removed))
+    }
+
+    fn from_report(root: &Path, result: crate::Result<prune::Report>) -> Self {
         let mut summary = Self {
             label: super::abbrev(root),
             total: None,
@@ -30,11 +38,6 @@ impl Summary {
             warning: None,
             error: None,
             review: "run /prune in this repo to review; upgrade takes no prune action",
-        };
-        let result = if preview {
-            prune::preview_upgrade(root)
-        } else {
-            prune::scan(root)
         };
         match result {
             Ok(report) => {
