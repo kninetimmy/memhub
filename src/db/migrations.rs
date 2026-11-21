@@ -162,12 +162,17 @@ const MIGRATIONS: &[(&str, &str)] = &[
         ARCH_SECTIONS_MIGRATION,
         include_str!("../../migrations/0025_arch_sections.sql"),
     ),
+    (
+        MEMORY_LIFECYCLE_MIGRATION,
+        include_str!("../../migrations/0026_memory_lifecycle.sql"),
+    ),
 ];
 
 /// Migration that adds the derived `arch_sections` table. SQL cannot
 /// chunk markdown, so when this one is applied `apply_all` derives the
 /// sections of an already-stored latest architecture body in Rust.
 const ARCH_SECTIONS_MIGRATION: &str = "0025_arch_sections";
+pub(crate) const MEMORY_LIFECYCLE_MIGRATION: &str = "0026_memory_lifecycle";
 
 /// True when the ledger records at least one compiled migration and lacks
 /// at least one (a missing tail or a gap): an existing DB about to change.
@@ -613,7 +618,7 @@ mod tests {
         .expect("create migration ledger");
         for (version, sql) in MIGRATIONS
             .iter()
-            .filter(|(v, _)| *v != ARCH_SECTIONS_MIGRATION)
+            .take_while(|(v, _)| *v != ARCH_SECTIONS_MIGRATION)
         {
             conn.execute_batch(sql).expect("apply legacy migration");
             conn.execute(
@@ -655,8 +660,11 @@ mod tests {
         )
         .expect("seed legacy arch body");
 
-        let applied = apply_all(&mut conn, None).expect("auto-apply 0025");
-        assert_eq!(applied, vec![ARCH_SECTIONS_MIGRATION]);
+        let applied = apply_all(&mut conn, None).expect("auto-apply 0025 and later migrations");
+        assert_eq!(
+            applied.first().map(String::as_str),
+            Some(ARCH_SECTIONS_MIGRATION)
+        );
 
         let after: Vec<(i64, String, i64, String)> = {
             let mut stmt = conn
@@ -705,6 +713,93 @@ mod tests {
             [],
         )
         .expect("widened CHECK must admit 'arch_section'");
+    }
+
+    #[test]
+    fn migration_0026_preserves_legacy_tasks_indexes_and_sync_digest() {
+        use crate::commands::sync::LogicalVersion;
+
+        let mut conn = Connection::open_in_memory().expect("open");
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE schema_migrations (
+               version TEXT PRIMARY KEY,
+               applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+             );",
+        )
+        .unwrap();
+        for (version, sql) in MIGRATIONS
+            .iter()
+            .take_while(|(v, _)| *v != MEMORY_LIFECYCLE_MIGRATION)
+        {
+            conn.execute_batch(sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations(version) VALUES (?1)",
+                [version],
+            )
+            .unwrap();
+        }
+        conn.execute_batch(
+            "INSERT INTO projects(id, root_path, schema_version) VALUES (1, 'test', '0025_arch_sections');
+             INSERT INTO facts(id, key, value) VALUES (13, 'old', 'fact');
+             INSERT INTO documents(id, path, title, content_hash, byte_len) VALUES (17, 'guide.md', 'Guide', 'hash', 5);
+             INSERT INTO doc_chunks(doc_id, ord, heading_path, body) VALUES (17, 0, 'Guide', 'legacy chunk');
+             INSERT INTO tasks(id, title, status, notes, created_at, updated_at) VALUES
+               (7, 'legacy', 'open', 'note', '2020-01-01', '2020-01-02'),
+               (8, 'legacy', 'blocked', NULL, '2020-01-01', '2020-01-03'),
+               (9, 'legacy', 'done', '', '2020-01-01', '2020-01-04');
+             INSERT INTO embeddings(source_type, source_id, model_name, dimension, vector, content_hash)
+               VALUES ('task', 7, 'test-model', 1, X'01', 'hash'), ('fact', 7, 'test-model', 1, X'02', 'hash');",
+        )
+        .unwrap();
+        let baseline = LogicalVersion::read(&conn).unwrap();
+        assert_eq!(
+            apply_all(&mut conn, None).unwrap(),
+            [MEMORY_LIFECYCLE_MIGRATION]
+        );
+        assert_eq!(LogicalVersion::read(&conn).unwrap(), baseline);
+        assert_eq!(apply_all(&mut conn, None).unwrap(), Vec::<String>::new());
+
+        let count = |sql| conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+        assert_eq!(count("SELECT COUNT(*) FROM pragma_foreign_key_check"), 0);
+        assert_eq!(
+            count("SELECT COUNT(*) FROM sqlite_schema WHERE name = 'idx_tasks_status_updated_at'"),
+            1
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM tasks_fts WHERE tasks_fts MATCH 'legacy'"),
+            3
+        );
+        assert_eq!(count("SELECT COUNT(*) FROM embeddings"), 2);
+        conn.execute_batch(
+            "UPDATE facts SET retired_at = CURRENT_TIMESTAMP, retired_reason = 'obsolete' WHERE id = 13;
+             UPDATE documents SET archived_at = CURRENT_TIMESTAMP, archived_reason = 'old' WHERE id = 17;
+             UPDATE tasks SET title = 'revised', status = 'dropped' WHERE id = 7;
+             INSERT INTO tasks(title) VALUES ('fresh');",
+        )
+        .unwrap();
+        assert_ne!(LogicalVersion::read(&conn).unwrap(), baseline);
+        assert_eq!(
+            count("SELECT COUNT(*) FROM tasks_fts WHERE tasks_fts MATCH 'legacy'"),
+            2
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM tasks_fts WHERE tasks_fts MATCH 'revised OR fresh'"),
+            2
+        );
+        conn.execute("DELETE FROM tasks WHERE id = 7", []).unwrap();
+        assert_eq!(
+            count("SELECT COUNT(*) FROM tasks_fts WHERE tasks_fts MATCH 'revised'"),
+            0
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM embeddings WHERE source_type = 'task'"),
+            0
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM embeddings WHERE source_type = 'fact'"),
+            1
+        );
     }
 
     thread_local! {

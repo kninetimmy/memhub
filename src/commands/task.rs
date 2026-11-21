@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use rusqlite::Row;
+
 use crate::db;
 use crate::models::Task;
 use crate::{MemhubError, Result};
@@ -15,7 +17,7 @@ pub fn add_with_status(
     status: &str,
     actor: &str,
 ) -> Result<i64> {
-    if !matches!(status, "open" | "done" | "blocked") {
+    if !matches!(status, "open" | "done" | "blocked" | "dropped") {
         return Err(MemhubError::InvalidInput(format!(
             "unsupported task status '{status}'"
         )));
@@ -52,14 +54,14 @@ pub fn list(start: &Path, status_filter: Option<&str>) -> Result<Vec<Task>> {
 
     let (sql, params): (&str, Vec<&str>) = match status_filter {
         Some(status) if status != "all" => (
-            "SELECT id, title, status, notes, created_at, updated_at
+            "SELECT id, title, status, notes, created_at, updated_at, dropped_reason
              FROM tasks
              WHERE status = ?1
              ORDER BY updated_at DESC, id DESC",
             vec![status],
         ),
         _ => (
-            "SELECT id, title, status, notes, created_at, updated_at
+            "SELECT id, title, status, notes, created_at, updated_at, dropped_reason
              FROM tasks
              ORDER BY updated_at DESC, id DESC",
             Vec::new(),
@@ -67,16 +69,7 @@ pub fn list(start: &Path, status_filter: Option<&str>) -> Result<Vec<Task>> {
     };
 
     let mut stmt = ctx.conn.prepare(sql)?;
-    let rows = stmt.query_map(rusqlite::params_from_iter(params), |row| {
-        Ok(Task {
-            id: row.get(0)?,
-            title: row.get(1)?,
-            status: row.get(2)?,
-            notes: row.get(3)?,
-            created_at: row.get(4)?,
-            updated_at: row.get(5)?,
-        })
-    })?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(params), read_task)?;
 
     rows.collect::<std::result::Result<Vec<_>, _>>()
         .map_err(Into::into)
@@ -86,20 +79,11 @@ pub fn get(start: &Path, task_id: i64) -> Result<Task> {
     let ctx = db::open_project(start)?;
     ctx.conn
         .query_row(
-            "SELECT id, title, status, notes, created_at, updated_at
+            "SELECT id, title, status, notes, created_at, updated_at, dropped_reason
              FROM tasks
              WHERE id = ?1",
             [task_id],
-            |row| {
-                Ok(Task {
-                    id: row.get(0)?,
-                    title: row.get(1)?,
-                    status: row.get(2)?,
-                    notes: row.get(3)?,
-                    created_at: row.get(4)?,
-                    updated_at: row.get(5)?,
-                })
-            },
+            read_task,
         )
         .map_err(|err| match err {
             rusqlite::Error::QueryReturnedNoRows => {
@@ -117,7 +101,7 @@ pub fn list_by_status(start: &Path, status: &str, limit: usize) -> Result<Vec<Ta
     }
 
     let status = status.trim().to_ascii_lowercase();
-    if !matches!(status.as_str(), "open" | "done" | "blocked") {
+    if !matches!(status.as_str(), "open" | "done" | "blocked" | "dropped") {
         return Err(MemhubError::InvalidInput(format!(
             "unsupported task status '{status}'"
         )));
@@ -125,25 +109,28 @@ pub fn list_by_status(start: &Path, status: &str, limit: usize) -> Result<Vec<Ta
 
     let ctx = db::open_project(start)?;
     let mut stmt = ctx.conn.prepare(
-        "SELECT id, title, status, notes, created_at, updated_at
+        "SELECT id, title, status, notes, created_at, updated_at, dropped_reason
          FROM tasks
          WHERE status = ?1
          ORDER BY updated_at DESC, id DESC
          LIMIT ?2",
     )?;
-    let rows = stmt.query_map(rusqlite::params![status, limit as i64], |row| {
-        Ok(Task {
-            id: row.get(0)?,
-            title: row.get(1)?,
-            status: row.get(2)?,
-            notes: row.get(3)?,
-            created_at: row.get(4)?,
-            updated_at: row.get(5)?,
-        })
-    })?;
+    let rows = stmt.query_map(rusqlite::params![status, limit as i64], read_task)?;
 
     rows.collect::<std::result::Result<Vec<_>, _>>()
         .map_err(Into::into)
+}
+
+pub(crate) fn read_task(row: &Row<'_>) -> rusqlite::Result<Task> {
+    Ok(Task {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        status: row.get(2)?,
+        notes: row.get(3)?,
+        created_at: row.get(4)?,
+        updated_at: row.get(5)?,
+        dropped_reason: row.get(6)?,
+    })
 }
 
 pub fn done(start: &Path, task_id: i64, actor: &str) -> Result<()> {
@@ -152,7 +139,8 @@ pub fn done(start: &Path, task_id: i64, actor: &str) -> Result<()> {
 
     let updated = tx.execute(
         "UPDATE tasks
-         SET status = 'done', updated_at = CURRENT_TIMESTAMP
+         SET status = 'done', updated_at = CURRENT_TIMESTAMP, dropped_reason = NULL,
+             pre_drop_status = NULL, pre_drop_updated_at = NULL
          WHERE id = ?1 AND status != 'done'",
         [task_id],
     )?;

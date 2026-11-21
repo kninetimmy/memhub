@@ -1807,7 +1807,7 @@ struct RecallToolHit {
     /// At most 300 characters of the row's text, ending in `…` when cut.
     /// `get_row` returns the full text.
     text: String,
-    /// Task status (`open`, `done`, `blocked`); omitted for other rows.
+    /// Task status (`open`, `done`, `blocked`, `dropped`); omitted for other rows.
     #[serde(skip_serializing_if = "Option::is_none")]
     status: Option<String>,
     stale: bool,

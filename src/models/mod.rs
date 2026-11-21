@@ -32,6 +32,8 @@ pub struct Fact {
     /// legal, no CHECK constraint. `None` for an untagged fact, which is
     /// every fact written before this column existed.
     pub kind: Option<String>,
+    pub retired_at: Option<String>,
+    pub retired_reason: Option<String>,
 }
 
 #[derive(Debug)]
@@ -61,6 +63,7 @@ pub struct Task {
     pub notes: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    pub dropped_reason: Option<String>,
 }
 
 /// An ingested external reference document. Per-repo, user-initiated,
@@ -75,6 +78,8 @@ pub struct Document {
     pub source: String,
     pub ingested_at: String,
     pub chunk_count: i64,
+    pub archived_at: Option<String>,
+    pub archived_reason: Option<String>,
 }
 
 /// One retrievable section of a [`Document`]. `heading_path` is the

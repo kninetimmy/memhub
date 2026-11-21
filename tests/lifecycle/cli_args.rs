@@ -231,7 +231,13 @@ fn fact_add_without_kind_defaults_to_none() {
 fn fact_list_json_flag_parses() {
     match parse(&["fact", "list", "--json"]) {
         TopLevelCommand::Fact { command } => match command {
-            FactCommand::List { json } => assert!(json),
+            FactCommand::List {
+                json,
+                include_retired,
+            } => {
+                assert!(json);
+                assert!(!include_retired);
+            }
             other => panic!("expected FactCommand::List, got {other:?}"),
         },
         other => panic!("expected Fact, got {other:?}"),
@@ -242,7 +248,13 @@ fn fact_list_json_flag_parses() {
 fn fact_list_without_json_defaults_to_false() {
     match parse(&["fact", "list"]) {
         TopLevelCommand::Fact { command } => match command {
-            FactCommand::List { json } => assert!(!json),
+            FactCommand::List {
+                json,
+                include_retired,
+            } => {
+                assert!(!json);
+                assert!(!include_retired);
+            }
             other => panic!("expected FactCommand::List, got {other:?}"),
         },
         other => panic!("expected Fact, got {other:?}"),

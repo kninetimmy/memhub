@@ -178,7 +178,7 @@ pub struct RecallHit {
     /// `scoring.superseded_penalty`), not excluded — this tag lets the
     /// caller see the replacement id. Only facts/decisions can carry it.
     pub superseded_by: Option<i64>,
-    /// Task status (`open`, `done`, ...); `None` for every other row type.
+    /// Task status (`open`, `done`, `blocked`, `dropped`); `None` for other row types.
     pub status: Option<String>,
     pub source: String,
     pub created_at: String,
@@ -553,7 +553,7 @@ pub fn get_row(start: &Path, source_type: &str, source_id: i64, scope: &str) -> 
     let ctx = db::open_project(start)?;
     let stale_after = ctx.config.retrieval.fact_stale_after_days;
     let row = match scope {
-        SCOPE_REPO => load_source_row(&ctx.conn, st, source_id, stale_after)?,
+        SCOPE_REPO => load_source_row(&ctx.conn, st, source_id, stale_after, true)?,
         SCOPE_GLOBAL => {
             if !ctx.config.global.enabled {
                 return Err(MemhubError::InvalidInput(
@@ -570,7 +570,7 @@ pub fn get_row(start: &Path, source_type: &str, source_id: i64, scope: &str) -> 
                     "{reason}; run `memhub upgrade`"
                 )));
             }
-            load_source_row(&gctx.conn, st, source_id, stale_after)?
+            load_source_row(&gctx.conn, st, source_id, stale_after, true)?
         }
         other => {
             return Err(MemhubError::InvalidInput(format!(
@@ -912,7 +912,8 @@ fn gather_scored(
 
     let doc_chunk_total = conn
         .query_row(
-            "SELECT COUNT(*) FROM doc_chunks WHERE project_id = 1",
+            "SELECT COUNT(*) FROM doc_chunks c JOIN documents d ON d.id = c.doc_id
+             WHERE c.project_id = 1 AND d.archived_at IS NULL",
             [],
             |r| r.get::<_, i64>(0),
         )
@@ -1614,8 +1615,8 @@ fn fts_lookup(
     let sql = match source_type {
         SourceType::Fact => {
             "SELECT facts_fts.rowid, bm25(facts_fts) AS score \
-             FROM facts_fts \
-             WHERE facts_fts MATCH ?1 \
+             FROM facts_fts JOIN facts f ON f.id = facts_fts.rowid \
+             WHERE facts_fts MATCH ?1 AND f.retired_at IS NULL \
              ORDER BY score ASC \
              LIMIT ?2"
         }
@@ -1635,8 +1636,9 @@ fn fts_lookup(
         }
         SourceType::DocChunk => {
             "SELECT doc_chunks_fts.rowid, bm25(doc_chunks_fts) AS score \
-             FROM doc_chunks_fts \
-             WHERE doc_chunks_fts MATCH ?1 \
+             FROM doc_chunks_fts JOIN doc_chunks c ON c.id = doc_chunks_fts.rowid \
+             JOIN documents d ON d.id = c.doc_id \
+             WHERE doc_chunks_fts MATCH ?1 AND d.archived_at IS NULL \
              ORDER BY score ASC \
              LIMIT ?2"
         }
@@ -1687,8 +1689,15 @@ fn vector_lookup(
         .join(", ");
     let mut stmt = conn.prepare(&format!(
         "SELECT source_type, source_id, vector \
-         FROM embeddings \
-         WHERE model_name = ?1 AND dimension = ?2 AND source_type IN ({placeholders})"
+         FROM embeddings e \
+         WHERE model_name = ?1 AND dimension = ?2 AND source_type IN ({placeholders}) \
+           AND (e.source_type != 'fact' OR NOT EXISTS ( \
+               SELECT 1 FROM facts f WHERE f.id = e.source_id AND f.retired_at IS NOT NULL \
+           )) \
+           AND (e.source_type != 'doc_chunk' OR NOT EXISTS ( \
+               SELECT 1 FROM doc_chunks c JOIN documents d ON d.id = c.doc_id \
+               WHERE c.id = e.source_id AND d.archived_at IS NOT NULL \
+           ))"
     ))?;
     let dimension = EMBEDDING_DIMENSION as i64;
     let mut bound: Vec<&dyn rusqlite::ToSql> = vec![&EMBEDDING_MODEL_NAME, &dimension];
@@ -1928,7 +1937,7 @@ fn hydrate_sources(
 
     for (st, ids) in by_type {
         for id in ids {
-            if let Some(row) = load_source_row(conn, st, id, fact_stale_after_days)?
+            if let Some(row) = load_source_row(conn, st, id, fact_stale_after_days, false)?
                 && let Some(entry) = candidates.get_mut(&(st, id))
             {
                 entry.title = row.title;
@@ -1976,6 +1985,7 @@ fn load_source_row(
     source_type: SourceType,
     source_id: i64,
     fact_stale_after_days: i64,
+    include_out_of_circulation: bool,
 ) -> Result<Option<HydratedSource>> {
     match source_type {
         SourceType::Fact => {
@@ -1989,10 +1999,11 @@ fn load_source_row(
                     superseded_by, \
                     julianday('now') - julianday(verified_at) AS age_days, \
                     kind \
-                FROM facts WHERE id = ?1",
+                FROM facts WHERE id = ?1 AND (?3 OR retired_at IS NULL)",
             )?;
+            let bindings = params![source_id, fact_stale_after_days, include_out_of_circulation];
             let row: std::result::Result<HydratedSource, rusqlite::Error> =
-                stmt.query_row(params![source_id, fact_stale_after_days], |r: &Row<'_>| {
+                stmt.query_row(bindings, |r: &Row<'_>| {
                     let key: String = r.get(0)?;
                     let value: String = r.get(1)?;
                     let source: String = r.get(2)?;
@@ -2091,10 +2102,11 @@ fn load_source_row(
             let mut stmt = conn.prepare(
                 "SELECT d.title, c.heading_path, c.body, d.source, c.created_at \
                  FROM doc_chunks c JOIN documents d ON d.id = c.doc_id \
-                 WHERE c.id = ?1",
+                 WHERE c.id = ?1 AND (?2 OR d.archived_at IS NULL)",
             )?;
+            let bindings = params![source_id, include_out_of_circulation];
             let row: std::result::Result<HydratedSource, rusqlite::Error> =
-                stmt.query_row(params![source_id], |r: &Row<'_>| {
+                stmt.query_row(bindings, |r: &Row<'_>| {
                     let doc_title: String = r.get(0)?;
                     let heading_path: String = r.get(1)?;
                     let body: String = r.get(2)?;

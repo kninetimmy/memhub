@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use rusqlite::{OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::Result;
 use crate::db;
@@ -63,15 +63,9 @@ pub fn add_with_kind_in_tx(
     // what it replaced (Wave 3 L5, issue #48). `fact add` on an existing key
     // is silent last-writer-wins; without this the old value is captured
     // nowhere and the overwrite is unrecoverable.
-    let existing: Option<(i64, String)> = tx
-        .query_row(
-            "SELECT id, value FROM facts WHERE project_id = 1 AND key = ?1",
-            [key],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()?;
+    let existing = find_writable_fact(tx, key)?;
 
-    let (row_id, created, prior_value) = if let Some((id, prior)) = existing {
+    let (row_id, created, prior_value) = if let Some((id, prior, _superseded)) = existing {
         tx.execute(
             "UPDATE facts
              SET value = ?1, source = ?2, confidence = 1.0, verified_at = CURRENT_TIMESTAMP, kind = ?3
@@ -115,6 +109,36 @@ pub fn add_with_kind_in_tx(
     )?;
 
     Ok((row_id, created))
+}
+
+/// Find the existing row and whether it is superseded. Reject retired keys
+/// before either an upsert or the accept-time probe can proceed.
+pub(super) fn find_writable_fact(
+    tx: &Transaction<'_>,
+    key: &str,
+) -> Result<Option<(i64, String, bool)>> {
+    let existing = tx
+        .query_row(
+            "SELECT id, value, superseded_by IS NOT NULL, retired_at IS NOT NULL
+             FROM facts WHERE project_id = 1 AND key = ?1",
+            [key],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get::<_, bool>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    match existing {
+        Some((id, _, _, true)) => Err(crate::MemhubError::InvalidInput(format!(
+            "fact '{key}' (#{id}) is retired; run `memhub fact unretire {id}` before updating it"
+        ))),
+        Some((id, value, superseded, false)) => Ok(Some((id, value, superseded))),
+        None => Ok(None),
+    }
 }
 
 /// Normalize a `--kind` value: whitespace-only collapses to `None`
@@ -219,7 +243,7 @@ pub fn promote(start: &Path, id: i64, actor: &str) -> Result<GlobalFactOutcome> 
 /// `doc::resolve_doc_id`'s id-first-then-lookup shape. Returns
 /// `(id, key)` so callers can report the resolved key even when
 /// `ident` was numeric.
-fn resolve_fact(tx: &Transaction<'_>, ident: &str) -> Result<Option<(i64, String)>> {
+pub(super) fn resolve_fact(tx: &Transaction<'_>, ident: &str) -> Result<Option<(i64, String)>> {
     if let Ok(id) = ident.parse::<i64>() {
         let found: Option<(i64, String)> = tx
             .query_row(
@@ -274,8 +298,16 @@ pub fn verify(start: &Path, ident: &str, actor: &str) -> Result<Option<(i64, Str
 }
 
 pub fn list(start: &Path) -> Result<Vec<Fact>> {
+    list_with_retired(start, false)
+}
+
+pub fn list_with_retired(start: &Path, include_retired: bool) -> Result<Vec<Fact>> {
     let ctx = db::open_project(start)?;
-    let mut stmt = ctx.conn.prepare(
+    list_in_conn(&ctx.conn, include_retired)
+}
+
+pub(crate) fn list_in_conn(conn: &Connection, include_retired: bool) -> Result<Vec<Fact>> {
+    let mut stmt = conn.prepare(
         "SELECT id, key, value, source, verified_at, created_at,
                 CASE
                     WHEN verified_at IS NULL THEN 1
@@ -283,12 +315,13 @@ pub fn list(start: &Path) -> Result<Vec<Fact>> {
                     ELSE 0
                 END AS is_stale,
                 superseded_by,
-                kind
+                kind, retired_at, retired_reason
          FROM facts
+         WHERE project_id = 1 AND (?2 OR retired_at IS NULL)
          ORDER BY key ASC",
     )?;
 
-    let rows = stmt.query_map(params![FACT_STALE_AFTER_DAYS], |row| {
+    let rows = stmt.query_map(params![FACT_STALE_AFTER_DAYS, include_retired], |row| {
         let is_stale_int: i64 = row.get(6)?;
         Ok(Fact {
             id: row.get(0)?,
@@ -300,6 +333,8 @@ pub fn list(start: &Path) -> Result<Vec<Fact>> {
             is_stale: is_stale_int != 0,
             superseded_by: row.get(7)?,
             kind: row.get(8)?,
+            retired_at: row.get(9)?,
+            retired_reason: row.get(10)?,
         })
     })?;
 

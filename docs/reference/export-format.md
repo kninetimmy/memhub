@@ -60,6 +60,10 @@ remain valid after restore.
 }
 ```
 
+Retired facts also carry `retired_at` (UTC timestamp) and `retired_reason`.
+Before migration 0026 these fields did not exist; import treats them as
+null when absent, so older v1 backups still restore active facts.
+
 ### Decision
 
 ```json
@@ -90,7 +94,11 @@ decisions supersede older ones.
 }
 ```
 
-`status` is one of `open`, `done`, `blocked`.
+Before migration 0026, `status` was one of `open`, `done`, `blocked`.
+It now also accepts `dropped`. Dropped tasks carry `dropped_reason`,
+`pre_drop_status`, and `pre_drop_updated_at`, so they can be restored
+with `task undrop` after import. The new fields are optional, so older
+v1 backups still restore unchanged.
 
 ### Command
 

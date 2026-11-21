@@ -202,6 +202,23 @@ const CONTENT_TABLES: &[(&str, &[&str])] = &[
     ("doc_chunks", &["doc_id", "ord", "heading_path", "body"]),
 ];
 
+// Nullable lifecycle columns extend the stream only when populated. Merely
+// migrating a 0025 snapshot must not invalidate its recorded sync baseline.
+// The first column identifies the row; the rest are the optional metadata.
+const LIFECYCLE_CONTENT: &[(&str, &[&str])] = &[
+    ("facts", &["id", "retired_at", "retired_reason"]),
+    (
+        "tasks",
+        &[
+            "id",
+            "dropped_reason",
+            "pre_drop_status",
+            "pre_drop_updated_at",
+        ],
+    ),
+    ("documents", &["path", "archived_at", "archived_reason"]),
+];
+
 impl LogicalVersion {
     pub fn read(conn: &Connection) -> Result<Self> {
         let (max_id, count): (Option<i64>, i64) = conn.query_row(
@@ -220,10 +237,23 @@ impl LogicalVersion {
         // content — two DBs hash equal iff their digested content is
         // byte-for-byte identical, and NULL ≠ '' ≠ any other value.
         let mut hasher = Sha256::new();
-        for (table, cols) in CONTENT_TABLES {
+        let has_lifecycle = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = ?1)",
+            [db::MEMORY_LIFECYCLE_MIGRATION],
+            |r| r.get::<_, bool>(0),
+        )?;
+        for (table, cols, extension) in CONTENT_TABLES
+            .iter()
+            .map(|(table, cols)| (table, cols, false))
+            .chain(
+                LIFECYCLE_CONTENT
+                    .iter()
+                    .filter(|_| has_lifecycle)
+                    .map(|(table, cols)| (table, cols, true)),
+            )
+        {
             // Length-framed table name so no table's bytes can bleed into
             // the next.
-            hash_len_prefixed(&mut hasher, table.as_bytes());
             // Each column is CAST to TEXT individually (NULL stays NULL —
             // it is not coalesced), so integer/real columns render
             // deterministically while NULL remains distinguishable.
@@ -232,10 +262,29 @@ impl LogicalVersion {
                 .map(|c| format!("CAST({c} AS TEXT)"))
                 .collect::<Vec<_>>()
                 .join(", ");
-            let sql = format!("SELECT {select_list} FROM {table} WHERE project_id = 1 ORDER BY id");
+            let filter = if extension {
+                format!(
+                    " AND ({})",
+                    cols[1..]
+                        .iter()
+                        .map(|col| format!("{col} IS NOT NULL"))
+                        .collect::<Vec<_>>()
+                        .join(" OR ")
+                )
+            } else {
+                String::new()
+            };
+            let sql = format!(
+                "SELECT {select_list} FROM {table} WHERE project_id = 1{filter} ORDER BY id"
+            );
             let mut stmt = conn.prepare(&sql)?;
             let mut rows = stmt.query([])?;
-            while let Some(row) = rows.next()? {
+            let mut next = rows.next()?;
+            if extension && next.is_none() {
+                continue;
+            }
+            hash_len_prefixed(&mut hasher, table.as_bytes());
+            while let Some(row) = next {
                 // 0x01 = "a row follows"; distinguished from the 0x00
                 // end-of-table marker below. The column count is fixed per
                 // table, so the parse of the framed values is unambiguous.
@@ -251,6 +300,7 @@ impl LogicalVersion {
                         }
                     }
                 }
+                next = rows.next()?;
             }
             // 0x00 closes the table's row stream.
             hasher.update([TABLE_END]);
@@ -3100,10 +3150,13 @@ mod tests {
         let ctx = db::open_project(temp.path()).expect("open");
         let conn = &ctx.conn;
 
-        let digested: std::collections::HashMap<&str, Vec<&str>> = CONTENT_TABLES
+        let mut digested: std::collections::HashMap<&str, Vec<&str>> = CONTENT_TABLES
             .iter()
             .map(|(t, cols)| (*t, cols.to_vec()))
             .collect();
+        for (table, cols) in LIFECYCLE_CONTENT {
+            digested.get_mut(table).expect("base table").extend(*cols);
+        }
 
         let mut tables_stmt = conn
             .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")

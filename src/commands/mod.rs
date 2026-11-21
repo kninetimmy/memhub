@@ -14,6 +14,7 @@ pub mod index;
 pub mod ingest_git;
 pub mod init;
 pub mod install_manifest;
+pub mod lifecycle;
 #[cfg(feature = "metrics")]
 pub mod metrics;
 pub mod narrative;

@@ -122,7 +122,7 @@ The `memhub.recall` MCP bundle has the shape:
 }
 ```
 
-A task hit also carries `status` (`open`, `done` or `blocked`). The
+A task hit also carries `status` (`open`, `done`, `blocked` or `dropped`). The
 CLI's `memhub recall --json` carries the same compact hits plus the
 diagnostic `rank`, `score`, `fts_score` and `vector_score`; add
 `--full` to get each hit's whole stored text as `body`. The MCP bundle

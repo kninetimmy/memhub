@@ -33,7 +33,7 @@ memhub is one offline binary and one SQLite file next to your code. Claude Code,
 - **Hybrid recall**: a recall that blends keyword search (FTS5 with BM25) and meaning-based search (BGE-small), then re-ranks the best candidates. The alternative, FTS-only recall, uses keyword search alone.
 - **Re-ranker**: a second small model that reads the query together with one candidate row and scores how well the row answers it. The bundled one is ms-marco-MiniLM-L-6-v2, called **ms-marco** below.
 - **Rerank cutoff**: the re-ranker score below which recall drops a row as nonsense (`[retrieval.scoring] rerank_cutoff`, default -7.0). Every other row comes back in strict score order, and the agent judges which ones answer the question. Before decision 235, recall used a higher rerank floor instead and marked the rows under it `low_confidence`; that floor and the flag are gone, and the old floor keys in a config are ignored.
-- **Named rows**: a decision, task, or fact you name by number in a query, such as "decision 201". Recall returns it first, and it skips the rerank cutoff.
+- **Named rows**: a decision, task, or fact you name by number in a query, such as "decision 201". Recall returns eligible named rows first, skipping the rerank cutoff. Before fact retirement, an otherwise eligible fact could always be named; now retired facts are excluded even by number. Use `memhub get-row fact <id>` to inspect one directly.
 - **Compact hits**: each recall hit carries the row's type, id, scope, title, re-ranker score, date, status, and at most 300 characters of its text. `memhub get-row` (the MCP `get_row` tool) returns a row's full text. If no row clears the cutoff and no named row is returned, recall returns nothing and adds a `rerank_cutoff_dropped_all` warning.
 - **Pending writes**: agent proposals (`pending_writes` in the database) that wait for your review. Each becomes a fact or decision only when you accept it.
 - **PROJECT_LEDGER.md**: a markdown file written by `memhub render` that lists decisions, the task backlog, facts, and recent write activity. Agents use recall instead of reading it.
@@ -674,6 +674,7 @@ Worth knowing:
 
 - Docs are excluded from `memhub export`. They are file-backed, so re-run `doc add` on another machine.
 - Re-ingesting an unchanged file is a no-op, and changed content replaces every chunk in place.
+- Before archiving, those re-ingest rules applied to every stored path and every ingested chunk could count toward `available_docs`. Now an archived document's chunks stay out of recall and its counts, and you must `memhub doc unarchive` before re-ingesting it.
 - `memhub doc ls / show / rm` manage what's ingested, and the `/doc` skill wraps `doc add`.
 - Set `include_docs_in_default = false` in config for strict opt-in.
 
@@ -861,6 +862,7 @@ Sync state (the `[sync]` config and the per-machine baseline marker) is wiring, 
 | `memhub arch set/show` | The architecture narrative |
 | `memhub ingest-git` | Pull commit + file history into the DB |
 | `memhub doc add/ls/rm/show` | Ingest external markdown docs; scope recall with `--source-type doc` |
+| `memhub fact retire/unretire`, `memhub doc archive/unarchive`, `memhub task drop/undrop/keep` | [Manage outdated repo memory](docs/reference/operations.md#reversible-repo-memory-states) without deleting it (CLI only) |
 | `memhub locate <query>` | Find code by intent: ranked `file:line` breadcrumbs from the sibling code index |
 | `memhub code index/status/rm` | Build / inspect / drop the local code index (`.memhub/code_index.sqlite`) |
 | `memhub global enable/disable/status` | Opt this repo into optional machine-global memory (`~/.memhub/global.sqlite`) |

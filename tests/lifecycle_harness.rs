@@ -21,6 +21,8 @@ mod export_import;
 mod foundation;
 #[path = "lifecycle/mcp_protocol.rs"]
 mod mcp_protocol;
+#[path = "lifecycle/memory_lifecycle.rs"]
+mod memory_lifecycle;
 #[path = "lifecycle/metrics_maintenance.rs"]
 #[cfg(feature = "metrics")]
 mod metrics_maintenance;

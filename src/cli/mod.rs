@@ -112,14 +112,18 @@ fn flatten_title(title: &str) -> String {
 }
 
 fn task_json(task: &crate::models::Task) -> serde_json::Value {
-    json!({
+    let mut row = json!({
         "id": task.id,
         "title": task.title,
         "status": task.status,
         "notes": task.notes,
         "created_at": task.created_at,
         "updated_at": task.updated_at,
-    })
+    });
+    if let Some(reason) = &task.dropped_reason {
+        row["dropped_reason"] = json!(reason);
+    }
+    row
 }
 
 fn resolve_actor(actor: Option<&str>) -> Result<String> {
@@ -603,22 +607,32 @@ pub fn run(cli: Cli) -> Result<()> {
                     );
                 }
             }
-            FactCommand::List { json: as_json } => {
-                let facts = commands::fact::list(&cwd)?;
+            FactCommand::List {
+                json: as_json,
+                include_retired,
+            } => {
+                let facts = commands::fact::list_with_retired(&cwd, include_retired)?;
                 if as_json {
                     let payload = json!({
                         "facts": facts
                             .iter()
-                            .map(|fact| json!({
-                                "id": fact.id,
-                                "key": fact.key,
-                                "value": fact.value,
-                                "source": fact.source,
-                                "verified_at": fact.verified_at,
-                                "created_at": fact.created_at,
-                                "is_stale": fact.is_stale,
-                                "superseded_by": fact.superseded_by,
-                            }))
+                            .map(|fact| {
+                                let mut row = json!({
+                                    "id": fact.id,
+                                    "key": fact.key,
+                                    "value": fact.value,
+                                    "source": fact.source,
+                                    "verified_at": fact.verified_at,
+                                    "created_at": fact.created_at,
+                                    "is_stale": fact.is_stale,
+                                    "superseded_by": fact.superseded_by,
+                                });
+                                if include_retired {
+                                    row["retired_at"] = json!(fact.retired_at);
+                                    row["retired_reason"] = json!(fact.retired_reason);
+                                }
+                                row
+                            })
                             .collect::<Vec<_>>(),
                     });
                     println!("{payload}");
@@ -643,8 +657,29 @@ pub fn run(cli: Cli) -> Result<()> {
                             verified_at,
                             fact.created_at
                         );
+                        if let Some(at) = fact.retired_at {
+                            println!(
+                                "  retired at {at}: {}",
+                                fact.retired_reason.as_deref().unwrap_or("(no reason)")
+                            );
+                        }
                     }
                 }
+            }
+            FactCommand::Retire {
+                ident,
+                reason,
+                actor,
+            } => {
+                let actor = resolve_actor(actor.as_deref())?;
+                let id =
+                    commands::lifecycle::set_fact_retirement(&cwd, &ident, Some(&reason), &actor)?;
+                println!("Retired fact #{id}.");
+            }
+            FactCommand::Unretire { ident, actor } => {
+                let actor = resolve_actor(actor.as_deref())?;
+                let id = commands::lifecycle::set_fact_retirement(&cwd, &ident, None, &actor)?;
+                println!("Unretired fact #{id}.");
             }
             FactCommand::Verify {
                 ident,
@@ -926,6 +961,9 @@ pub fn run(cli: Cli) -> Result<()> {
                             .filter(|n| !n.is_empty())
                             .unwrap_or("(none)")
                     );
+                    if let Some(reason) = task.dropped_reason {
+                        println!("drop reason: {reason}");
+                    }
                 }
             }
             TaskCommand::List {
@@ -998,6 +1036,21 @@ pub fn run(cli: Cli) -> Result<()> {
                 } else {
                     println!("Marked task {id} as done.");
                 }
+            }
+            TaskCommand::Drop { id, reason, actor } => {
+                let actor = resolve_actor(actor.as_deref())?;
+                commands::lifecycle::drop_or_keep_task(&cwd, id, Some(&reason), &actor)?;
+                println!("Dropped task {id}.");
+            }
+            TaskCommand::Undrop { id, actor } => {
+                let actor = resolve_actor(actor.as_deref())?;
+                commands::lifecycle::undrop_task(&cwd, id, &actor)?;
+                println!("Restored task {id}.");
+            }
+            TaskCommand::Keep { id, actor } => {
+                let actor = resolve_actor(actor.as_deref())?;
+                commands::lifecycle::drop_or_keep_task(&cwd, id, None, &actor)?;
+                println!("Kept task {id}; refreshed its update time.");
             }
         },
         TopLevelCommand::Doc { command } => match command {
@@ -1072,7 +1125,7 @@ pub fn run(cli: Cli) -> Result<()> {
                         "docs": docs
                             .iter()
                             .map(|d| {
-                                json!({
+                                let mut row = json!({
                                     "id": d.id,
                                     "title": d.title,
                                     "path": d.path,
@@ -1081,7 +1134,12 @@ pub fn run(cli: Cli) -> Result<()> {
                                     "source": d.source,
                                     "ingested_at": d.ingested_at,
                                     "scope": scope,
-                                })
+                                });
+                                if let Some(at) = &d.archived_at {
+                                    row["archived_at"] = json!(at);
+                                    row["archived_reason"] = json!(d.archived_reason);
+                                }
+                                row
                             })
                             .collect::<Vec<_>>(),
                     });
@@ -1094,8 +1152,28 @@ pub fn run(cli: Cli) -> Result<()> {
                             "[{}] {} ({} chunks, {} bytes) ingested: {}\n  {}",
                             d.id, d.title, d.chunk_count, d.byte_len, d.ingested_at, d.path,
                         );
+                        if let Some(at) = d.archived_at {
+                            println!(
+                                "  archived at {at}: {}",
+                                d.archived_reason.as_deref().unwrap_or("(no reason)")
+                            );
+                        }
                     }
                 }
+            }
+            DocCommand::Archive {
+                ident,
+                reason,
+                actor,
+            } => {
+                let actor = resolve_actor(actor.as_deref())?;
+                let id = commands::lifecycle::set_doc_archive(&cwd, &ident, Some(&reason), &actor)?;
+                println!("Archived document #{id}.");
+            }
+            DocCommand::Unarchive { ident, actor } => {
+                let actor = resolve_actor(actor.as_deref())?;
+                let id = commands::lifecycle::set_doc_archive(&cwd, &ident, None, &actor)?;
+                println!("Unarchived document #{id}.");
             }
             DocCommand::Rm {
                 ident,

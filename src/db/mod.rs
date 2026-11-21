@@ -1,4 +1,5 @@
 mod migrations;
+pub(crate) use migrations::MEMORY_LIFECYCLE_MIGRATION;
 pub mod registry;
 
 use std::fs;

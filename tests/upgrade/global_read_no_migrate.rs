@@ -204,22 +204,7 @@ fn global_reads_leave_an_older_store_untouched() {
     assert!(scopes(&recall_json(&f)["results"]).contains(&"global".to_string()));
 
     // Make the store one migration behind this binary.
-    let older = {
-        let conn = Connection::open(f.global_db()).expect("open global");
-        conn.execute("DELETE FROM schema_migrations WHERE version = ?1", [&head])
-            .expect("drop newest migration row");
-        let prev: String = conn
-            .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| {
-                r.get(0)
-            })
-            .expect("previous version");
-        conn.execute(
-            "UPDATE projects SET schema_version = ?1 WHERE id = 1",
-            [&prev],
-        )
-        .expect("set recorded schema");
-        prev
-    };
+    let older = make_ledger_older(&f, &head);
     let before = f.schema_state();
     assert_eq!(before.0, older);
 
@@ -232,6 +217,11 @@ fn global_reads_leave_an_older_store_untouched() {
     let after = f.schema_state();
     assert_eq!(after.0, head);
     assert!(after.1.contains(&head));
+    assert!(scopes(&recall_json(&f)["results"]).contains(&"global".to_string()));
+    assert_eq!(
+        f.ok_json(&["doc", "ls", "--global", "--json"])["docs"][0]["title"],
+        "Guide"
+    );
 }
 
 #[test]
@@ -354,19 +344,36 @@ fn global_reads_skip_a_store_whose_ledger_cannot_be_read() {
 /// moved back with it); returns the ledger's schema.
 fn make_ledger_older(f: &Fixture, head: &str) -> String {
     let conn = Connection::open(f.global_db()).expect("open global");
-    conn.execute("DELETE FROM schema_migrations WHERE version = ?1", [head])
-        .expect("drop newest migration row");
-    let prev: String = conn
-        .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| {
-            r.get(0)
-        })
-        .expect("previous version");
+    let prev = remove_last_migration(&conn, head);
     conn.execute(
         "UPDATE projects SET schema_version = ?1 WHERE id = 1",
         [&prev],
     )
     .expect("set recorded schema");
     prev
+}
+
+fn remove_last_migration(conn: &Connection, head: &str) -> String {
+    if head == "0026_memory_lifecycle" {
+        // 0026 adds columns with ALTER TABLE, so omitting the ledger entry
+        // alone would leave an impossible fixture with duplicate columns.
+        conn.execute_batch(
+            "ALTER TABLE facts DROP COLUMN retired_at;
+             ALTER TABLE facts DROP COLUMN retired_reason;
+             ALTER TABLE documents DROP COLUMN archived_at;
+             ALTER TABLE documents DROP COLUMN archived_reason;
+             ALTER TABLE tasks DROP COLUMN dropped_reason;
+             ALTER TABLE tasks DROP COLUMN pre_drop_status;
+             ALTER TABLE tasks DROP COLUMN pre_drop_updated_at;",
+        )
+        .expect("remove the new columns from the fixture");
+    }
+    conn.execute("DELETE FROM schema_migrations WHERE version = ?1", [head])
+        .expect("drop newest migration row");
+    conn.query_row("SELECT MAX(version) FROM schema_migrations", [], |r| {
+        r.get(0)
+    })
+    .expect("previous version")
 }
 
 fn ratchet_recorded_schema(f: &Fixture) {
@@ -558,15 +565,9 @@ fn mcp_recall_global_store_skipped_warning_has_every_field() {
 fn upgrade_migrates_a_store_whose_ledger_is_behind_but_recorded_schema_is_at_head() {
     let f = fixture();
     let (head, _) = f.schema_state();
-    // Drop only the newest ledger row; `projects.schema_version` stays at head.
+    // Backdate the schema and ledger; `projects.schema_version` stays at head.
     let conn = Connection::open(f.global_db()).expect("open global");
-    conn.execute("DELETE FROM schema_migrations WHERE version = ?1", [&head])
-        .expect("drop newest migration row");
-    let older: String = conn
-        .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| {
-            r.get(0)
-        })
-        .expect("previous version");
+    let older = remove_last_migration(&conn, &head);
     drop(conn);
     assert_eq!(
         f.schema_state().0,

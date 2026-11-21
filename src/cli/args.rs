@@ -924,8 +924,27 @@ pub enum FactCommand {
         actor: Option<String>,
     },
     List {
+        /// Include retired facts with their retirement time and reason.
+        #[arg(long)]
+        include_retired: bool,
         #[arg(long)]
         json: bool,
+    },
+    /// Take a repo fact out of recall without deleting it (CLI only).
+    Retire {
+        #[arg(value_name = "ID-OR-KEY")]
+        ident: String,
+        #[arg(long)]
+        reason: String,
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// Restore a retired repo fact without re-verifying it (CLI only).
+    Unretire {
+        #[arg(value_name = "ID-OR-KEY")]
+        ident: String,
+        #[arg(long)]
+        actor: Option<String>,
     },
     /// Refresh a fact's `verified_at` to now. Touches nothing else
     /// durable — no confidence reset, no source rewrite, no
@@ -988,6 +1007,22 @@ pub enum DocCommand {
         global: bool,
         #[arg(long)]
         json: bool,
+    },
+    /// Take a repo document out of recall without deleting it (CLI only).
+    Archive {
+        #[arg(value_name = "ID-OR-PATH")]
+        ident: String,
+        #[arg(long)]
+        reason: String,
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// Restore an archived repo document to recall (CLI only).
+    Unarchive {
+        #[arg(value_name = "ID-OR-PATH")]
+        ident: String,
+        #[arg(long)]
+        actor: Option<String>,
     },
     /// Remove a document (and its chunks) by id or path.
     Rm {
@@ -1087,6 +1122,7 @@ pub enum TaskStatus {
     Open,
     Done,
     Blocked,
+    Dropped,
     All,
 }
 
@@ -1096,6 +1132,7 @@ impl TaskStatus {
             Self::Open => "open",
             Self::Done => "done",
             Self::Blocked => "blocked",
+            Self::Dropped => "dropped",
             Self::All => "all",
         }
     }
@@ -1133,6 +1170,26 @@ pub enum TaskCommand {
         id: i64,
         #[arg(long)]
         json: bool,
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// Drop an open or blocked task without deleting it (CLI only).
+    Drop {
+        id: i64,
+        #[arg(long)]
+        reason: String,
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// Restore a dropped task to its previous status and update time (CLI only).
+    Undrop {
+        id: i64,
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// Refresh an open or blocked task's last-updated time (CLI only).
+    Keep {
+        id: i64,
         #[arg(long)]
         actor: Option<String>,
     },

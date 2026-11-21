@@ -471,8 +471,8 @@ still load, have no effect, and `memhub doctor` names them under
 `config_ignored_settings`.
 
 Each hit is compact: `source_type`, `source_id`, `scope`, `title`,
-`rerank_score`, `created_at`, `status` (tasks only: `open`, `done` or
-`blocked`), `stale`, `superseded_by` and `text`, at most 300 characters of the
+`rerank_score`, `created_at`, `status` (tasks only: `open`, `done`, `blocked`
+or `dropped`), `stale`, `superseded_by` and `text`, at most 300 characters of the
 row's text (ending in `…` when cut) in place of its full body; a tagged fact
 also carries `kind`. `memhub recall --json` adds the diagnostic `rank`,
 `score`, `fts_score` and `vector_score`, and `memhub recall --full` adds each
@@ -561,8 +561,10 @@ whitespace and/or `#` and a number (`decision 201`, `Task #99`, `fact 7`)
 returns that row first. Only the main query is read, not the variants. The row
 must exist in the repo store and pass the call's source-type and
 accepted-only filters (accepted-only excludes a task, since tasks carry no `source`); a
-superseded row is kept, as in ranked results. Named rows come in the order the
-query names them, once each, ahead of every other hit, are exempt from the
+superseded row is kept, as in ranked results. Before fact retirement, any
+otherwise eligible repo fact could be named by ID. Now a retired fact is
+skipped even when named; use `get-row` for direct inspection. Named rows come
+in the order the query names them, once each, ahead of every other hit, are exempt from the
 cutoff (a named row is an explicit lookup, not ranking), and they count toward
 `max_results` (named rows past the limit are dropped, last named first); the
 remaining slots are filled by the normal ranking, which does not see them. When
@@ -946,7 +948,9 @@ and asks recall for each one, in up to two forms:
 Superseded facts and decisions are neither sampled nor counted in the per-type
 row totals: recall ranks them below their replacements on purpose, so failing
 to surface one would not be a recall fault. Done tasks are still sampled, as
-recall keeps them visible.
+recall keeps them visible, as it does dropped tasks. Before lifecycle states,
+every non-superseded fact and every doc chunk could be sampled. Now retired
+facts and archived chunks are also excluded from both the sample and the totals.
 
 A doc chunk is checked by the passage form only, because a heading-path query
 is not a fair known-item probe for one. A chunk's heading path starts with its
@@ -1192,6 +1196,13 @@ Surfaces: `memhub doc add|ls|show|rm` (CLI) · `memhub.doc_add` (MCP,
 direct write — a doc is a user-pointed artifact, not an agent claim) ·
 `/doc` (skill). Re-ingesting an unchanged file is a no-op; changed
 content replaces every chunk and refreshes embeddings/FTS.
+
+Before document archiving, all ingested chunks could be searched and counted
+as available, and re-ingesting any known path followed the unchanged/changed
+rules above. Now only chunks of non-archived documents are eligible in both
+default and doc-scoped recall (including `available_docs` and
+`--explain`'s `docs_not_searched`); re-ingest refuses an archived path until it
+is unarchived. The same rule applies to CLI and MCP ingestion.
 
 Doc content is **excluded from `memhub export`** — it is a disk-backed,
 re-ingestable cache. On another machine, re-run `doc add` against the
@@ -1983,6 +1994,51 @@ Similarity warnings are best-effort on stderr, including with `--json`;
 failure to print a warning does not affect acceptance or the success
 output on stdout. Global-targeted accepts do not run the repo checks and
 still reject `--supersede`.
+
+## Reversible repo memory states
+
+These repo-only commands take `--actor` and record successful changes in
+`writes_log`. None is an MCP write tool. They do not delete rows, document
+chunks, or embeddings. Drive snapshots retain the lifecycle fields and the
+sync digest detects changes to them. Migrating an unchanged 0025 store does
+not change its sync baseline.
+
+- **Retire a fact:** `memhub fact retire <id-or-key> --reason <text>`.
+  `memhub fact list --include-retired` shows its retirement time and reason;
+  `memhub get-row fact <id>` still reads its full text directly. `memhub fact
+  unretire <id-or-key>` clears only the retirement metadata, without changing
+  the value, verification time, or any supersession link.
+  **Before:** all facts were in the default fact list and facts ledger, and
+  eligible facts could be recalled even by naming their ID. Same-key
+  `fact add` overwrote the existing row; accept-time comparison used
+  non-superseded facts. **After:** every retired fact is excluded from
+  ranked and named-ID recall (with or without filters), rendered fact
+  views and the ledger's stale-fact count, the default CLI and MCP fact lists,
+  and accept-time similarity candidates. All same-key add/accept
+  variants, including `review accept --force`, refuse a retired key and
+  name `memhub fact unretire`. Staleness and supersession alone still do
+  not exclude a fact from recall; existing same-key rules for
+  non-retired facts are unchanged.
+- **Archive a document:** `memhub doc archive <id-or-path> --reason <text>`.
+  `memhub doc ls` marks it archived, and `doc show` still reads its stored
+  chunks. `memhub doc unarchive <id-or-path>` restores eligibility without
+  re-ingesting or modifying those chunks. If the source file is gone,
+  use the ID or the exact stored path shown by `doc ls`. See
+  [doc ingestion](#doc-ingestion) for recall and re-ingest
+  exclusions. `doc rm` still deletes, and portable export still excludes
+  documents in either state.
+- **Drop a task:** `memhub task drop <id> --reason <text>` changes an
+  `open` or `blocked` task to `dropped`. `memhub task show <id>` shows why.
+  `memhub task list --status dropped` and the existing MCP task-list
+  status filter accept the new status. Dropped tasks are not open work
+  in rendered views, but remain in the full backlog, task recall and
+  exports. `memhub task undrop <id>` restores the prior status and
+  last-updated time and clears the drop reason. `memhub task keep <id>`
+  refreshes only the last-updated time of an open or blocked task; it
+  is audited but has no timestamp undo. The former task states and
+  their filters still work. Marking a dropped task done replaces its
+  dropped status and clears the saved undo data; the old drop stays in
+  the audit log.
 
 ## Attribution
 
