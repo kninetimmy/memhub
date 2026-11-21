@@ -665,9 +665,9 @@ fn format_ledger_md(s: &RenderSnapshot) -> String {
             s.facts.len(),
             s.stale_fact_count
         ));
-        // The "Superseded" column annotates (never hides) a superseded fact
-        // with its replacement id — the demote-with-link surface for facts
-        // (Wave 3 L3), parallel to the decisions annotation above.
+        // Before retirement, the "Superseded" column annotated every
+        // superseded repo fact. It still annotates visible facts, parallel
+        // to decisions (Wave 3 L3); retirement hides a fact independently.
         //
         // The "Kind" column (Wave 6 W4, migration 0021) is additive and
         // conditional: it only appears when at least one rendered fact

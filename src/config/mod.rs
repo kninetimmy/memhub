@@ -72,10 +72,11 @@ pub const DEFAULT_ACCEPTED_ONLY: bool = false;
 /// configs; `memhub doctor` reports it as an ignored setting. The
 /// staleness horizon itself is `DEFAULT_FACT_STALE_AFTER_DAYS`.
 pub const DEFAULT_INCLUDE_STALE: bool = true;
-/// Recall's fact-staleness horizon in days. A fact is stale (flagged
-/// `stale: true` in recall, never excluded or demoted) when it has never
-/// been verified or was last verified more than this many days ago. Kept
-/// identical to the long-standing hardcoded window
+/// Recall's fact-staleness horizon in days. An unverified fact, or one last
+/// verified more than this many days ago, is stale. Before retirement,
+/// eligible stale facts were flagged `stale: true`, not excluded or demoted
+/// for staleness alone. This still holds for non-retired facts.
+/// The default still matches the long-standing hardcoded window
 /// (`models::FACT_STALE_AFTER_DAYS`, which still drives the non-recall
 /// fact-hygiene surfaces — `fact list`, render, stats).
 pub const DEFAULT_FACT_STALE_AFTER_DAYS: i64 = crate::models::FACT_STALE_AFTER_DAYS;
@@ -174,8 +175,10 @@ pub struct RetrievalScoringConfig {
     #[serde(default = "default_stale_penalty", skip_serializing)]
     pub stale_penalty: f64,
     /// Blended-score demotion for a superseded fact/decision (Wave 3 L3).
-    /// Superseded rows are demoted (never excluded) and tagged
-    /// `superseded_by: N`. Defaults to `DEFAULT_SUPERSEDED_PENALTY`.
+    /// Before retirement, eligible superseded rows were demoted and tagged
+    /// `superseded_by: N`, not excluded for supersession. That still holds
+    /// for decisions and non-retired facts; retired facts are excluded
+    /// separately. Defaults to `DEFAULT_SUPERSEDED_PENALTY`.
     #[serde(default = "default_superseded_penalty")]
     pub superseded_penalty: f64,
     /// Half-life in days for optional continuous age decay (Wave 3 L6).

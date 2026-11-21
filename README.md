@@ -1090,7 +1090,7 @@ This is a presence check: customized regular files count as present, extra user 
 
 ### Staleness and confidence
 
-- **Facts** go stale after 90 days without re-verification. Before retirement, recall ranked eligible stale facts like fresh ones and flagged them `stale`. That still holds for non-retired facts; retired facts are excluded. `memhub fact verify <id|key>` refreshes `verified_at` only, and `/wrap-up` offers a per-item re-verify step for the oldest facts on the default fact list. Verification is CLI only, because agent self-verification is exactly what the untrusted-writer guardrail forbids.
+- **Facts** go stale after 90 days without re-verification. Before retirement, recall ranked eligible stale facts like fresh ones and flagged them `stale`. That still holds for non-retired facts; retired facts are excluded. Both `/wrap-up` paths still offer per-item re-verification for the oldest candidates on the default fact list, which used to include every repo fact and now omits retired ones. `memhub fact verify <id|key>` still works on a retired fact and refreshes `verified_at` only. Verification is CLI only, because agent self-verification is exactly what the untrusted-writer guardrail forbids.
 - **Commands** carry a derived confidence: `success_count / (success_count + fail_count)`.
 - **Embeddings** go stale when the source body changes or the bundled model changes. Recall surfaces a warning, and you decide whether to run `/reindex`.
 

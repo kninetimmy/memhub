@@ -1220,6 +1220,10 @@ archived path: to restore and re-ingest it, first run `memhub doc unarchive
 **Retained stale queue behavior.** `memhub review stale` still suggests
 `memhub fact verify` for facts past the horizon that are not superseded,
 even if they are retired. `memhub status` still uses the same queue count.
+Before retirement, both `/wrap-up` stale-fact re-verification paths could
+pick such facts from the default `memhub fact list --json`. Both still use
+that list, but it now omits retired facts, so they are no longer wrap-up
+candidates. Direct `memhub fact verify <id-or-key>` still works on them.
 The standalone stale-fact counts in `status` and `stats` still include
 retired facts; the rendered ledger's stale-fact count does not.
 
@@ -2021,6 +2025,23 @@ These repo-only commands take `--actor` and record successful changes in
 chunks, or embeddings. Drive snapshots retain the lifecycle fields and the
 sync digest detects changes to them. Migrating an unchanged 0025 store does
 not change its sync baseline.
+
+**Audit readers:** Before, there were no lifecycle actions to display or
+count. Now the ledger's Recent Activity uses its existing window and row
+limit to show the new action, actor, and logged reason or undo detail.
+`sync check --diff` counts each action after a comparable audit baseline as
+an update, using its existing rule that every non-insert action is an
+update. Status and stats include these entries in the existing write counts.
+Doctor includes them in write recency and detects them as writes since render.
+
+**Keyword index:** Before, otherwise eligible facts and chunks in the
+full-text index could be returned as hits. Now recall filters retired facts
+and archived chunks out before the keyword candidate limit, but leaves them
+in the index. They still contribute to the BM25 corpus statistics used to
+score other hits. This applies in both keyword-only and hybrid recall.
+The candidate-based `stale_embeddings` check now sees the filtered pool,
+including when checking for corrupt vectors. The store-wide
+`missing_embeddings` count still includes rows out of circulation.
 
 - **Retire a fact:** `memhub fact retire <id-or-key> --reason <text>`.
   `memhub fact list --include-retired` shows its retirement time and reason;

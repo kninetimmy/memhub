@@ -858,12 +858,14 @@ pub enum ReviewCommand {
         json: bool,
         #[arg(long)]
         actor: Option<String>,
-        /// Retire the named repo row in favor of this write (fact id or key,
-        /// or numeric decision id). A fact cannot supersede itself.
+        /// Link the named repo row to this replacement as before (fact id or
+        /// key, or numeric decision id). This supersedes, not retires, a fact.
+        /// A fact cannot supersede itself.
         #[arg(long)]
         supersede: Option<String>,
-        /// Skip repo accept-time checks. A same-key overwrite logs the prior
-        /// value to writes_log.
+        /// Skip repo overwrite and similarity checks as before. A same-key
+        /// overwrite logs the prior value; a retired key now refuses even
+        /// with this flag, until restored with `memhub fact unretire`.
         #[arg(long)]
         force: bool,
     },

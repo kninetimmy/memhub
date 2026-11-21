@@ -25,11 +25,14 @@ the source database was at when the export was taken.
 
 ## Top-level shape
 
+This v2 example represents a development build after the v0.3.1 release,
+with the package version still at `0.3.1`. The released v0.3.1 wrote v1.
+
 ```json
 {
   "memhub_export_version": 2,
-  "exported_at": "2026-05-12 14:23:01",
-  "exported_by": "memhub 0.1.0",
+  "exported_at": "2026-11-21 04:00:00",
+  "exported_by": "memhub 0.3.1",
   "source_schema_version": "0026_memory_lifecycle",
   "project": {
     "root_path_at_export": "/Users/.../my-repo",

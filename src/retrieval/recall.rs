@@ -174,9 +174,10 @@ pub struct RecallHit {
     pub vector_score: f64,
     pub stale: bool,
     /// `Some(new_id)` when this hit was superseded by another row of the
-    /// same source type (Wave 3 L3). The hit is kept and demoted (via
-    /// `scoring.superseded_penalty`), not excluded — this tag lets the
-    /// caller see the replacement id. Only facts/decisions can carry it.
+    /// same source type (Wave 3 L3). Before retirement, eligible
+    /// superseded rows were kept and demoted via `scoring.superseded_penalty`.
+    /// That still holds for decisions and non-retired facts; retired facts
+    /// never reach this point. Only fact and decision hits can carry this tag.
     pub superseded_by: Option<i64>,
     /// Task status (`open`, `done`, `blocked`, `dropped`); `None` for other row types.
     pub status: Option<String>,
@@ -611,7 +612,9 @@ struct ResolvedOptions {
     source_types: Vec<SourceType>,
     /// Fact-staleness horizon in days (`[retrieval] fact_stale_after_days`).
     /// A fact never verified, or last verified more than this many days ago,
-    /// is stale: flagged `stale: true`, never excluded or demoted.
+    /// is stale. Before retirement, eligible stale facts were flagged
+    /// `stale: true` without exclusion or demotion for staleness. That
+    /// still holds for non-retired facts; retirement filters separately.
     fact_stale_after_days: i64,
     accepted_only: bool,
     /// Effective rerank toggle; honored only when mode = hybrid.
@@ -626,9 +629,10 @@ struct ResolvedOptions {
     rerank_cutoff: f32,
     /// True only when doc chunks entered the pool implicitly via
     /// `[retrieval] include_docs_in_default` (caller passed no
-    /// `source_types`). Explicit `--source-type doc` keeps this false
-    /// so that path behaves exactly as before. Gates the doc cap and the
-    /// "drop unvetted docs" safety rule below.
+    /// `source_types`). Before archiving, explicitly scoped recall could
+    /// search every ingested document. Explicit `--source-type doc` still
+    /// keeps this false, bypassing the doc cap and the "drop unvetted docs"
+    /// rule, but both explicit and default scopes now exclude archived chunks.
     docs_via_default: bool,
 }
 
@@ -2255,10 +2259,10 @@ fn score(rows: &[CandidateRow], scoring: &RetrievalScoringConfig) -> Vec<ScoredH
                 None => 0.0,
             };
             let vector_score = c.vector_score.unwrap_or(0.0).clamp(0.0, 1.0);
-            // Demotion signal (Wave 3 L3): a superseded row is kept and
-            // tagged but pushed down, never excluded (demote-with-link,
-            // decision 145). Staleness is deliberately not a ranking input
-            // (decision 236): `stale` is only a flag on the hit.
+            // Before retirement, eligible superseded rows were kept,
+            // tagged and demoted (decision 145). That still holds here;
+            // retirement is filtered before scoring. Staleness remains
+            // a flag, not a ranking input (decision 236).
             let superseded_penalty = if c.superseded_by.is_some() {
                 scoring.superseded_penalty
             } else {

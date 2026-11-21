@@ -135,6 +135,11 @@ proof of complete reconciliation or shared ancestry. Whole-DB snapshots
 still require an operator to decide which history to retain or reconcile;
 there is no automatic row merge.
 
+Before #445, there were no memory lifecycle actions in the audit diff.
+Now it counts retire, archive, drop, keep, and their undo actions as
+updates under the existing non-insert rule. Fact keys and task titles
+still appear when available; documents get counts but no per-row list.
+
 ## 3. Change detection is logical, not byte-level (load-bearing)
 
 SQLite files are **not byte-stable** for identical logical content:
@@ -152,6 +157,18 @@ manifest (§4) and the marker. It has two parts:
   themselves (facts, decisions, tasks, commands, pending_writes,
   session_notes, project_state, project_arch), each row's columns
   rendered in id order.
+
+**Lifecycle follow-up (#445).** Before migration 0026, the digest used
+the base stream (which by 0025 also covered `documents` and `doc_chunks`).
+After 0026, the base stream is unchanged. The digest appends populated
+lifecycle metadata in fixed table and row order: fact ID with
+`retired_at`/`retired_reason`, task ID with `dropped_reason`,
+`pre_drop_status`, `pre_drop_updated_at`, `pre_keep_updated_at`, and
+`kept_at`, and document path with `archived_at`/`archived_reason`. Each
+extension omits rows whose lifecycle fields are all null and emits
+nothing if none remain. A 0025 store can still be hashed as-is; migrating
+it without other changes preserves the digest and its recorded baseline.
+The whole-database snapshot and adopt safety checks are unchanged.
 
 Equality hinges on the digest. Two subtler approaches were tried and
 rejected: row *count* collides (two repos that each added one fact look

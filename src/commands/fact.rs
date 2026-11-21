@@ -14,10 +14,10 @@ pub fn add(start: &Path, key: &str, value: &str, source: &str, actor: &str) -> R
 /// #97) -- a lightweight, unenforced classifier for the writing agent
 /// (suggested vocabulary: `gotcha | env | preference | command |
 /// constraint`, but any non-empty string is legal). `kind: None` behaves
-/// identically to [`add`], including on a same-key overwrite: `kind`
-/// follows the same last-writer-wins rule Wave 3 L5 already documented for
-/// `value`/`source`, so re-adding an existing key without `--kind` clears
-/// a previously-set tag rather than silently preserving it.
+/// identically to [`add`]. Before retirement, same-key upserts used
+/// last-writer-wins for `kind`, `value`, and `source`. This still holds
+/// for non-retired facts: re-adding without `--kind` clears any prior tag.
+/// Retired keys now refuse until restored with `memhub fact unretire`.
 pub fn add_with_kind(
     start: &Path,
     key: &str,
@@ -60,9 +60,9 @@ pub fn add_with_kind_in_tx(
     let kind_value = normalize_kind(kind);
 
     // Read the prior value alongside the id so a same-key overwrite can log
-    // what it replaced (Wave 3 L5, issue #48). `fact add` on an existing key
-    // is silent last-writer-wins; without this the old value is captured
-    // nowhere and the overwrite is unrecoverable.
+    // what it replaced (Wave 3 L5, issue #48). Last-writer-wins used to
+    // apply to every existing key. It still does for non-retired keys;
+    // retired keys now refuse before the prior value can be overwritten.
     let existing = find_writable_fact(tx, key)?;
 
     let (row_id, created, prior_value) = if let Some((id, prior, _superseded)) = existing {
