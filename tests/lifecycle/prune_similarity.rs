@@ -281,6 +281,162 @@ fn imported_architecture(f: &Fixture) -> String {
 }
 
 #[test]
+fn imported_decisions_use_exact_chronology_offsets_and_id_only_for_true_ties() {
+    let f = fixture();
+    // Each pair reverses insertion/ID order, except the true instant tie.
+    for (id, date) in [
+        (1, "2025-01-01T00:00:00.0002Z"),
+        (2, "2025-01-01T00:00:00.0001Z"),
+        (3, "2025-01-02T00:00:00.0001Z"),
+        (4, "2025-01-02T01:00:00.0001+02:00"),
+        (5, "2025-01-03T00:00:00.00010Z"),
+        (6, "2025-01-03T01:00:00.000100+01:00"),
+    ] {
+        f.db()
+            .execute(
+                "INSERT INTO decisions(id,title,rationale,decided_at)
+             VALUES (?1,'Adopt Postgres as the datastore',?2,?3)",
+                params![id, CLAIM, date],
+            )
+            .unwrap();
+    }
+    let report = f.scan();
+    for (earlier, later) in [(2, 1), (4, 3), (5, 6)] {
+        let pair = category(&report, "unlinked_decisions")
+            .into_iter()
+            .find(|item| item["subjects"][0]["id"] == earlier && item["subjects"][1]["id"] == later)
+            .unwrap();
+        assert_eq!(
+            action(pair, "supersede_earlier"),
+            [
+                "decision",
+                "supersede",
+                &earlier.to_string(),
+                "--by",
+                &later.to_string()
+            ]
+        );
+    }
+    assert_eq!(category(&report, "unlinked_decisions").len(), 15);
+    assert_eq!(f.scan(), report);
+}
+
+#[test]
+fn legacy_and_current_architecture_excerpts_never_borrow_an_adjacent_versions_context() {
+    for legacy in [true, false] {
+        let f = fixture();
+        let body = format!(
+            "# Architecture\n\n## Storage v1.0 only\n\n{CLAIM}\n\n## Storage v2.0 only\n\n{CLAIM}"
+        );
+        if legacy {
+            // A supported pre-existing layout retains the wrapper at ord 0.
+            // Insert it directly: no export/import or section rederivation.
+            let db = f.db();
+            db.execute(
+                "INSERT INTO project_arch(id,body,actor,actor_raw)
+                 VALUES (1,?1,'fixture','fixture')",
+                [&body],
+            )
+            .unwrap();
+            for (ord, (heading, chunk)) in memhub::commands::doc::chunk_markdown(&body)
+                .iter()
+                .enumerate()
+            {
+                db.execute(
+                    "INSERT INTO arch_sections(arch_id,ord,heading_path,body) VALUES (1,?1,?2,?3)",
+                    params![ord as i64, heading, chunk],
+                )
+                .unwrap();
+            }
+        } else {
+            f.ok(&["arch", "set", "--", &body]);
+        }
+        f.db()
+            .execute(
+                "INSERT INTO facts(id,key,value) VALUES (1,'old',?1)",
+                [CLAIM],
+            )
+            .unwrap();
+        let post_human =
+            String::from_utf8(f.ok(&["fact", "retire", "1", "--reason", "obsolete"])).unwrap();
+        let post = serde_json::to_value(
+            memhub::commands::prune::correction_sweep(&f.repo, "fact", 1).unwrap(),
+        )
+        .unwrap();
+        let scan = f.scan();
+        let hits = category(&scan, "correction_sweep");
+        assert_eq!(category(&post, "correction_sweep"), hits);
+        assert_eq!(hits.len(), 2, "{scan}");
+        for (index, hit) in hits.iter().enumerate() {
+            let version = index + 1;
+            assert_eq!(
+                hit["excerpts"]["possible_restatement"]["text"],
+                format!(
+                    "Architecture > Storage v{version}.0 only\n\n## Storage v{version}.0 only\n\n{CLAIM}"
+                )
+            );
+        }
+        let human = String::from_utf8(f.ok(&["prune", "scan"])).unwrap();
+        for hit in hits {
+            let excerpt = hit["excerpts"]["possible_restatement"]["text"]
+                .as_str()
+                .unwrap()
+                .replace('\n', "\n      ");
+            assert!(human.contains(&excerpt), "{human}");
+            assert!(post_human.contains(&excerpt), "{post_human}");
+        }
+        assert_eq!(
+            f.db()
+                .query_row("SELECT count(*) FROM arch_sections", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            if legacy { 3 } else { 2 },
+            "reporting must not normalize the stored layout"
+        );
+    }
+}
+
+#[test]
+fn repeated_architecture_headings_use_their_exact_body_and_preserve_wrapper_qualifiers() {
+    let f = fixture();
+    let body = format!(
+        "# Architecture v1.0 only\n\n## Storage\n\n{CLAIM}\n\n## Storage\n\n{CLAIM}\n\nFor v2.0 only."
+    );
+    f.ok(&["arch", "set", "--", &body]);
+    f.db()
+        .execute(
+            "INSERT INTO facts(id,key,value) VALUES (1,'old',?1)",
+            [CLAIM],
+        )
+        .unwrap();
+    let post_human =
+        String::from_utf8(f.ok(&["fact", "retire", "1", "--reason", "obsolete"])).unwrap();
+    let post = serde_json::to_value(
+        memhub::commands::prune::correction_sweep(&f.repo, "fact", 1).unwrap(),
+    )
+    .unwrap();
+    let scan = f.scan();
+    let hits = category(&scan, "correction_sweep");
+    assert_eq!(category(&post, "correction_sweep"), hits);
+    assert_eq!(hits.len(), 2);
+    assert_eq!(
+        hits[0]["excerpts"]["possible_restatement"]["text"],
+        format!("Architecture v1.0 only > Storage\n\n## Storage\n\n{CLAIM}")
+    );
+    assert_eq!(
+        hits[1]["excerpts"]["possible_restatement"]["text"],
+        format!("Architecture v1.0 only > Storage\n\n## Storage\n\n{CLAIM}\n\nFor v2.0 only.")
+    );
+    for hit in hits {
+        let excerpt = hit["excerpts"]["possible_restatement"]["text"]
+            .as_str()
+            .unwrap()
+            .replace('\n', "\n      ");
+        assert!(post_human.contains(&excerpt), "{post_human}");
+    }
+}
+
+#[test]
 fn correction_uses_current_imported_architecture_and_preserves_enclosing_version_heading() {
     let f = fixture();
     imported_architecture(&f);

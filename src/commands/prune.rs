@@ -290,18 +290,21 @@ pub fn dismiss(start: &Path, id: &str, actor: &str) -> Result<()> {
     let mut ctx = db::open_project(start)?;
     let similarity_match = if ctx.config.retrieval.use_reranker {
         let snapshot = ctx.conn.transaction()?;
-        similarity::contains(&snapshot, &ctx.paths.repo_root, id, true)?
+        similarity::prepare_dismissal(&snapshot, &ctx.paths.repo_root, id)?
     } else {
-        false
+        None
     };
     let tx = ctx
         .conn
         .transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let mut found = false;
-    let warning = visit_candidates(&tx, &ctx.paths, &ctx.config, |item| found |= item.id == id)?;
-    if !found && similarity_match {
-        found = similarity::contains(&tx, &ctx.paths.repo_root, id, false)?;
-    }
+    let (found, warning) = if let Some(pair) = similarity_match {
+        (pair.is_current(&tx, &ctx.paths.repo_root, id)?, None)
+    } else {
+        let mut found = false;
+        let warning =
+            visit_candidates(&tx, &ctx.paths, &ctx.config, |item| found |= item.id == id)?;
+        (found, warning)
+    };
     if !found {
         let detail = warning.map_or_else(String::new, |warning| format!("; {warning}"));
         return Err(MemhubError::InvalidInput(format!(
@@ -365,7 +368,7 @@ fn visit_candidates(
     }
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(untagged)]
 enum Timestamp {
     SinceEpoch(SystemTime),
@@ -559,7 +562,7 @@ fn documents(conn: &Connection, root: &Path, visit: &mut impl FnMut(Item)) -> Re
     Ok(())
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 enum DocumentFile {
     Readable {
         hash: String,
