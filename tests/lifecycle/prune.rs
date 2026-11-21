@@ -432,6 +432,35 @@ fn scan_uses_missing_config_fallback_without_creating_a_live_config() {
 }
 
 #[test]
+fn replacing_a_drifted_document_with_identical_bytes_invalidates_its_dismissal() {
+    let f = Fixture::new();
+    f.document("changed.md", Some(b"# Changed"), false);
+    let report = f.scan();
+    let previous = row_item(&report, "out_of_date_document", 1);
+    f.ok(&action(previous, "keep"));
+    assert_eq!(f.scan()["total"], 0);
+
+    let source = f.temp.path().join("changed.md");
+    let replacement = f.temp.path().join("replacement.md");
+    fs::copy(&source, &replacement).unwrap();
+    File::options()
+        .write(true)
+        .open(&replacement)
+        .unwrap()
+        .set_times(
+            FileTimes::new().set_modified(fs::metadata(&source).unwrap().modified().unwrap()),
+        )
+        .unwrap();
+    fs::rename(&source, f.temp.path().join("old.md")).unwrap();
+    fs::rename(&replacement, &source).unwrap();
+    let after = f.scan();
+    let changed = row_item(&after, "out_of_date_document", 1);
+    assert_ne!(previous["id"], changed["id"]);
+    assert_eq!(previous["reason"], changed["reason"]);
+    assert_eq!(after, f.scan());
+}
+
+#[test]
 fn a_dangling_document_link_does_not_match_a_missing_file_dismissal() {
     let f = Fixture::new();
     f.document("gone.md", None, false);
@@ -529,6 +558,134 @@ exit $LASTEXITCODE
         .collect::<rusqlite::Result<_>>()
         .unwrap();
     assert_eq!(rows, [(KEY.into(), "updated".into())]);
+}
+
+#[cfg(windows)]
+#[test]
+fn a_backup_inspection_error_omits_only_the_incomplete_group() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let f = Fixture::new();
+    let incomplete = f.backups("incomplete", 21);
+    let nested = f.backups("incomplete/nested", 21);
+    let healthy = f.backups("healthy", 21);
+    let open = File::options()
+        .read(true)
+        .share_mode(0)
+        .open(incomplete.join("00.bak"))
+        .unwrap();
+    let scan = f.scan();
+    assert_eq!(scan["total"], 2);
+    let warning = scan["backup_warning"].as_str().unwrap();
+    assert!(
+        warning.contains("incomplete") && warning.contains("00.bak"),
+        "{warning}"
+    );
+    let status = f.json(&["status", "--json"]);
+    assert_eq!(status["status"]["prune_review_count"], 2);
+    assert_eq!(status["status"]["prune_backup_warning"], warning);
+    let human = String::from_utf8(f.ok(&["prune", "scan"])).unwrap();
+    assert!(
+        human.contains("Surplus backups not counted")
+            && human.contains("incomplete")
+            && human.contains("00.bak"),
+        "{human}"
+    );
+
+    let healthy_batch = &items(&scan)[0];
+    assert!(
+        healthy_batch["subjects"][0]["directory"]
+            .as_str()
+            .unwrap()
+            .ends_with("healthy")
+    );
+    f.ok(&action(healthy_batch, "delete"));
+    assert_eq!(file_count(&healthy), 20);
+    assert_eq!(file_count(&nested), 21);
+    assert_eq!(file_count(&incomplete), 22);
+    drop(open);
+    assert_eq!(
+        f.scan()["total"],
+        2,
+        "both remaining batches are readable again"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn scan_and_cleanup_reject_known_readonly_or_alternate_stream_targets() {
+    let f = Fixture::new();
+    let readonly = f.backups("readonly", 22).join("00.bak");
+    let readonly_meta = fs::metadata(&readonly).unwrap();
+    let mut permissions = readonly_meta.permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(&readonly, permissions).unwrap();
+    let streamed = f.backups("streamed", 22).join("00.bak");
+    let modified = fs::metadata(&streamed).unwrap().modified().unwrap();
+    let mut stream = streamed.as_os_str().to_os_string();
+    stream.push(":notes");
+    fs::write(&stream, "additional content").unwrap();
+    File::options()
+        .write(true)
+        .open(&streamed)
+        .unwrap()
+        .set_times(FileTimes::new().set_modified(modified))
+        .unwrap();
+
+    let scan = f.scan();
+    assert_eq!(scan["total"], 2);
+    for (item, reason) in items(&scan).iter().zip(["read-only", "unreviewed streams"]) {
+        assert!(item["reason"].as_str().unwrap().contains(reason), "{item}");
+        assert_eq!(item["actions"].as_array().unwrap().len(), 1);
+        let id = item["id"].as_str().unwrap();
+        assert_eq!(action(item, "keep"), ["prune", "dismiss", id]);
+        let out = f.run(&["prune", "backups", "--yes", "--candidate", id]);
+        assert!(!out.status.success(), "{out:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains(reason),
+            "{out:?}"
+        );
+    }
+    let human = String::from_utf8(f.ok(&["prune", "scan"])).unwrap();
+    assert!(human.contains("read-only") && human.contains("unreviewed streams"));
+    assert!(!human.contains("memhub prune backups --yes --candidate"));
+    assert_eq!(file_count(readonly.parent().unwrap()), 22);
+    assert_eq!(file_count(streamed.parent().unwrap()), 22);
+    assert_eq!(fs::read_to_string(stream).unwrap(), "additional content");
+    fs::set_permissions(readonly, readonly_meta.permissions()).unwrap();
+}
+
+// APFS does not allow creating the invalid UTF-8 entry used by this fixture.
+#[cfg(target_os = "linux")]
+#[test]
+fn scan_distinguishes_invalid_utf8_from_literal_escape_and_replacement_character() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let f = Fixture::new();
+    let dir = f.backups("rendered", 23);
+    for (i, name) in [b"\xff.bak".as_slice(), br"\xff.bak", "�.bak".as_bytes()]
+        .into_iter()
+        .enumerate()
+    {
+        fs::rename(
+            dir.join(format!("{i:02}.bak")),
+            dir.join(OsStr::from_bytes(name)),
+        )
+        .unwrap();
+    }
+    let scan = f.scan();
+    let files = items(&scan)[0]["subjects"][0]["files"].as_array().unwrap();
+    let human = String::from_utf8(f.ok(&["prune", "scan"])).unwrap();
+    assert_eq!(files.len(), 3);
+    for name in [r"/\xff.bak", r"/\\xff.bak", "/�.bak"] {
+        let displayed = files
+            .iter()
+            .find_map(|file| file.as_str().filter(|path| path.ends_with(name)))
+            .unwrap_or_else(|| panic!("no distinct path ending in {name:?}: {files:?}"));
+        assert!(human.contains(&format!("{displayed:?}")), "{human}");
+    }
+    assert_eq!(file_count(&dir), 23);
 }
 
 #[cfg(windows)]
@@ -648,6 +805,62 @@ fn backup_cleanup_refuses_before_any_deletion_when_a_keeper_or_victim_is_busy() 
     assert_eq!(f.scan(), report);
     f.ok(&delete);
     assert_eq!(file_count(&dir), 20);
+}
+
+#[cfg(windows)]
+#[test]
+fn backup_cleanup_with_an_attribute_reader_is_complete_or_refused() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let f = Fixture::new();
+    let dir = f.backups("rendered", 22);
+    let report = f.scan();
+    let delete = action(&items(&report)[0], "delete");
+    let target = dir.join("00.bak");
+    let reader = File::options()
+        .access_mode(0x80) // FILE_READ_ATTRIBUTES
+        .share_mode(7)
+        .open(&target)
+        .unwrap();
+    let out = f.run(&delete);
+    let namespace = || {
+        let mut names: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    };
+    let held = namespace();
+    drop(reader);
+    let released = namespace();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    eprintln!(
+        "attribute reader: exit={}, stdout={stdout:?}, stderr={stderr:?}, held={held:?}, released={released:?}",
+        out.status
+    );
+    assert_eq!(
+        held, released,
+        "cleanup must not be deferred past the command"
+    );
+    let expected: Vec<_> = (if out.status.success() { 2 } else { 0 }..22)
+        .map(|i| format!("{i:02}.bak"))
+        .collect();
+    assert_eq!(held, expected);
+    if out.status.success() {
+        assert_eq!(stdout.trim(), "Deleted 2 surplus backup file(s)");
+    } else {
+        assert!(stdout.is_empty(), "{stdout}");
+        let stdout = String::from_utf8(f.ok(&delete)).unwrap();
+        let after = namespace();
+        eprintln!("after retry: stdout={stdout:?}, names={after:?}");
+        assert_eq!(stdout.trim(), "Deleted 2 surplus backup file(s)");
+        assert_eq!(
+            after,
+            (2..22).map(|i| format!("{i:02}.bak")).collect::<Vec<_>>()
+        );
+    }
 }
 
 #[cfg(windows)]

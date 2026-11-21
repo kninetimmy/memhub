@@ -14,7 +14,9 @@ use serde::Serialize;
 
 use crate::config::ProjectConfig;
 use crate::db::{self, ProjectPaths};
-use crate::fs_identity::is_link_or_reparse_point;
+use crate::fs_identity::{
+    FileIdentity, file_info_from_handle, is_link_or_reparse_point, open_direct_file,
+};
 use crate::retrieval::util::sha256_hex;
 use crate::{MemhubError, Result};
 
@@ -267,11 +269,11 @@ fn visit_candidates(
     tasks(conn, &mut visit)?;
     documents(conn, &paths.repo_root, &mut visit)?;
     match backups::surplus(paths) {
-        Ok(groups) => {
+        Ok((groups, warnings)) => {
             for group in groups {
                 visit(group.item());
             }
-            Ok(None)
+            Ok(backups::warning(warnings))
         }
         Err(err) => Ok(Some(format!("Surplus backups not counted: {err}"))),
     }
@@ -427,8 +429,8 @@ fn documents(conn: &Connection, root: &Path, visit: &mut impl FnMut(Item)) -> Re
         let state: String = row.get(4)?;
         let on_disk = document_file(root, Path::new(&path));
         let (reason, action) = match &on_disk {
-            DocumentFile::Readable(hash) if *hash == ingested_hash => continue,
-            DocumentFile::Readable(_) => (
+            DocumentFile::Readable { hash, .. } if *hash == ingested_hash => continue,
+            DocumentFile::Readable { .. } => (
                 "File content changed since ingest.",
                 Action::new(
                     "re_ingest",
@@ -470,7 +472,10 @@ fn documents(conn: &Connection, root: &Path, visit: &mut impl FnMut(Item)) -> Re
 
 #[derive(Serialize)]
 enum DocumentFile {
-    Readable(String),
+    Readable {
+        hash: String,
+        identity: FileIdentity,
+    },
     Missing,
     Linked(Vec<u8>, Option<Vec<u8>>, Option<Timestamp>),
     Unreadable(
@@ -528,11 +533,28 @@ fn document_file(root: &Path, path: &Path) -> DocumentFile {
             if !meta.is_file() || fs::canonicalize(&expected).ok().as_ref() != Some(&expected) {
                 return DocumentFile::Unreadable(None, None, stamp);
             }
-            return match fs::read(&expected) {
-                Ok(bytes) if std::str::from_utf8(&bytes).is_ok() => {
-                    DocumentFile::Readable(sha256_hex(&bytes))
+            let read = || -> std::io::Result<_> {
+                use std::io::Read;
+
+                let mut file = open_direct_file(&expected, &meta)?;
+                let identity = file_info_from_handle(&file)?.identity;
+                if fs::canonicalize(&expected)? != expected {
+                    return Err(std::io::Error::other(
+                        "document path changed before reading",
+                    ));
                 }
-                Ok(bytes) => DocumentFile::Unreadable(None, Some(sha256_hex(&bytes)), stamp),
+                let mut bytes = Vec::new();
+                file.read_to_end(&mut bytes)?;
+                Ok((identity, bytes))
+            };
+            return match read() {
+                Ok((identity, bytes)) if std::str::from_utf8(&bytes).is_ok() => {
+                    DocumentFile::Readable {
+                        hash: sha256_hex(&bytes),
+                        identity,
+                    }
+                }
+                Ok((_, bytes)) => DocumentFile::Unreadable(None, Some(sha256_hex(&bytes)), stamp),
                 Err(e) => DocumentFile::Unreadable(e.raw_os_error(), None, stamp),
             };
         }

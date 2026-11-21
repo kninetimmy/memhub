@@ -33,16 +33,83 @@ pub(crate) fn file_identity(path: &Path) -> io::Result<FileIdentity> {
 
 #[cfg(unix)]
 pub(crate) fn file_info(path: &Path) -> io::Result<FileInfo> {
+    Ok(unix_file_info(&fs::metadata(path)?))
+}
+
+#[cfg(unix)]
+pub(crate) fn file_info_from_handle(file: &fs::File) -> io::Result<FileInfo> {
+    Ok(unix_file_info(&file.metadata()?))
+}
+
+#[cfg(unix)]
+fn unix_file_info(metadata: &fs::Metadata) -> FileInfo {
     use std::os::unix::fs::MetadataExt;
 
-    let metadata = fs::metadata(path)?;
-    Ok(FileInfo {
+    FileInfo {
         identity: FileIdentity {
             first: metadata.dev(),
             second: metadata.ino(),
         },
         links: metadata.nlink(),
-    })
+    }
+}
+
+/// Open after the caller checks the exact path and its ancestors. On Unix,
+/// verify against the prior non-following metadata before reading any bytes.
+pub(crate) fn open_direct_file(path: &Path, expected: &fs::Metadata) -> io::Result<fs::File> {
+    let mut options = fs::File::options();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = options.open(path)?;
+    let actual = file.metadata()?;
+    if !expected.is_file() || !actual.is_file() || is_link_or_reparse_point(&actual) {
+        return Err(io::Error::other("not a direct regular file"));
+    }
+    #[cfg(windows)]
+    if final_path(&file, 0)? != path {
+        return Err(io::Error::other("file resolved outside its checked path"));
+    }
+    #[cfg(unix)]
+    if unix_file_info(&actual).identity != unix_file_info(expected).identity {
+        return Err(io::Error::other("file identity changed before opening"));
+    }
+    Ok(file)
+}
+
+#[cfg(windows)]
+pub(crate) fn final_path(file: &fs::File, flags: u32) -> io::Result<std::path::PathBuf> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+    use std::os::windows::io::{AsRawHandle, RawHandle};
+    use std::ptr::null_mut;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetFinalPathNameByHandleW(file: RawHandle, path: *mut u16, size: u32, flags: u32)
+        -> u32;
+    }
+
+    // SAFETY: valid handle and null buffer with size zero requests the required length.
+    let size = unsafe { GetFinalPathNameByHandleW(file.as_raw_handle(), null_mut(), 0, flags) };
+    if size == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut buf = vec![0; size as usize];
+    // SAFETY: `buf` has storage for exactly `size` UTF-16 units.
+    let len =
+        unsafe { GetFinalPathNameByHandleW(file.as_raw_handle(), buf.as_mut_ptr(), size, flags) };
+    if len == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if len >= size {
+        return Err(io::Error::other("handle path changed during verification"));
+    }
+    Ok(OsString::from_wide(&buf[..len as usize]).into())
 }
 
 #[cfg(windows)]
@@ -122,6 +189,14 @@ pub(crate) fn file_info_from_handle(file: &fs::File) -> io::Result<FileInfo> {
 
 #[cfg(not(any(unix, windows)))]
 pub(crate) fn file_info(_path: &Path) -> io::Result<FileInfo> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "filesystem identity verification is unsupported",
+    ))
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn file_info_from_handle(_file: &fs::File) -> io::Result<FileInfo> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "filesystem identity verification is unsupported",

@@ -154,6 +154,12 @@ be atomically replaced by the existing confirmed sync-adopt path. On each
 call the metadata directory, DB/config and SQLite sidecars must nevertheless
 remain direct, single-link files at their canonical expected locations;
 memory-directory junction/symlink or DB/config aliasing fails before open.
+On Windows, the shared identity helper now uses a Rust-owned metadata handle
+rather than a manually owned `CreateFileW` handle. MCP binding still compares
+the Windows volume serial and file index and still requires a single link for
+direct storage files. The same is true of code-cache validation's single-link
+check for the cache DB and its sidecars; prune-specific checks do not apply to
+these callers.
 
 ## Safety backups
 
@@ -2253,6 +2259,10 @@ CLI `memhub status` replaces `Stale queue:` with `Prune review:` and adds
 count. The CLI's separate stale-fact count and all other counts and checks
 keep their existing definitions. MCP `status` still returns stored counts
 and exposes neither the prune count nor any prune action.
+Before, the CLI stale queue did not read backup files. CLI status now uses
+the same full backup content hashing as the scan for every surplus group,
+including its 20 retention witnesses. This can add substantial disk reads;
+MCP status does not perform them.
 The public Rust `StatusSummary` previously exposed `stale_queue`; it no
 longer has that field. Use `commands::prune::scan` for a read-only total.
 The old Rust `commands::review` queue entry points (`stale` and
@@ -2261,10 +2271,13 @@ The old Rust `commands::review` queue entry points (`stale` and
 replacement scanner and report types live under `commands::prune`.
 When backups cannot be safely inspected (for example, a linked backup
 root), both scan entry points and CLI status still report the other
-categories once the project has opened. Human output names the omission;
-JSON carries `backup_warning` in the scan report or `prune_backup_warning`
-in `status`. This only changes the review count, not the maintained
-open or its pre-migration backup.
+categories once the project has opened. Before the review fix, any backup
+inspection error omitted all backup groups. Now an incomplete directory
+has no candidate or delete action, but independently inspected directories
+still count. Human output names the omitted directory; JSON carries
+`backup_warning` in the scan report or `prune_backup_warning` in `status`.
+This only changes the review count, not the maintained open or its
+pre-migration backup.
 
 `memhub prune dismiss <identifier> [--actor <actor>]` records a keep
 decision without editing the source row or file. It matches a current
@@ -2275,6 +2288,11 @@ on-disk file state. A changed source state still eligible for review
 gets a new ID; presenting an old ID does not dismiss that changed item.
 In particular, a dangling link at a previously missing document path is
 an unreadable entry with a different ID; the link target is not inspected.
+Before the review fix, a readable drifted document's on-disk fingerprint
+used its content hash alone. Now its physical file identity comes from
+the same handle as the bytes. Replacing it with a different file of the
+same drifted bytes invalidates that dismissal; the previous readable-drift
+IDs do not match the new format.
 Returning to exactly the dismissed state matches the same ID again.
 The scan does not prune or otherwise edit old dismissal records. It
 reads schema 0026 or 0027 without applying migrations; `dismiss` and
@@ -2294,6 +2312,9 @@ can delete. It works without a `Cargo.toml` and does not open the database.
 Linux and macOS list the surplus and offer keep, but direct cleanup also
 refuses without moving or deleting anything. Both scan formats explain
 when cleanup is report-only or the storage check fails.
+On Unix, both formats display invalid UTF-8 bytes as `\xNN` and escape
+literal backslashes, rather than conflating distinct names in a lossy
+display. The shown strings are for review, not command arguments.
 
 Selection still uses regular, single-link `.bak` files under
 `.memhub/backups/` (the extension used by render and the former markdown
@@ -2313,11 +2334,25 @@ rename and takes transactional locks on the eligible batch before
 verifying names, identities, timestamps, sizes and contents, including
 the 20 files that justify retention. It refuses changed or unverifiable
 batches, redirected paths, sharing conflicts, read-only files, and
-deletion targets with unreviewed alternate streams. It sets
-`FileDispositionInfo` on each verified deletion handle and commits
-only after all dispositions succeed; it never falls back to a pathname
-unlink. If Windows cannot supply these guarantees, rescan and keep the
-files rather than treating the delete action as guaranteed to succeed.
+deletion targets with unreviewed alternate streams. Before the review fix,
+scan could offer delete after checking storage alone. Now both formats
+omit delete, but still offer keep, when inspection already detects a
+cleanup blocker such as a read-only file or unreviewed streams on a target.
+Cleanup still rechecks eligibility under lock; a later sharing conflict
+can refuse an action that was previously available.
+
+Cleanup sets `FileDispositionInfo` on each verified deletion handle and
+never falls back to a pathname unlink. Before the review fix, successful
+dispositions were enough to attempt commit. Now, after closing its
+deletion handles, cleanup requires each reviewed target name to be absent
+from the transaction's directory view before it commits and counts the
+removals. A name that is still present or cannot be checked refuses the
+batch before commit. An attribute-only open need not conflict with the
+share mask, so neither that mask nor a successful disposition is proof
+of removal. If cleanup refuses, rescan and keep rather than assuming
+the offered delete action is guaranteed to succeed. See Microsoft's
+[CreateFileW sharing rules](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)
+and [Transactional NTFS programming considerations](https://learn.microsoft.com/en-us/windows/win32/fileio/programming-considerations-for-transacted-fileio-).
 Microsoft has deprecated Transactional NTFS. Volumes that do not
 advertise transaction support are report-only.
 

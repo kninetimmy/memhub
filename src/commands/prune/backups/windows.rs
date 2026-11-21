@@ -1,9 +1,9 @@
 //! Opt-in deletion on local NTFS with transactional locking (TxF).
 
-use std::ffi::{OsString, c_void};
+use std::ffi::c_void;
 use std::fs::File;
 use std::io;
-use std::os::windows::ffi::{OsStrExt, OsStringExt};
+use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 use std::path::{Component, Path, PathBuf, Prefix};
@@ -11,7 +11,7 @@ use std::ptr::null_mut;
 
 use super::{Backup, Group, RETAIN, at_path, changed};
 use crate::commands::sync::sha256_reader;
-use crate::fs_identity::{file_info_from_handle, is_link_or_reparse_point};
+use crate::fs_identity::{file_info_from_handle, final_path, is_link_or_reparse_point};
 use crate::{MemhubError, Result};
 
 const INVALID_HANDLE: RawHandle = -1isize as RawHandle;
@@ -28,10 +28,19 @@ const DRIVE_FIXED: u32 = 3;
 const SUPPORTS_TRANSACTIONS: u32 = 0x0020_0000;
 const FILE_DISPOSITION_INFO: i32 = 4;
 const FILE_STREAM_INFO: i32 = 7;
+const FILE_NOT_FOUND: i32 = 2;
+
+#[repr(C)]
+struct FindData {
+    attributes: u32,
+    times: [u32; 6],
+    size_and_reserved: [u32; 4],
+    name: [u16; 260],
+    short_name: [u16; 14],
+}
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
-    fn GetFinalPathNameByHandleW(file: RawHandle, path: *mut u16, size: u32, flags: u32) -> u32;
     fn GetDriveTypeW(root: *const u16) -> u32;
     fn GetVolumeInformationByHandleW(
         file: RawHandle,
@@ -63,6 +72,16 @@ unsafe extern "system" {
     ) -> i32;
     fn SetFileInformationByHandle(file: RawHandle, class: i32, data: *mut c_void, size: u32)
     -> i32;
+    fn FindFirstFileTransactedW(
+        name: *const u16,
+        info_level: i32,
+        data: *mut FindData,
+        search_op: i32,
+        search_filter: *mut c_void,
+        flags: u32,
+        transaction: RawHandle,
+    ) -> RawHandle;
+    fn FindClose(search: RawHandle) -> i32;
 }
 
 #[link(name = "ktmw32")]
@@ -95,25 +114,6 @@ fn own(raw: RawHandle) -> io::Result<OwnedHandle> {
         // SAFETY: both callers transfer a newly opened Win32 handle on success.
         Ok(unsafe { OwnedHandle::from_raw_handle(raw) })
     }
-}
-
-fn final_path(file: &File, flags: u32) -> io::Result<PathBuf> {
-    // SAFETY: valid handle and null buffer with size zero requests the required length.
-    let size = unsafe { GetFinalPathNameByHandleW(file.as_raw_handle(), null_mut(), 0, flags) };
-    if size == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let mut buf = vec![0; size as usize];
-    // SAFETY: `buf` has storage for exactly `size` UTF-16 units.
-    let len =
-        unsafe { GetFinalPathNameByHandleW(file.as_raw_handle(), buf.as_mut_ptr(), size, flags) };
-    if len == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    if len >= size {
-        return Err(io::Error::other("handle path changed during verification"));
-    }
-    Ok(OsString::from_wide(&buf[..len as usize]).into())
 }
 
 fn unsupported(path: &Path) -> MemhubError {
@@ -220,11 +220,10 @@ fn open_locked(transaction: &OwnedHandle, path: &Path, remove: bool) -> Result<F
     own(raw).map(File::from).map_err(|e| at_path(path, e))
 }
 
-fn verify(file: &File, path: &Path, expected: &Backup) -> Result<()> {
+fn verify(file: &File, path: &Path, expected: &Backup, remove: bool) -> Result<()> {
     let meta = file.metadata().map_err(|e| at_path(path, e))?;
     let info = file_info_from_handle(file).map_err(|e| at_path(path, e))?;
     if !meta.is_file()
-        || meta.permissions().readonly()
         || is_link_or_reparse_point(&meta)
         || info.links != 1
         || info.identity != expected.identity
@@ -234,6 +233,24 @@ fn verify(file: &File, path: &Path, expected: &Backup) -> Result<()> {
         || sha256_reader(file)? != expected.hash
     {
         return Err(changed(&expected.path));
+    }
+    check_file(file, &meta, path, remove)
+}
+
+pub(super) fn check_file(
+    file: &File,
+    meta: &std::fs::Metadata,
+    path: &Path,
+    remove: bool,
+) -> Result<()> {
+    if meta.permissions().readonly() {
+        return Err(MemhubError::InvalidInput(format!(
+            "backup '{}' is read-only; refusing cleanup",
+            path.display()
+        )));
+    }
+    if remove {
+        verify_only_default_stream(file, path)?;
     }
     Ok(())
 }
@@ -265,7 +282,11 @@ fn verify_only_default_stream(file: &File, path: &Path) -> Result<()> {
         )
     };
     if ok == 0 {
-        return Err(at_path(path, io::Error::last_os_error()));
+        return Err(MemhubError::InvalidInput(format!(
+            "cannot verify that backup '{}' has no unreviewed streams; refusing cleanup: {}",
+            path.display(),
+            io::Error::last_os_error()
+        )));
     }
     if info.next != 0
         || info.name_bytes != 14
@@ -277,6 +298,45 @@ fn verify_only_default_stream(file: &File, path: &Path) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+fn verify_unlinked(tx: &OwnedHandle, path: &Path) -> Result<()> {
+    if path
+        .file_name()
+        .expect("entry name")
+        .encode_wide()
+        .any(|unit| unit == u16::from(b'*') || unit == u16::from(b'?'))
+    {
+        return Err(changed(path));
+    }
+    let name = wide(path)?;
+    let mut data = std::mem::MaybeUninit::<FindData>::uninit();
+    // SAFETY: the path is NUL-terminated, `data` is a writable WIN32_FIND_DATAW
+    // buffer and the transaction is live. Use an exact name, not a wildcard.
+    let search = unsafe {
+        FindFirstFileTransactedW(
+            name.as_ptr(),
+            0,
+            data.as_mut_ptr(),
+            0,
+            null_mut(),
+            0,
+            tx.as_raw_handle(),
+        )
+    };
+    if search == INVALID_HANDLE {
+        let err = io::Error::last_os_error();
+        if err.raw_os_error() == Some(FILE_NOT_FOUND) {
+            return Ok(());
+        }
+        return Err(at_path(path, err));
+    }
+    // SAFETY: the successful call returned a search handle; FindClose owns its cleanup.
+    unsafe { FindClose(search) };
+    Err(MemhubError::InvalidInput(format!(
+        "backup '{}' is still present inside the transaction (possibly open elsewhere); refusing cleanup",
+        path.display()
+    )))
 }
 
 fn transaction(path: &Path) -> Result<OwnedHandle> {
@@ -319,10 +379,7 @@ pub(super) fn delete(group: Group) -> Result<usize> {
         // WRITE_ATTRIBUTES makes this a TxF writer, even for the keepers.
         // Ordinary share masks alone do not exclude metadata-only writers.
         let handle = open_locked(&tx, &path, remove)?;
-        verify(&handle, &path, expected)?;
-        if remove {
-            verify_only_default_stream(&handle, &path)?;
-        }
+        verify(&handle, &path, expected, remove)?;
         files.push(handle);
     }
     let count = files.len() - RETAIN;
@@ -345,6 +402,14 @@ pub(super) fn delete(group: Group) -> Result<usize> {
         if ok == 0 {
             return Err(at_path(&expected.path, io::Error::last_os_error()));
         }
+    }
+    // A successful disposition can still be waiting on another handle that
+    // did not participate in share checks. Verify the namespace change in
+    // this transaction before commit, while rollback can still leave all
+    // targets intact. A pending deletion is not a completed unlink.
+    for expected in &group.files[RETAIN..] {
+        let path = physical.join(expected.path.file_name().expect("entry name"));
+        verify_unlinked(&tx, &path)?;
     }
     // Keep the retention witnesses and ancestor handles alive through
     // commit; only the handles marked for deletion must be closed first.
