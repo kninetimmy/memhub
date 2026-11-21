@@ -2346,8 +2346,10 @@ checks were skipped (`similarity_warning` in JSON).
   keys. Retire either fact, or keep both by dismissing the pair.
 - `unlinked_decisions`: pairs of active decisions without supersession
   links. Compare the later decision against the earlier one, ordered by
-  recorded decision date with row ID as the tie-breaker. Mark the earlier
-  decision superseded by the later one, or keep both.
+  the recorded instant (including offset and fractional seconds), with
+  row ID as the tie-breaker for equal instants. Mark the earlier decision
+  superseded by the later one, or keep both. If either date cannot establish
+  an instant, the overlap is reportable but only keep is offered.
 - `correction_sweep`: for every superseded fact or decision and every
   retired fact, list active, non-retired facts, current architecture
   sections, non-archived document chunks and open tasks that still overlap
@@ -2365,8 +2367,11 @@ known. JSON carries them in `excerpts.old_claim` and
 `excerpts.possible_restatement` (`source_type`, `source_id`, `recorded_at`,
 `text`). Titles, headings, rationale/summary, notes and version qualifiers
 are preserved, not replaced with a model-generated explanation.
-Architecture excerpts retain the original enclosing heading breadcrumb,
-including a version-qualified wrapper omitted from the recall index.
+Architecture pairs show the exact stored section plus its full original
+Markdown, not headings reconstructed from the recall index. JSON attaches
+the original Markdown as `architecture_source.text` beside the stored
+section, with `architecture_id` and the zero-based `section_ordinal` to
+identify the match even when headings repeat or legacy sections are present.
 
 Correction actions are retire for a fact; edit the source file then run
 the provided title-preserving `doc add` command for a document; rewrite
@@ -2376,9 +2381,14 @@ or `task keep`. Every pair also offers keep through `prune dismiss`.
 Editing a file or composing replacement architecture is human work;
 the scanner never performs it or invents an edit command.
 Stored document matches remain reviewable when the recorded path is missing,
-unreadable, or redirected, but offer no `doc add` command until the existing
-exact-path, regular-file and UTF-8 checks pass. Restore the recorded source
-and rescan first; the excerpt never comes from a redirected destination.
+unreadable, redirected, or stored under a relative or noncanonical path.
+Re-ingest is offered only for a readable, direct UTF-8 file whose canonical
+absolute path is the exact existing row key `doc add` uses; a relative path
+would instead resolve against the caller's directory and could create or
+update a different row. When no safe command is offered, the stored
+evidence and keep action remain available. Evidence never comes from a
+redirected destination. The same re-ingest rule applies to out-of-date
+documents in the model-free scan.
 
 These categories share the 25-item per-category cap, overflow counts and
 source-state dismissal identifiers. Both rows' stored state participates
@@ -2388,11 +2398,14 @@ changed or redirected source invalidates its prior dismissal. All eligible
 pairs are scored during scans; the cap limits the display, not the search.
 This exhaustive manual review can take longer on
 large corpora, but loads no embedding model and writes no memory, index,
-query log or file. The four original categories and their IDs are unchanged.
-Similarity dismissal scores only the requested pair in a read snapshot,
-before taking the writer lock. Under that lock it revalidates current
-eligibility and exact source-state fingerprints without model inference;
-a changed candidate refuses the old identifier.
+query log or file. The four original categories retain their IDs.
+Dismissal resolves model-free matches first, in a read snapshot. Only
+if none matches does it look for and score the requested similarity pair.
+After the usual maintained open, no writer transaction starts for an
+unmatched ID. Before recording a dismissal, the writer transaction
+revalidates eligibility and the fingerprint of only the matched rows
+and applicable file or backup directory. Changes to that state refuse
+the old ID.
 
 After successful `fact supersede`, `decision supersede`, `review accept
 --supersede` (also accepted staged supersession), or `fact retire`, the CLI

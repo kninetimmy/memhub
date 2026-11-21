@@ -1,16 +1,17 @@
 //! Exhaustive, report-only overlap checks using the bundled compact reranker.
 
 mod dismissal;
-pub(super) use dismissal::prepare as prepare_dismissal;
+pub(super) use dismissal::{Pair, prepare as prepare_dismissal};
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+use chrono::{DateTime, NaiveDate};
 use rusqlite::Connection;
 
 use super::{
-    Action, Category, CorrectionExcerpts, DocumentFile, Item, SourceExcerpt, Subject,
-    document_file, identifier,
+    Action, ArchitectureSource, Category, CorrectionExcerpts, DocumentFile, Item, SourceExcerpt,
+    Subject, document_file, identifier, re_ingest_action,
 };
 use crate::Result;
 use crate::commands::review::ACCEPT_SIMILARITY_RERANK_THRESHOLD;
@@ -47,8 +48,14 @@ fn visit_matching(
     let facts = facts(conn, None)?;
     let decisions = decisions(conn, None)?;
     if old.is_none() {
-        pairs(&facts, Category::DuplicateFacts, requested, visit)?;
-        pairs(&decisions, Category::UnlinkedDecisions, requested, visit)?;
+        pairs(conn, &facts, Category::DuplicateFacts, requested, visit)?;
+        pairs(
+            conn,
+            &decisions,
+            Category::UnlinkedDecisions,
+            requested,
+            visit,
+        )?;
     }
     let mut targets: Vec<&Row> = facts.iter().filter(|row| row.active).collect();
     let other_targets = correction_targets(conn, root, None)?;
@@ -73,11 +80,12 @@ fn visit_matching(
         }
         for target in matches(&source.excerpt.text, &candidates)? {
             let id = identifier(category, (&source.state, &target.state))?;
-            let mut actions = correction_actions(target);
             let mut reason = "Textual overlap with an old claim; not evidence of contradiction. Check version qualifiers before choosing keep or correcting the row.".to_string();
-            if matches!(&target.subject, Subject::DocumentChunk { .. }) && actions.is_empty() {
-                reason.push_str(" Edit and re-ingest unavailable: the recorded path is missing, unreadable, or redirected. Restore a regular UTF-8 file at that exact path before rescanning; the excerpt is the stored chunk, not redirected content.");
-            }
+            let mut actions = correction_actions(target).unwrap_or_else(|why| {
+                reason.push_str(" Edit and re-ingest unavailable: ");
+                reason.push_str(why);
+                Vec::new()
+            });
             actions.push(Action::keep(&id));
             visit(
                 Item {
@@ -129,7 +137,12 @@ fn matches<'a>(query: &str, candidates: &[&'a Row]) -> Result<Vec<&'a Row>> {
     }
     let docs: Vec<_> = candidates
         .iter()
-        .map(|row| row.excerpt.text.clone())
+        .map(|row| match &row.subject {
+            Subject::ArchitectureSection { heading, .. } => {
+                arch_section_embed_text(heading, &row.excerpt.text)
+            }
+            _ => row.excerpt.text.clone(),
+        })
         .collect();
     let mut scored = rerank::rerank(query, &docs)?;
     // Stable source order, independent of score ordering or result caps.
@@ -142,15 +155,31 @@ fn matches<'a>(query: &str, candidates: &[&'a Row]) -> Result<Vec<&'a Row>> {
 }
 
 fn pairs(
+    conn: &Connection,
     rows: &[Row],
     category: Category,
     requested: Option<&str>,
     visit: &mut impl FnMut(Item, &Row, &Row),
 ) -> Result<()> {
-    let active: Vec<_> = rows.iter().filter(|row| row.active).collect();
-    for (i, later) in active.iter().enumerate() {
+    let mut active = Vec::new();
+    for row in rows.iter().filter(|row| row.active) {
+        let time = match &row.subject {
+            Subject::Decision { .. } => {
+                decision_time(conn, row.excerpt.recorded_at.as_deref().unwrap_or(""))?
+            }
+            _ => None,
+        };
+        active.push((time, row));
+    }
+    active.sort_by_key(|(time, row)| (*time, row.excerpt.source_id));
+    let unknown: HashSet<_> = active
+        .iter()
+        .take_while(|(time, _)| time.is_none())
+        .map(|(_, row)| row.excerpt.source_id)
+        .collect();
+    for (i, &(later_time, later)) in active.iter().enumerate() {
         let mut earlier_rows = Vec::new();
-        for &earlier in &active[..i] {
+        for &(_, earlier) in &active[..i] {
             let different_keys = match (&earlier.subject, &later.subject) {
                 (Subject::Fact { key: a, .. }, Subject::Fact { key: b, .. }) => a != b,
                 _ => true,
@@ -161,13 +190,15 @@ fn pairs(
         }
         for earlier in matches(&later.excerpt.text, &earlier_rows)? {
             let id = identifier(category, (&earlier.state, &later.state))?;
+            let mut reason = "Textual overlap meets the accept-time similarity cutoff; not evidence of contradiction.".to_string();
+            let keep = Action::new("keep_both", ["prune", "dismiss", &id]);
             let actions = if category == Category::DuplicateFacts {
                 vec![
                     retire("retire_earlier", earlier.excerpt.source_id),
                     retire("retire_later", later.excerpt.source_id),
-                    Action::new("keep_both", ["prune", "dismiss", &id]),
+                    keep,
                 ]
-            } else {
+            } else if later_time.is_some() && !unknown.contains(&earlier.excerpt.source_id) {
                 vec![
                     Action::new(
                         "supersede_earlier",
@@ -179,17 +210,26 @@ fn pairs(
                             &later.excerpt.source_id.to_string(),
                         ],
                     ),
-                    Action::new("keep_both", ["prune", "dismiss", &id]),
+                    keep,
                 ]
+            } else {
+                reason.push_str(
+                    " Decision chronology is unknown; no supersession command is offered.",
+                );
+                vec![keep]
             };
-            visit(Item {
-                id,
-                category,
-                subjects: vec![earlier.subject.clone(), later.subject.clone()],
-                reason: "Textual overlap meets the accept-time similarity cutoff; not evidence of contradiction.".into(),
-                actions,
-                excerpts: None,
-            }, earlier, later);
+            visit(
+                Item {
+                    id,
+                    category,
+                    subjects: vec![earlier.subject.clone(), later.subject.clone()],
+                    reason,
+                    actions,
+                    excerpts: None,
+                },
+                earlier,
+                later,
+            );
         }
     }
     Ok(())
@@ -208,8 +248,8 @@ fn retire(action: &'static str, id: i64) -> Action {
     )
 }
 
-fn correction_actions(row: &Row) -> Vec<Action> {
-    match &row.subject {
+fn correction_actions(row: &Row) -> std::result::Result<Vec<Action>, &'static str> {
+    Ok(match &row.subject {
         Subject::Fact { id, .. } => vec![retire("retire", *id)],
         Subject::Task { id, .. } => vec![
             Action::new(
@@ -225,14 +265,13 @@ fn correction_actions(row: &Row) -> Vec<Action> {
             Action::new("keep_task", ["task", "keep", &id.to_string()]),
         ],
         Subject::DocumentChunk { path, title, .. } => {
-            if !matches!(row.document_file, Some(DocumentFile::Readable { .. })) {
-                return Vec::new();
-            }
             // Editing is human work, not an invented memhub edit verb.
-            vec![Action::new(
+            vec![re_ingest_action(
                 "edit_and_re_ingest",
-                ["doc", "add", &format!("--title={title}"), "--", path],
-            )]
+                row.document_file.as_ref().expect("document file state"),
+                path,
+                title,
+            )?]
         }
         Subject::ArchitectureSection { .. } => {
             let mut action = Action::new(
@@ -248,7 +287,7 @@ fn correction_actions(row: &Row) -> Vec<Action> {
             vec![action]
         }
         _ => unreachable!("only correction target types"),
-    }
+    })
 }
 
 fn row_filter(id: Option<i64>) -> &'static str {
@@ -275,6 +314,7 @@ fn facts(conn: &Connection, id: Option<i64>) -> Result<Vec<Row>> {
                     source_id: id,
                     recorded_at: r.get(3)?,
                     text: fact_embed_text(&key, &r.get::<_, String>(2)?),
+                    architecture_source: None,
                 },
                 subject: Subject::Fact { id, key },
                 state: r.get(6)?,
@@ -296,7 +336,7 @@ fn decisions(conn: &Connection, id: Option<i64>) -> Result<Vec<Row>> {
           {} ORDER BY id",
         row_filter(id),
     ))?;
-    let rows = stmt
+    Ok(stmt
         .query_map(rusqlite::params_from_iter(id), |r| {
             let id = r.get(0)?;
             let title: String = r.get(1)?;
@@ -312,6 +352,7 @@ fn decisions(conn: &Connection, id: Option<i64>) -> Result<Vec<Row>> {
                         &r.get::<_, String>(2)?,
                         r.get::<_, Option<String>>(3)?.as_deref(),
                     ),
+                    architecture_source: None,
                 },
                 subject: Subject::Decision { id, title },
                 state: r.get(7)?,
@@ -320,55 +361,47 @@ fn decisions(conn: &Connection, id: Option<i64>) -> Result<Vec<Row>> {
                 document_file: None,
             })
         })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut ordered = Vec::with_capacity(rows.len());
-    for row in rows {
-        let time = decision_time(conn, row.excerpt.recorded_at.as_deref().unwrap_or(""))?;
-        ordered.push((time, row));
-    }
-    // SQLite's Julian day loses sub-millisecond precision. Keep its timezone
-    // handling for whole seconds, then compare the exact decimal fraction.
-    ordered.sort_by(|a, b| {
-        a.0.cmp(&b.0)
-            .then_with(|| a.1.excerpt.source_id.cmp(&b.1.excerpt.source_id))
-    });
-    Ok(ordered.into_iter().map(|(_, row)| row).collect())
+        .collect::<rusqlite::Result<_>>()?)
 }
 
-fn decision_time(conn: &Connection, date: &str) -> Result<Option<(i64, String)>> {
-    let mut whole = date.to_string();
-    let mut fraction = "";
-    if let Some((prefix, suffix)) = date
-        .split_once('.')
-        .filter(|(prefix, _)| prefix.len() >= 19)
-    {
+// Order by UTC second (including leap seconds), then the exact decimal
+// fraction: the parsers' built-in subsecond precision can round or truncate.
+type DecisionTime<'a> = (i64, bool, &'a str);
+
+fn decision_time<'a>(conn: &Connection, date: &'a str) -> Result<Option<DecisionTime<'a>>> {
+    let date = date.trim();
+    let decimal = date.split_once('.').map(|(prefix, suffix)| {
         let digits = suffix.bytes().take_while(u8::is_ascii_digit).count();
-        if digits > 0 {
-            whole = format!("{prefix}{}", &suffix[digits..]);
-            fraction = suffix[..digits].trim_end_matches('0');
-        }
+        (prefix, &suffix[..digits], &suffix[digits..])
+    });
+    let fraction = decimal.map_or("", |(_, digits, _)| digits.trim_end_matches('0'));
+    if let Ok(time) = DateTime::parse_from_rfc3339(date) {
+        return Ok(Some((
+            time.timestamp(),
+            time.timestamp_subsec_nanos() >= 1_000_000_000,
+            fraction,
+        )));
     }
-    let seconds: Option<i64> = conn.query_row("SELECT unixepoch(?1)", [&whole], |r| r.get(0))?;
-    // Unknown dates sort first, with row ID breaking ties, as in SQLite.
-    Ok(seconds.map(|seconds| (seconds, fraction.to_string())))
-}
 
-fn source_heading(source: &str, heading: &str, body: &str) -> String {
-    let mut headings: HashSet<_> = crate::commands::narrative::arch_sections(source)
-        .into_iter()
-        .filter(|section| {
-            section.body == body
-                && (section.heading_path == heading || section.source_heading_path == heading)
-        })
-        .map(|section| section.source_heading_path)
-        .collect();
-    // Legacy rows may retain the heading-only wrapper the current parser drops.
-    // Never use an ordinal (or a heading alone) to borrow a sibling's context.
-    if headings.len() == 1 {
-        headings.drain().next().unwrap()
-    } else {
-        heading.to_string()
+    // Use SQLite for its native calendar-bearing layouts. Reject invalid
+    // calendar dates, time-only strings, and ambiguous numeric values.
+    if !date
+        .get(..10)
+        .is_some_and(|day| NaiveDate::parse_from_str(day, "%Y-%m-%d").is_ok())
+    {
+        return Ok(None);
     }
+    // Leave a zero fraction in place so SQLite validates its placement but
+    // cannot round it into a different second (or outside its date range).
+    let whole = decimal
+        .filter(|(_, digits, _)| !digits.is_empty())
+        .map(|(prefix, _, suffix)| format!("{prefix}.0{suffix}"));
+    let seconds: Option<i64> = conn.query_row(
+        "SELECT unixepoch(?1)",
+        [whole.as_deref().unwrap_or(date)],
+        |r| r.get(0),
+    )?;
+    Ok(seconds.map(|seconds| (seconds, false, fraction)))
 }
 
 fn correction_targets(
@@ -382,7 +415,7 @@ fn correction_targets(
             "SELECT s.id, s.heading_path, s.body, a.created_at,
                 json_array('arch_section', s.id, s.arch_id, s.ord, s.heading_path, s.body,
                            s.created_at, a.body, a.actor, a.actor_raw, a.created_at),
-                a.body
+                 a.body, a.id, s.ord
          FROM arch_sections s JOIN project_arch a ON a.id = s.arch_id
          WHERE s.project_id = 1 AND a.id = (
              SELECT id FROM project_arch WHERE project_id = 1
@@ -399,15 +432,17 @@ fn correction_targets(
             |r| {
                 let id = r.get(0)?;
                 let heading: String = r.get(1)?;
-                let source: String = r.get(5)?;
-                let body: String = r.get(2)?;
-                let source_heading = source_heading(&source, &heading, &body);
                 Ok(Row {
                     excerpt: SourceExcerpt {
                         source_type: "arch_section",
                         source_id: id,
                         recorded_at: r.get(3)?,
-                        text: arch_section_embed_text(&source_heading, &body),
+                        text: r.get(2)?,
+                        architecture_source: Some(ArchitectureSource {
+                            text: r.get(5)?,
+                            architecture_id: r.get(6)?,
+                            section_ordinal: r.get(7)?,
+                        }),
                     },
                     subject: Subject::ArchitectureSection { id, heading },
                     state: r.get(4)?,
@@ -446,6 +481,7 @@ fn correction_targets(
                         source_id: id,
                         recorded_at: r.get(3)?,
                         text: doc_chunk_embed_text(&heading, &r.get::<_, String>(2)?),
+                        architecture_source: None,
                     },
                     subject: Subject::DocumentChunk {
                         id,
@@ -491,6 +527,7 @@ fn correction_targets(
                         source_id: id,
                         recorded_at: r.get(3)?,
                         text: task_embed_text(&title, r.get::<_, Option<String>>(2)?.as_deref()),
+                        architecture_source: None,
                     },
                     subject: Subject::Task { id, title },
                     state: r.get(4)?,
@@ -515,7 +552,12 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         for (earlier, later) in [
             ("2025-01-01T00:00:00.0001Z", "2025-01-01T00:00:00.0002Z"),
+            (
+                "2025-01-01 00:00:00.0000000001",
+                "2025-01-01t00:00:00.0000000002z",
+            ),
             ("2025-01-01T00:00:00.9999999999Z", "2025-01-01T00:00:01Z"),
+            ("2025-01-01 00:00:00.9999999999", "2025-01-01 00:00:01"),
             (
                 "2025-01-01T00:00:00.0001-01:00",
                 "2025-01-01T01:00:00.0002Z",
@@ -524,8 +566,14 @@ mod tests {
                 "2025-01-01T01:00:00.0001+01:00",
                 "2025-01-01T00:00:00.0002Z",
             ),
+            ("2016-12-31T23:59:59.999Z", "2016-12-31T23:59:60Z"),
+            ("2016-12-31T23:59:60.999Z", "2017-01-01T00:00:00Z"),
         ] {
-            assert!(decision_time(&conn, earlier).unwrap() < decision_time(&conn, later).unwrap());
+            assert!(
+                decision_time(&conn, earlier).unwrap().unwrap()
+                    < decision_time(&conn, later).unwrap().unwrap(),
+                "{earlier} < {later}"
+            );
         }
         for same in [
             "2025-01-01T00:00:00.000100Z",
@@ -536,27 +584,14 @@ mod tests {
                 decision_time(&conn, "2025-01-01T00:00:00.0001Z").unwrap()
             );
         }
-    }
-
-    #[test]
-    fn heading_context_requires_matching_body_and_never_guesses_an_ambiguous_ancestor() {
-        let source =
-            "# Architecture\n\n## v1\n\n### Storage\n\nOne.\n\n## v2\n\n### Storage\n\nOne.";
         assert_eq!(
-            source_heading(source, "Storage", "### Storage\n\nOne."),
-            "Storage"
+            decision_time(&conn, "2025-01-01 01:00+01:00")
+                .unwrap()
+                .unwrap(),
+            decision_time(&conn, "2025-01-01").unwrap().unwrap(),
         );
-        assert_eq!(
-            source_heading(source, "v1 > Storage", "### Storage\n\nOne."),
-            "Architecture > v1 > Storage"
-        );
-        assert_eq!(
-            source_heading(source, "v1 > Storage", "Different stored text."),
-            "v1 > Storage"
-        );
-        assert_eq!(
-            source_heading(source, "Architecture", "# Architecture"),
-            "Architecture"
-        );
+        for unknown in ["unset", "now", "00:00:00", "2025-02-30 00:00:00"] {
+            assert_eq!(decision_time(&conn, unknown).unwrap(), None, "{unknown}");
+        }
     }
 }

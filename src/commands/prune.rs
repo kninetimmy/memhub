@@ -1,8 +1,10 @@
 //! Pull-based, repo-local cleanup review. Only explicit actions write.
 
 mod backups;
+mod dismissal;
 mod similarity;
 pub(super) use backups::RETAIN as BACKUPS_RETENTION_COUNT;
+pub use dismissal::dismiss;
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
@@ -10,7 +12,7 @@ use std::io::ErrorKind;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{Connection, OpenFlags, TransactionBehavior};
+use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
 
 use crate::config::ProjectConfig;
@@ -142,7 +144,18 @@ pub struct SourceExcerpt {
     pub source_id: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recorded_at: Option<String>,
-    /// Full source text, not a model-truncated or paraphrased snippet.
+    /// Stored text, not a model-truncated or paraphrased snippet.
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub architecture_source: Option<ArchitectureSource>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ArchitectureSource {
+    pub architecture_id: i64,
+    /// Zero-based ordinal of the matched stored section, including legacy layouts.
+    pub section_ordinal: i64,
+    /// Original architecture Markdown, not a reconstructed heading breadcrumb.
     pub text: String,
 }
 
@@ -286,50 +299,6 @@ fn scan_in(
     Ok(report)
 }
 
-pub fn dismiss(start: &Path, id: &str, actor: &str) -> Result<()> {
-    let mut ctx = db::open_project(start)?;
-    let similarity_match = if ctx.config.retrieval.use_reranker {
-        let snapshot = ctx.conn.transaction()?;
-        similarity::prepare_dismissal(&snapshot, &ctx.paths.repo_root, id)?
-    } else {
-        None
-    };
-    let tx = ctx
-        .conn
-        .transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let (found, warning) = if let Some(pair) = similarity_match {
-        (pair.is_current(&tx, &ctx.paths.repo_root, id)?, None)
-    } else {
-        let mut found = false;
-        let warning =
-            visit_candidates(&tx, &ctx.paths, &ctx.config, |item| found |= item.id == id)?;
-        (found, warning)
-    };
-    if !found {
-        let detail = warning.map_or_else(String::new, |warning| format!("; {warning}"));
-        return Err(MemhubError::InvalidInput(format!(
-            "no current prune candidate '{id}'; run `memhub prune scan` again{detail}"
-        )));
-    }
-    if tx.execute(
-        "INSERT INTO prune_dismissals(identifier) VALUES (?1)
-         ON CONFLICT(project_id, identifier) DO NOTHING",
-        [id],
-    )? > 0
-    {
-        db::log_write(
-            &tx,
-            actor,
-            "prune_dismissals",
-            Some(tx.last_insert_rowid()),
-            "insert",
-            &format!("prune dismiss {id}"),
-        )?;
-    }
-    tx.commit()?;
-    Ok(())
-}
-
 pub fn delete_backups(start: &Path, candidate: Option<&str>) -> Result<usize> {
     #[cfg(not(windows))]
     {
@@ -354,9 +323,14 @@ fn visit_candidates(
     config: &ProjectConfig,
     mut visit: impl FnMut(Item),
 ) -> Result<Option<String>> {
-    facts(conn, config.retrieval.fact_stale_after_days, &mut visit)?;
-    tasks(conn, &mut visit)?;
-    documents(conn, &paths.repo_root, &mut visit)?;
+    facts(
+        conn,
+        config.retrieval.fact_stale_after_days,
+        None,
+        &mut visit,
+    )?;
+    tasks(conn, None, &mut visit)?;
+    documents(conn, &paths.repo_root, None, &mut visit)?;
     match backups::surplus(paths) {
         Ok((groups, warnings)) => {
             for group in groups {
@@ -396,15 +370,28 @@ fn identifier(category: Category, state: impl Serialize) -> Result<String> {
     Ok(sha256_hex(&serde_json::to_vec(&(category, state))?))
 }
 
-fn facts(conn: &Connection, horizon: i64, visit: &mut impl FnMut(Item)) -> Result<()> {
-    let mut stmt = conn.prepare(
+fn facts(
+    conn: &Connection,
+    horizon: i64,
+    selected: Option<i64>,
+    visit: &mut dyn FnMut(Item),
+) -> Result<()> {
+    let filter = if selected.is_some() {
+        "AND id = ?2"
+    } else {
+        ""
+    };
+    let mut stmt = conn.prepare(&format!(
         "SELECT id, key, kind, verified_at,
                 json_array(id, key, value, confidence, source, verified_at, created_at, kind)
          FROM facts WHERE project_id = 1 AND superseded_by IS NULL AND retired_at IS NULL
            AND (verified_at IS NULL OR julianday('now') - julianday(verified_at) > ?1)
+           {filter}
          ORDER BY verified_at IS NOT NULL, verified_at, id",
-    )?;
-    let mut rows = stmt.query([horizon])?;
+    ))?;
+    let mut rows = stmt.query(rusqlite::params_from_iter(
+        [horizon].into_iter().chain(selected),
+    ))?;
     while let Some(row) = rows.next()? {
         let row_id: i64 = row.get(0)?;
         let key: String = row.get(1)?;
@@ -459,16 +446,24 @@ fn facts(conn: &Connection, horizon: i64, visit: &mut impl FnMut(Item)) -> Resul
     Ok(())
 }
 
-fn tasks(conn: &Connection, visit: &mut impl FnMut(Item)) -> Result<()> {
-    let mut stmt = conn.prepare(
+fn tasks(conn: &Connection, selected: Option<i64>, visit: &mut dyn FnMut(Item)) -> Result<()> {
+    let filter = if selected.is_some() {
+        "AND id = ?2"
+    } else {
+        ""
+    };
+    let mut stmt = conn.prepare(&format!(
         "SELECT id, title, status, updated_at,
                 json_array(id, title, status, notes, created_at, updated_at, dropped_reason,
                            pre_drop_status, pre_drop_updated_at, pre_keep_updated_at, kept_at)
          FROM tasks WHERE project_id = 1 AND status IN ('open', 'blocked')
            AND julianday('now') - julianday(updated_at) > ?1
+           {filter}
          ORDER BY updated_at, id",
-    )?;
-    let mut rows = stmt.query([IDLE_TASK_DAYS])?;
+    ))?;
+    let mut rows = stmt.query(rusqlite::params_from_iter(
+        [IDLE_TASK_DAYS].into_iter().chain(selected),
+    ))?;
     while let Some(row) = rows.next()? {
         let row_id: i64 = row.get(0)?;
         let title = row.get(1)?;
@@ -505,13 +500,23 @@ fn tasks(conn: &Connection, visit: &mut impl FnMut(Item)) -> Result<()> {
     Ok(())
 }
 
-fn documents(conn: &Connection, root: &Path, visit: &mut impl FnMut(Item)) -> Result<()> {
-    let mut stmt = conn.prepare(
+fn documents(
+    conn: &Connection,
+    root: &Path,
+    selected: Option<i64>,
+    visit: &mut dyn FnMut(Item),
+) -> Result<()> {
+    let filter = if selected.is_some() {
+        "AND id = ?1"
+    } else {
+        ""
+    };
+    let mut stmt = conn.prepare(&format!(
         "SELECT id, path, title, content_hash,
                 json_array(id, path, title, content_hash, byte_len, source, ingested_at)
-         FROM documents WHERE project_id = 1 AND archived_at IS NULL ORDER BY id",
-    )?;
-    let mut rows = stmt.query([])?;
+         FROM documents WHERE project_id = 1 AND archived_at IS NULL {filter} ORDER BY id",
+    ))?;
+    let mut rows = stmt.query(rusqlite::params_from_iter(selected))?;
     while let Some(row) = rows.next()? {
         let row_id: i64 = row.get(0)?;
         let path: String = row.get(1)?;
@@ -521,21 +526,21 @@ fn documents(conn: &Connection, root: &Path, visit: &mut impl FnMut(Item)) -> Re
         let on_disk = document_file(root, Path::new(&path));
         let (reason, action) = match &on_disk {
             DocumentFile::Readable { hash, .. } if *hash == ingested_hash => continue,
-            DocumentFile::Readable { .. } => (
-                "File content changed since ingest.",
-                Action::new(
-                    "re_ingest",
-                    ["doc", "add", &format!("--title={title}"), "--", &path],
-                ),
-            ),
+            DocumentFile::Readable { .. } => {
+                let reason = "File content changed since ingest.";
+                match re_ingest_action("re_ingest", &on_disk, &path, &title) {
+                    Ok(action) => (reason.into(), Some(action)),
+                    Err(why) => (format!("{reason} Re-ingest unavailable: {why}"), None),
+                }
+            }
             other => (
                 match other {
                     DocumentFile::Missing => "Ingested file is missing.",
                     _ => {
                         "Ingested file is unreadable as a regular UTF-8 document at its recorded path."
                     }
-                },
-                Action::new(
+                }.into(),
+                Some(Action::new(
                     "archive",
                     [
                         "doc",
@@ -544,17 +549,17 @@ fn documents(conn: &Connection, root: &Path, visit: &mut impl FnMut(Item)) -> Re
                         "--reason",
                         "prune review: unavailable document",
                     ],
-                ),
+                )),
             ),
         };
         let category = Category::OutOfDateDocument;
         let id = identifier(category, (state, on_disk))?;
-        let actions = vec![action, Action::keep(&id)];
+        let actions = action.into_iter().chain([Action::keep(&id)]).collect();
         visit(Item {
             id,
             category,
             subjects: vec![Subject::Document { id: row_id, path }],
-            reason: reason.into(),
+            reason,
             actions,
             excerpts: None,
         });
@@ -562,11 +567,50 @@ fn documents(conn: &Connection, root: &Path, visit: &mut impl FnMut(Item)) -> Re
     Ok(())
 }
 
+fn re_ingest_action(
+    action: &'static str,
+    file: &DocumentFile,
+    recorded: &str,
+    title: &str,
+) -> std::result::Result<Action, &'static str> {
+    let path = Path::new(recorded);
+    if !path.is_absolute() {
+        return Err(
+            "the stored path is relative; `doc add` resolves against the caller's directory and uses a canonical path as its row key.",
+        );
+    }
+    if !matches!(file, DocumentFile::Readable { .. }) {
+        return Err(
+            "the recorded path is missing, unreadable, or redirected. Restore a regular UTF-8 file at that path and rescan; review evidence is from the stored row.",
+        );
+    }
+    // Ingest looks up the canonical path by exact SQL string equality, not
+    // filesystem identity or Path equality (which ignores some spelling).
+    if !matches!(
+        file,
+        DocumentFile::Readable {
+            ingest_key: true,
+            ..
+        }
+    ) {
+        return Err(
+            "the recorded path does not match the canonical row key `doc add` would use. Review the stored row before re-ingesting.",
+        );
+    }
+    Ok(Action::new(
+        action,
+        ["doc", "add", &format!("--title={title}"), "--", recorded],
+    ))
+}
+
 #[derive(Clone, Serialize)]
 enum DocumentFile {
     Readable {
         hash: String,
         identity: FileIdentity,
+        // Action eligibility is not part of the on-disk fingerprint.
+        #[serde(skip)]
+        ingest_key: bool,
     },
     Missing,
     Linked(
@@ -644,24 +688,27 @@ fn document_file(root: &Path, path: &Path) -> DocumentFile {
 
                 let mut file = open_direct_file(&expected, &meta)?;
                 let identity = file_info_from_handle(&file)?.identity;
-                if fs::canonicalize(&expected)? != expected {
+                let canonical = fs::canonicalize(&expected)?;
+                if canonical != expected {
                     return Err(std::io::Error::other(
                         "document path changed before reading",
                     ));
                 }
+                let ingest_key = canonical.as_os_str() == path.as_os_str();
                 observed_identity = Some(identity.clone());
                 let mut bytes = Vec::new();
                 file.read_to_end(&mut bytes)?;
-                Ok((identity, bytes))
+                Ok((identity, bytes, ingest_key))
             };
             return match read() {
-                Ok((identity, bytes)) if std::str::from_utf8(&bytes).is_ok() => {
+                Ok((identity, bytes, ingest_key)) if std::str::from_utf8(&bytes).is_ok() => {
                     DocumentFile::Readable {
                         hash: sha256_hex(&bytes),
                         identity,
+                        ingest_key,
                     }
                 }
-                Ok((identity, bytes)) => DocumentFile::Unreadable(
+                Ok((identity, bytes, _)) => DocumentFile::Unreadable(
                     None,
                     Some((sha256_hex(&bytes), identity)),
                     stamp,

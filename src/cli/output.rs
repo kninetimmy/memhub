@@ -1619,6 +1619,19 @@ pub(crate) fn print_prune_report(r: &PruneReport, as_json: bool, envelope: &str)
                     for line in source.text.split('\n') {
                         println!("      {}", line.escape_debug());
                     }
+                    if let Some(arch) = &source.architecture_source {
+                        println!(
+                            "    Architecture #{} full source (matched stored section ordinal {}, zero-based):",
+                            arch.architecture_id, arch.section_ordinal
+                        );
+                        if arch.text == source.text {
+                            println!("      (same as matched text above)");
+                        } else {
+                            for line in arch.text.split('\n') {
+                                println!("      {}", line.escape_debug());
+                            }
+                        }
+                    }
                 }
             }
             for action in &item.actions {

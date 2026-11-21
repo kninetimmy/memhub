@@ -285,12 +285,13 @@ fn imported_decisions_use_exact_chronology_offsets_and_id_only_for_true_ties() {
     let f = fixture();
     // Each pair reverses insertion/ID order, except the true instant tie.
     for (id, date) in [
-        (1, "2025-01-01T00:00:00.0002Z"),
-        (2, "2025-01-01T00:00:00.0001Z"),
+        (1, "2025-01-01t00:00:00.0000000002z"),
+        (2, "2025-01-01 00:00:00.0000000001"),
         (3, "2025-01-02T00:00:00.0001Z"),
         (4, "2025-01-02T01:00:00.0001+02:00"),
         (5, "2025-01-03T00:00:00.00010Z"),
-        (6, "2025-01-03T01:00:00.000100+01:00"),
+        (6, "2025-01-03 01:00:00.000100+01:00"),
+        (7, "unknown"),
     ] {
         f.db()
             .execute(
@@ -300,6 +301,9 @@ fn imported_decisions_use_exact_chronology_offsets_and_id_only_for_true_ties() {
             )
             .unwrap();
     }
+    let export = f.repo.join("decisions.json");
+    f.ok(&["export", export.to_str().unwrap()]);
+    f.ok(&["import", export.to_str().unwrap(), "--force"]);
     let report = f.scan();
     for (earlier, later) in [(2, 1), (4, 3), (5, 6)] {
         let pair = category(&report, "unlinked_decisions")
@@ -317,7 +321,29 @@ fn imported_decisions_use_exact_chronology_offsets_and_id_only_for_true_ties() {
             ]
         );
     }
-    assert_eq!(category(&report, "unlinked_decisions").len(), 15);
+    let decisions = category(&report, "unlinked_decisions");
+    assert_eq!(decisions.len(), 21);
+    let unknown: Vec<_> = decisions
+        .into_iter()
+        .filter(|pair| {
+            pair["subjects"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|s| s["id"] == 7)
+        })
+        .collect();
+    assert_eq!(unknown.len(), 6);
+    for pair in unknown {
+        assert_eq!(pair["actions"].as_array().unwrap().len(), 1);
+        assert_eq!(&action(pair, "keep_both")[..2], ["prune", "dismiss"]);
+        assert!(
+            pair["reason"]
+                .as_str()
+                .unwrap()
+                .contains("chronology is unknown")
+        );
+    }
     assert_eq!(f.scan(), report);
 }
 
@@ -325,8 +351,13 @@ fn imported_decisions_use_exact_chronology_offsets_and_id_only_for_true_ties() {
 fn legacy_and_current_architecture_excerpts_never_borrow_an_adjacent_versions_context() {
     for legacy in [true, false] {
         let f = fixture();
+        let wrapper = if legacy {
+            "# Architecture for C#"
+        } else {
+            "Architecture for C# only\n========================="
+        };
         let body = format!(
-            "# Architecture\n\n## Storage v1.0 only\n\n{CLAIM}\n\n## Storage v2.0 only\n\n{CLAIM}"
+            "{wrapper}\n\n## Storage v1.0 only\n\n{CLAIM}\n\n## Storage v2.0 only\n\n{CLAIM}"
         );
         if legacy {
             // A supported pre-existing layout retains the wrapper at ord 0.
@@ -369,14 +400,23 @@ fn legacy_and_current_architecture_excerpts_never_borrow_an_adjacent_versions_co
         assert_eq!(hits.len(), 2, "{scan}");
         for (index, hit) in hits.iter().enumerate() {
             let version = index + 1;
+            let excerpt = &hit["excerpts"]["possible_restatement"];
             assert_eq!(
-                hit["excerpts"]["possible_restatement"]["text"],
-                format!(
-                    "Architecture > Storage v{version}.0 only\n\n## Storage v{version}.0 only\n\n{CLAIM}"
-                )
+                excerpt["text"],
+                format!("## Storage v{version}.0 only\n\n{CLAIM}")
             );
+            assert_eq!(excerpt["architecture_source"]["text"], body);
+            assert_eq!(excerpt["architecture_source"]["architecture_id"], 1);
+            assert_eq!(excerpt["architecture_source"]["section_ordinal"], version);
         }
         let human = String::from_utf8(f.ok(&["prune", "scan"])).unwrap();
+        for output in [&human, &post_human] {
+            assert!(
+                output.contains(&wrapper.replace('\n', "\n      ")),
+                "{output}"
+            );
+            assert!(output.contains("Architecture #1 full source (matched stored section ordinal"));
+        }
         for hit in hits {
             let excerpt = hit["excerpts"]["possible_restatement"]["text"]
                 .as_str()
@@ -390,7 +430,7 @@ fn legacy_and_current_architecture_excerpts_never_borrow_an_adjacent_versions_co
                 .query_row("SELECT count(*) FROM arch_sections", [], |r| r
                     .get::<_, i64>(0))
                 .unwrap(),
-            if legacy { 3 } else { 2 },
+            3,
             "reporting must not normalize the stored layout"
         );
     }
@@ -400,7 +440,7 @@ fn legacy_and_current_architecture_excerpts_never_borrow_an_adjacent_versions_co
 fn repeated_architecture_headings_use_their_exact_body_and_preserve_wrapper_qualifiers() {
     let f = fixture();
     let body = format!(
-        "# Architecture v1.0 only\n\n## Storage\n\n{CLAIM}\n\n## Storage\n\n{CLAIM}\n\nFor v2.0 only."
+        "# Architecture v1.0 only\n\n## Storage\n\n{CLAIM}\n\n## Storage\n\n{CLAIM}\n\n## Storage\n\n{CLAIM}\n\nFor v2.0 only."
     );
     f.ok(&["arch", "set", "--", &body]);
     f.db()
@@ -418,17 +458,22 @@ fn repeated_architecture_headings_use_their_exact_body_and_preserve_wrapper_qual
     let scan = f.scan();
     let hits = category(&scan, "correction_sweep");
     assert_eq!(category(&post, "correction_sweep"), hits);
-    assert_eq!(hits.len(), 2);
+    assert_eq!(hits.len(), 3);
+    for hit in &hits[..2] {
+        assert_eq!(
+            hit["excerpts"]["possible_restatement"]["text"],
+            format!("## Storage\n\n{CLAIM}")
+        );
+    }
     assert_eq!(
-        hits[0]["excerpts"]["possible_restatement"]["text"],
-        format!("Architecture v1.0 only > Storage\n\n## Storage\n\n{CLAIM}")
+        hits[2]["excerpts"]["possible_restatement"]["text"],
+        format!("## Storage\n\n{CLAIM}\n\nFor v2.0 only.")
     );
-    assert_eq!(
-        hits[1]["excerpts"]["possible_restatement"]["text"],
-        format!("Architecture v1.0 only > Storage\n\n## Storage\n\n{CLAIM}\n\nFor v2.0 only.")
-    );
-    for hit in hits {
-        let excerpt = hit["excerpts"]["possible_restatement"]["text"]
+    for (index, hit) in hits.into_iter().enumerate() {
+        let restatement = &hit["excerpts"]["possible_restatement"];
+        assert_eq!(restatement["architecture_source"]["text"], body);
+        assert_eq!(restatement["architecture_source"]["section_ordinal"], index);
+        let excerpt = restatement["text"]
             .as_str()
             .unwrap()
             .replace('\n', "\n      ");
@@ -439,7 +484,7 @@ fn repeated_architecture_headings_use_their_exact_body_and_preserve_wrapper_qual
 #[test]
 fn correction_uses_current_imported_architecture_and_preserves_enclosing_version_heading() {
     let f = fixture();
-    imported_architecture(&f);
+    let body = imported_architecture(&f);
     f.db()
         .execute(
             "INSERT INTO facts(id,key,value,retired_at) VALUES (1,'old',?1,CURRENT_TIMESTAMP)",
@@ -454,8 +499,12 @@ fn correction_uses_current_imported_architecture_and_preserves_enclosing_version
         .unwrap();
     assert_eq!(
         hit["excerpts"]["possible_restatement"]["text"],
-        format!("Architecture v1.0 only, not v2.0 > Storage\n\n## Storage\n\n{CLAIM}")
+        format!("## Storage\n\n{CLAIM}")
     );
+    let source = &hit["excerpts"]["possible_restatement"]["architecture_source"];
+    assert_eq!(source["text"], body);
+    assert_eq!(source["architecture_id"], 11);
+    assert_eq!(source["section_ordinal"], 0);
     assert_eq!(
         hit["excerpts"]["possible_restatement"]["recorded_at"],
         "2025-01-01"
@@ -561,6 +610,99 @@ fn stored_document_matches_survive_redirected_paths_without_unsafe_reingest_acti
     assert_eq!(
         fs::read_to_string(target.join("guide.md")).unwrap(),
         "Unrelated destination."
+    );
+}
+
+#[test]
+fn document_actions_from_a_subdirectory_only_target_the_canonical_ingest_row() {
+    let f = fixture();
+    let nested = f.repo.join("nested");
+    fs::create_dir(&nested).unwrap();
+    let doc = f.repo.join("guide.md");
+    let body = format!("# Guide v1.0 only\n\n{CLAIM}");
+    fs::write(&doc, &body).unwrap();
+    fs::write(nested.join("guide.md"), "A different document.").unwrap();
+    fs::write(f.repo.join("legacy.md"), &body).unwrap();
+    let original = f.json(&["doc", "add", "--json", "guide.md"]);
+    let db = f.db();
+    db.execute_batch(
+        "INSERT INTO documents(id,path,title,content_hash,byte_len) VALUES
+             (20,'guide.md','Relative alias','old',1),
+             (21,'legacy.md','Relative only','old',1);",
+    )
+    .unwrap();
+    for row in [20, 21] {
+        db.execute(
+            "INSERT INTO doc_chunks(doc_id,ord,heading_path,body) VALUES (?1,0,'Guide v1.0 only',?2)",
+            params![row, body],
+        )
+        .unwrap();
+    }
+    db.execute(
+        "INSERT INTO facts(key,value,retired_at) VALUES ('old',?1,CURRENT_TIMESTAMP)",
+        [CLAIM],
+    )
+    .unwrap();
+    drop(db);
+    fs::write(&doc, format!("{body}\n\nEdited.")).unwrap();
+
+    let run = |args: &[&str]| {
+        let out = f
+            .command(env!("CARGO_BIN_EXE_memhub"))
+            .current_dir(&nested)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()
+    };
+    let report = run(&["prune", "scan", "--json"])["prune_scan"].clone();
+    assert_eq!(report, f.scan());
+    for id in [20, 21] {
+        let item = category(&report, "correction_sweep")
+            .into_iter()
+            .find(|item| item["subjects"][1]["document_id"] == id)
+            .unwrap();
+        assert!(
+            item["excerpts"]["possible_restatement"]["text"]
+                .as_str()
+                .unwrap()
+                .contains(&body)
+        );
+        for item in [item, row_item(&report, "out_of_date_document", id)] {
+            assert_eq!(item["actions"].as_array().unwrap().len(), 1);
+            assert_eq!(&action(item, "keep")[..2], ["prune", "dismiss"]);
+            assert!(
+                item["reason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("stored path is relative")
+            );
+        }
+    }
+    let item = category(&report, "correction_sweep")
+        .into_iter()
+        .find(|item| item["subjects"][1]["document_id"] == original["id"])
+        .unwrap();
+    let mut argv = action(item, "edit_and_re_ingest");
+    assert_eq!(
+        argv.last().copied(),
+        fs::canonicalize(&doc).unwrap().to_str()
+    );
+    argv.insert(2, "--json");
+    let updated = run(&argv);
+    assert_eq!(updated["status"], "updated");
+    assert_eq!(updated["id"], original["id"]);
+    assert_eq!(
+        f.db()
+            .query_row("SELECT count(*) FROM documents", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        3,
+        "neither a legacy alias nor a subdirectory file should be ingested"
     );
 }
 
@@ -777,7 +919,7 @@ fn every_committed_supersession_and_retirement_reports_only_its_old_rows_sweep()
             .find(|i| i["excerpts"]["possible_restatement"]["source_type"] == "arch_section")
             .unwrap();
         assert!(
-            architecture["excerpts"]["possible_restatement"]["text"]
+            architecture["excerpts"]["possible_restatement"]["architecture_source"]["text"]
                 .as_str()
                 .unwrap()
                 .contains("Architecture v1.0 only, not v2.0")

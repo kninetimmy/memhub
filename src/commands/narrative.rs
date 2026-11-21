@@ -163,8 +163,6 @@ pub(crate) fn rederive_arch_sections(tx: &Transaction<'_>, mode: RetrievalMode) 
 /// One retrievable piece of the architecture body (see [`arch_sections`]).
 pub(crate) struct ArchSection {
     pub heading_path: String,
-    /// Original breadcrumb, including any wrapper omitted from the recall index.
-    pub source_heading_path: String,
     pub body: String,
     /// False for the follow-on pieces of one over-long section; the PROJECT.md
     /// index lists one entry per piece that starts a section.
@@ -196,7 +194,6 @@ pub(crate) fn arch_sections(body: &str) -> Vec<ArchSection> {
                 .next()
                 .is_some_and(|l| crate::commands::doc::parse_heading(l.trim_start()).is_some());
             ArchSection {
-                source_heading_path: heading_path.clone(),
                 heading_path,
                 body,
                 starts_section,
