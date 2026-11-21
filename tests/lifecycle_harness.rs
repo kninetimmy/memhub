@@ -36,14 +36,14 @@ mod metrics_tokenizer;
 mod milestone2;
 #[path = "lifecycle/narrative.rs"]
 mod narrative;
+#[path = "lifecycle/prune.rs"]
+mod prune;
 #[path = "lifecycle/recall_query_log.rs"]
 mod recall_query_log;
 #[path = "lifecycle/render.rs"]
 mod render;
 #[path = "lifecycle/review.rs"]
 mod review;
-#[path = "lifecycle/review_stale.rs"]
-mod review_stale;
 #[path = "lifecycle/session_notes.rs"]
 mod session_notes;
 #[path = "lifecycle/staleness.rs"]

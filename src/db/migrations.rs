@@ -166,6 +166,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         MEMORY_LIFECYCLE_MIGRATION,
         include_str!("../../migrations/0026_memory_lifecycle.sql"),
     ),
+    (
+        PRUNE_DISMISSALS_MIGRATION,
+        include_str!("../../migrations/0027_prune_dismissals.sql"),
+    ),
 ];
 
 /// Migration that adds the derived `arch_sections` table. SQL cannot
@@ -173,6 +177,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
 /// sections of an already-stored latest architecture body in Rust.
 const ARCH_SECTIONS_MIGRATION: &str = "0025_arch_sections";
 pub(crate) const MEMORY_LIFECYCLE_MIGRATION: &str = "0026_memory_lifecycle";
+pub(crate) const PRUNE_DISMISSALS_MIGRATION: &str = "0027_prune_dismissals";
 
 /// True when the ledger records at least one compiled migration and lacks
 /// at least one (a missing tail or a gap): an existing DB about to change.
@@ -755,7 +760,7 @@ mod tests {
         let baseline = LogicalVersion::read(&conn).unwrap();
         assert_eq!(
             apply_all(&mut conn, None).unwrap(),
-            [MEMORY_LIFECYCLE_MIGRATION]
+            [MEMORY_LIFECYCLE_MIGRATION, PRUNE_DISMISSALS_MIGRATION]
         );
         assert_eq!(LogicalVersion::read(&conn).unwrap(), baseline);
         assert_eq!(apply_all(&mut conn, None).unwrap(), Vec::<String>::new());

@@ -106,6 +106,11 @@ pub enum TopLevelCommand {
         #[command(subcommand)]
         command: ReviewCommand,
     },
+    /// Review and act on repo-local cleanup candidates.
+    Prune {
+        #[command(subcommand)]
+        command: PruneCommand,
+    },
     Note {
         #[command(subcommand)]
         command: NoteCommand,
@@ -882,14 +887,34 @@ pub enum ReviewCommand {
         #[arg(long, default_value_t = 30)]
         older_than_days: i64,
     },
-    /// Read-only lifecycle audit queue (Wave 3 L4): facts near the
-    /// staleness horizon, done tasks aged past threshold, expired
-    /// pending writes, and docs whose on-disk hash no longer matches
-    /// `documents.content_hash`. Mutates nothing — each row only
-    /// suggests the existing verb that addresses it.
+    /// Read-only alias of `memhub prune scan`.
     Stale {
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PruneCommand {
+    /// List cleanup candidates without acting on them.
+    Scan {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Hide this candidate until its source state changes.
+    Dismiss {
+        identifier: String,
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// Delete one reviewed surplus backup batch on supported Windows storage.
+    Backups {
+        /// Confirm permanent deletion.
+        #[arg(long)]
+        yes: bool,
+        /// Required on Windows: the exact identifier shown by `prune scan`.
+        #[arg(long)]
+        candidate: Option<String>,
     },
 }
 

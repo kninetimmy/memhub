@@ -1123,6 +1123,7 @@ dependencies = [
  "env_logger",
  "fastembed",
  "globset",
+ "libc",
  "log",
  "rmcp",
  "rusqlite",

@@ -69,6 +69,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+use super::prune::BACKUPS_RETENTION_COUNT;
 use crate::config::{GcConfig, ProjectConfig};
 use crate::{MemhubError, Result};
 
@@ -91,10 +92,6 @@ const LARGE_THIRDPARTY_THRESHOLD_BYTES: u64 = 100 * 1024 * 1024;
 /// set — test/bench incremental caches are KB-scale; memhub's own is
 /// the multi-GB hog the July review measured.
 const INCREMENTAL_OWNED_STEM: &str = "memhub";
-
-/// U8 (decision Q16): newest-N backup files kept per
-/// `.memhub/backups/{rendered,markdown}` directory.
-const BACKUPS_RETENTION_COUNT: usize = 20;
 
 /// U8: the one-time legacy DB backup left behind by the K9-to-memhub-
 /// primary migration. Always reported when present, never auto-deleted

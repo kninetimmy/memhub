@@ -58,6 +58,9 @@ ureq = { version = "2.10", default-features = false, features = ["tls", "json"],
 # user for this feature.
 zstd = "0.13"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2" # Platform O_NOFOLLOW/O_NONBLOCK flags for prune reads.
+
 [features]
 # Metrics is deliberately hibernated: normal builds contain none of its
 # runtime, CLI, MCP, rendering, scraping, or calibration surfaces. The

@@ -164,6 +164,19 @@ hardcode `is_stale: false`.
 Also: retire or repurpose the vestigial confidence field (§11 Q5), and make
 pending-write expiry automatic at `open_project` (§11 Q6).
 
+**L4 follow-up (#451).** Before: `review stale` showed stale facts, aged
+done tasks, expired proposals, and document drift, and `status` counted
+that queue. After: both use the [prune scan](../reference/operations.md#prune-review).
+It excludes retired facts and archived documents, replaces the aged
+done-task and expired-proposal categories with idle tasks and surplus
+backups, and lists the available actions without running them.
+The old queue's queries did not write, but its maintained open on the 0026
+binary could back up and migrate an initialized pre-0026 repo before
+reporting. The read-only alias refuses pre-0026 schemas and points to
+`memhub upgrade`. The old document check followed links at or above the
+recorded file; the scan and CLI status now report those paths as unreadable
+without reading their targets.
+
 **L5 follow-up (#443).** Before: an above-threshold rerank hit blocked plain
 accept for both facts under different keys and decisions. After: only the
 decision hit still blocks; a different-key fact hit warns without linking or

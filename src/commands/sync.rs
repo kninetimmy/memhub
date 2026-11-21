@@ -89,9 +89,9 @@ pub struct LogicalVersion {
 /// Order is fixed so the digest is deterministic.
 ///
 /// Before migration 0026 this was the entire durable-content digest list.
-/// It now defines the base stream; `LIFECYCLE_CONTENT` adds populated
-/// lifecycle metadata. The digest covers durable content that `memhub
-/// export` does not. A whole-DB sync snapshot (`VACUUM INTO`) carries
+/// It now defines the base stream; the schema-gated extensions add
+/// populated lifecycle metadata and prune dismissals. The digest covers
+/// durable content that `memhub export` does not. A whole-DB sync snapshot (`VACUUM INTO`) carries
 /// every table, including `documents` / `doc_chunks`, which `export`
 /// deliberately omits — so the digest must
 /// cover them too or two machines that each ingest a different doc would
@@ -99,7 +99,7 @@ pub struct LogicalVersion {
 ///
 /// Coverage is hand-maintained but drift-proofed: the
 /// `content_tables_cover_the_live_schema` test asserts every live table
-/// and column is either covered by one of the two digest lists or on an
+/// and column is either covered by a digest list or on an
 /// explicit exemption list with a stated reason.
 ///
 /// `project_id` is intentionally never digested (it is the constant
@@ -217,6 +217,7 @@ const LIFECYCLE_CONTENT: &[(&str, &[&str])] = &[
     ),
     ("documents", &["path", "archived_at", "archived_reason"]),
 ];
+const PRUNE_CONTENT: (&str, &[&str]) = ("prune_dismissals", &["id", "identifier"]);
 
 impl LogicalVersion {
     pub fn read(conn: &Connection) -> Result<Self> {
@@ -236,20 +237,20 @@ impl LogicalVersion {
         // content — two DBs hash equal iff their digested content is
         // byte-for-byte identical, and NULL ≠ '' ≠ any other value.
         let mut hasher = Sha256::new();
-        let has_lifecycle = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = ?1)",
-            [db::MEMORY_LIFECYCLE_MIGRATION],
-            |r| r.get::<_, bool>(0),
-        )?;
+        let mut applied =
+            conn.prepare("SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = ?1)")?;
+        let has_lifecycle = applied.query_row([db::MEMORY_LIFECYCLE_MIGRATION], |r| r.get(0))?;
+        let has_prune: bool = applied.query_row([db::PRUNE_DISMISSALS_MIGRATION], |r| r.get(0))?;
         for (table, cols, extension) in CONTENT_TABLES
             .iter()
-            .map(|(table, cols)| (table, cols, false))
+            .map(|&(table, cols)| (table, cols, false))
             .chain(
                 LIFECYCLE_CONTENT
                     .iter()
                     .filter(|_| has_lifecycle)
-                    .map(|(table, cols)| (table, cols, true)),
+                    .map(|&(table, cols)| (table, cols, true)),
             )
+            .chain(has_prune.then_some((PRUNE_CONTENT.0, PRUNE_CONTENT.1, true)))
         {
             // Length-framed table name so no table's bytes can bleed into
             // the next.
@@ -1901,11 +1902,14 @@ fn machine_id() -> String {
 }
 
 pub fn sha256_file(path: &Path) -> Result<String> {
-    let mut file = File::open(path)?;
+    sha256_reader(File::open(path)?)
+}
+
+pub(super) fn sha256_reader(mut reader: impl Read) -> Result<String> {
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 64 * 1024];
     loop {
-        let n = file.read(&mut buf)?;
+        let n = reader.read(&mut buf)?;
         if n == 0 {
             break;
         }
@@ -3156,6 +3160,7 @@ mod tests {
         for (table, cols) in LIFECYCLE_CONTENT {
             digested.get_mut(table).expect("base table").extend(*cols);
         }
+        digested.insert(PRUNE_CONTENT.0, PRUNE_CONTENT.1.to_vec());
 
         let mut tables_stmt = conn
             .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
