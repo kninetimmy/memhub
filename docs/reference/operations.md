@@ -277,8 +277,9 @@ replace. Adoption is **operator-gated**, never automatic.
 
 `sync check --diff` validates the audit cutoff against both actual
 databases. An incompatible cutoff returns null sides with an explicit
-`unavailable_reason`, never an available empty diff. Unavailable does not
-mean there are no unique records; an available audit diff is not proof
+`unavailable_reason`, never an available empty diff. A newer remote schema
+also makes the diff unavailable, even with a comparable cutoff. Unavailable
+does not mean there are no unique records; an available audit diff is not proof
 of complete reconciliation or ancestry, either.
 
 Scope is deliberately **single-user across
@@ -334,6 +335,14 @@ Surfaces:
   upgrade`), or a checksum that disagrees with the manifest. (This
   gate is also kept inline in `CLAUDE.md` / `AGENTS.md` under Safety
   gates — it is the one destructive sync op.)
+- **Mixed versions since migration 0026:** Two 0025 clients could adopt
+  each other's compatible snapshots. A 0025 client now blocks adoption
+  of a 0026 snapshot even when no lifecycle fields are populated and its
+  logical version matches (`up-to-date`). The schema block is separate
+  from the content verdict, and `/catch-up` stops on it. A 0026 client
+  can still adopt a 0025 snapshot if the other guards pass; reopening
+  migrates it and preserves its logical baseline. The push guard still
+  checks `drive-ahead` and `diverged`, not the adopt-only schema flag.
 - Skill: `/catch-up` orchestrates the pull side (check → summarize →
   adopt with your approval).
 
@@ -425,7 +434,11 @@ takes a slot ahead of an otherwise-equal current row. Staleness is not an
 adjustment: a stale fact ranks exactly like a fresh one. The superseded penalty
 comes off one unweighted retriever component, which carries only its weight (0.5 by
 default) of the blended relevance, so in a pool ranking it counts for about half
-its strength in the blended score.
+its strength in the blended score. Before lifecycle exclusions, a matching
+fact or chunk could take a candidate slot. Now retired facts and archived
+chunks are filtered before the keyword limit, vector scoring, and re-rank
+pool fill. The limits, score adjustments, and fill order still apply to the
+eligible pool.
 This is intended: the pool is a wide net the re-ranker then judges, and the
 penalty arithmetic is unchanged. In a default recall that includes doc chunks
 (`include_docs_in_default`, no `--source-type`), `[retrieval] rerank_doc_cap`
@@ -455,7 +468,10 @@ its type. A candidate's score is its score against the query or, for a
 two-question query, its best part (see "Two-question queries" below). When
 candidates existed but none cleared the cutoff and no named row is returned,
 the response is empty and carries a `rerank_cutoff_dropped_all` warning that
-names the cutoff and the highest score seen. Override the cutoff per call with
+names the cutoff and the highest score seen. Before lifecycle exclusions,
+facts and chunks now out of circulation could participate in that decision.
+If filtering leaves no candidates or named rows, the re-ranker does not run
+and there is no cutoff warning. Override the cutoff per call with
 `memhub recall --rerank-cutoff <F>` or `memhub eval retrieval --rerank-cutoff
 <F>`. Calibration: the scores of right and wrong rows overlap, so no fixed
 threshold separates them. The default was re-measured 2026-10-17 on 344 blind
@@ -488,14 +504,18 @@ proxy (`recall_metrics`) counts each hit's title and compact text, what the
 agent actually receives.
 
 **Partial-token FTS (issue #225).** The recall FTS path first requires every
-query token to match one row (a quoted FTS5 `AND`). When no row in the corpus
-holds every token, which is the normal case for a keyword bag or a natural
-question, recall retries with an `OR` of the query's content tokens (English
-stopwords such as "the", "how", "does" are dropped) so rows matching some of
-the tokens still contribute FTS signal. Before this, a multi-word query whose
-tokens never co-occur in one row got no FTS signal at all, the rerank
-candidate pool was picked by the narrow cosine band alone, and the right row
-could fall outside it and never reach the cross-encoder. bm25 is min-max
+query token to match one row (a quoted FTS5 `AND`). Before retirement and
+archiving, any full-token FTS hit in the searched types suppressed the retry.
+Now a retired fact or archived chunk cannot suppress it. If no eligible FTS
+hit matches every token in that store for that phrasing, recall retries with
+an `OR` of the query's content tokens (English stopwords such as "the", "how",
+"does" are dropped) so partial matches still contribute FTS signal. This is
+common for keyword bags and natural questions. A full-token hit removed only
+by the later accepted-only filter still suppresses the retry. Before
+issue #225, a multi-word query whose tokens never co-occur in one row
+got no FTS signal at all, the rerank candidate pool was picked by the narrow
+cosine band alone, and the right row could fall outside it and never reach the
+cross-encoder. bm25 is min-max
 normalized over the hits, so the best partial hit would otherwise blend as if
 it matched every token (about 0.82 against about 0.36 for a vector-only row)
 and crowd the pool; partial-token FTS scores are therefore multiplied by 0.5
@@ -529,8 +549,11 @@ block after the results; the MCP response gains an `explain` field. Without the
 flag nothing is added and the output is unchanged. The counters are bookkeeping
 only: the rows returned, their order and their scores are identical with and
 without it. Counts are summed over every store the call searched (the repo
-store, plus the machine-global store when this repo opted in). The reasons, by
-JSON key:
+store, plus the machine-global store when this repo opted in). Before lifecycle
+filters, any otherwise eligible fact or chunk could enter these stages.
+Now these counters reflect the surviving inputs; there is no separate
+explain counter for rows excluded by retirement or archiving. The reasons,
+by JSON key:
 
 - `reranker_ran` (bool): whether the cross-encoder re-ranker ran (hybrid mode,
   `use_reranker` on, at least one candidate). No cutoff applies when it did
@@ -622,7 +645,9 @@ variants and about 380 ms with them, medians of the live-set A/B at pool 20),
 plus, per variant or part, one more embedding and, in each searched store (the
 repo store and, when the repo opted in, the machine-global store), one more set
 of full-text lookups (one per searched source type, and a second set with the
-partial-token retry when no row holds every token) and one more scan of the
+partial-token retry when no eligible FTS hit holds every token; before
+lifecycle exclusions, a full-token hit from a now-retired fact or archived
+chunk could suppress that extra set) and one more scan of the
 stored vectors. When the re-ranker does not run (FTS-only mode, `--no-rerank`,
 `use_reranker = false`) no pool is cut and variant-only rows have no main-query
 score, so the merged set is ordered by each row's best blended score across
@@ -1062,7 +1087,7 @@ accepted, but none of them changes which rows come back or their order.
 `memhub doctor` names the two config keys as ignored settings; deleting them is
 safe. Optional age decay (`age_half_life_days`) is separate and unchanged.
 
-`[global] enabled` is managed by `memhub global enable` / `disable` — it's per-machine, so the tracked `.memhub/config.example.toml` baseline ships `false`. The machine-global store has no `[retrieval]` block of its own; it inherits the active repo's, including `[retrieval] include_docs_in_default`, which alone decides whether global docs join that repo's default recall.
+`[global] enabled` is managed by `memhub global enable` / `disable` — it's per-machine, so the tracked `.memhub/config.example.toml` baseline ships `false`. The machine-global store has no `[retrieval]` block of its own; it inherits the active repo's. Before archiving, once that store was in scope, `[retrieval] include_docs_in_default` decided whether its docs could join default recall. It still does for non-archived docs; the archive filter applies to every searched store.
 
 ## Token Accounting
 
@@ -1630,7 +1655,11 @@ machine, an experimental build included, can reach the same file.
 add --global`, `fact|decision promote --global`, `review accept` of a
 global-scoped proposal, `doc add|rm --global`) still migrate an older
 store to the binary's schema and still refuse a newer one with the
-"written by a newer memhub" error. The store's schema is read from
+"written by a newer memhub" error. The same forward-only rule holds for
+normal repo opens. Before lifecycle states, 0025 was head. A 0026 build
+now migrates a 0025 store on either of these migration-capable paths;
+a 0025 build refuses to open a 0026 store through them. The global
+store's schema is read from
 its applied-migration ledger (`schema_migrations`, the ledger
 migrations themselves check), not from `projects.schema_version`,
 which only ever ratchets upward and so can stay ahead of a store a
@@ -1655,6 +1684,10 @@ come from `schema_migrations`, not from `projects.schema_version`.
 Before issue #353 every one of those reads migrated an older store to
 the binary's schema as a side effect, and failed outright (recall
 included) on a newer one with the "written by a newer memhub" error.
+With 0025 and 0026 builds, the read-only mismatch behavior applies in
+both directions: recall skips the other schema, direct global `get-row`
+and `doc ls|show --global` refuse it, and `global status` still reports
+stored counts without migrating it.
 
 When enabled, `recall` merges global hits with repo hits; every hit
 carries `scope: "repo" | "global"`. **Precedence is
@@ -1818,6 +1851,13 @@ error degrades to a `warn` row, never fails the upgrade — same posture
 as the registry/metrics writes). `--no-skills` skips the step; the
 binary + DB migrate still run. The manual `cp` recipe (fact 10) is now
 a fallback only.
+
+The lifecycle release updates `/recall` and `/doc` guidance for all four
+hosts and Claude's `/global` template through that same resync. Older
+copies do not describe the new exclusions. Refreshing a wrapper alone
+does not add CLI verbs or update MCP descriptions on an older binary.
+The serving binary supplies the MCP descriptions, so reconnect after
+upgrading it.
 
 Before issue #427, skill resync had no Antigravity target. It now also
 copies `templates/skills/antigravity/` into `~/.gemini/config/skills/`,
@@ -2032,7 +2072,10 @@ limit to show the new action, actor, and logged reason or undo detail.
 `sync check --diff` counts each action after a comparable audit baseline as
 an update, using its existing rule that every non-insert action is an
 update. Status and stats include these entries in the existing write counts.
-Doctor includes them in write recency and detects them as writes since render.
+Doctor includes them in write recency. CLI `status` (human and JSON) and
+`doctor` use the same render-freshness check: before, no lifecycle write
+could count as a write since render; now any of the eight actions can
+make current output stale. MCP `status` returns counts, not these checks.
 
 **Keyword index:** Before, otherwise eligible facts and chunks in the
 full-text index could be returned as hits. Now recall filters retired facts
@@ -2076,7 +2119,11 @@ including when checking for corrupt vectors. The store-wide
   `memhub task list --status dropped` and the existing MCP task-list
   status filter accept the new status. Dropped tasks are not open work
   in rendered views, but remain in the full backlog, task recall and
-  exports. `memhub task undrop <id>` restores the prior status and
+  exports. Before, the ledger said "Open first, then by recency" while
+  grouping open, blocked, and done separately. It still groups those
+  statuses in that order, then puts dropped after done regardless of
+  recency. Within each group it sorts by latest update, then highest ID.
+  `memhub task undrop <id>` restores the prior status and
   last-updated time and clears the drop reason. The former task states
   and their filters still work. Previously CLI `task done` and MCP
   `task_done` marked the task done and refreshed its update time.
@@ -2089,6 +2136,13 @@ including when checking for corrupt vectors. The store-wide
   there is no saved time or the current time no longer matches the keep.
   Dropping the task suspends unkeep until undrop restores the kept state.
   Marking it done clears the saved keep.
+
+Both the minimal and shared standard/full/transcript `/wrap-up`
+read windows still use `task list --status open --brief` to match closures
+to IDs. Before, there was no drop to remove a task from that window or
+keep to refresh its sort time. Now dropping an open task removes it and
+keeping an open task can reorder it. Blocked tasks remain outside the
+window, and `task show` still supplies full notes on demand.
 
 ## Attribution
 

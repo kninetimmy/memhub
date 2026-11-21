@@ -235,6 +235,17 @@ A raw `.sqlite` carries a schema version, and migrations are
 This turns the one genuinely confusing failure mode into an actionable
 instruction, and ties M10 to the existing machine-wide upgrade story.
 
+**Lifecycle follow-up (#445).** Before migration 0026, two 0025 clients
+could adopt each other's compatible snapshots. A 0025 client now reports
+`schema_blocks_adopt` and refuses a 0026 snapshot even if all lifecycle
+fields are null and the logical version matches. `sync check --diff` also
+refuses comparison of that snapshot when it reaches its schema check.
+In the other direction, a 0026 client can adopt a 0025 snapshot if the
+other guards pass; reopening applies 0026 without changing the recorded
+logical baseline. The schema flag is independent of the content verdict.
+The normal push guard still checks the content verdict rather than the
+adopt-only schema flag.
+
 ## 7. WAL consistency
 
 A live DB in WAL mode has `-wal` / `-shm` sidecars; copying the main

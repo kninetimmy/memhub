@@ -961,9 +961,10 @@ fn phrasing_candidates(
         Some(expr) => fts_all(&expr)?,
         None => Vec::new(),
     };
-    // No row holds every query token (typical of a keyword bag or a natural
-    // question): let rows matching some of the content tokens contribute
-    // FTS signal instead of leaving the pool to cosine alone (issue #225).
+    // Retry with some tokens if no full-token FTS hit survives in this
+    // store for this phrasing (issue #225). Before lifecycle filtering,
+    // a full-token hit from a now-retired fact or archived chunk could
+    // suppress the retry. Accepted-only and cosine do not affect this test.
     let fts_partial = fts_results.is_empty();
     if fts_partial && let Some(expr) = build_fts_match_any(phrasing.text) {
         fts_results = fts_all(&expr)?;

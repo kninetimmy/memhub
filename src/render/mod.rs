@@ -635,7 +635,7 @@ fn format_ledger_md(s: &RenderSnapshot) -> String {
         out.push_str("_No tasks recorded._\n\n");
     } else {
         out.push_str(&format!(
-            "_{} task(s), {} open. Open first, then by recency._\n\n",
+            "_{} task(s), {} open. Open, blocked, done, then dropped; newest update first within each status._\n\n",
             s.tasks.len(),
             s.open_task_count
         ));

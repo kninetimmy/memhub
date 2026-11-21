@@ -92,18 +92,19 @@ pub struct LogicalVersion {
 /// Durable content tables and the columns that define their content.
 /// Order is fixed so the digest is deterministic.
 ///
-/// This is the authoritative list of what divergence the sync check
-/// gates on. It is a **superset** of `memhub export` — a whole-DB sync
-/// snapshot (`VACUUM INTO`) carries every table, including `documents` /
-/// `doc_chunks`, which `export` deliberately omits — so the digest must
+/// Before migration 0026 this was the entire durable-content digest list.
+/// It now defines the base stream; `LIFECYCLE_CONTENT` adds populated
+/// lifecycle metadata. The digest covers durable content that `memhub
+/// export` does not. A whole-DB sync snapshot (`VACUUM INTO`) carries
+/// every table, including `documents` / `doc_chunks`, which `export`
+/// deliberately omits — so the digest must
 /// cover them too or two machines that each ingest a different doc would
 /// compare EQUAL over real divergence (audit finding F2).
 ///
 /// Coverage is hand-maintained but drift-proofed: the
 /// `content_tables_cover_the_live_schema` test asserts every live table
-/// and column is either digested here or on an explicit exemption list
-/// with a stated reason. Adding a durable table/column without updating
-/// one of the two lists turns that test red.
+/// and column is either covered by one of the two digest lists or on an
+/// explicit exemption list with a stated reason.
 ///
 /// `project_id` is intentionally never digested (it is the constant
 /// singleton partition key, always 1, and the digest already filters
