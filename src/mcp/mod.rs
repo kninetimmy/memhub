@@ -987,7 +987,7 @@ impl MemhubServer {
 
     #[tool(
         name = "doc_add",
-        description = "Ingest (or re-ingest) a local markdown file as an external reference document, chunked and RAG-searchable. Direct write: a doc is a user-pointed artifact, not an agent claim, so no review gate. Docs are OPT-IN to recall — query them with recall(source_types=[\"doc\"]) to scope to docs alone; after a repo's first doc add they also join the default recall bundle, ranked with every other row (decision 90). Unchanged content (same hash) is a no-op; changed content replaces every chunk. The path must canonicalize under the repo root or a configured [doc] allowed_dirs entry and must not match the deny-list; otherwise this refuses with a clear error (Wave-0 F11)."
+        description = "Ingest (or re-ingest) a local markdown file as an external reference document, chunked and RAG-searchable. Direct write: a doc is a user-pointed artifact, not an agent claim, so no review gate. Docs are OPT-IN to recall — query them with recall(source_types=[\"doc\"]) to scope to docs alone; after a repo's first doc add they also join the default recall bundle, ranked with every other row (decision 90). Before archiving, unchanged content (same hash) was a no-op and changed content replaced every chunk on any stored path. That still holds for unarchived paths; archived paths refuse until restored with `memhub doc unarchive`. The path must canonicalize under the repo root or a configured [doc] allowed_dirs entry and must not match the deny-list; otherwise this refuses with a clear error (Wave-0 F11)."
     )]
     async fn doc_add(
         &self,

@@ -140,7 +140,8 @@ pub fn done(start: &Path, task_id: i64, actor: &str) -> Result<()> {
     let updated = tx.execute(
         "UPDATE tasks
          SET status = 'done', updated_at = CURRENT_TIMESTAMP, dropped_reason = NULL,
-             pre_drop_status = NULL, pre_drop_updated_at = NULL
+             pre_drop_status = NULL, pre_drop_updated_at = NULL,
+             pre_keep_updated_at = NULL, kept_at = NULL
          WHERE id = ?1 AND status != 'done'",
         [task_id],
     )?;

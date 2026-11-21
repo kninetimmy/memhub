@@ -6,7 +6,7 @@ use rusqlite::{Transaction, TransactionBehavior, params};
 use crate::commands::{index, narrative, search};
 use crate::config::RetrievalMode;
 use crate::db;
-use crate::export::{EXPORT_VERSION, Export, v1};
+use crate::export::{decode, v1, v2};
 use crate::{MemhubError, Result};
 
 pub struct ImportSummary {
@@ -55,14 +55,7 @@ pub struct ImportSummary {
 
 pub fn run(start: &Path, source: &Path, force: bool) -> Result<ImportSummary> {
     let raw = fs::read_to_string(source)?;
-    let payload: Export = serde_json::from_str(&raw)?;
-
-    if payload.memhub_export_version != EXPORT_VERSION {
-        return Err(MemhubError::InvalidInput(format!(
-            "unsupported memhub_export_version: {} (this build supports {})",
-            payload.memhub_export_version, EXPORT_VERSION
-        )));
-    }
+    let payload = decode(&raw)?;
 
     let mut ctx = db::open_project(start)?;
     let paths = ctx.paths.clone();
@@ -261,7 +254,7 @@ fn wipe_durable_tables(tx: &Transaction<'_>) -> Result<()> {
     Ok(())
 }
 
-fn insert_facts(tx: &Transaction<'_>, rows: &[v1::Fact]) -> Result<()> {
+fn insert_facts(tx: &Transaction<'_>, rows: &[v2::Fact]) -> Result<()> {
     // `superseded_by` is a self-referential FK; the enclosing import
     // transaction sets `PRAGMA defer_foreign_keys = ON`, so an old fact
     // that points at a not-yet-inserted newer fact resolves at commit
@@ -273,15 +266,15 @@ fn insert_facts(tx: &Transaction<'_>, rows: &[v1::Fact]) -> Result<()> {
     )?;
     for fact in rows {
         stmt.execute(params![
-            fact.id,
-            fact.key,
-            fact.value,
-            fact.confidence,
-            fact.source,
-            fact.verified_at,
-            fact.created_at,
-            fact.superseded_by,
-            fact.kind,
+            fact.base.id,
+            fact.base.key,
+            fact.base.value,
+            fact.base.confidence,
+            fact.base.source,
+            fact.base.verified_at,
+            fact.base.created_at,
+            fact.base.superseded_by,
+            fact.base.kind,
             fact.retired_at,
             fact.retired_reason,
         ])?;
@@ -309,23 +302,26 @@ fn insert_decisions(tx: &Transaction<'_>, rows: &[v1::Decision]) -> Result<()> {
     Ok(())
 }
 
-fn insert_tasks(tx: &Transaction<'_>, rows: &[v1::Task]) -> Result<()> {
+fn insert_tasks(tx: &Transaction<'_>, rows: &[v2::Task]) -> Result<()> {
     let mut stmt = tx.prepare(
         "INSERT INTO tasks(id, project_id, title, status, notes, created_at, updated_at,
-                           dropped_reason, pre_drop_status, pre_drop_updated_at)
-         VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                           dropped_reason, pre_drop_status, pre_drop_updated_at,
+                           pre_keep_updated_at, kept_at)
+         VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
     )?;
     for task in rows {
         stmt.execute(params![
-            task.id,
-            task.title,
-            task.status,
-            task.notes,
-            task.created_at,
-            task.updated_at,
+            task.base.id,
+            task.base.title,
+            task.base.status,
+            task.base.notes,
+            task.base.created_at,
+            task.base.updated_at,
             task.dropped_reason,
             task.pre_drop_status,
             task.pre_drop_updated_at,
+            task.pre_keep_updated_at,
+            task.kept_at,
         ])?;
     }
     Ok(())

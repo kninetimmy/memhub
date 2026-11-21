@@ -20,7 +20,9 @@ CREATE TABLE tasks_new (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     dropped_reason TEXT,
     pre_drop_status TEXT CHECK (pre_drop_status IN ('open', 'blocked')),
-    pre_drop_updated_at TEXT
+    pre_drop_updated_at TEXT,
+    pre_keep_updated_at TEXT,
+    kept_at TEXT
 );
 
 INSERT INTO tasks_new(id, project_id, title, status, notes, created_at, updated_at)

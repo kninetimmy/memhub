@@ -209,16 +209,14 @@ fn memory_lifecycle_task_keep_drop_show_and_portable_export() {
             [],
         )
         .unwrap();
-    let mut before = repo.json(&["task", "show", &id, "--json"]);
+    let before = repo.json(&["task", "show", &id, "--json"]);
+    repo.fails_with(&["task", "unkeep", &id], "no keep to undo");
     repo.ok(&["task", "keep", &id, "--actor", "test:keep"]);
-    let refreshed = repo.json(&["task", "show", &id, "--json"]);
-    assert_ne!(before["updated_at"], refreshed["updated_at"]);
-    before["updated_at"] = refreshed["updated_at"].clone();
-    assert_eq!(before, refreshed);
-    repo.conn()
-        .execute("UPDATE tasks SET updated_at = '2001-01-01 00:00:00'", [])
-        .unwrap();
     let before_drop = repo.json(&["task", "show", &id, "--json"]);
+    assert_ne!(before["updated_at"], before_drop["updated_at"]);
+    let mut expected = before.clone();
+    expected["updated_at"] = before_drop["updated_at"].clone();
+    assert_eq!(expected, before_drop);
     repo.ok(&[
         "task",
         "drop",
@@ -248,6 +246,7 @@ fn memory_lifecycle_task_keep_drop_show_and_portable_export() {
         );
     }
     repo.fails_with(&["task", "keep", &id], "not open or blocked");
+    repo.fails_with(&["task", "unkeep", &id], "changed since it was kept");
     repo.ok(&["render"]);
     let ledger =
         fs::read_to_string(repo.path().join(".memhub/rendered/PROJECT_LEDGER.md")).unwrap();
@@ -259,6 +258,10 @@ fn memory_lifecycle_task_keep_drop_show_and_portable_export() {
     let output = repo.path().join("export.json");
     let out = output.to_str().unwrap();
     repo.ok(&["export", out]);
+    let export: Value = serde_json::from_str(&fs::read_to_string(&output).unwrap()).unwrap();
+    assert_eq!(export["memhub_export_version"], 2);
+    assert_eq!(export["facts"][0]["retired_reason"], "obsolete");
+    assert_eq!(export["tasks"][0]["status"], "dropped");
     let target = Repo::new();
     target.ok(&["import", out]);
     assert_eq!(target.json(&["task", "show", &id, "--json"]), dropped);
@@ -270,4 +273,38 @@ fn memory_lifecycle_task_keep_drop_show_and_portable_export() {
     assert_eq!(target.json(&["task", "show", &id, "--json"]), before_drop);
     target.assert_logged("undrop", "task undrop");
     target.fails_with(&["task", "undrop", &id], "no recorded drop to undo");
+    target.ok(&["task", "unkeep", &id, "--actor", "test:unkeep"]);
+    assert_eq!(target.json(&["task", "show", &id, "--json"]), before);
+    target.assert_logged("unkeep", "task unkeep");
+    target.fails_with(&["task", "unkeep", &id], "no keep to undo");
+}
+
+#[test]
+fn task_unkeep_refuses_after_later_changes_and_undoes_only_the_latest_keep() {
+    let repo = Repo::new();
+    let task = repo.json(&["task", "add", "idle task", "--json"]);
+    let id = task["id"].to_string();
+    repo.conn()
+        .execute("UPDATE tasks SET updated_at = '2000-01-01 00:00:00'", [])
+        .unwrap();
+    repo.ok(&["task", "keep", &id]);
+    let first_keep = repo.json(&["task", "show", &id, "--json"]);
+    repo.ok(&["task", "keep", &id]);
+    repo.ok(&["task", "unkeep", &id]);
+    assert_eq!(repo.json(&["task", "show", &id, "--json"]), first_keep);
+    repo.fails_with(&["task", "unkeep", &id], "no keep to undo");
+
+    repo.ok(&["task", "keep", &id]);
+    repo.conn()
+        .execute("UPDATE tasks SET updated_at = '2001-01-01 00:00:00'", [])
+        .unwrap();
+    let changed = repo.json(&["task", "show", &id, "--json"]);
+    repo.fails_with(&["task", "unkeep", &id], "changed since it was kept");
+    assert_eq!(repo.json(&["task", "show", &id, "--json"]), changed);
+
+    repo.ok(&["task", "keep", &id]);
+    repo.ok(&["task", "done", &id]);
+    let done = repo.json(&["task", "show", &id, "--json"]);
+    repo.fails_with(&["task", "unkeep", &id], "no keep to undo");
+    assert_eq!(repo.json(&["task", "show", &id, "--json"]), done);
 }

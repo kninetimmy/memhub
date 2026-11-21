@@ -2019,6 +2019,10 @@ not change its sync baseline.
   name `memhub fact unretire`. Staleness and supersession alone still do
   not exclude a fact from recall; existing same-key rules for
   non-retired facts are unchanged.
+  **Ledger supersession links:** Before retirement, a visible fact linked to
+  its replacement as `→ key` when the replacement was present, with `→ #id`
+  as a fallback. Now every visible fact whose replacement is retired uses
+  the `→ #id` fallback. Visible replacements still show their keys.
 - **Archive a document:** `memhub doc archive <id-or-path> --reason <text>`.
   `memhub doc ls` marks it archived, and `doc show` still reads its stored
   chunks. `memhub doc unarchive <id-or-path>` restores eligibility without
@@ -2033,12 +2037,18 @@ not change its sync baseline.
   status filter accept the new status. Dropped tasks are not open work
   in rendered views, but remain in the full backlog, task recall and
   exports. `memhub task undrop <id>` restores the prior status and
-  last-updated time and clears the drop reason. `memhub task keep <id>`
-  refreshes only the last-updated time of an open or blocked task; it
-  is audited but has no timestamp undo. The former task states and
-  their filters still work. Marking a dropped task done replaces its
-  dropped status and clears the saved undo data; the old drop stays in
-  the audit log.
+  last-updated time and clears the drop reason. The former task states
+  and their filters still work. Marking a dropped task done replaces
+  its dropped status and clears the saved undo data; the old drop stays
+  in the audit log.
+- **Keep a task:** `memhub task keep <id>` refreshes only the last-updated
+  time shown for an open or blocked task. **Before:** keep was audited but
+  had no timestamp undo. **After:** keep saves the previous time, and
+  `memhub task unkeep <id>` restores it and logs the undo. Only the latest
+  keep can be undone; unkeep refuses when there is no saved time or the
+  current time no longer matches the keep. Dropping the task suspends
+  unkeep until undrop restores the kept state. Marking it done clears
+  the saved keep.
 
 ## Attribution
 

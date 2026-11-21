@@ -980,8 +980,11 @@ pub enum FactCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum DocCommand {
-    /// Ingest (or re-ingest) a markdown file. Unchanged content is a
-    /// no-op; changed content replaces every chunk.
+    /// Ingest (or re-ingest) a markdown file; archived paths require `memhub doc unarchive`.
+    ///
+    /// Before archiving existed, unchanged content was a no-op and changed content
+    /// replaced every chunk on any stored path. This still holds for unarchived
+    /// paths; archived paths refuse until restored with `memhub doc unarchive`.
     Add {
         /// Path to the markdown file to ingest.
         file: PathBuf,
@@ -1189,6 +1192,12 @@ pub enum TaskCommand {
     },
     /// Refresh an open or blocked task's last-updated time (CLI only).
     Keep {
+        id: i64,
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// Restore the update time saved by the latest task keep (CLI only).
+    Unkeep {
         id: i64,
         #[arg(long)]
         actor: Option<String>,

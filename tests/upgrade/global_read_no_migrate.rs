@@ -364,7 +364,9 @@ fn remove_last_migration(conn: &Connection, head: &str) -> String {
              ALTER TABLE documents DROP COLUMN archived_reason;
              ALTER TABLE tasks DROP COLUMN dropped_reason;
              ALTER TABLE tasks DROP COLUMN pre_drop_status;
-             ALTER TABLE tasks DROP COLUMN pre_drop_updated_at;",
+              ALTER TABLE tasks DROP COLUMN pre_drop_updated_at;
+              ALTER TABLE tasks DROP COLUMN pre_keep_updated_at;
+              ALTER TABLE tasks DROP COLUMN kept_at;",
         )
         .expect("remove the new columns from the fixture");
     }

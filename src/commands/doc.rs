@@ -199,8 +199,9 @@ fn ingest_in_tx(
 }
 
 /// Ingest (or re-ingest) a markdown file into this repo's store.
-/// Unchanged content (same SHA-256) is a no-op. Changed content
-/// replaces every chunk.
+/// Before archiving, unchanged content (same SHA-256) was a no-op and changed
+/// content replaced every chunk on any stored path. Unarchived paths still
+/// work that way; archived paths refuse until `memhub doc unarchive`.
 pub fn add(start: &Path, file: &Path, title: Option<&str>, actor: &str) -> Result<DocAddOutcome> {
     let doc = prepare_doc(file, title)?;
 

@@ -89,7 +89,7 @@ pub fn set_doc_archive(
     Ok(id)
 }
 
-/// A reason drops a live task; no reason refreshes only its update time.
+/// A reason drops a live task; no reason refreshes its update time and saves it for undo.
 pub fn drop_or_keep_task(start: &Path, id: i64, reason: Option<&str>, actor: &str) -> Result<()> {
     check_reason(reason)?;
     let mut ctx = db::open_project(start)?;
@@ -104,7 +104,8 @@ pub fn drop_or_keep_task(start: &Path, id: i64, reason: Option<&str>, actor: &st
             reason,
         ),
         None => (
-            "UPDATE tasks SET updated_at = CURRENT_TIMESTAMP
+            "UPDATE tasks SET pre_keep_updated_at = updated_at, kept_at = CURRENT_TIMESTAMP,
+                              updated_at = CURRENT_TIMESTAMP
              WHERE id = ?1 AND status IN ('open', 'blocked')",
             "keep",
             "task keep",
@@ -147,6 +148,36 @@ pub fn undrop_task(start: &Path, id: i64, actor: &str) -> Result<()> {
         )));
     }
     db::log_write(&tx, actor, "tasks", Some(id), "undrop", "task undrop")?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Undo the latest keep, but never replace the timestamp of a later change.
+pub fn unkeep_task(start: &Path, id: i64, actor: &str) -> Result<()> {
+    let mut ctx = db::open_project(start)?;
+    let tx = ctx.conn.transaction()?;
+    let updated = tx.execute(
+        "UPDATE tasks SET updated_at = pre_keep_updated_at,
+                          pre_keep_updated_at = NULL, kept_at = NULL
+         WHERE id = ?1 AND status IN ('open', 'blocked')
+           AND pre_keep_updated_at IS NOT NULL AND updated_at = kept_at",
+        [id],
+    )?;
+    if updated == 0 {
+        let has_saved_time = tx
+            .query_row(
+                "SELECT pre_keep_updated_at IS NOT NULL FROM tasks WHERE id = ?1",
+                [id],
+                |r| r.get::<_, bool>(0),
+            )
+            .optional()?;
+        return Err(MemhubError::InvalidInput(match has_saved_time {
+            Some(true) => format!("cannot unkeep task {id}: it changed since it was kept"),
+            Some(false) => format!("task {id} has no keep to undo"),
+            None => format!("task {id} does not exist"),
+        }));
+    }
+    db::log_write(&tx, actor, "tasks", Some(id), "unkeep", "task unkeep")?;
     tx.commit()?;
     Ok(())
 }

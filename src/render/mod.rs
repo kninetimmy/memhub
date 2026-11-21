@@ -686,10 +686,9 @@ fn format_ledger_md(s: &RenderSnapshot) -> String {
         }
         out.push('\n');
         for f in &s.facts {
-            // Show the superseding fact's KEY (not its id): the facts table
-            // has no id column, but every fact's key is right there in the
-            // Key column, so the link resolves in place. Fall back to the
-            // id only if the target somehow isn't in the rendered set.
+            // Before retirement, the facts table could link to the replacement
+            // by key. It still does when the replacement is visible; a retired
+            // (or otherwise missing) replacement uses the existing #id fallback.
             let superseded = match f.superseded_by {
                 Some(new_id) => match s.facts.iter().find(|other| other.id == new_id) {
                     Some(other) => format!("→ {}", other.key),

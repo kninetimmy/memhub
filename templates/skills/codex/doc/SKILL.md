@@ -64,10 +64,11 @@ memhub doc rm <id|path> --global --json
 
 ## Re-ingest semantics
 
-`doc add` on an already-ingested path: unchanged content (same
-SHA-256) is a no-op (`status: "unchanged"`); changed content replaces
-every chunk and refreshes embeddings/FTS (`status: "updated"`). Safe to
-re-run after the user edits the file.
+Before archiving existed, unchanged content (same SHA-256) was a no-op
+(`status: "unchanged"`) on any already-ingested path; changed content
+replaced every chunk and refreshed embeddings/FTS (`status: "updated"`).
+This still holds for unarchived paths. Both `doc add` and `doc_add` now
+refuse archived paths until restored with `memhub doc unarchive`.
 
 ## Retrieving from the doc
 

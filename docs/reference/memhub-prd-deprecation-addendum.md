@@ -263,4 +263,4 @@ Authoritative for the items they cover:
 - [`docs/archive/wrap-up-design.md`](../archive/wrap-up-design.md) — wrap-up routing brain location, session-boundary model, K9-vocabulary scope.
 - [`docs/archive/k9-deprecation-plan.md`](../archive/k9-deprecation-plan.md) — full deprecation direction and slice enumeration.
 - [`docs/archive/k9-wrap-up-contract.md`](../archive/k9-wrap-up-contract.md) — v1 K9 `/wrap-up` shell-out contract (still authoritative for K9-using repos).
-- [`docs/reference/export-format.md`](export-format.md) — export format v1; addendum will follow if `state`/`arch`/`session_notes` get added in v2.
+- [`docs/reference/export-format.md`](export-format.md) — originally documented export format v1, with an addendum anticipated if v2 added state, architecture, or session notes. Those arrays were added compatibly to v1. V2 retains them and adds fact and task lifecycle metadata; import still accepts v1.

@@ -153,6 +153,7 @@ fn tools_list_exposes_full_tool_surface() {
         "task_drop",
         "task_undrop",
         "task_keep",
+        "task_unkeep",
     ] {
         assert!(!names.contains(name), "{name} must stay CLI-only");
     }

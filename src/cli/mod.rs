@@ -1052,6 +1052,11 @@ pub fn run(cli: Cli) -> Result<()> {
                 commands::lifecycle::drop_or_keep_task(&cwd, id, None, &actor)?;
                 println!("Kept task {id}; refreshed its update time.");
             }
+            TaskCommand::Unkeep { id, actor } => {
+                let actor = resolve_actor(actor.as_deref())?;
+                commands::lifecycle::unkeep_task(&cwd, id, &actor)?;
+                println!("Restored the previous update time for task {id}.");
+            }
         },
         TopLevelCommand::Doc { command } => match command {
             DocCommand::Add {

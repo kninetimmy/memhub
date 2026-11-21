@@ -57,10 +57,6 @@ pub struct Fact {
     /// same treatment as `superseded_by` above.
     #[serde(default)]
     pub kind: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub retired_at: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub retired_reason: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -92,12 +88,6 @@ pub struct Task {
     pub notes: Option<String>,
     pub created_at: String,
     pub updated_at: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dropped_reason: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pre_drop_status: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pre_drop_updated_at: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

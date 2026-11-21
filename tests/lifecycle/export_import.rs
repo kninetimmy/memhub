@@ -6,7 +6,7 @@ use memhub::commands::{
     session_note, task,
 };
 use memhub::db;
-use memhub::export::v1;
+use memhub::export::v2;
 use memhub::models::{NarrativeKind, SessionNoteProvenance};
 use tempfile::tempdir;
 
@@ -48,9 +48,9 @@ fn export_writes_versioned_json_with_durable_tables() {
     assert_eq!(summary.tasks, 1);
 
     let raw = fs::read_to_string(&dest).expect("read export");
-    let parsed: v1::Export = serde_json::from_str(&raw).expect("parse export");
+    let parsed: v2::Export = serde_json::from_str(&raw).expect("parse export");
 
-    assert_eq!(parsed.memhub_export_version, v1::EXPORT_VERSION);
+    assert_eq!(parsed.memhub_export_version, 2);
     assert!(!parsed.source_schema_version.is_empty());
     assert!(parsed.exported_by.starts_with("memhub "));
     assert_eq!(parsed.facts.len(), 2);
@@ -71,11 +71,12 @@ fn export_preserves_durable_fields_for_each_table() {
     export::run(temp.path(), &dest).expect("export succeeds");
 
     let raw = fs::read_to_string(&dest).expect("read export");
-    let parsed: v1::Export = serde_json::from_str(&raw).expect("parse export");
+    let parsed: v2::Export = serde_json::from_str(&raw).expect("parse export");
 
     let build_command = parsed
         .facts
         .iter()
+        .map(|f| &f.base)
         .find(|f| f.key == "build-command")
         .expect("build-command fact present");
     assert_eq!(build_command.value, "cargo build");
@@ -86,7 +87,7 @@ fn export_preserves_durable_fields_for_each_table() {
     assert_eq!(decision.status, "active");
     assert!(decision.superseded_by.is_none());
 
-    let task = &parsed.tasks[0];
+    let task = &parsed.tasks[0].base;
     assert_eq!(task.title, "Wire export command");
     assert_eq!(task.status, "open");
     assert_eq!(task.notes.as_deref(), Some("Phase A of M4-001"));
@@ -135,7 +136,7 @@ fn export_on_empty_project_produces_empty_arrays() {
     assert_eq!(summary.pending_writes, 0);
 
     let raw = fs::read_to_string(&dest).expect("read export");
-    let parsed: v1::Export = serde_json::from_str(&raw).expect("parse export");
+    let parsed: v2::Export = serde_json::from_str(&raw).expect("parse export");
 
     assert!(parsed.facts.is_empty());
     assert!(parsed.decisions.is_empty());
@@ -184,7 +185,7 @@ fn export_overwrites_existing_destination_via_atomic_rename_leaving_no_temp_file
     let second = fs::read_to_string(&dest).expect("read second export");
 
     assert_ne!(first, second, "second export should reflect the new fact");
-    let parsed: v1::Export = serde_json::from_str(&second).expect("parse second export");
+    let parsed: v2::Export = serde_json::from_str(&second).expect("parse second export");
     assert_eq!(parsed.facts.len(), 3);
 
     let leftovers: Vec<_> = fs::read_dir(temp.path())
@@ -258,7 +259,7 @@ fn export_import_round_trips_pending_writes_reviewed_at() {
     export::run(source.path(), &export_path).expect("export");
 
     let raw = fs::read_to_string(&export_path).expect("read export");
-    let parsed: v1::Export = serde_json::from_str(&raw).expect("parse");
+    let parsed: v2::Export = serde_json::from_str(&raw).expect("parse");
     assert_eq!(parsed.pending_writes.len(), 1);
     assert_eq!(
         parsed.pending_writes[0].reviewed_at.as_deref(),
@@ -364,11 +365,12 @@ fn export_import_round_trips_fact_kind() {
     export::run(source.path(), &export_path).expect("export succeeds");
 
     let raw = fs::read_to_string(&export_path).expect("read export");
-    let parsed: v1::Export = serde_json::from_str(&raw).expect("parse export");
+    let parsed: v2::Export = serde_json::from_str(&raw).expect("parse export");
 
     let tagged = parsed
         .facts
         .iter()
+        .map(|f| &f.base)
         .find(|f| f.key == "deploy-script")
         .expect("deploy-script fact present in export");
     assert_eq!(
@@ -379,6 +381,7 @@ fn export_import_round_trips_fact_kind() {
     let untagged = parsed
         .facts
         .iter()
+        .map(|f| &f.base)
         .find(|f| f.key == "untagged")
         .expect("untagged fact present in export");
     assert_eq!(
@@ -437,7 +440,14 @@ fn import_accepts_v1_export_missing_fact_kind_field() {
             "created_at": "2025-01-01T00:00:00Z",
         }],
         "decisions": [],
-        "tasks": [],
+        "tasks": [{
+            "id": 3,
+            "title": "legacy task",
+            "status": "blocked",
+            "notes": null,
+            "created_at": "2025-01-01 00:00:00",
+            "updated_at": "2025-01-02 00:00:00"
+        }],
         "commands": [],
         "pending_writes": [],
         "writes_log": []
@@ -448,14 +458,19 @@ fn import_accepts_v1_export_missing_fact_kind_field() {
     let summary =
         import::run(target.path(), &legacy_path, true).expect("legacy import should succeed");
     assert_eq!(summary.facts, 1);
+    assert_eq!(summary.tasks, 1);
 
     let facts = fact::list(target.path()).expect("list facts in target");
     assert_eq!(facts.len(), 1);
     assert_eq!(facts[0].key, "legacy-fact");
+    assert_eq!(facts[0].retired_at, None);
     assert_eq!(
         facts[0].kind, None,
         "kind should default to None for a pre-0021 backup"
     );
+    let task = task::get(target.path(), 3).expect("read v1 task");
+    assert_eq!(task.status, "blocked");
+    assert_eq!(task.updated_at, "2025-01-02 00:00:00");
 }
 
 #[test]
@@ -536,7 +551,11 @@ fn import_rejects_unsupported_export_version() {
     fs::write(&bad_path, serde_json::to_string(&bad_json).unwrap()).expect("write bad export");
 
     let result = import::run(temp.path(), &bad_path, true);
-    assert!(result.is_err(), "import should reject unsupported version");
+    assert!(matches!(
+        result,
+        Err(MemhubError::InvalidInput(message))
+            if message == "unsupported memhub_export_version: 99 (this build supports 1 and 2)"
+    ));
 }
 
 #[test]

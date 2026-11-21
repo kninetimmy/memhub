@@ -862,7 +862,7 @@ Sync state (the `[sync]` config and the per-machine baseline marker) is wiring, 
 | `memhub arch set/show` | The architecture narrative |
 | `memhub ingest-git` | Pull commit + file history into the DB |
 | `memhub doc add/ls/rm/show` | Ingest external markdown docs; scope recall with `--source-type doc` |
-| `memhub fact retire/unretire`, `memhub doc archive/unarchive`, `memhub task drop/undrop/keep` | [Manage outdated repo memory](docs/reference/operations.md#reversible-repo-memory-states) without deleting it (CLI only) |
+| `memhub fact retire/unretire`, `memhub doc archive/unarchive`, `memhub task drop/undrop/keep/unkeep` | [Manage outdated repo memory](docs/reference/operations.md#reversible-repo-memory-states) without deleting it (CLI only) |
 | `memhub locate <query>` | Find code by intent: ranked `file:line` breadcrumbs from the sibling code index |
 | `memhub code index/status/rm` | Build / inspect / drop the local code index (`.memhub/code_index.sqlite`) |
 | `memhub global enable/disable/status` | Opt this repo into optional machine-global memory (`~/.memhub/global.sqlite`) |

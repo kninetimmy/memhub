@@ -214,6 +214,8 @@ const LIFECYCLE_CONTENT: &[(&str, &[&str])] = &[
             "dropped_reason",
             "pre_drop_status",
             "pre_drop_updated_at",
+            "pre_keep_updated_at",
+            "kept_at",
         ],
     ),
     ("documents", &["path", "archived_at", "archived_reason"]),

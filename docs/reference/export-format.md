@@ -7,9 +7,17 @@ read every format version it has shipped support for.
 
 ## Versioning
 
-Exports carry a top-level `memhub_export_version` (integer). The current
-version is `1`. A new format version is introduced when a schema change
-makes the existing layout insufficient — never as a silent shape change.
+Exports carry a top-level `memhub_export_version` (integer). A new format
+version is introduced when a schema change makes the existing layout
+insufficient — never as a silent shape change.
+
+**Before:** export always wrote version `1` and import accepted only `1`.
+Version `1` had no retirement or task drop/keep metadata.
+**After:** export always writes version `2`, even when there is no
+lifecycle metadata. Import accepts versions `1` and `2`, translating
+`1` to the current shape without lifecycle metadata. Older v1-only
+builds refuse a v2 file with `unsupported memhub_export_version`, rather
+than accepting it and restoring a retired fact as active.
 
 `memhub_export_version` is independent of `source_schema_version`. The
 former is the durable file contract; the latter records which migration
@@ -19,10 +27,10 @@ the source database was at when the export was taken.
 
 ```json
 {
-  "memhub_export_version": 1,
+  "memhub_export_version": 2,
   "exported_at": "2026-05-12 14:23:01",
   "exported_by": "memhub 0.1.0",
-  "source_schema_version": "0004_pending_write_provenance",
+  "source_schema_version": "0026_memory_lifecycle",
   "project": {
     "root_path_at_export": "/Users/.../my-repo",
     "created_at": "2026-04-21 09:00:00"
@@ -60,9 +68,9 @@ remain valid after restore.
 }
 ```
 
-Retired facts also carry `retired_at` (UTC timestamp) and `retired_reason`.
-Before migration 0026 these fields did not exist; import treats them as
-null when absent, so older v1 backups still restore active facts.
+In version `2`, retired facts also carry `retired_at` (UTC timestamp)
+and `retired_reason`. Version `1` did not carry these fields and restores
+facts as non-retired; absent fields in version `2` are treated as null.
 
 ### Decision
 
@@ -94,11 +102,13 @@ decisions supersede older ones.
 }
 ```
 
-Before migration 0026, `status` was one of `open`, `done`, `blocked`.
-It now also accepts `dropped`. Dropped tasks carry `dropped_reason`,
+In version `1`, `status` was one of `open`, `done`, `blocked`.
+Version `2` also accepts `dropped`. Dropped tasks carry `dropped_reason`,
 `pre_drop_status`, and `pre_drop_updated_at`, so they can be restored
-with `task undrop` after import. The new fields are optional, so older
-v1 backups still restore unchanged.
+with `task undrop` after import. Tasks with a saved keep also carry
+`pre_keep_updated_at` and `kept_at`, so `task unkeep` remains available
+after restore. These fields are optional in version `2`; version `1`
+restores tasks with their original status and no lifecycle metadata.
 
 ### Command
 
@@ -161,6 +171,8 @@ restored durable rows or from git:
 - `schema_migrations` — applied by the target database when opened.
 - `.memhub/config.toml` — per-machine; copy manually if desired.
 - `.memhub/backups/` — local-machine artifacts, not durable state.
+- Ingested documents, including their archive state — re-ingest source
+  files in the target repo if needed. Import leaves existing documents alone.
 
 ## Import contract
 
@@ -168,7 +180,7 @@ restored durable rows or from git:
 `.memhub/` (which must already exist via `memhub init`). The operation:
 
 1. Validates `memhub_export_version` against the supported set
-   (currently `{1}`).
+   (before: `{1}`; now: `{1, 2}`).
 2. Refuses if the target database has any rows in `facts`, `decisions`,
    `tasks`, `commands`, or `pending_writes`, unless `--force` is passed.
 3. Wraps the restore in a single transaction with
@@ -191,7 +203,7 @@ in the export file for audit only; they are not written back.
 
 ## Forward compatibility
 
-When `memhub_export_version` is bumped to `2` (or later):
+When `memhub_export_version` is bumped to a newer version:
 
 - Older `memhub` builds continue to reject the newer version with a
   clear error message.
