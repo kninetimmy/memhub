@@ -1523,7 +1523,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 println!("Dismissed prune candidate {identifier}");
             }
             PruneCommand::Backups { yes, candidate } => {
-                if !yes {
+                if cfg!(windows) && !yes {
                     return Err(MemhubError::InvalidInput(
                         "backup deletion requires --yes; review `memhub prune scan` first".into(),
                     ));

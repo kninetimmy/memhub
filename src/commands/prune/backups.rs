@@ -6,12 +6,17 @@ use std::time::SystemTime;
 
 use super::{Action, Category, Item, Subject, identifier, timestamp};
 use crate::commands::sync::sha256_file;
-use crate::db::{DB_FILENAME, MEMHUB_DIR, ProjectPaths};
+use crate::db::{MEMHUB_DIR, ProjectPaths};
 use crate::fs_identity::{FileIdentity, file_identity, file_info, is_link_or_reparse_point};
 use crate::{MemhubError, Result};
 
+#[cfg(windows)]
+mod windows;
+
 pub(crate) const RETAIN: usize = 20;
 const SAFETY_SLOTS: [&str; 3] = ["sync", "import", "migrations"];
+#[cfg(not(windows))]
+pub(super) const REPORT_ONLY: &str = "Backup cleanup is report-only on this platform.";
 
 #[derive(PartialEq, Eq)]
 struct Backup {
@@ -25,6 +30,7 @@ struct Backup {
 pub(super) struct Group {
     id: String,
     directory: PathBuf,
+    #[cfg(windows)]
     directory_identity: FileIdentity,
     files: Vec<Backup>,
 }
@@ -33,10 +39,23 @@ impl Group {
     pub(super) fn item(self) -> Item {
         let stale = &self.files[RETAIN..];
         let id = self.id;
-        let actions = vec![
-            Action::new("delete", ["prune", "backups", "--yes", "--candidate", &id]),
-            Action::keep(&id),
-        ];
+        #[cfg(windows)]
+        let unavailable = windows::check_storage(&self.directory)
+            .err()
+            .map(|e| format!("Backup cleanup unavailable: {e}"));
+        #[cfg(not(windows))]
+        let unavailable = Some(REPORT_ONLY.to_owned());
+        let mut actions = vec![Action::keep(&id)];
+        let mut reason = format!("{} backup file(s) beyond the newest {RETAIN}.", stale.len());
+        if let Some(unavailable) = unavailable {
+            reason.push(' ');
+            reason.push_str(&unavailable);
+        } else {
+            actions.push(Action::new(
+                "delete",
+                ["prune", "backups", "--yes", "--candidate", &id],
+            ));
+        }
         Item {
             id,
             category: Category::SurplusBackups,
@@ -47,7 +66,7 @@ impl Group {
                     .map(|file| file.path.display().to_string())
                     .collect(),
             }],
-            reason: format!("{} backup file(s) beyond the newest {RETAIN}.", stale.len()),
+            reason,
             actions,
         }
     }
@@ -78,7 +97,11 @@ pub(super) fn surplus(paths: &ProjectPaths) -> Result<Vec<Group>> {
                 continue;
             }
             if meta.is_dir() {
-                if dir != backups || !SAFETY_SLOTS.iter().any(|name| *name == entry.file_name()) {
+                if dir != backups
+                    || !SAFETY_SLOTS
+                        .iter()
+                        .any(|name| entry.file_name().eq_ignore_ascii_case(name))
+                {
                     dirs.push(path);
                 }
             } else if meta.is_file() && path.extension().is_some_and(|ext| ext == "bak") {
@@ -117,6 +140,7 @@ pub(super) fn surplus(paths: &ProjectPaths) -> Result<Vec<Group>> {
             .map(|f| {
                 (
                     f.path.file_name().expect("entry name").as_encoded_bytes(),
+                    &f.identity,
                     timestamp(f.modified),
                     f.bytes,
                     &f.hash,
@@ -125,11 +149,17 @@ pub(super) fn surplus(paths: &ProjectPaths) -> Result<Vec<Group>> {
             .collect();
         let id = identifier(
             Category::SurplusBackups,
-            (relative.as_os_str().as_encoded_bytes(), fingerprint),
+            (
+                root.as_os_str().as_encoded_bytes(),
+                relative.as_os_str().as_encoded_bytes(),
+                &directory_identity,
+                fingerprint,
+            ),
         )?;
         groups.push(Group {
             id,
             directory: dir,
+            #[cfg(windows)]
             directory_identity,
             files,
         });
@@ -138,12 +168,13 @@ pub(super) fn surplus(paths: &ProjectPaths) -> Result<Vec<Group>> {
     Ok(groups)
 }
 
-pub(super) fn delete(paths: &ProjectPaths, candidate: Option<&str>) -> Result<usize> {
+#[cfg(windows)]
+pub(super) fn delete(paths: &ProjectPaths, candidate: &str) -> Result<usize> {
     // Do not open the database: even ordinary maintained opens can modify the
     // DB, replace the migration backup, and expire proposals.
     let memhub = fs::canonicalize(&paths.repo_root)?.join(MEMHUB_DIR);
     require_directory(&memhub)?;
-    let database = memhub.join(DB_FILENAME);
+    let database = memhub.join(crate::db::DB_FILENAME);
     require_direct(&database)?;
     if !fs::symlink_metadata(&database)?.is_file() {
         return Err(MemhubError::InvalidInput(format!(
@@ -151,49 +182,15 @@ pub(super) fn delete(paths: &ProjectPaths, candidate: Option<&str>) -> Result<us
             database.display()
         )));
     }
-    let mut groups = surplus(paths)?;
-    if let Some(id) = candidate {
-        groups.retain(|group| group.id == id);
-        if groups.is_empty() {
-            return Err(MemhubError::InvalidInput(format!(
-                "no current surplus backup candidate '{id}'; run `memhub prune scan` again"
-            )));
-        }
-    }
-
-    let mut removed = 0;
-    for group in groups {
-        for file in &group.files[RETAIN..] {
-            // Revalidate both the directory and the selected file before
-            // unlinking. An edited/replaced entry is not the approved copy.
-            validate_group(&group)?;
-            require_direct(&file.path)?;
-            let meta = fs::symlink_metadata(&file.path).map_err(|err| at_path(&file.path, err))?;
-            let info = file_info(&file.path).map_err(|err| at_path(&file.path, err))?;
-            if is_link_or_reparse_point(&meta)
-                || !meta.is_file()
-                || info.links != 1
-                || info.identity != file.identity
-                || meta.modified()? != file.modified
-                || meta.len() != file.bytes
-                || sha256_file(&file.path)? != file.hash
-            {
-                return Err(changed(&file.path));
-            }
-            validate_group(&group)?;
-            fs::remove_file(&file.path).map_err(|err| at_path(&file.path, err))?;
-            removed += 1;
-        }
-    }
-    Ok(removed)
-}
-
-fn validate_group(group: &Group) -> Result<()> {
-    require_directory(&group.directory)?;
-    if file_identity(&group.directory)? != group.directory_identity {
-        return Err(changed(&group.directory));
-    }
-    Ok(())
+    let group = surplus(paths)?
+        .into_iter()
+        .find(|group| group.id == candidate)
+        .ok_or_else(|| {
+            MemhubError::InvalidInput(format!(
+                "no current surplus backup candidate '{candidate}'; run `memhub prune scan` again"
+            ))
+        })?;
+    windows::delete(group)
 }
 
 fn require_direct(path: &Path) -> Result<()> {

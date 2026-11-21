@@ -907,13 +907,13 @@ pub enum PruneCommand {
         #[arg(long)]
         actor: Option<String>,
     },
-    /// Delete surplus backup files, preserving the newest 20 per directory.
+    /// Delete one reviewed surplus backup batch on supported Windows storage.
     Backups {
         /// Confirm permanent deletion.
         #[arg(long)]
         yes: bool,
-        /// Act only on this reviewed directory and file batch. Omit to clean all backup directories.
-        #[arg(long, requires = "yes")]
+        /// Required on Windows: the exact identifier shown by `prune scan`.
+        #[arg(long)]
         candidate: Option<String>,
     },
 }

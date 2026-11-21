@@ -240,7 +240,21 @@ pub fn dismiss(start: &Path, id: &str, actor: &str) -> Result<()> {
 }
 
 pub fn delete_backups(start: &Path, candidate: Option<&str>) -> Result<usize> {
-    backups::delete(&db::discover_paths(start)?, candidate)
+    #[cfg(not(windows))]
+    {
+        let _ = (start, candidate);
+        Err(MemhubError::InvalidInput(backups::REPORT_ONLY.into()))
+    }
+    #[cfg(windows)]
+    {
+        let candidate = candidate.ok_or_else(|| {
+            MemhubError::InvalidInput(
+                "backup deletion requires --candidate <identifier>; review `memhub prune scan` first"
+                    .into(),
+            )
+        })?;
+        backups::delete(&db::discover_paths(start)?, candidate)
+    }
 }
 
 fn visit_candidates(

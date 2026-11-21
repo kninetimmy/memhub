@@ -1902,11 +1902,14 @@ fn machine_id() -> String {
 }
 
 pub fn sha256_file(path: &Path) -> Result<String> {
-    let mut file = File::open(path)?;
+    sha256_reader(File::open(path)?)
+}
+
+pub(super) fn sha256_reader(mut reader: impl Read) -> Result<String> {
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 64 * 1024];
     loop {
-        let n = file.read(&mut buf)?;
+        let n = reader.read(&mut buf)?;
         if n == 0 {
             break;
         }

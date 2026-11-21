@@ -192,10 +192,16 @@ fn scan_reports_the_four_categories_and_alias_and_status_agree_without_acting() 
         "Out-of-date documents",
         "Surplus backups",
         "memhub fact verify 11",
-        "memhub prune backups --yes --candidate",
     ] {
         assert!(human.contains(text), "{human}");
     }
+    #[cfg(windows)]
+    assert!(
+        human.contains("memhub prune backups --yes --candidate"),
+        "{human}"
+    );
+    #[cfg(not(windows))]
+    assert!(human.contains("Backup cleanup is report-only"), "{human}");
     assert_eq!(
         fs::read(&db_file).unwrap(),
         before,
@@ -525,6 +531,7 @@ exit $LASTEXITCODE
     assert_eq!(rows, [(KEY.into(), "updated".into())]);
 }
 
+#[cfg(windows)]
 #[test]
 fn backup_cleanup_requires_confirmation_and_only_removes_reviewed_surplus() {
     let f = Fixture::new();
@@ -542,7 +549,7 @@ fn backup_cleanup_requires_confirmation_and_only_removes_reviewed_surplus() {
         fs::metadata(&oldest).unwrap().modified().unwrap(),
         pre_epoch
     );
-    let safety = f.backups("migrations", 21);
+    let safety = f.backups("MiGrAtIoNs", 21);
     let unrelated = rendered.join("readme.txt");
     fs::write(&unrelated, "not a backup").unwrap();
     let hardlink = rendered.join("not-a-backup.bak");
@@ -566,6 +573,14 @@ fn backup_cleanup_requires_confirmation_and_only_removes_reviewed_surplus() {
         .unwrap();
     assert_eq!(first["subjects"][0]["files"].as_array().unwrap().len(), 3);
     let argv = action(first, "delete");
+    assert!(!f.run(&["prune", "backups", "--yes"]).status.success());
+    assert!(
+        !f.run(&["prune", "backups", "--candidate", argv[4]])
+            .status
+            .success()
+    );
+    assert_eq!(file_count(&rendered), 25);
+    assert_eq!(file_count(&markdown), 22);
     fs::write(rendered.join("00.bak"), "changed after review").unwrap();
     assert!(!f.run(&argv).status.success());
     assert_eq!(
@@ -594,7 +609,9 @@ fn backup_cleanup_requires_confirmation_and_only_removes_reviewed_surplus() {
     for file in first["subjects"][0]["files"].as_array().unwrap() {
         assert!(!Path::new(file.as_str().unwrap()).exists(), "{file}");
     }
-    f.ok(&["prune", "backups", "--yes"]);
+    let report = f.scan();
+    assert_eq!(report["total"], 1);
+    f.ok(&action(&items(&report)[0], "delete"));
     assert_eq!(file_count(&markdown), 20);
     for i in 0..22 {
         assert_eq!(markdown.join(format!("{i:02}.bak")).exists(), i >= 2);
@@ -606,6 +623,81 @@ fn backup_cleanup_requires_confirmation_and_only_removes_reviewed_surplus() {
         fs::read(f.repo.join(".memhub/project.sqlite")).unwrap(),
         before
     );
+}
+
+#[cfg(windows)]
+#[test]
+fn backup_cleanup_refuses_before_any_deletion_when_a_keeper_or_victim_is_busy() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let f = Fixture::new();
+    let dir = f.backups("rendered", 22);
+    let report = f.scan();
+    let delete = action(&items(&report)[0], "delete");
+    for name in ["21.bak", "00.bak"] {
+        let busy = File::options()
+            .write(true)
+            .share_mode(7)
+            .open(dir.join(name))
+            .unwrap();
+        let out = f.run(&delete);
+        assert!(!out.status.success(), "{out:?}");
+        assert_eq!(file_count(&dir), 22);
+        drop(busy);
+    }
+    assert_eq!(f.scan(), report);
+    f.ok(&delete);
+    assert_eq!(file_count(&dir), 20);
+}
+
+#[cfg(windows)]
+#[test]
+fn backup_cleanup_requires_a_new_review_after_an_identical_file_replacement() {
+    let f = Fixture::new();
+    let dir = f.backups("rendered", 21);
+    let report = f.scan();
+    let delete = action(&items(&report)[0], "delete");
+    let oldest = dir.join("00.bak");
+    let stamp = fs::metadata(&oldest).unwrap().modified().unwrap();
+    let replacement = f.temp.path().join("replacement");
+    fs::copy(&oldest, &replacement).unwrap();
+    fs::remove_file(&oldest).unwrap();
+    fs::rename(&replacement, &oldest).unwrap();
+    File::options()
+        .write(true)
+        .open(&oldest)
+        .unwrap()
+        .set_times(FileTimes::new().set_modified(stamp))
+        .unwrap();
+    assert!(!f.run(&delete).status.success());
+    assert_eq!(file_count(&dir), 21);
+    assert_ne!(items(&report)[0]["id"], items(&f.scan())[0]["id"]);
+}
+
+#[cfg(not(windows))]
+#[test]
+fn backup_cleanup_reports_surplus_but_refuses_direct_invocations() {
+    let f = Fixture::new();
+    let dir = f.backups("rendered", 22);
+    let report = f.scan();
+    let item = &items(&report)[0];
+    assert_eq!(item["subjects"][0]["files"].as_array().unwrap().len(), 2);
+    assert_eq!(item["actions"].as_array().unwrap().len(), 1);
+    assert!(item["reason"].as_str().unwrap().contains("report-only"));
+    let id = item["id"].as_str().unwrap();
+    assert_eq!(action(item, "keep"), ["prune", "dismiss", id]);
+    for argv in [
+        &["prune", "backups"][..],
+        &["prune", "backups", "--yes"][..],
+        &["prune", "backups", "--candidate", id],
+        &["prune", "backups", "--yes", "--candidate", id],
+    ] {
+        let out = f.run(argv);
+        assert!(!out.status.success(), "{out:?}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("report-only"));
+    }
+    assert_eq!(f.scan(), report);
+    assert_eq!(file_count(&dir), 22);
 }
 
 #[test]
@@ -622,7 +714,14 @@ fn backup_cleanup_skips_linked_children_and_refuses_a_linked_backup_root() {
     #[cfg(unix)]
     std::os::unix::fs::symlink(&victim, dir.join("linked.bak")).unwrap();
     directory_alias(&outside, &dir.join("linked-dir"));
-    f.ok(&["prune", "backups", "--yes"]);
+    let initial = f.scan();
+    let item = &items(&initial)[0];
+    let id = item["id"].as_str().unwrap();
+    let argv = ["prune", "backups", "--yes", "--candidate", id];
+    #[cfg(windows)]
+    f.ok(&argv);
+    #[cfg(not(windows))]
+    assert!(!f.run(&argv).status.success());
     #[cfg(unix)]
     assert!(dir.join("linked.bak").is_symlink());
     assert!(dir.join("linked-dir/victim.bak").is_file());
@@ -655,7 +754,7 @@ fn backup_cleanup_skips_linked_children_and_refuses_a_linked_backup_root() {
     assert!(human.contains("Surplus backups not counted"));
     let id = row_item(&report, "stale_fact", 1)["id"].as_str().unwrap();
     f.ok(&["prune", "dismiss", id]);
-    assert!(!f.run(&["prune", "backups", "--yes"]).status.success());
+    assert!(!f.run(&argv).status.success());
     assert_eq!(fs::read_to_string(&victim).unwrap(), "outside");
     assert_eq!(file_count(&outside), 22);
 }

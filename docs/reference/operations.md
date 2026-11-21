@@ -2236,7 +2236,7 @@ control characters are displayed as exact argv rather than a shell line.
 | `stale_fact` | Non-superseded facts past the configured horizon (including never-verified and retired facts); verify hint only. | Same `[retrieval] fact_stale_after_days` horizon; retired and superseded facts are excluded. Verify by ID, update value through same-key `fact add` (its usual source, confidence, and verification behavior applies), or retire by ID. |
 | `idle_task` | Done tasks over 30 days old, with a `task list --status done` inspect hint. | Open or blocked tasks last updated more than 60 days ago. Keep with `task keep` to refresh the clock, or drop or mark done. Done and dropped tasks are not candidates. |
 | `out_of_date_document` | Changed or unreadable files, including archived rows, with a single re-ingest hint. | Changed, missing or unreadable files for non-archived rows only. Re-ingest a changed file (keeping the title), archive a missing or unreadable one, or keep the item. Ingested documents can be external to the repo; drift checks the recorded source path, not a redirected symlink target. |
-| `surplus_backups` | No backup candidates. `gc` separately reports/prunes rendered and legacy markdown backups under its own rules. | One item per backup directory over 20 eligible files, showing the surplus paths. Delete that reviewed batch or keep it. |
+| `surplus_backups` | No backup candidates. `gc` separately reports/prunes rendered and legacy markdown backups under its own rules. | One item per backup directory over 20 eligible files, showing the surplus paths. Keep on any platform, or request explicit cleanup of that batch on supported Windows storage. |
 | Expired pending writes | All expired proposals, with a `review show` inspect hint. | Not prune candidates. Inspect with `memhub review list --status expired` or `memhub review show <id>`. Proposal expiry on maintained open still holds. |
 
 Each category shows up to 25 undismissed items, with an `overflow` count
@@ -2283,25 +2283,47 @@ use the existing render Recent Activity and freshness, doctor recency,
 status and stats write counts, and sync audit readers. Drive snapshots
 carry the table; JSON export/import do not transfer dismissal state.
 
-`memhub prune backups --yes` attempts to delete surplus backups in the
-current repo and works without a `Cargo.toml`. Eligible files are regular,
-single-link `.bak` files under `.memhub/backups/`, the extension used by
-render and the former markdown backup writer. Retention keeps the
-newest 20 per directory by modified time, including times before 1970,
-with filename breaking ties.
-The scan's delete action includes `--candidate <identifier>`; it requires
-a matching batch fingerprint at the start of cleanup. The identifier
-covers kept files as well, since their state determines which files are
-surplus. Omitting `--candidate` selects all eligible batches, regardless
-of dismissals. Neither form opens the database.
-Both exclude linked paths, directories, unrelated files, the legacy K9
-copy, and files in `backups/{sync,import,migrations}` during selection.
-These restrictions apply to both forms of `prune backups`, not to all cleanup
-commands: `memhub gc` retains its existing Rust-project requirement,
-scope and `[gc] delete_stale_backups`/`--dry-run` behavior.
-Cleanup rechecks paths and file identity before each unlink. These
-checks do not pin the file through the final pathname unlink, so the
-deletion guarantee is not met if the backup tree can change concurrently.
+**Before (#451 implementation):** `memhub prune backups --yes` could
+select all eligible batches regardless of dismissals, on any platform.
+`--candidate <identifier>` was optional. Cleanup rechecked paths and
+identity before each pathname unlink, but did not pin the verified file
+through the unlink.
+
+**After (#456):** Only `memhub prune backups --yes --candidate <identifier>`
+can delete. It works without a `Cargo.toml` and does not open the database.
+Linux and macOS list the surplus and offer keep, but direct cleanup also
+refuses without moving or deleting anything. Both scan formats explain
+when cleanup is report-only or the storage check fails.
+
+Selection still uses regular, single-link `.bak` files under
+`.memhub/backups/` (the extension used by render and the former markdown
+backup writer). It excludes linked paths, directories, unrelated files,
+the legacy K9 copy, and the `backups/{sync,import,migrations}` safety slots.
+Retention still keeps the newest 20 per directory by modified time,
+including times before 1970, with filename breaking ties. The Windows
+action requires a current batch fingerprint covering the directory and
+all eligible files, including the kept 20. The fingerprint now includes
+filesystem identities, so replacing a file with an otherwise identical
+copy requires a fresh review; prior backup candidate identifiers and
+dismissals don't match the new format.
+
+Cleanup requires a direct path on a fixed, local NTFS volume that
+supports Transactional NTFS. Windows pins the directory chain against
+rename and takes transactional locks on the eligible batch before
+verifying names, identities, timestamps, sizes and contents, including
+the 20 files that justify retention. It refuses changed or unverifiable
+batches, redirected paths, sharing conflicts, read-only files, and
+deletion targets with unreviewed alternate streams. It sets
+`FileDispositionInfo` on each verified deletion handle and commits
+only after all dispositions succeed; it never falls back to a pathname
+unlink. If Windows cannot supply these guarantees, rescan and keep the
+files rather than treating the delete action as guaranteed to succeed.
+Microsoft has deprecated Transactional NTFS. Volumes that do not
+advertise transaction support are report-only.
+
+These restrictions apply only to `memhub prune backups`, not to all
+cleanup commands. `memhub gc` retains its existing Rust-project
+requirement, scope and `[gc] delete_stale_backups`/`--dry-run` behavior.
 
 ## Attribution
 

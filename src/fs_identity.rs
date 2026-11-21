@@ -15,7 +15,7 @@ pub(crate) fn is_link_or_reparse_point(meta: &fs::Metadata) -> bool {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct FileIdentity {
     first: u64,
     second: u64,
@@ -47,16 +47,24 @@ pub(crate) fn file_info(path: &Path) -> io::Result<FileInfo> {
 
 #[cfg(windows)]
 pub(crate) fn file_info(path: &Path) -> io::Result<FileInfo> {
-    use std::ffi::c_void;
-    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::fs::OpenOptionsExt;
 
-    type Handle = *mut c_void;
-    const INVALID_HANDLE_VALUE: Handle = -1isize as Handle;
     const FILE_SHARE_READ: u32 = 0x0000_0001;
     const FILE_SHARE_WRITE: u32 = 0x0000_0002;
     const FILE_SHARE_DELETE: u32 = 0x0000_0004;
-    const OPEN_EXISTING: u32 = 3;
     const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+
+    let file = fs::File::options()
+        .access_mode(0)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)?;
+    file_info_from_handle(&file)
+}
+
+#[cfg(windows)]
+pub(crate) fn file_info_from_handle(file: &fs::File) -> io::Result<FileInfo> {
+    use std::os::windows::io::{AsRawHandle, RawHandle};
 
     #[repr(C)]
     struct FileTime {
@@ -80,56 +88,16 @@ pub(crate) fn file_info(path: &Path) -> io::Result<FileInfo> {
 
     #[link(name = "kernel32")]
     unsafe extern "system" {
-        fn CreateFileW(
-            file_name: *const u16,
-            desired_access: u32,
-            share_mode: u32,
-            security_attributes: *mut c_void,
-            creation_disposition: u32,
-            flags_and_attributes: u32,
-            template_file: Handle,
-        ) -> Handle;
         fn GetFileInformationByHandle(
-            file: Handle,
+            file: RawHandle,
             information: *mut ByHandleFileInformation,
         ) -> i32;
-        fn CloseHandle(object: Handle) -> i32;
     }
 
-    struct OwnedHandle(Handle);
-    impl Drop for OwnedHandle {
-        fn drop(&mut self) {
-            // SAFETY: `self.0` is the live handle returned by CreateFileW
-            // and this owner closes it exactly once.
-            unsafe {
-                CloseHandle(self.0);
-            }
-        }
-    }
-
-    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    // SAFETY: `wide` is NUL-terminated and remains alive for the call; all
-    // optional pointer arguments are null and the constants follow the
-    // CreateFileW contract for opening either a file or directory metadata.
-    let raw = unsafe {
-        CreateFileW(
-            wide.as_ptr(),
-            0,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            std::ptr::null_mut(),
-            OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS,
-            std::ptr::null_mut(),
-        )
-    };
-    if raw == INVALID_HANDLE_VALUE {
-        return Err(io::Error::last_os_error());
-    }
-    let handle = OwnedHandle(raw);
     let mut information = std::mem::MaybeUninit::<ByHandleFileInformation>::uninit();
-    // SAFETY: `handle` is valid and `information` points to writable storage
+    // SAFETY: the file handle is valid and `information` points to writable storage
     // of the exact BY_HANDLE_FILE_INFORMATION layout.
-    if unsafe { GetFileInformationByHandle(handle.0, information.as_mut_ptr()) } == 0 {
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), information.as_mut_ptr()) } == 0 {
         return Err(io::Error::last_os_error());
     }
     // SAFETY: GetFileInformationByHandle succeeded and initialized every

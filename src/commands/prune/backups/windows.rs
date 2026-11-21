@@ -1,0 +1,400 @@
+//! Opt-in deletion on local NTFS with transactional locking (TxF).
+
+use std::ffi::{OsString, c_void};
+use std::fs::File;
+use std::io;
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
+use std::os::windows::fs::OpenOptionsExt;
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
+use std::path::{Component, Path, PathBuf, Prefix};
+use std::ptr::null_mut;
+
+use super::{Backup, Group, RETAIN, at_path, changed};
+use crate::commands::sync::sha256_reader;
+use crate::fs_identity::{file_info_from_handle, is_link_or_reparse_point};
+use crate::{MemhubError, Result};
+
+const INVALID_HANDLE: RawHandle = -1isize as RawHandle;
+const SHARE_READ: u32 = 1;
+const SHARE_ALL: u32 = 7; // Read, write, and delete; only for read-only probing.
+const GENERIC_READ: u32 = 0x8000_0000;
+const WRITE_ATTRIBUTES: u32 = 0x100;
+const DELETE: u32 = 0x0001_0000;
+const OPEN_EXISTING: u32 = 3;
+const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+const BACKUP_SEMANTICS: u32 = 0x0200_0000;
+const VOLUME_NAME_GUID: u32 = 1;
+const DRIVE_FIXED: u32 = 3;
+const SUPPORTS_TRANSACTIONS: u32 = 0x0020_0000;
+const FILE_DISPOSITION_INFO: i32 = 4;
+const FILE_STREAM_INFO: i32 = 7;
+
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn GetFinalPathNameByHandleW(file: RawHandle, path: *mut u16, size: u32, flags: u32) -> u32;
+    fn GetDriveTypeW(root: *const u16) -> u32;
+    fn GetVolumeInformationByHandleW(
+        file: RawHandle,
+        volume: *mut u16,
+        volume_size: u32,
+        serial: *mut u32,
+        max_component: *mut u32,
+        flags: *mut u32,
+        filesystem: *mut u16,
+        filesystem_size: u32,
+    ) -> i32;
+    fn CreateFileTransactedW(
+        name: *const u16,
+        access: u32,
+        share: u32,
+        security: *mut c_void,
+        disposition: u32,
+        flags: u32,
+        template: RawHandle,
+        transaction: RawHandle,
+        miniversion: *mut u16,
+        reserved: *mut c_void,
+    ) -> RawHandle;
+    fn GetFileInformationByHandleEx(
+        file: RawHandle,
+        class: i32,
+        data: *mut c_void,
+        size: u32,
+    ) -> i32;
+    fn SetFileInformationByHandle(file: RawHandle, class: i32, data: *mut c_void, size: u32)
+    -> i32;
+}
+
+#[link(name = "ktmw32")]
+unsafe extern "system" {
+    fn CreateTransaction(
+        security: *mut c_void,
+        uow: *mut c_void,
+        options: u32,
+        isolation_level: u32,
+        isolation_flags: u32,
+        timeout: u32,
+        description: *mut u16,
+    ) -> RawHandle;
+    fn CommitTransaction(transaction: RawHandle) -> i32;
+}
+
+fn wide(path: &Path) -> io::Result<Vec<u16>> {
+    let mut units: Vec<_> = path.as_os_str().encode_wide().collect();
+    if units.contains(&0) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "NUL in path"));
+    }
+    units.push(0);
+    Ok(units)
+}
+
+fn own(raw: RawHandle) -> io::Result<OwnedHandle> {
+    if raw == INVALID_HANDLE {
+        Err(io::Error::last_os_error())
+    } else {
+        // SAFETY: both callers transfer a newly opened Win32 handle on success.
+        Ok(unsafe { OwnedHandle::from_raw_handle(raw) })
+    }
+}
+
+fn final_path(file: &File, flags: u32) -> io::Result<PathBuf> {
+    // SAFETY: valid handle and null buffer with size zero requests the required length.
+    let size = unsafe { GetFinalPathNameByHandleW(file.as_raw_handle(), null_mut(), 0, flags) };
+    if size == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut buf = vec![0; size as usize];
+    // SAFETY: `buf` has storage for exactly `size` UTF-16 units.
+    let len =
+        unsafe { GetFinalPathNameByHandleW(file.as_raw_handle(), buf.as_mut_ptr(), size, flags) };
+    if len == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if len >= size {
+        return Err(io::Error::other("handle path changed during verification"));
+    }
+    Ok(OsString::from_wide(&buf[..len as usize]).into())
+}
+
+fn unsupported(path: &Path) -> MemhubError {
+    MemhubError::InvalidInput(format!(
+        "'{}' requires local fixed NTFS with transactional locking",
+        path.display()
+    ))
+}
+
+fn storage_path(dir: &Path, handle: &File) -> Result<PathBuf> {
+    if !matches!(dir.components().next(), Some(Component::Prefix(p)) if matches!(p.kind(), Prefix::VerbatimDisk(_)))
+    {
+        return Err(unsupported(dir));
+    }
+    let guid = final_path(handle, VOLUME_NAME_GUID).map_err(|_| unsupported(dir))?;
+    let root = wide(&volume_root(&guid).ok_or_else(|| unsupported(dir))?)?;
+    let mut fs_name = [0u16; 16];
+    let mut flags = 0;
+    // SAFETY: `root` is a NUL-terminated volume root and `handle` is live.
+    // The only requested outputs have storage for their advertised sizes.
+    let supported = unsafe {
+        GetDriveTypeW(root.as_ptr()) == DRIVE_FIXED
+            && GetVolumeInformationByHandleW(
+                handle.as_raw_handle(),
+                null_mut(),
+                0,
+                null_mut(),
+                null_mut(),
+                &mut flags,
+                fs_name.as_mut_ptr(),
+                fs_name.len() as u32,
+            ) != 0
+    };
+    if !supported
+        || flags & SUPPORTS_TRANSACTIONS == 0
+        || !fs_name[..5].iter().copied().eq("NTFS\0".encode_utf16())
+    {
+        return Err(unsupported(dir));
+    }
+    Ok(guid)
+}
+
+fn volume_root(guid: &Path) -> Option<PathBuf> {
+    let Component::Prefix(prefix) = guid.components().next()? else {
+        return None;
+    };
+    if !matches!(prefix.kind(), Prefix::Verbatim(name) if name.as_encoded_bytes().starts_with(b"Volume{"))
+    {
+        return None;
+    }
+    let mut root = prefix.as_os_str().to_os_string();
+    root.push("\\");
+    Some(root.into())
+}
+
+fn directory(path: &Path, share: u32) -> Result<File> {
+    let handle = File::options()
+        // Directory-list access participates in share checks; attribute-only
+        // access does not. The pin must actually exclude write/delete opens.
+        .access_mode(GENERIC_READ)
+        .share_mode(share)
+        .custom_flags(BACKUP_SEMANTICS | OPEN_REPARSE_POINT)
+        .open(path)
+        .map_err(|e| at_path(path, e))?;
+    let meta = handle.metadata().map_err(|e| at_path(path, e))?;
+    if !meta.is_dir() || is_link_or_reparse_point(&meta) {
+        return Err(changed(path));
+    }
+    Ok(handle)
+}
+
+pub(super) fn check_storage(dir: &Path) -> Result<()> {
+    let handle = directory(dir, SHARE_ALL)?;
+    storage_path(dir, &handle).map(|_| ())
+}
+
+fn pin_directory(path: &Path) -> Result<File> {
+    let handle = directory(path, SHARE_READ)?;
+    if final_path(&handle, VOLUME_NAME_GUID).map_err(|e| at_path(path, e))? != path {
+        return Err(changed(path));
+    }
+    Ok(handle)
+}
+
+fn open_locked(transaction: &OwnedHandle, path: &Path, remove: bool) -> Result<File> {
+    let name = wide(path)?;
+    let access = GENERIC_READ | WRITE_ATTRIBUTES | if remove { DELETE } else { 0 };
+    // SAFETY: `name` and transaction are live; all optional arguments are null.
+    // OPEN_EXISTING plus OPEN_REPARSE_POINT does not create or follow the final entry.
+    let raw = unsafe {
+        CreateFileTransactedW(
+            name.as_ptr(),
+            access,
+            0,
+            null_mut(),
+            OPEN_EXISTING,
+            OPEN_REPARSE_POINT,
+            null_mut(),
+            transaction.as_raw_handle(),
+            null_mut(),
+            null_mut(),
+        )
+    };
+    own(raw).map(File::from).map_err(|e| at_path(path, e))
+}
+
+fn verify(file: &File, path: &Path, expected: &Backup) -> Result<()> {
+    let meta = file.metadata().map_err(|e| at_path(path, e))?;
+    let info = file_info_from_handle(file).map_err(|e| at_path(path, e))?;
+    if !meta.is_file()
+        || meta.permissions().readonly()
+        || is_link_or_reparse_point(&meta)
+        || info.links != 1
+        || info.identity != expected.identity
+        || meta.modified().map_err(|e| at_path(path, e))? != expected.modified
+        || meta.len() != expected.bytes
+        || final_path(file, VOLUME_NAME_GUID).map_err(|e| at_path(path, e))? != path
+        || sha256_reader(file)? != expected.hash
+    {
+        return Err(changed(&expected.path));
+    }
+    Ok(())
+}
+
+fn verify_only_default_stream(file: &File, path: &Path) -> Result<()> {
+    #[repr(C)]
+    struct StreamInfo {
+        next: u32,
+        name_bytes: u32,
+        size: i64,
+        allocation_size: i64,
+        name: [u16; 20],
+    }
+    let mut info = StreamInfo {
+        next: 0,
+        name_bytes: 0,
+        size: 0,
+        allocation_size: 0,
+        name: [0; 20],
+    };
+    // SAFETY: `info` is aligned, writable, and large enough for the default
+    // stream entry. A larger list may fail, which also refuses deletion.
+    let ok = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FILE_STREAM_INFO,
+            (&mut info as *mut StreamInfo).cast(),
+            size_of::<StreamInfo>() as u32,
+        )
+    };
+    if ok == 0 {
+        return Err(at_path(path, io::Error::last_os_error()));
+    }
+    if info.next != 0
+        || info.name_bytes != 14
+        || !info.name[..7].iter().copied().eq("::$DATA".encode_utf16())
+    {
+        return Err(MemhubError::InvalidInput(format!(
+            "backup '{}' has unreviewed streams; refusing cleanup",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+fn transaction(path: &Path) -> Result<OwnedHandle> {
+    // SAFETY: all arguments are either null or documented default values.
+    // If we return before commit, dropping the transaction rolls it back.
+    own(unsafe { CreateTransaction(null_mut(), null_mut(), 0, 0, 0, 0, null_mut()) })
+        .map_err(|e| at_path(path, e))
+}
+
+pub(super) fn delete(group: Group) -> Result<usize> {
+    let selected = directory(&group.directory, SHARE_ALL)?;
+    if final_path(&selected, 0)? != group.directory {
+        return Err(changed(&group.directory));
+    }
+    // Anchor to the physical volume, not a mutable drive-letter alias.
+    let physical = storage_path(&group.directory, &selected)?;
+    let mut path = volume_root(&physical).ok_or_else(|| unsupported(&group.directory))?;
+    // Pin each ancestor before opening its child. The read-only share mask
+    // excludes directory opens with write-data or rename/delete access.
+    let mut dirs = vec![pin_directory(&path)?];
+    for component in physical
+        .components()
+        .filter(|part| !matches!(part, Component::Prefix(_) | Component::RootDir))
+    {
+        let Component::Normal(name) = component else {
+            return Err(changed(&group.directory));
+        };
+        path.push(name);
+        dirs.push(pin_directory(&path)?);
+    }
+    let dir = dirs.last().ok_or_else(|| changed(&group.directory))?;
+    if file_info_from_handle(dir)?.identity != group.directory_identity {
+        return Err(changed(&group.directory));
+    }
+    let tx = transaction(&group.directory)?;
+    let mut files = Vec::new();
+    for (index, expected) in group.files.iter().enumerate() {
+        let remove = index >= RETAIN;
+        let path = physical.join(expected.path.file_name().expect("entry name"));
+        // WRITE_ATTRIBUTES makes this a TxF writer, even for the keepers.
+        // Ordinary share masks alone do not exclude metadata-only writers.
+        let handle = open_locked(&tx, &path, remove)?;
+        verify(&handle, &path, expected)?;
+        if remove {
+            verify_only_default_stream(&handle, &path)?;
+        }
+        files.push(handle);
+    }
+    let count = files.len() - RETAIN;
+    // There are at least 20 locked entries newer than all these targets.
+    // New entries cannot lower this bound. Nothing is marked until every
+    // reviewed file has been locked and verified.
+    for (handle, expected) in files.drain(RETAIN..).zip(&group.files[RETAIN..]) {
+        // SAFETY: FileDispositionInfo takes a one-byte BOOLEAN. The exact
+        // handle verified above has DELETE access; closing it stages removal
+        // in the transaction, rather than resolving a pathname again.
+        let mut delete_file = 1u8;
+        let ok = unsafe {
+            SetFileInformationByHandle(
+                handle.as_raw_handle(),
+                FILE_DISPOSITION_INFO,
+                (&mut delete_file as *mut u8).cast(),
+                1,
+            )
+        };
+        if ok == 0 {
+            return Err(at_path(&expected.path, io::Error::last_os_error()));
+        }
+    }
+    // Keep the retention witnesses and ancestor handles alive through
+    // commit; only the handles marked for deletion must be closed first.
+    // SAFETY: `tx` is a live transaction and has not yet been committed.
+    if unsafe { CommitTransaction(tx.as_raw_handle()) } == 0 {
+        return Err(at_path(&group.directory, io::Error::last_os_error()));
+    }
+    Ok(count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::{self, FileTimes};
+    use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn retention_lock_protects_against_metadata_only_updates() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = fs::canonicalize(temp.path()).unwrap().join("keeper.bak");
+        fs::write(&path, "disposable keeper").unwrap();
+        let open_metadata_writer = || {
+            File::options()
+                .access_mode(WRITE_ATTRIBUTES)
+                .share_mode(SHARE_ALL)
+                .open(&path)
+        };
+        let initial = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let changed = initial + Duration::from_secs(1);
+        let writer = open_metadata_writer().unwrap();
+        writer
+            .set_times(FileTimes::new().set_modified(initial))
+            .unwrap();
+        let tx = transaction(&path).unwrap();
+        if let Ok(keeper) = open_locked(&tx, &path, false) {
+            assert!(
+                writer
+                    .set_times(FileTimes::new().set_modified(changed))
+                    .is_err()
+            );
+            assert_eq!(keeper.metadata().unwrap().modified().unwrap(), initial);
+        }
+        drop(writer);
+        let keeper = open_locked(&tx, &path, false).unwrap();
+        let update = |writer: File| writer.set_times(FileTimes::new().set_modified(changed));
+        assert!(open_metadata_writer().and_then(update).is_err());
+        assert_eq!(keeper.metadata().unwrap().modified().unwrap(), initial);
+        drop(keeper);
+        drop(tx);
+        open_metadata_writer().and_then(update).unwrap();
+        assert_eq!(fs::metadata(path).unwrap().modified().unwrap(), changed);
+    }
+}
