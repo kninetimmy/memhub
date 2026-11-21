@@ -36,6 +36,8 @@ mod upgrade_degrade;
 mod upgrade_embedding_fill;
 #[path = "upgrade/upgrade_manifest.rs"]
 mod upgrade_manifest;
+#[path = "upgrade/upgrade_prune.rs"]
+mod upgrade_prune;
 #[path = "upgrade/upgrade_registry.rs"]
 mod upgrade_registry;
 #[path = "upgrade/upgrade_resync_transient.rs"]

@@ -57,6 +57,8 @@
 //! over in the upgrade summary. Never fatal, and Unix is untouched (the
 //! rename/sweep pair only runs under `cfg!(windows)`).
 
+mod prune_report;
+
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -98,6 +100,8 @@ pub struct UpgradeArgs {
     pub no_gc: bool,
     /// Skip installing the SessionStart hook entry (`hook` module).
     pub no_hooks: bool,
+    /// Skip the read-only per-repo prune review scan.
+    pub no_prune_scan: bool,
     /// Report the outcome of the most recent upgrade from
     /// `~/.memhub/last_upgrade.json` and exit 0/1/3. Does not rebuild.
     pub verify_last: bool,
@@ -389,6 +393,9 @@ fn staged_relaunch_command(shim: &Path, cwd: &Path, args: &UpgradeArgs) -> Comma
     }
     if args.no_hooks {
         cmd.arg("--no-hooks");
+    }
+    if args.no_prune_scan {
+        cmd.arg("--no-prune-scan");
     }
     if args.json {
         cmd.arg("--json");
@@ -784,9 +791,10 @@ fn orchestrate_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
     //    GC, and PATH-shadow fix have already run in THIS (orchestrate)
     //    process, so `--no-gc` / `--no-skills` / `--yes` are irrelevant
     //    to it by design. Only `--json` (output shape), `--also`
-    //    (extra roots to migrate) and `--no-hooks` carry into the finish
-    //    phase. The hook install runs THERE, under the new binary, so a
-    //    first upgrade from a binary that predates it still installs it.
+    //    (extra roots to migrate), `--no-prune-scan` and `--no-hooks`
+    //    carry into the finish phase. The hook install runs THERE, under
+    //    the new binary, so a first upgrade from a binary that predates
+    //    it still installs it.
     //    Do not "unify" this with the staged helper — the flag sets
     //    differ on purpose.
     let mut child = finish_command(&cargo_bin, cwd, args);
@@ -819,7 +827,7 @@ fn orchestrate_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
     std::process::exit(code);
 }
 
-/// The `--finish` re-exec: `--json`, `--no-hooks` and `--also` only. Kept
+/// The `--finish` re-exec: `--json`, `--no-hooks`, `--no-prune-scan` and `--also`. Kept
 /// separate from [`staged_relaunch_command`] on purpose (see the comment
 /// at its call site in the orchestrate phase); a function so the
 /// forwarded flags are testable.
@@ -837,6 +845,9 @@ fn finish_command(cargo_bin: &Path, cwd: &Path, args: &UpgradeArgs) -> Command {
     }
     if args.no_hooks {
         child.arg("--no-hooks");
+    }
+    if args.no_prune_scan {
+        child.arg("--no-prune-scan");
     }
     for p in &args.also {
         child.arg("--also").arg(p);
@@ -954,6 +965,7 @@ fn finish_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
     }
 
     let mut reports: Vec<InstanceReport> = Vec::new();
+    let mut prune_scans: Vec<prune_report::Summary> = Vec::new();
     let mut removed_stale_files: Vec<String> = Vec::new();
     let mut retired: Vec<RetiredSettings> = Vec::new();
     for root in &roots {
@@ -961,7 +973,16 @@ fn finish_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
             removed_stale_files.push(format!("{}: {}", abbrev(root), abbrev(&removed)));
         }
         retired.extend(clean_retired_settings(root, true));
-        reports.push(verify_repo(root));
+        let report = verify_repo(root);
+        if !args.no_prune_scan
+            && matches!(
+                report.status,
+                InstanceStatus::Ready | InstanceStatus::Migrated
+            )
+        {
+            prune_scans.push(prune_report::Summary::scan(root, false));
+        }
+        reports.push(report);
     }
     reports.push(verify_global());
 
@@ -1006,6 +1027,7 @@ fn finish_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
 
     emit(
         &reports,
+        &prune_scans,
         pruned,
         &skills,
         &hooks,
@@ -1666,6 +1688,7 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
     let mut previews: Vec<(String, Option<String>, &'static str, FillPreview)> = Vec::new();
     let mut retired: Vec<RetiredSettings> = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
+    let mut prune_scans: Vec<prune_report::Summary> = Vec::new();
     for root in &roots {
         let key = root
             .canonicalize()
@@ -1691,6 +1714,9 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
         let label = abbrev(root);
         let fill =
             repo_would_fill(root).then(|| preview_fill(&db_path, verdict, &label, &mut warnings));
+        if !args.no_prune_scan {
+            prune_scans.push(prune_report::Summary::scan(root, true));
+        }
         previews.push((label, cur, verdict, fill));
     }
     let global_preview = if db::global_store_exists()? {
@@ -1760,6 +1786,7 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
                 // (`removed`) or leave (`left`), per repo; same shape as
                 // the real run's field.
                 "retired_settings": retired,
+                "prune_scan": prune_scans,
                 "skills": resync.agents,
                 "hooks": hooks,
                 // Resync orphans (U6): files memhub installed before but no
@@ -1812,6 +1839,9 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
     );
     for line in retired.iter().flat_map(|r| retired_lines(r, true)) {
         println!("  config:       {line}");
+    }
+    for scan in &prune_scans {
+        scan.print();
     }
     for s in &resync.agents {
         println!("  skills:       {}", s.dry_line());
@@ -1937,6 +1967,7 @@ fn describe_shadow(cargo_bin: &Path) -> Result<String> {
 #[allow(clippy::too_many_arguments)]
 fn emit(
     reports: &[InstanceReport],
+    prune_scans: &[prune_report::Summary],
     pruned: usize,
     skills: &[SkillSync],
     hooks: &[HookInstall],
@@ -1998,6 +2029,7 @@ fn emit(
                 // config.toml set one: `removed` this run, `left` (not on a
                 // line of their own), `error` when the file was left alone.
                 "retired_settings": retired,
+                "prune_scan": prune_scans,
                 // Degrade warnings (U7): recoverable problems that did NOT
                 // abort the upgrade (e.g. a corrupt registry, a shadow-fix
                 // IO error).
@@ -2060,6 +2092,9 @@ fn emit(
     }
     for line in retired.iter().flat_map(|r| retired_lines(r, false)) {
         println!("  config: {line}");
+    }
+    for scan in prune_scans {
+        scan.print();
     }
     if first_run {
         print_first_run_notice();
@@ -3194,6 +3229,7 @@ mod tests {
             no_skills,
             no_gc,
             no_hooks,
+            no_prune_scan: false,
             verify_last: false,
         }
     }
@@ -3277,6 +3313,20 @@ mod tests {
             &args,
         ));
         assert_eq!(a, vec!["upgrade".to_string(), "--staged".to_string()]);
+    }
+
+    #[test]
+    fn both_relaunches_forward_no_prune_scan_only_when_given() {
+        let mut args = upgrade_args(false, false, false, false, false, &[]);
+        for skip in [false, true] {
+            args.no_prune_scan = skip;
+            for command in [
+                staged_relaunch_command(Path::new("/shim.exe"), Path::new("/cwd"), &args),
+                finish_command(Path::new("/memhub"), Path::new("/cwd"), &args),
+            ] {
+                assert_eq!(argv(&command).iter().any(|a| a == "--no-prune-scan"), skip);
+            }
+        }
     }
 
     #[test]

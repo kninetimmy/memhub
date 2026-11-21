@@ -1880,6 +1880,23 @@ missing one from `config.example.toml` or the defaults) but never edited an
 existing one, so doctor kept warning about these keys until they were deleted
 by hand.
 
+Prune review (issue #458): after each repo's migrate, recall smoke and
+embedding fill succeed, upgrade runs the read-only `memhub prune scan`.
+It prints that repo's item counts by category, including items beyond the
+scan's 25-item display cap and excluding dismissed items, and points to
+`/prune` in that repo for human review. The global store is not scanned.
+Both real and dry-run JSON carry `prune_scan`, an array of
+`{label, total, counts, review}` summaries; `counts` maps the scanner's
+category names to their totals. A scan failure produces that repo's
+`error` instead of counts; partial backup inspection adds `warning`.
+Neither stops other scans nor changes upgrade's success/failure outcome.
+`--dry-run` reports the same counts without writing: for an older schema
+it migrates an in-memory SQLite backup and scans that copy, reading files
+at their original paths. `--no-prune-scan` skips this step (no text counts,
+an empty JSON array). Before this change upgrade reported no prune work.
+The scan never changes a memory row, dismisses an item or deletes a file;
+existing upgrade migration, maintenance and GC behavior is unchanged.
+
 `--dry-run` previews both. Before this change it listed each instance's
 schema and verdict only; it now also prints the `would remove` / `left`
 lines (`retired_settings` in `--json`, same shape) and, for each instance
