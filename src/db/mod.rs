@@ -255,6 +255,19 @@ fn migrate(conn: &mut Connection, paths: &ProjectPaths) -> Result<Vec<String>> {
     migrations::apply_all(conn, Some(&pre_migration_backup_path(paths)))
 }
 
+/// Upgrade previews migrate only this in-memory copy, never the source DB.
+pub(crate) fn migrated_memory_copy(source: &Connection) -> Result<Connection> {
+    let mut copy = Connection::open_in_memory()?;
+    let step = rusqlite::backup::Backup::new(source, &mut copy)?.step(-1)?;
+    if step != rusqlite::backup::StepResult::Done {
+        return Err(MemhubError::InvalidInput(
+            "could not copy the database for the prune preview; database is busy".into(),
+        ));
+    }
+    migrations::apply_all(&mut copy, None)?;
+    Ok(copy)
+}
+
 fn open_connection(path: &Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;

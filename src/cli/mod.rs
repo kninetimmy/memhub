@@ -1794,6 +1794,7 @@ pub fn run(cli: Cli) -> Result<()> {
             no_skills,
             no_gc,
             no_hooks,
+            no_prune_scan,
             finish,
             staged,
             allow_self_stage,
@@ -1813,6 +1814,7 @@ pub fn run(cli: Cli) -> Result<()> {
                     no_skills,
                     no_gc,
                     no_hooks,
+                    no_prune_scan,
                     verify_last,
                 },
             )?;

@@ -123,9 +123,20 @@ pub struct Report {
 }
 
 pub fn scan(start: &Path) -> Result<Report> {
+    scan_readonly(start, false)
+}
+
+pub(super) fn preview_upgrade(start: &Path) -> Result<Report> {
+    scan_readonly(start, true)
+}
+
+fn scan_readonly(start: &Path, preview: bool) -> Result<Report> {
     let paths = db::discover_paths(start)?;
     let config = scan_config(&paths)?;
     let mut conn = Connection::open_with_flags(&paths.db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    if preview && db::ledger_schema(&conn)?.as_deref() != Some(db::latest_schema_version()) {
+        conn = db::migrated_memory_copy(&conn)?;
+    }
     let tx = conn.transaction()?;
     let schema = db::ledger_schema(&tx)?;
     let has_dismissals = match schema.as_deref() {
