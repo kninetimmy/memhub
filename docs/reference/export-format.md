@@ -7,9 +7,17 @@ read every format version it has shipped support for.
 
 ## Versioning
 
-Exports carry a top-level `memhub_export_version` (integer). The current
-version is `1`. A new format version is introduced when a schema change
-makes the existing layout insufficient — never as a silent shape change.
+Exports carry a top-level `memhub_export_version` (integer). A new format
+version is introduced when a schema change makes the existing layout
+insufficient — never as a silent shape change.
+
+**Before:** export always wrote version `1` and import accepted only `1`.
+Version `1` had no retirement or task drop/keep metadata.
+**After:** export always writes version `2`, even when there is no
+lifecycle metadata. Import accepts versions `1` and `2`, translating
+`1` to the current shape without lifecycle metadata. Older v1-only
+builds refuse a v2 file with `unsupported memhub_export_version`, rather
+than accepting it and restoring a retired fact as active.
 
 `memhub_export_version` is independent of `source_schema_version`. The
 former is the durable file contract; the latter records which migration
@@ -17,12 +25,15 @@ the source database was at when the export was taken.
 
 ## Top-level shape
 
+This v2 example represents a development build after the v0.3.1 release,
+with the package version still at `0.3.1`. The released v0.3.1 wrote v1.
+
 ```json
 {
-  "memhub_export_version": 1,
-  "exported_at": "2026-05-12 14:23:01",
-  "exported_by": "memhub 0.1.0",
-  "source_schema_version": "0004_pending_write_provenance",
+  "memhub_export_version": 2,
+  "exported_at": "2026-11-21 04:00:00",
+  "exported_by": "memhub 0.3.1",
+  "source_schema_version": "0026_memory_lifecycle",
   "project": {
     "root_path_at_export": "/Users/.../my-repo",
     "created_at": "2026-04-21 09:00:00"
@@ -60,6 +71,10 @@ remain valid after restore.
 }
 ```
 
+In version `2`, retired facts also carry `retired_at` (UTC timestamp)
+and `retired_reason`. Version `1` did not carry these fields and restores
+facts as non-retired; absent fields in version `2` are treated as null.
+
 ### Decision
 
 ```json
@@ -90,7 +105,20 @@ decisions supersede older ones.
 }
 ```
 
-`status` is one of `open`, `done`, `blocked`.
+In version `1`, `status` was one of `open`, `done`, `blocked`. Those
+tasks still import without lifecycle metadata. Version `2` also accepts
+`dropped`, which requires a nonblank `dropped_reason`, `pre_drop_status`
+of `open` or `blocked`, and a non-null `pre_drop_updated_at`. Other
+statuses must omit the drop metadata (or set it to null).
+
+A saved keep requires a non-null `pre_keep_updated_at` and a nonblank `kept_at`
+together, and is only valid for open, blocked, or dropped tasks. `kept_at`
+must match `updated_at`, or `pre_drop_updated_at` for a dropped task.
+The saved prior times accept exactly what `updated_at` accepts: any string,
+including a blank legacy value. Undo restores it verbatim. This allows
+`task unkeep` after restore (after `task undrop` if dropped).
+Import rejects inconsistent undo metadata, naming the task, before
+changing target rows or replacing the import safety backup.
 
 ### Command
 
@@ -153,6 +181,8 @@ restored durable rows or from git:
 - `schema_migrations` — applied by the target database when opened.
 - `.memhub/config.toml` — per-machine; copy manually if desired.
 - `.memhub/backups/` — local-machine artifacts, not durable state.
+- Ingested documents, including their archive state — re-ingest source
+  files in the target repo if needed. Import leaves existing documents alone.
 
 ## Import contract
 
@@ -160,7 +190,7 @@ restored durable rows or from git:
 `.memhub/` (which must already exist via `memhub init`). The operation:
 
 1. Validates `memhub_export_version` against the supported set
-   (currently `{1}`).
+   (before: `{1}`; now: `{1, 2}`).
 2. Refuses if the target database has any rows in `facts`, `decisions`,
    `tasks`, `commands`, or `pending_writes`, unless `--force` is passed.
 3. Wraps the restore in a single transaction with
@@ -183,7 +213,7 @@ in the export file for audit only; they are not written back.
 
 ## Forward compatibility
 
-When `memhub_export_version` is bumped to `2` (or later):
+When `memhub_export_version` is bumped to a newer version:
 
 - Older `memhub` builds continue to reject the newer version with a
   clear error message.

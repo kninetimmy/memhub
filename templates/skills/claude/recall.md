@@ -50,6 +50,9 @@ ahead of every other hit and exempt from the cutoff (it is an explicit
 lookup, not ranking), when that row exists and the filters allow it
 (`accepted_only` drops a task); it takes one of the `max_results`
 slots, and the other hits fill the rest.
+Before fact retirement, this applied to any otherwise eligible repo
+fact. Now every retired fact is excluded even if named or requested
+with a source-type filter; use `memhub.get_row` by ID to inspect it.
 Shorthand such as `D17` and a number after any other word (`issue 290`,
 `PR #328`) is not treated as a row id.
 
@@ -87,9 +90,11 @@ sections.
   `git`, or `observed` rows that would otherwise leak in. It also
   drops tasks, architecture sections, and session notes, which carry
   no such source.
-- `include_stale=true` / `--include-stale`: accepted and ignored. Stale
-  facts (past the 90-day verification window) are always returned,
-  ranked like fresh ones and flagged `stale = true`.
+- `include_stale=true` / `--include-stale`: accepted and ignored. Before
+  retirement, otherwise eligible stale facts (past the verification
+  window, 90 days by default) ranked like fresh ones and were flagged
+  `stale = true`. That still holds for non-retired facts; retired facts
+  are excluded regardless of staleness.
 
 ## Interpreting the response
 
@@ -122,7 +127,7 @@ The `memhub.recall` MCP bundle has the shape:
 }
 ```
 
-A task hit also carries `status` (`open`, `done` or `blocked`). The
+A task hit also carries `status` (`open`, `done`, `blocked` or `dropped`). The
 CLI's `memhub recall --json` carries the same compact hits plus the
 diagnostic `rank`, `score`, `fts_score` and `vector_score`; add
 `--full` to get each hit's whole stored text as `body`. The MCP bundle
@@ -155,7 +160,8 @@ above is trimmed to what you need day to day (issue #72).
   `agent:X`, `git`, `observed`). Cite it when the user asks where a
   claim came from.
 - `available_docs` (integer) counts ingested reference-doc chunks that
-  did NOT surface this call — see "Reaching for ingested docs".
+  did NOT surface this call, excluding archived documents — see
+  "Reaching for ingested docs".
 - Empty `results` is a real answer, not a failure — see below.
 
 ## Reaching for ingested docs
@@ -167,8 +173,10 @@ call already ranks doc chunks with facts, decisions and tasks (at most
 on-topic chunk surfaces alongside them while an off-topic one scores
 under the cutoff or below the other hits — no scoping needed.
 
-The `available_docs` count is chunks that did **not** surface this
-call — the long tail. When it is **> 0** and the user's question is
+Before doc archiving, any ingested chunk could surface in recall or
+count toward `available_docs` if it did **not** surface. Now chunks
+from archived docs are excluded from both the count and recall, even
+with an explicit doc filter. When the count is **> 0** and the question is
 design/spec/architecture/style-flavored, a doc-scoped follow-up can
 still be worth running:
 
@@ -179,8 +187,8 @@ memhub.recall(query="<same or refined question>", source_types=["doc"])
 Use judgment, not reflex: this is a per-question decision, not an
 every-turn one. A question clearly answerable from facts/decisions, or
 one already well-covered by the first bundle, does not need the
-doc pass. When `available_docs` is 0 there are either no ingested docs
-or every chunk already made this bundle — do nothing extra.
+doc pass. When `available_docs` is 0 there are no remaining
+non-archived chunks to reach for — do nothing extra.
 
 Doc hits come back with `source_type: "doc_chunk"` and a `title` of
 `<document title> — <section breadcrumb>`; cite the document and
@@ -215,7 +223,9 @@ When `results` is empty or does not answer the question:
    relevance, candidate-pool, and result-limit cuts. `reranker_ran`
    indicates whether reranking and its cutoff applied.
    `docs_not_searched` and `docs_dropped_no_rerank` report unsearched or
-   excluded doc chunks; `global_store_not_searched` flags an existing
+   excluded doc chunks. Before archiving, any ingested chunk could
+   count; now archived documents' chunks never count.
+   `global_store_not_searched` flags an existing
    global store skipped because this repo has not opted in. Diagnostics
    do not search additional stores or restore dropped rows. Keep user
    filters and retrieval configuration unchanged.

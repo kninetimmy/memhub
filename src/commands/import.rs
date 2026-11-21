@@ -6,7 +6,7 @@ use rusqlite::{Transaction, TransactionBehavior, params};
 use crate::commands::{index, narrative, search};
 use crate::config::RetrievalMode;
 use crate::db;
-use crate::export::{EXPORT_VERSION, Export, v1};
+use crate::export::{decode, v1, v2};
 use crate::{MemhubError, Result};
 
 pub struct ImportSummary {
@@ -55,13 +55,9 @@ pub struct ImportSummary {
 
 pub fn run(start: &Path, source: &Path, force: bool) -> Result<ImportSummary> {
     let raw = fs::read_to_string(source)?;
-    let payload: Export = serde_json::from_str(&raw)?;
-
-    if payload.memhub_export_version != EXPORT_VERSION {
-        return Err(MemhubError::InvalidInput(format!(
-            "unsupported memhub_export_version: {} (this build supports {})",
-            payload.memhub_export_version, EXPORT_VERSION
-        )));
+    let payload = decode(&raw)?;
+    for task in &payload.tasks {
+        validate_task_undo(task)?;
     }
 
     let mut ctx = db::open_project(start)?;
@@ -261,26 +257,29 @@ fn wipe_durable_tables(tx: &Transaction<'_>) -> Result<()> {
     Ok(())
 }
 
-fn insert_facts(tx: &Transaction<'_>, rows: &[v1::Fact]) -> Result<()> {
+fn insert_facts(tx: &Transaction<'_>, rows: &[v2::Fact]) -> Result<()> {
     // `superseded_by` is a self-referential FK; the enclosing import
     // transaction sets `PRAGMA defer_foreign_keys = ON`, so an old fact
     // that points at a not-yet-inserted newer fact resolves at commit
     // (same handling decisions already rely on).
     let mut stmt = tx.prepare(
-        "INSERT INTO facts(id, project_id, key, value, confidence, source, verified_at, created_at, superseded_by, kind)
-         VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO facts(id, project_id, key, value, confidence, source, verified_at, created_at,
+                           superseded_by, kind, retired_at, retired_reason)
+         VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
     )?;
     for fact in rows {
         stmt.execute(params![
-            fact.id,
-            fact.key,
-            fact.value,
-            fact.confidence,
-            fact.source,
-            fact.verified_at,
-            fact.created_at,
-            fact.superseded_by,
-            fact.kind,
+            fact.base.id,
+            fact.base.key,
+            fact.base.value,
+            fact.base.confidence,
+            fact.base.source,
+            fact.base.verified_at,
+            fact.base.created_at,
+            fact.base.superseded_by,
+            fact.base.kind,
+            fact.retired_at,
+            fact.retired_reason,
         ])?;
     }
     Ok(())
@@ -306,19 +305,75 @@ fn insert_decisions(tx: &Transaction<'_>, rows: &[v1::Decision]) -> Result<()> {
     Ok(())
 }
 
-fn insert_tasks(tx: &Transaction<'_>, rows: &[v1::Task]) -> Result<()> {
+fn validate_task_undo(task: &v2::Task) -> Result<()> {
+    let nonblank = |value: Option<&str>| value.is_some_and(|value| !value.trim().is_empty());
+    let invalid = |detail: &str| {
+        MemhubError::InvalidInput(format!("task {} has invalid {detail}", task.base.id))
+    };
+    let dropped = task.base.status == "dropped";
+    // Saved prior timestamps are verbatim copies of updated_at, which can
+    // be any non-null string (including blank on a legacy import).
+    if dropped {
+        if !nonblank(task.dropped_reason.as_deref())
+            || !matches!(task.pre_drop_status.as_deref(), Some("open" | "blocked"))
+            || task.pre_drop_updated_at.is_none()
+        {
+            return Err(invalid(
+                "drop metadata: expected a nonblank reason, an open or blocked prior status, \
+                 and a prior update time",
+            ));
+        }
+    } else if task.dropped_reason.is_some()
+        || task.pre_drop_status.is_some()
+        || task.pre_drop_updated_at.is_some()
+    {
+        return Err(invalid("drop metadata: only dropped tasks can carry it"));
+    }
+
+    // A drop suspends keep undo until undrop restores the kept timestamp.
+    let kept_update_time = if dropped {
+        task.pre_drop_updated_at.as_deref()
+    } else {
+        Some(task.base.updated_at.as_str())
+    };
+    let keep_is_valid = match (task.pre_keep_updated_at.as_deref(), task.kept_at.as_deref()) {
+        (None, None) => true,
+        (prior, kept_at) => {
+            matches!(task.base.status.as_str(), "open" | "blocked" | "dropped")
+                && prior.is_some()
+                && nonblank(kept_at)
+                && kept_at == kept_update_time
+        }
+    };
+    if !keep_is_valid {
+        return Err(invalid(
+            "keep metadata: expected both keep timestamps on an open, blocked, or dropped task, \
+             with kept_at matching its current or pre-drop update time",
+        ));
+    }
+    Ok(())
+}
+
+fn insert_tasks(tx: &Transaction<'_>, rows: &[v2::Task]) -> Result<()> {
     let mut stmt = tx.prepare(
-        "INSERT INTO tasks(id, project_id, title, status, notes, created_at, updated_at)
-         VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO tasks(id, project_id, title, status, notes, created_at, updated_at,
+                           dropped_reason, pre_drop_status, pre_drop_updated_at,
+                           pre_keep_updated_at, kept_at)
+         VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
     )?;
     for task in rows {
         stmt.execute(params![
-            task.id,
-            task.title,
-            task.status,
-            task.notes,
-            task.created_at,
-            task.updated_at,
+            task.base.id,
+            task.base.title,
+            task.base.status,
+            task.base.notes,
+            task.base.created_at,
+            task.base.updated_at,
+            task.dropped_reason,
+            task.pre_drop_status,
+            task.pre_drop_updated_at,
+            task.pre_keep_updated_at,
+            task.kept_at,
         ])?;
     }
     Ok(())

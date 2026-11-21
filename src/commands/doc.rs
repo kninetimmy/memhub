@@ -118,16 +118,22 @@ fn ingest_in_tx(
         |r| r.get::<_, i64>(0),
     )? == 0;
 
-    let existing: Option<(i64, String)> = tx
+    let existing: Option<(i64, String, bool)> = tx
         .query_row(
-            "SELECT id, content_hash FROM documents WHERE project_id = 1 AND path = ?1",
+            "SELECT id, content_hash, archived_at IS NOT NULL
+             FROM documents WHERE project_id = 1 AND path = ?1",
             params![doc.path_str],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()?;
 
     let (doc_id, status) = match existing {
-        Some((id, old_hash)) if old_hash == doc.content_hash => {
+        Some((id, _, true)) => {
+            return Err(crate::MemhubError::InvalidInput(format!(
+                "document #{id} is archived; run `memhub doc unarchive {id}` before re-ingesting it"
+            )));
+        }
+        Some((id, old_hash, false)) if old_hash == doc.content_hash => {
             let chunk_count: i64 = tx.query_row(
                 "SELECT COUNT(*) FROM doc_chunks WHERE doc_id = ?1",
                 params![id],
@@ -140,7 +146,7 @@ fn ingest_in_tx(
                 was_first_doc,
             });
         }
-        Some((id, _)) => {
+        Some((id, _, false)) => {
             // Explicit chunk delete first so the AFTER-DELETE triggers
             // clear embeddings + FTS without relying on the FK cascade.
             tx.execute("DELETE FROM doc_chunks WHERE doc_id = ?1", params![id])?;
@@ -193,8 +199,9 @@ fn ingest_in_tx(
 }
 
 /// Ingest (or re-ingest) a markdown file into this repo's store.
-/// Unchanged content (same SHA-256) is a no-op. Changed content
-/// replaces every chunk.
+/// Before archiving, unchanged content (same SHA-256) was a no-op and changed
+/// content replaced every chunk on any stored path. Unarchived paths still
+/// work that way; archived paths refuse until `memhub doc unarchive`.
 pub fn add(start: &Path, file: &Path, title: Option<&str>, actor: &str) -> Result<DocAddOutcome> {
     let doc = prepare_doc(file, title)?;
 
@@ -302,7 +309,8 @@ fn list_in_conn(conn: &Connection) -> Result<Vec<Document>> {
     let mut stmt = conn.prepare(
         "SELECT d.id, d.path, d.title, d.content_hash, d.byte_len, d.source,
                 d.ingested_at,
-                (SELECT COUNT(*) FROM doc_chunks c WHERE c.doc_id = d.id) AS chunk_count
+                (SELECT COUNT(*) FROM doc_chunks c WHERE c.doc_id = d.id) AS chunk_count,
+                d.archived_at, d.archived_reason
          FROM documents d
          ORDER BY d.ingested_at DESC, d.id DESC",
     )?;
@@ -316,6 +324,8 @@ fn list_in_conn(conn: &Connection) -> Result<Vec<Document>> {
             source: r.get(5)?,
             ingested_at: r.get(6)?,
             chunk_count: r.get(7)?,
+            archived_at: r.get(8)?,
+            archived_reason: r.get(9)?,
         })
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -354,7 +364,7 @@ fn read_global(start: &Path) -> Result<Option<db::ProjectContext>> {
 }
 
 /// Resolve a document by numeric id or by exact/canonical path.
-fn resolve_doc_id(tx: &Transaction<'_>, ident: &str) -> Result<Option<i64>> {
+pub(super) fn resolve_doc_id(tx: &Transaction<'_>, ident: &str) -> Result<Option<i64>> {
     if let Ok(id) = ident.parse::<i64>() {
         let found: Option<i64> = tx
             .query_row("SELECT id FROM documents WHERE id = ?1", params![id], |r| {

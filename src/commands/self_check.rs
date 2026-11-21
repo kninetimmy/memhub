@@ -101,12 +101,14 @@ struct SampledRow {
 /// Per-type SQL: `SELECT id, <title>, <body>` ordered by id, with `LIMIT 1
 /// OFFSET ?1` appended by the caller. Doc chunks fall back to the document
 /// title when the chunk has no heading. Superseded facts and decisions are
-/// left out of both the count and the rows; done tasks stay in.
+/// left out of both the count and the rows, as are retired facts and
+/// archived chunks; tasks of any status stay in.
 const TYPES: [(SourceType, &str, &str); 5] = [
     (
         SourceType::Fact,
-        "SELECT COUNT(*) FROM facts WHERE superseded_by IS NULL",
-        "SELECT id, key, value FROM facts WHERE superseded_by IS NULL ORDER BY id LIMIT 1 OFFSET ?1",
+        "SELECT COUNT(*) FROM facts WHERE superseded_by IS NULL AND retired_at IS NULL",
+        "SELECT id, key, value FROM facts WHERE superseded_by IS NULL AND retired_at IS NULL
+         ORDER BY id LIMIT 1 OFFSET ?1",
     ),
     (
         SourceType::Decision,
@@ -120,10 +122,11 @@ const TYPES: [(SourceType, &str, &str); 5] = [
     ),
     (
         SourceType::DocChunk,
-        "SELECT COUNT(*) FROM doc_chunks",
+        "SELECT COUNT(*) FROM doc_chunks c JOIN documents d ON d.id = c.doc_id
+         WHERE d.archived_at IS NULL",
         "SELECT c.id, CASE WHEN trim(c.heading_path) = '' THEN d.title ELSE c.heading_path END, \
          c.body FROM doc_chunks c JOIN documents d ON d.id = c.doc_id \
-         ORDER BY c.id LIMIT 1 OFFSET ?1",
+         WHERE d.archived_at IS NULL ORDER BY c.id LIMIT 1 OFFSET ?1",
     ),
     (
         SourceType::ArchSection,

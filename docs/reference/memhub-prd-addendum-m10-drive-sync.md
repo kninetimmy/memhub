@@ -135,6 +135,11 @@ proof of complete reconciliation or shared ancestry. Whole-DB snapshots
 still require an operator to decide which history to retain or reconcile;
 there is no automatic row merge.
 
+Before #445, there were no memory lifecycle actions in the audit diff.
+Now it counts retire, archive, drop, keep, and their undo actions as
+updates under the existing non-insert rule. Fact keys and task titles
+still appear when available; documents get counts but no per-row list.
+
 ## 3. Change detection is logical, not byte-level (load-bearing)
 
 SQLite files are **not byte-stable** for identical logical content:
@@ -153,15 +158,34 @@ manifest (§4) and the marker. It has two parts:
   session_notes, project_state, project_arch), each row's columns
   rendered in id order.
 
-Equality hinges on the digest. Two subtler approaches were tried and
-rejected: row *count* collides (two repos that each added one fact look
-identical), and a digest over the `writes_log` collides too — the log
-records *that* a fact was added, not its key/value, so two repos adding
-different facts log near-identical rows differing only by a
-second-granularity timestamp. Hashing the content tables means only
-genuinely identical content compares equal, independent of timing or
-SQLite page layout. Because the digest is over content, not the file,
-it is stable across the `VACUUM INTO` snapshot and the byte-copy adopt.
+**Lifecycle follow-up (#445).** Before migration 0026, the digest used
+the base stream (which by 0025 also covered `documents` and `doc_chunks`).
+After 0026, the base stream is unchanged. The digest appends populated
+lifecycle metadata in fixed table and row order: fact ID with
+`retired_at`/`retired_reason`, task ID with `dropped_reason`,
+`pre_drop_status`, `pre_drop_updated_at`, `pre_keep_updated_at`, and
+`kept_at`, and document path with `archived_at`/`archived_reason`. Each
+extension omits rows whose lifecycle fields are all null and emits
+nothing if none remain. A 0025 store can still be hashed as-is; migrating
+it without other changes preserves the digest and its recorded baseline.
+The whole-database snapshot and adopt safety checks are unchanged.
+
+**Before:** This section said equality hinged on the digest. In fact,
+logical-version equality has always required the digest, the audit high-water
+mark (maximum ID), and the audit row count to match. No lifecycle undo pairs
+existed. **After 0026:** That equality rule still holds. Retire/unretire,
+archive/unarchive, drop/undrop, and keep/unkeep (with no prior keep undo saved)
+restore the content digest if nothing else changes, but both actions append
+audit rows. With Drive still at the shared baseline, `sync check` reports
+`local-ahead` and `sync commit` refuses to record equality.
+
+Two subtler approaches were tried and rejected: row *count* collides (two
+repos that each added one fact look identical), and a digest over the
+`writes_log` collides too — the log records *that* a fact was added, not
+its key/value, so two repos adding different facts log near-identical rows
+differing only by a second-granularity timestamp. The digest covers content
+rather than file bytes, so it is stable across the `VACUUM INTO` snapshot
+and the byte-copy adopt.
 
 A file checksum is still recorded in the manifest, but only as an
 integrity check against a torn/partial download — never as the
@@ -217,6 +241,17 @@ A raw `.sqlite` carries a schema version, and migrations are
 
 This turns the one genuinely confusing failure mode into an actionable
 instruction, and ties M10 to the existing machine-wide upgrade story.
+
+**Lifecycle follow-up (#445).** Before migration 0026, two 0025 clients
+could adopt each other's compatible snapshots. A 0025 client now reports
+`schema_blocks_adopt` and refuses a 0026 snapshot even if all lifecycle
+fields are null and the logical version matches. `sync check --diff` also
+refuses comparison of that snapshot when it reaches its schema check.
+In the other direction, a 0026 client can adopt a 0025 snapshot if the
+other guards pass; reopening applies 0026 without changing the recorded
+logical baseline. The schema flag is independent of the content verdict.
+The normal push guard still checks the content verdict rather than the
+adopt-only schema flag.
 
 ## 7. WAL consistency
 

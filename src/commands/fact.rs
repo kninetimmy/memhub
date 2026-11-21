@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use rusqlite::{OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::Result;
 use crate::db;
@@ -14,10 +14,10 @@ pub fn add(start: &Path, key: &str, value: &str, source: &str, actor: &str) -> R
 /// #97) -- a lightweight, unenforced classifier for the writing agent
 /// (suggested vocabulary: `gotcha | env | preference | command |
 /// constraint`, but any non-empty string is legal). `kind: None` behaves
-/// identically to [`add`], including on a same-key overwrite: `kind`
-/// follows the same last-writer-wins rule Wave 3 L5 already documented for
-/// `value`/`source`, so re-adding an existing key without `--kind` clears
-/// a previously-set tag rather than silently preserving it.
+/// identically to [`add`]. Before retirement, same-key upserts used
+/// last-writer-wins for `kind`, `value`, and `source`. This still holds
+/// for non-retired facts: re-adding without `--kind` clears any prior tag.
+/// Retired keys now refuse until restored with `memhub fact unretire`.
 pub fn add_with_kind(
     start: &Path,
     key: &str,
@@ -60,18 +60,12 @@ pub fn add_with_kind_in_tx(
     let kind_value = normalize_kind(kind);
 
     // Read the prior value alongside the id so a same-key overwrite can log
-    // what it replaced (Wave 3 L5, issue #48). `fact add` on an existing key
-    // is silent last-writer-wins; without this the old value is captured
-    // nowhere and the overwrite is unrecoverable.
-    let existing: Option<(i64, String)> = tx
-        .query_row(
-            "SELECT id, value FROM facts WHERE project_id = 1 AND key = ?1",
-            [key],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()?;
+    // what it replaced (Wave 3 L5, issue #48). Last-writer-wins used to
+    // apply to every existing key. It still does for non-retired keys;
+    // retired keys now refuse before the prior value can be overwritten.
+    let existing = find_writable_fact(tx, key)?;
 
-    let (row_id, created, prior_value) = if let Some((id, prior)) = existing {
+    let (row_id, created, prior_value) = if let Some((id, prior, _superseded)) = existing {
         tx.execute(
             "UPDATE facts
              SET value = ?1, source = ?2, confidence = 1.0, verified_at = CURRENT_TIMESTAMP, kind = ?3
@@ -115,6 +109,36 @@ pub fn add_with_kind_in_tx(
     )?;
 
     Ok((row_id, created))
+}
+
+/// Find the existing row and whether it is superseded. Reject retired keys
+/// before either an upsert or the accept-time probe can proceed.
+pub(super) fn find_writable_fact(
+    tx: &Transaction<'_>,
+    key: &str,
+) -> Result<Option<(i64, String, bool)>> {
+    let existing = tx
+        .query_row(
+            "SELECT id, value, superseded_by IS NOT NULL, retired_at IS NOT NULL
+             FROM facts WHERE project_id = 1 AND key = ?1",
+            [key],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get::<_, bool>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    match existing {
+        Some((id, _, _, true)) => Err(crate::MemhubError::InvalidInput(format!(
+            "fact '{key}' (#{id}) is retired; run `memhub fact unretire {id}` before updating it"
+        ))),
+        Some((id, value, superseded, false)) => Ok(Some((id, value, superseded))),
+        None => Ok(None),
+    }
 }
 
 /// Normalize a `--kind` value: whitespace-only collapses to `None`
@@ -170,9 +194,11 @@ pub fn add_global_with_kind(
     })
 }
 
-/// Copy an existing repo fact into the machine-global store (copy,
-/// not move — the repo row stays and still wins locally). Fact keys
-/// are UNIQUE per DB, so re-promoting a key updates the global fact.
+/// Copy an existing repo fact into the machine-global store, leaving
+/// the repo row intact. Before retirement the repo copy was eligible
+/// for local recall; now a retired repo fact is not, but its global
+/// copy is independent. Fact keys are UNIQUE per DB, so re-promoting
+/// a key updates the global fact.
 pub fn promote(start: &Path, id: i64, actor: &str) -> Result<GlobalFactOutcome> {
     let repo = db::open_project(start)?;
     crate::commands::global::ensure_enabled(&repo.config)?;
@@ -219,7 +245,7 @@ pub fn promote(start: &Path, id: i64, actor: &str) -> Result<GlobalFactOutcome> 
 /// `doc::resolve_doc_id`'s id-first-then-lookup shape. Returns
 /// `(id, key)` so callers can report the resolved key even when
 /// `ident` was numeric.
-fn resolve_fact(tx: &Transaction<'_>, ident: &str) -> Result<Option<(i64, String)>> {
+pub(super) fn resolve_fact(tx: &Transaction<'_>, ident: &str) -> Result<Option<(i64, String)>> {
     if let Ok(id) = ident.parse::<i64>() {
         let found: Option<(i64, String)> = tx
             .query_row(
@@ -274,8 +300,16 @@ pub fn verify(start: &Path, ident: &str, actor: &str) -> Result<Option<(i64, Str
 }
 
 pub fn list(start: &Path) -> Result<Vec<Fact>> {
+    list_with_retired(start, false)
+}
+
+pub fn list_with_retired(start: &Path, include_retired: bool) -> Result<Vec<Fact>> {
     let ctx = db::open_project(start)?;
-    let mut stmt = ctx.conn.prepare(
+    list_in_conn(&ctx.conn, include_retired)
+}
+
+pub(crate) fn list_in_conn(conn: &Connection, include_retired: bool) -> Result<Vec<Fact>> {
+    let mut stmt = conn.prepare(
         "SELECT id, key, value, source, verified_at, created_at,
                 CASE
                     WHEN verified_at IS NULL THEN 1
@@ -283,12 +317,13 @@ pub fn list(start: &Path) -> Result<Vec<Fact>> {
                     ELSE 0
                 END AS is_stale,
                 superseded_by,
-                kind
+                kind, retired_at, retired_reason
          FROM facts
+         WHERE project_id = 1 AND (?2 OR retired_at IS NULL)
          ORDER BY key ASC",
     )?;
 
-    let rows = stmt.query_map(params![FACT_STALE_AFTER_DAYS], |row| {
+    let rows = stmt.query_map(params![FACT_STALE_AFTER_DAYS, include_retired], |row| {
         let is_stale_int: i64 = row.get(6)?;
         Ok(Fact {
             id: row.get(0)?,
@@ -300,6 +335,8 @@ pub fn list(start: &Path) -> Result<Vec<Fact>> {
             is_stale: is_stale_int != 0,
             superseded_by: row.get(7)?,
             kind: row.get(8)?,
+            retired_at: row.get(9)?,
+            retired_reason: row.get(10)?,
         })
     })?;
 
@@ -320,11 +357,12 @@ pub struct FactSupersedeOutcome {
 
 /// Mark `old_ident`'s fact superseded by `new_ident`'s fact (Wave 3 L3).
 /// Demote-with-link, no-loss: the old row is NOT deleted — it stays present
-/// with `superseded_by` set, is penalized in recall, and is annotated in
-/// render. Both idents accept a numeric id or an exact key (mirroring
-/// `fact verify`). Errors if either side is missing or if a fact would
-/// supersede itself. Transaction-scoped so it composes with the CLI verb and
-/// the review-accept path.
+/// with `superseded_by` set. Before retirement it could still surface,
+/// penalized in recall and annotated in render; that still holds unless
+/// the old fact is separately retired. Both idents accept a numeric id or an
+/// exact key (mirroring `fact verify`). Errors if either side is missing or
+/// if a fact would supersede itself. Transaction-scoped so it composes
+/// with the CLI verb and the review-accept path.
 pub fn supersede_in_tx(
     tx: &Transaction<'_>,
     old_ident: &str,

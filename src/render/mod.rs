@@ -217,7 +217,7 @@ fn build_snapshot(
         arch: load_latest_narrative(conn, "project_arch")?,
         decisions: load_decisions(conn)?,
         tasks: load_tasks(conn)?,
-        facts: load_facts(conn)?,
+        facts: crate::commands::fact::list_in_conn(conn, false)?,
         stale_fact_count: count_stale_facts(conn)?,
         open_task_count: count_open_tasks(conn)?,
         recent_session_notes: load_recent_session_notes(conn)?,
@@ -288,7 +288,7 @@ fn load_decisions(conn: &Connection) -> Result<Vec<Decision>> {
 
 fn load_tasks(conn: &Connection) -> Result<Vec<Task>> {
     let mut stmt = conn.prepare(
-        "SELECT id, title, status, notes, created_at, updated_at
+        "SELECT id, title, status, notes, created_at, updated_at, dropped_reason
          FROM tasks
          WHERE project_id = 1
          ORDER BY
@@ -302,49 +302,7 @@ fn load_tasks(conn: &Connection) -> Result<Vec<Task>> {
              id DESC",
     )?;
     let rows = stmt
-        .query_map([], |row| {
-            Ok(Task {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                status: row.get(2)?,
-                notes: row.get(3)?,
-                created_at: row.get(4)?,
-                updated_at: row.get(5)?,
-            })
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    Ok(rows)
-}
-
-fn load_facts(conn: &Connection) -> Result<Vec<Fact>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, key, value, source, verified_at, created_at,
-                CASE
-                    WHEN verified_at IS NULL THEN 1
-                    WHEN (julianday('now') - julianday(verified_at)) > ?1 THEN 1
-                    ELSE 0
-                END AS is_stale,
-                superseded_by,
-                kind
-         FROM facts
-         WHERE project_id = 1
-         ORDER BY key ASC",
-    )?;
-    let rows = stmt
-        .query_map(params![FACT_STALE_AFTER_DAYS], |row| {
-            let is_stale_int: i64 = row.get(6)?;
-            Ok(Fact {
-                id: row.get(0)?,
-                key: row.get(1)?,
-                value: row.get(2)?,
-                source: row.get(3)?,
-                verified_at: row.get(4)?,
-                created_at: row.get(5)?,
-                is_stale: is_stale_int != 0,
-                superseded_by: row.get(7)?,
-                kind: row.get(8)?,
-            })
-        })?
+        .query_map([], crate::commands::task::read_task)?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(rows)
 }
@@ -352,7 +310,7 @@ fn load_facts(conn: &Connection) -> Result<Vec<Fact>> {
 fn count_stale_facts(conn: &Connection) -> Result<i64> {
     let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM facts
-         WHERE project_id = 1
+         WHERE project_id = 1 AND retired_at IS NULL
            AND (verified_at IS NULL
                 OR (julianday('now') - julianday(verified_at)) > ?1)",
         params![FACT_STALE_AFTER_DAYS],
@@ -677,7 +635,7 @@ fn format_ledger_md(s: &RenderSnapshot) -> String {
         out.push_str("_No tasks recorded._\n\n");
     } else {
         out.push_str(&format!(
-            "_{} task(s), {} open. Open first, then by recency._\n\n",
+            "_{} task(s), {} open. Open, blocked, done, then dropped; newest update first within each status._\n\n",
             s.tasks.len(),
             s.open_task_count
         ));
@@ -707,9 +665,9 @@ fn format_ledger_md(s: &RenderSnapshot) -> String {
             s.facts.len(),
             s.stale_fact_count
         ));
-        // The "Superseded" column annotates (never hides) a superseded fact
-        // with its replacement id — the demote-with-link surface for facts
-        // (Wave 3 L3), parallel to the decisions annotation above.
+        // Before retirement, the "Superseded" column annotated every
+        // superseded repo fact. It still annotates visible facts, parallel
+        // to decisions (Wave 3 L3); retirement hides a fact independently.
         //
         // The "Kind" column (Wave 6 W4, migration 0021) is additive and
         // conditional: it only appears when at least one rendered fact
@@ -728,10 +686,9 @@ fn format_ledger_md(s: &RenderSnapshot) -> String {
         }
         out.push('\n');
         for f in &s.facts {
-            // Show the superseding fact's KEY (not its id): the facts table
-            // has no id column, but every fact's key is right there in the
-            // Key column, so the link resolves in place. Fall back to the
-            // id only if the target somehow isn't in the rendered set.
+            // Before retirement, the facts table could link to the replacement
+            // by key. It still does when the replacement is visible; a retired
+            // (or otherwise missing) replacement uses the existing #id fallback.
             let superseded = match f.superseded_by {
                 Some(new_id) => match s.facts.iter().find(|other| other.id == new_id) {
                     Some(other) => format!("→ {}", other.key),
@@ -1083,6 +1040,8 @@ mod tests {
             is_stale: false,
             superseded_by: None,
             kind: kind.map(str::to_string),
+            retired_at: None,
+            retired_reason: None,
         }
     }
 

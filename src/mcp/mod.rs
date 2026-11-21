@@ -946,7 +946,7 @@ impl MemhubServer {
 
     #[tool(
         name = "propose_supersede",
-        description = "Stage a proposed SUPERSESSION — retire an outdated fact or decision by linking it to the row that replaces it — into pending_writes for human review. NEVER writes durably: the demote-with-link (the old row is kept, tagged, and penalized in recall, never deleted) happens only when the user runs `memhub review accept`. Set target_kind to \"fact\" or \"decision\"; `old` and `new` identify the retired row and its replacement (fact: numeric id or exact key; decision: numeric id). Use when you find a durable fact/decision that a newer one has clearly replaced — you are proposing the retirement, not performing it (untrusted-writer guardrail)."
+        description = "Stage a proposed SUPERSESSION — link an outdated fact or decision to the row that replaces it — into pending_writes for human review. NEVER writes durably: the link is set only when the user runs `memhub review accept`. Before fact retirement, an otherwise eligible superseded row stayed in recall, tagged and penalized, not deleted. That still holds unless the fact is separately retired; supersession alone never excludes the row. Set target_kind to \"fact\" or \"decision\"; `old` and `new` identify the superseded row and its replacement (fact: numeric id or exact key; decision: numeric id). Use when you find a durable fact/decision that a newer one has clearly replaced — you are proposing the supersession, not performing it (untrusted-writer guardrail)."
     )]
     async fn propose_supersede(
         &self,
@@ -987,7 +987,7 @@ impl MemhubServer {
 
     #[tool(
         name = "doc_add",
-        description = "Ingest (or re-ingest) a local markdown file as an external reference document, chunked and RAG-searchable. Direct write: a doc is a user-pointed artifact, not an agent claim, so no review gate. Docs are OPT-IN to recall — query them with recall(source_types=[\"doc\"]) to scope to docs alone; after a repo's first doc add they also join the default recall bundle, ranked with every other row (decision 90). Unchanged content (same hash) is a no-op; changed content replaces every chunk. The path must canonicalize under the repo root or a configured [doc] allowed_dirs entry and must not match the deny-list; otherwise this refuses with a clear error (Wave-0 F11)."
+        description = "Ingest (or re-ingest) a local markdown file as an external reference document, chunked and RAG-searchable. Direct write: a doc is a user-pointed artifact, not an agent claim, so no review gate. Docs are OPT-IN to recall — query them with recall(source_types=[\"doc\"]) to scope to docs alone; after a repo's first doc add they also join the default recall bundle, ranked with every other row (decision 90). Before archiving, unchanged content (same hash) was a no-op and changed content replaced every chunk on any stored path. That still holds for unarchived paths; archived paths refuse until restored with `memhub doc unarchive`. The path must canonicalize under the repo root or a configured [doc] allowed_dirs entry and must not match the deny-list; otherwise this refuses with a clear error (Wave-0 F11)."
     )]
     async fn doc_add(
         &self,
@@ -1000,7 +1000,7 @@ impl MemhubServer {
 
     #[tool(
         name = "task_done",
-        description = "Mark an existing task as done by id."
+        description = "Mark an existing task as done by id, as before. Like CLI task done, this now also clears any saved drop or keep undo state."
     )]
     async fn task_done(
         &self,
@@ -1013,7 +1013,7 @@ impl MemhubServer {
 
     #[tool(
         name = "list_facts",
-        description = "List durable facts. Use this to look up build/test/run commands or other key-value records the user has confirmed."
+        description = "List durable facts. This used to list all repo facts; now retired facts are omitted. Use get_row by id to read a retired fact. Use this list to look up build/test/run commands or other key-value records the user has confirmed."
     )]
     async fn list_facts(
         &self,
@@ -1036,7 +1036,7 @@ impl MemhubServer {
 
     #[tool(
         name = "recall",
-        description = "Retrieve relevant facts, decisions, tasks, and architecture sections via SQL+RAG hybrid recall (FTS5 + brute-force cosine when hybrid mode is configured). Read-only; prefer this over reading PROJECT_LEDGER.md mid-session. Hits are compact: each carries source_type, source_id, scope, title, rerank_score, created_at, status (tasks only), stale, superseded_by and `text`, at most 300 characters of the row's text (ending in … when cut). Call get_row with a hit's source_type, source_id and scope to read its full text before relying on a cut text. Hits come in strict re-ranker score order, highest first, and recall does not decide which of them answer the question: you judge relevance from the titles, text and scores. A lower score is a weaker match, not a rejected one; the right row is often not the first. Only rows scoring below a low nonsense cutoff ([retrieval.scoring] rerank_cutoff, default -7.0) are dropped; when no row clears it the results are empty and a `rerank_cutoff_dropped_all` warning says so. Without the re-ranker (fts mode, or the re-ranker disabled) rerank_score is null, hits follow the blended FTS/vector score and no cutoff applies. Phrase `query` as a natural-language question (\"are task writes reviewed or direct writes?\"), not a keyword list — the cross-encoder scores question phrasings several logits higher. When the first call comes back empty or thin, or the answer likely uses different words than your question, retry with `variants`: up to 4 extra phrasings of the same question, such as a keyword form and a sentence worded like the answer. Variants only widen which rows are considered; every row is still scored against `query` (or, when `query` asks two things joined by \"and\" plus a question word, its best part), never a variant, so keep `query` the best natural-language question. A decision, task or fact named in `query` by number (\"decision 201\", \"task #99\", \"fact 7\") is an explicit lookup: it is returned first, ahead of every other hit and exempt from the cutoff, when that row exists in the repo store and the filters allow it; it takes one of the `max_results` slots. Sections of the latest architecture narrative (`memhub arch set`, split by heading; source_type `arch_section`, titled `Architecture — <heading path>`) are part of the default bundle and ranked like facts, decisions, and tasks; source_types=[\"arch\"] scopes a query to them alone. Ingested reference docs are opt-in (add one with doc_add); once added their chunks join the default bundle and are ranked with every other row (decision 90), and source_types=[\"doc\"] scopes a query to docs alone. The response's `available_docs` counts ingested doc chunks that did NOT surface this call — when it is non-zero and the question is design/spec/architecture-flavored, consider a follow-up recall scoped to docs (use judgment; not every turn). Session notes (log_session_note) are write-only scratch and never join the default bundle at all — source_types=[\"note\"] is the only way to retrieve one."
+        description = "Retrieve relevant facts, decisions, tasks, and architecture sections via SQL+RAG hybrid recall (FTS5 + brute-force cosine when hybrid mode is configured). Read-only; prefer this over reading PROJECT_LEDGER.md mid-session. Hits are compact: each carries source_type, source_id, scope, title, rerank_score, created_at, status (tasks only), stale, superseded_by and `text`, at most 300 characters of the row's text (ending in … when cut). Call get_row with a hit's source_type, source_id and scope to read its full text before relying on a cut text. Hits come in strict re-ranker score order, highest first, and recall does not decide which of them answer the question: you judge relevance from the titles, text and scores. A lower score is a weaker match, not a rejected one; the right row is often not the first. The re-ranker drops candidates scoring below a low nonsense cutoff ([retrieval.scoring] rerank_cutoff, default -7.0). Recall warns `rerank_cutoff_dropped_all` only if the cutoff drops at least one scored candidate, none clear it, and no named row is returned. An empty pool after filtering does not trigger this warning. Without the re-ranker (fts mode, or the re-ranker disabled) rerank_score is null, hits follow the blended FTS/vector score and no cutoff applies. Phrase `query` as a natural-language question (\"are task writes reviewed or direct writes?\"), not a keyword list — the cross-encoder scores question phrasings several logits higher. When the first call comes back empty or thin, or the answer likely uses different words than your question, retry with `variants`: up to 4 extra phrasings of the same question, such as a keyword form and a sentence worded like the answer. Variants only widen which rows are considered; every row is still scored against `query` (or, when `query` asks two things joined by \"and\" plus a question word, its best part), never a variant, so keep `query` the best natural-language question. A decision, task or fact named in `query` by number (\"decision 201\", \"task #99\", \"fact 7\") is an explicit lookup: it is returned first, ahead of every other hit and exempt from the cutoff, when that row exists in the repo store and the filters allow it; it takes one of the `max_results` slots. Before retirement, this applied to any otherwise eligible repo fact. Now all retired facts are excluded from recall even if named or explicitly scoped; use get_row by ID to inspect them. Sections of the latest architecture narrative (`memhub arch set`, split by heading; source_type `arch_section`, titled `Architecture — <heading path>`) are part of the default bundle and ranked like facts, decisions, and tasks; source_types=[\"arch\"] scopes a query to them alone. Ingested reference docs are opt-in (add one with doc_add); once added their chunks join the default bundle and are ranked with every other row (decision 90), and source_types=[\"doc\"] scopes a query to docs alone. Before archiving, any ingested chunk could surface in recall or count toward `available_docs` if it did NOT surface. Now chunks from archived docs are excluded from both the count and recall, even with an explicit doc scope. When `available_docs` is non-zero and the question is design/spec/architecture-flavored, consider a follow-up recall scoped to docs (use judgment; not every turn). Session notes (log_session_note) are write-only scratch and never join the default bundle at all — source_types=[\"note\"] is the only way to retrieve one."
     )]
     async fn recall(
         &self,
@@ -1720,8 +1720,8 @@ struct RecallParams {
     /// Tasks, architecture sections and session notes carry no such
     /// source, so they are never returned when this is true.
     accepted_only: Option<bool>,
-    /// Accepted and ignored: stale facts are always returned, flagged
-    /// `stale: true`.
+    /// Accepted and ignored. Staleness still only marks eligible facts
+    /// `stale: true`; unlike before, retired facts cannot surface at all.
     include_stale: Option<bool>,
     /// Up to 4 extra phrasings of the same question, to catch rows the main
     /// `query` wording misses: a keyword form ("task review writes"), or a
@@ -1781,11 +1781,12 @@ struct RecallToolResponse {
     results: Vec<RecallToolHit>,
     candidate_count: i64,
     returned_count: i64,
-    /// Ingested doc chunks that exist but were NOT searched because the
-    /// call did not scope to `doc`. Non-zero is a cue to consider a
-    /// follow-up `recall(..., source_types=["doc"])` when the question is
-    /// design/spec/architecture-flavored. After a repo's first doc add,
-    /// doc chunks join the default bundle (decision 90).
+    /// Ingested doc chunks not surfaced in this call, across the stores
+    /// searched. Before archiving, any ingested chunk could count; now
+    /// archived documents' chunks never count. Zero when explicitly scoped
+    /// to docs. Non-zero is a cue to consider a doc-scoped follow-up for
+    /// design/spec/architecture questions. After a repo's first doc add,
+    /// eligible doc chunks join the default bundle (decision 90).
     available_docs: i64,
     warnings: Vec<RecallToolWarning>,
     provenance: RecallToolProvenance,
@@ -1799,15 +1800,16 @@ struct RecallToolResponse {
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 struct RecallToolHit {
     source_type: String,
-    /// `"repo"` or `"global"` (M9). Repo-local always wins on
-    /// conflict; a `"global"` hit may be overridden by repo memory.
+    /// `"repo"` or `"global"` (M9). On conflict the caller still prefers
+    /// an eligible repo hit. Before retirement any matching repo fact
+    /// could surface; now retired ones are excluded from recall.
     scope: String,
     source_id: i64,
     title: String,
     /// At most 300 characters of the row's text, ending in `…` when cut.
     /// `get_row` returns the full text.
     text: String,
-    /// Task status (`open`, `done`, `blocked`); omitted for other rows.
+    /// Task status (`open`, `done`, `blocked`, `dropped`); omitted for other rows.
     #[serde(skip_serializing_if = "Option::is_none")]
     status: Option<String>,
     stale: bool,

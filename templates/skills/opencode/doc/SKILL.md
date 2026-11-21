@@ -12,5 +12,5 @@ Ingest a user-pointed markdown reference document so recall can retrieve it.
 Workflow:
 - Confirm the path is a markdown file the user wants indexed.
 - Run `memhub doc add "<path>" --json` for repo docs unless the user explicitly asks for global docs.
-- Report created/updated/unchanged status and chunk count.
+- Report created/updated/unchanged status and chunk count. If the path is archived, report the refusal and point to `memhub doc unarchive`; do not unarchive it automatically.
 - Mention that docs are re-ingestable cache and are not exported by `memhub export`.

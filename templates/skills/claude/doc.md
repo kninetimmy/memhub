@@ -69,14 +69,15 @@ memhub doc rm <id|path> --global --json
 
 ## Re-ingest semantics
 
-`doc add` on a path already ingested:
+Before archiving existed, `doc add` behaved this way on any path already
+ingested. It still does on unarchived paths:
 
 - **Unchanged content** (same SHA-256) → no-op, `status: "unchanged"`.
 - **Changed content** → every chunk is replaced (old embeddings + FTS
   cleaned), `status: "updated"`.
 
-So re-running after the user edits the source file is safe and cheap;
-just run it again.
+Re-run directly after edits only for unarchived paths. Both `doc add` and
+`doc_add` now refuse archived paths until restored with `memhub doc unarchive`.
 
 ## Retrieving from the doc
 
@@ -91,8 +92,10 @@ memhub.recall(query="<question>", source_types=["doc"])
 ```
 
 In normal recall (no `source_types`), the response also carries an
-`available_docs` count — ingested doc chunks that did NOT surface this
-call. When it is non-zero and the question is
+`available_docs` count of chunks that did NOT surface this call.
+Before archiving, any ingested chunk could count; now archived
+documents' chunks are excluded from the count and every recall scope.
+When the count is non-zero and the question is
 design/spec/architecture-flavored, the `/recall` skill's guidance
 applies: a doc-scoped follow-up can still be worth running. Use
 judgment — not every turn.

@@ -284,6 +284,10 @@ the `include_stale` filter, the `--include-stale` flag and the MCP
   change nothing, and `memhub doctor` names the two config keys as ignored
   settings.
 
+**Lifecycle follow-up (#445):** the stale rule previously applied to
+every otherwise eligible fact. It still applies to non-retired facts;
+retirement excludes a fact independently of its staleness or these options.
+
 ## 5. Eager-embed write path (decisions 27 + 28)
 
 Fact, decision, and task `add` handlers re-embed the affected row
@@ -616,6 +620,9 @@ These PRD-level commitments hold without modification:
   derived FTS data. A `v2` export could include embeddings as an
   optional payload; default behavior stays "export canonical, rebuild
   derived."
+  **Lifecycle follow-up (#445):** exports previously wrote v1; they now
+  write v2 for fact and task lifecycle metadata, not embeddings. Import
+  still reads v1.
 - **Security / privacy §15.** No new exfiltration surface. Embedding
   inference is local. Vectors never leave the machine.
 - **Indexing principle §9** *(otherwise unchanged).* The new vector

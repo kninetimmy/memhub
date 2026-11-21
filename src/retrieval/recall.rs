@@ -109,8 +109,8 @@ pub struct RecallOptions {
     /// architecture sections, plus doc chunks when the repo includes docs
     /// in default recall. Never session notes; scope to `Note` explicitly.
     pub source_types: Vec<SourceType>,
-    /// Accepted for compatibility and ignored: stale facts are always
-    /// returned, flagged `stale: true` and ranked like fresh ones.
+    /// Accepted for compatibility and ignored. Staleness still only marks
+    /// eligible facts `stale: true`; unlike before, retired facts cannot surface.
     pub include_stale: Option<bool>,
     /// Override of `accepted_only_by_default`.
     pub accepted_only: Option<bool>,
@@ -174,11 +174,12 @@ pub struct RecallHit {
     pub vector_score: f64,
     pub stale: bool,
     /// `Some(new_id)` when this hit was superseded by another row of the
-    /// same source type (Wave 3 L3). The hit is kept and demoted (via
-    /// `scoring.superseded_penalty`), not excluded — this tag lets the
-    /// caller see the replacement id. Only facts/decisions can carry it.
+    /// same source type (Wave 3 L3). Before retirement, eligible
+    /// superseded rows were kept and demoted via `scoring.superseded_penalty`.
+    /// That still holds for decisions and non-retired facts; retired facts
+    /// never reach this point. Only fact and decision hits can carry this tag.
     pub superseded_by: Option<i64>,
-    /// Task status (`open`, `done`, ...); `None` for every other row type.
+    /// Task status (`open`, `done`, `blocked`, `dropped`); `None` for other row types.
     pub status: Option<String>,
     pub source: String,
     pub created_at: String,
@@ -231,18 +232,14 @@ pub struct RecallResponse {
     pub warnings: Vec<RecallWarning>,
     pub matcher: String,
     pub elapsed_ms: u128,
-    /// Count of ingested doc chunks that exist in this repo but were NOT
-    /// surfaced in `results` on this call. Zero when the caller explicitly
-    /// scoped to docs (`--source-type doc`), when none are ingested, or
-    /// when every ingested chunk made the returned bundle. A non-zero
-    /// value is a cheap cue for the agent to decide whether a follow-up
-    /// doc-scoped recall is worthwhile. Doc chunks join the *default*
-    /// bundle (no explicit `source_types`) only when `[retrieval]
-    /// include_docs_in_default` is set — auto-enabled by the first `doc
-    /// add` (decision 90) — and even then at most `rerank_doc_cap` of them
-    /// are re-ranked and only those that score high enough take a slot, so
-    /// most ingested chunks still don't surface and this count stays
-    /// meaningfully non-zero.
+    /// Counts ingested doc chunks not surfaced in `results`, over the
+    /// stores searched. Before archiving, any ingested chunk could count;
+    /// now archived documents' chunks never count. Zero when explicitly
+    /// scoped to docs, when no eligible chunks exist, or when all surfaced.
+    /// Non-zero is a cue to consider a doc-scoped follow-up. The first repo
+    /// `doc add` enables `[retrieval] include_docs_in_default` (decision 90);
+    /// default-included chunks still compete for `rerank_doc_cap` pool slots
+    /// and must score high enough to surface.
     pub available_docs: usize,
     /// Per-reason accounting of rows this call dropped, demoted or cut.
     /// Always computed (a handful of counters); the CLI and MCP surfaces
@@ -276,8 +273,10 @@ pub struct RecallExplain {
     /// run to vet them.
     pub docs_dropped_no_rerank: usize,
     /// Ingested doc chunks (over the stores searched) this call did not
-    /// search: the full chunk total when doc chunks were not among the
-    /// searched source types, 0 when they were (default inclusion or an
+    /// search. Before archiving, any ingested chunk could count; now
+    /// archived documents' chunks never count. The count is the eligible
+    /// chunk total when doc chunks were not among the searched source
+    /// types, 0 when they were (default inclusion or an
     /// explicit doc scope). Unlike `available_docs`, a chunk that was
     /// searched but not surfaced does not count. The machine-global store's
     /// chunks are not counted when this repo has not opted in to it;
@@ -553,7 +552,7 @@ pub fn get_row(start: &Path, source_type: &str, source_id: i64, scope: &str) -> 
     let ctx = db::open_project(start)?;
     let stale_after = ctx.config.retrieval.fact_stale_after_days;
     let row = match scope {
-        SCOPE_REPO => load_source_row(&ctx.conn, st, source_id, stale_after)?,
+        SCOPE_REPO => load_source_row(&ctx.conn, st, source_id, stale_after, true)?,
         SCOPE_GLOBAL => {
             if !ctx.config.global.enabled {
                 return Err(MemhubError::InvalidInput(
@@ -570,7 +569,7 @@ pub fn get_row(start: &Path, source_type: &str, source_id: i64, scope: &str) -> 
                     "{reason}; run `memhub upgrade`"
                 )));
             }
-            load_source_row(&gctx.conn, st, source_id, stale_after)?
+            load_source_row(&gctx.conn, st, source_id, stale_after, true)?
         }
         other => {
             return Err(MemhubError::InvalidInput(format!(
@@ -613,7 +612,9 @@ struct ResolvedOptions {
     source_types: Vec<SourceType>,
     /// Fact-staleness horizon in days (`[retrieval] fact_stale_after_days`).
     /// A fact never verified, or last verified more than this many days ago,
-    /// is stale: flagged `stale: true`, never excluded or demoted.
+    /// is stale. Before retirement, eligible stale facts were flagged
+    /// `stale: true` without exclusion or demotion for staleness. That
+    /// still holds for non-retired facts; retirement filters separately.
     fact_stale_after_days: i64,
     accepted_only: bool,
     /// Effective rerank toggle; honored only when mode = hybrid.
@@ -628,9 +629,10 @@ struct ResolvedOptions {
     rerank_cutoff: f32,
     /// True only when doc chunks entered the pool implicitly via
     /// `[retrieval] include_docs_in_default` (caller passed no
-    /// `source_types`). Explicit `--source-type doc` keeps this false
-    /// so that path behaves exactly as before. Gates the doc cap and the
-    /// "drop unvetted docs" safety rule below.
+    /// `source_types`). Before archiving, explicitly scoped recall could
+    /// search every ingested document. Explicit `--source-type doc` still
+    /// keeps this false, bypassing the doc cap and the "drop unvetted docs"
+    /// rule, but both explicit and default scopes now exclude archived chunks.
     docs_via_default: bool,
 }
 
@@ -768,9 +770,9 @@ struct GatherResult {
     /// them.
     candidate_count: usize,
     warnings: Vec<RecallWarning>,
-    /// `COUNT(*)` of `doc_chunks` in this corpus, summed across corpora by
-    /// the orchestrator. It feeds both `available_docs` and
-    /// `RecallExplain::docs_not_searched`.
+    /// Previously `COUNT(*)` of all `doc_chunks` in this corpus; now only
+    /// chunks of non-archived documents. Summed across corpora to feed
+    /// `available_docs` and `RecallExplain::docs_not_searched`.
     doc_chunk_total: i64,
     /// Rows a retriever found that the accepted-only filter then excluded;
     /// already counted in `explain`.
@@ -845,8 +847,9 @@ fn gather_scored(
     hydrate_sources(conn, &mut candidates, opts.fact_stale_after_days)?;
 
     // Apply filters (per §4 of the addendum, filters apply before scoring).
-    // Staleness is informational (decision 236): stale facts are never
-    // filtered or demoted, only flagged `stale: true`.
+    // Staleness is informational (decision 236): before retirement, eligible
+    // facts were only flagged, not filtered or demoted for staleness. This
+    // still holds; the separate retirement exclusion happens before scoring.
     let mut explain = RecallExplain::default();
     let mut excluded = HashSet::new();
     let surviving: Vec<CandidateRow> = candidates
@@ -912,7 +915,8 @@ fn gather_scored(
 
     let doc_chunk_total = conn
         .query_row(
-            "SELECT COUNT(*) FROM doc_chunks WHERE project_id = 1",
+            "SELECT COUNT(*) FROM doc_chunks c JOIN documents d ON d.id = c.doc_id
+             WHERE c.project_id = 1 AND d.archived_at IS NULL",
             [],
             |r| r.get::<_, i64>(0),
         )
@@ -957,9 +961,10 @@ fn phrasing_candidates(
         Some(expr) => fts_all(&expr)?,
         None => Vec::new(),
     };
-    // No row holds every query token (typical of a keyword bag or a natural
-    // question): let rows matching some of the content tokens contribute
-    // FTS signal instead of leaving the pool to cosine alone (issue #225).
+    // Retry with some tokens if no full-token FTS hit survives in this
+    // store for this phrasing (issue #225). Before lifecycle filtering,
+    // a full-token hit from a now-retired fact or archived chunk could
+    // suppress the retry. Accepted-only and cosine do not affect this test.
     let fts_partial = fts_results.is_empty();
     if fts_partial && let Some(expr) = build_fts_match_any(phrasing.text) {
         fts_results = fts_all(&expr)?;
@@ -1223,8 +1228,9 @@ fn named_rows(query: &str) -> Vec<(SourceType, i64)> {
 /// Pull the repo-store rows the query names by number (`named_rows`) out of
 /// the per-phrasing pools and return them in query order, at most
 /// `max_results`. A named row is skipped when its source type is outside the
-/// search scope, it does not exist, or the stale / accepted-only filters
-/// exclude it; global-store rows are never touched (their ids are their own).
+/// search scope, it does not exist, or the accepted-only filter excludes it.
+/// Before retirement, any otherwise eligible fact could be named; now retired
+/// facts are skipped too. Global-store rows are never touched (their ids are their own).
 /// A row the retrievers already found keeps its blended hit and the counts the
 /// ranked gather gave it. Any other row is loaded and counted as the gather
 /// would have counted it had a retriever found it: in `candidate_count`, the
@@ -1524,8 +1530,8 @@ struct CandidateRow {
     created_at: String,
     /// Decay-eligible age in days (Wave 3 L6): `julianday('now') -
     /// julianday(verified_at)` for facts, `... - julianday(updated_at)` for
-    /// *done* tasks. `None` for decisions, doc chunks, open/blocked tasks,
-    /// and never-verified facts — rows that carry no age and so never decay.
+    /// *done* tasks. `None` for decisions, doc chunks, open/blocked/dropped
+    /// tasks, and never-verified facts — rows with no age decay.
     /// Drives the `age_half_life_days` multiplier in `score()`.
     age_days: Option<f64>,
     /// Optional, unenforced classifier tag (Wave 6 W4, migration 0021),
@@ -1614,8 +1620,8 @@ fn fts_lookup(
     let sql = match source_type {
         SourceType::Fact => {
             "SELECT facts_fts.rowid, bm25(facts_fts) AS score \
-             FROM facts_fts \
-             WHERE facts_fts MATCH ?1 \
+             FROM facts_fts JOIN facts f ON f.id = facts_fts.rowid \
+             WHERE facts_fts MATCH ?1 AND f.retired_at IS NULL \
              ORDER BY score ASC \
              LIMIT ?2"
         }
@@ -1635,8 +1641,9 @@ fn fts_lookup(
         }
         SourceType::DocChunk => {
             "SELECT doc_chunks_fts.rowid, bm25(doc_chunks_fts) AS score \
-             FROM doc_chunks_fts \
-             WHERE doc_chunks_fts MATCH ?1 \
+             FROM doc_chunks_fts JOIN doc_chunks c ON c.id = doc_chunks_fts.rowid \
+             JOIN documents d ON d.id = c.doc_id \
+             WHERE doc_chunks_fts MATCH ?1 AND d.archived_at IS NULL \
              ORDER BY score ASC \
              LIMIT ?2"
         }
@@ -1687,8 +1694,15 @@ fn vector_lookup(
         .join(", ");
     let mut stmt = conn.prepare(&format!(
         "SELECT source_type, source_id, vector \
-         FROM embeddings \
-         WHERE model_name = ?1 AND dimension = ?2 AND source_type IN ({placeholders})"
+         FROM embeddings e \
+         WHERE model_name = ?1 AND dimension = ?2 AND source_type IN ({placeholders}) \
+           AND (e.source_type != 'fact' OR NOT EXISTS ( \
+               SELECT 1 FROM facts f WHERE f.id = e.source_id AND f.retired_at IS NOT NULL \
+           )) \
+           AND (e.source_type != 'doc_chunk' OR NOT EXISTS ( \
+               SELECT 1 FROM doc_chunks c JOIN documents d ON d.id = c.doc_id \
+               WHERE c.id = e.source_id AND d.archived_at IS NOT NULL \
+           ))"
     ))?;
     let dimension = EMBEDDING_DIMENSION as i64;
     let mut bound: Vec<&dyn rusqlite::ToSql> = vec![&EMBEDDING_MODEL_NAME, &dimension];
@@ -1928,7 +1942,7 @@ fn hydrate_sources(
 
     for (st, ids) in by_type {
         for id in ids {
-            if let Some(row) = load_source_row(conn, st, id, fact_stale_after_days)?
+            if let Some(row) = load_source_row(conn, st, id, fact_stale_after_days, false)?
                 && let Some(entry) = candidates.get_mut(&(st, id))
             {
                 entry.title = row.title;
@@ -1963,7 +1977,8 @@ struct HydratedSource {
     created_at: String,
     /// Decay-eligible age in days (Wave 3 L6): `Some` only for facts (from
     /// `verified_at`) and *done* tasks (from `updated_at`); `None` for
-    /// decisions, doc chunks, open/blocked tasks, and never-verified facts.
+    /// decisions, doc chunks, never-verified facts, and all non-done tasks
+    /// (previously open/blocked, now also dropped).
     age_days: Option<f64>,
     /// Optional, unenforced classifier tag (Wave 6 W4, migration 0021).
     /// `Some` only for a tagged fact; always `None` for decisions, tasks,
@@ -1976,6 +1991,7 @@ fn load_source_row(
     source_type: SourceType,
     source_id: i64,
     fact_stale_after_days: i64,
+    include_out_of_circulation: bool,
 ) -> Result<Option<HydratedSource>> {
     match source_type {
         SourceType::Fact => {
@@ -1989,10 +2005,11 @@ fn load_source_row(
                     superseded_by, \
                     julianday('now') - julianday(verified_at) AS age_days, \
                     kind \
-                FROM facts WHERE id = ?1",
+                FROM facts WHERE id = ?1 AND (?3 OR retired_at IS NULL)",
             )?;
+            let bindings = params![source_id, fact_stale_after_days, include_out_of_circulation];
             let row: std::result::Result<HydratedSource, rusqlite::Error> =
-                stmt.query_row(params![source_id, fact_stale_after_days], |r: &Row<'_>| {
+                stmt.query_row(bindings, |r: &Row<'_>| {
                     let key: String = r.get(0)?;
                     let value: String = r.get(1)?;
                     let source: String = r.get(2)?;
@@ -2052,8 +2069,8 @@ fn load_source_row(
         }
         SourceType::Task => {
             // Age decay keys on `updated_at` for *done* tasks only (Wave 3
-            // L6); open/blocked tasks are live work and carry no decay age
-            // (`NULL` => `None`).
+            // L6); all other tasks carry no decay age (`NULL` => `None`):
+            // previously open/blocked, now also dropped.
             let mut stmt = conn.prepare(
                 "SELECT title, notes, created_at, \
                     CASE WHEN status = 'done' \
@@ -2091,10 +2108,11 @@ fn load_source_row(
             let mut stmt = conn.prepare(
                 "SELECT d.title, c.heading_path, c.body, d.source, c.created_at \
                  FROM doc_chunks c JOIN documents d ON d.id = c.doc_id \
-                 WHERE c.id = ?1",
+                 WHERE c.id = ?1 AND (?2 OR d.archived_at IS NULL)",
             )?;
+            let bindings = params![source_id, include_out_of_circulation];
             let row: std::result::Result<HydratedSource, rusqlite::Error> =
-                stmt.query_row(params![source_id], |r: &Row<'_>| {
+                stmt.query_row(bindings, |r: &Row<'_>| {
                     let doc_title: String = r.get(0)?;
                     let heading_path: String = r.get(1)?;
                     let body: String = r.get(2)?;
@@ -2242,10 +2260,10 @@ fn score(rows: &[CandidateRow], scoring: &RetrievalScoringConfig) -> Vec<ScoredH
                 None => 0.0,
             };
             let vector_score = c.vector_score.unwrap_or(0.0).clamp(0.0, 1.0);
-            // Demotion signal (Wave 3 L3): a superseded row is kept and
-            // tagged but pushed down, never excluded (demote-with-link,
-            // decision 145). Staleness is deliberately not a ranking input
-            // (decision 236): `stale` is only a flag on the hit.
+            // Before retirement, eligible superseded rows were kept,
+            // tagged and demoted (decision 145). That still holds here;
+            // retirement is filtered before scoring. Staleness remains
+            // a flag, not a ranking input (decision 236).
             let superseded_penalty = if c.superseded_by.is_some() {
                 scoring.superseded_penalty
             } else {
@@ -2308,8 +2326,9 @@ fn score(rows: &[CandidateRow], scoring: &RetrievalScoringConfig) -> Vec<ScoredH
 ///
 /// When enabled (`> 0`), a row whose decay-eligible age is `days` old is
 /// scaled by `2^(-days / half_life)`, i.e. it halves every `half_life_days`.
-/// `age_days == None` (decisions, doc chunks, open/blocked tasks, or a fact
-/// never verified) and non-positive ages both return `1.0`: decay only ever
+/// `age_days == None` (e.g. decisions, doc chunks, non-done tasks, or a fact
+/// never verified) and non-positive ages both return `1.0`. Non-done used
+/// to cover open/blocked only; now it also covers dropped. Decay only ever
 /// demotes an aged row, it never boosts a fresh or timestamp-less one.
 fn age_decay_multiplier(age_days: Option<f64>, half_life_days: i64) -> f64 {
     if half_life_days <= 0 {

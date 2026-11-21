@@ -5,7 +5,7 @@ use rusqlite::Connection;
 
 use crate::Result;
 use crate::db;
-use crate::export::{EXPORT_VERSION, Export, v1};
+use crate::export::{EXPORT_VERSION, Export, v1, v2};
 use crate::render::temp_path_for;
 
 pub struct ExportSummary {
@@ -104,24 +104,29 @@ fn read_project_meta(conn: &Connection) -> Result<(String, String, String)> {
     )?)
 }
 
-fn read_facts(conn: &Connection) -> Result<Vec<v1::Fact>> {
+fn read_facts(conn: &Connection) -> Result<Vec<v2::Fact>> {
     let mut stmt = conn.prepare(
-        "SELECT id, key, value, confidence, source, verified_at, created_at, superseded_by, kind
+        "SELECT id, key, value, confidence, source, verified_at, created_at, superseded_by, kind,
+                retired_at, retired_reason
          FROM facts
          WHERE project_id = 1
          ORDER BY id",
     )?;
     let rows = stmt.query_map([], |row| {
-        Ok(v1::Fact {
-            id: row.get(0)?,
-            key: row.get(1)?,
-            value: row.get(2)?,
-            confidence: row.get(3)?,
-            source: row.get(4)?,
-            verified_at: row.get(5)?,
-            created_at: row.get(6)?,
-            superseded_by: row.get(7)?,
-            kind: row.get(8)?,
+        Ok(v2::Fact {
+            base: v1::Fact {
+                id: row.get(0)?,
+                key: row.get(1)?,
+                value: row.get(2)?,
+                confidence: row.get(3)?,
+                source: row.get(4)?,
+                verified_at: row.get(5)?,
+                created_at: row.get(6)?,
+                superseded_by: row.get(7)?,
+                kind: row.get(8)?,
+            },
+            retired_at: row.get(9)?,
+            retired_reason: row.get(10)?,
         })
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -151,21 +156,29 @@ fn read_decisions(conn: &Connection) -> Result<Vec<v1::Decision>> {
         .map_err(Into::into)
 }
 
-fn read_tasks(conn: &Connection) -> Result<Vec<v1::Task>> {
+fn read_tasks(conn: &Connection) -> Result<Vec<v2::Task>> {
     let mut stmt = conn.prepare(
-        "SELECT id, title, status, notes, created_at, updated_at
+        "SELECT id, title, status, notes, created_at, updated_at, dropped_reason,
+                pre_drop_status, pre_drop_updated_at, pre_keep_updated_at, kept_at
          FROM tasks
          WHERE project_id = 1
          ORDER BY id",
     )?;
     let rows = stmt.query_map([], |row| {
-        Ok(v1::Task {
-            id: row.get(0)?,
-            title: row.get(1)?,
-            status: row.get(2)?,
-            notes: row.get(3)?,
-            created_at: row.get(4)?,
-            updated_at: row.get(5)?,
+        Ok(v2::Task {
+            base: v1::Task {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                status: row.get(2)?,
+                notes: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+            },
+            dropped_reason: row.get(6)?,
+            pre_drop_status: row.get(7)?,
+            pre_drop_updated_at: row.get(8)?,
+            pre_keep_updated_at: row.get(9)?,
+            kept_at: row.get(10)?,
         })
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()

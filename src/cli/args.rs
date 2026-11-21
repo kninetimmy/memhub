@@ -228,8 +228,8 @@ pub enum TopLevelCommand {
         max_results: Option<usize>,
         #[arg(long, value_enum)]
         mode: Option<RecallModeArg>,
-        /// Accepted and ignored: stale facts are always returned, flagged
-        /// `stale`.
+        /// Accepted and ignored. Staleness still only flags eligible facts
+        /// as `stale`; unlike before, retired facts cannot surface at all.
         #[arg(long)]
         include_stale: bool,
         /// Keep only rows whose source is `user` or `user+agent:<id>`.
@@ -510,6 +510,9 @@ pub enum EvalCommand {
     /// reports how many came back first and within the top 3, plus the
     /// misses. Adds or changes no rows (like every command, it runs
     /// maintenance-on-open); the same database draws the same sample.
+    ///
+    /// Before lifecycle states, any non-superseded fact and any doc chunk
+    /// could be sampled; now retired facts and archived chunks are skipped.
     SelfCheck {
         /// Rows sampled per type.
         #[arg(long, default_value_t = commands::self_check::DEFAULT_SAMPLE)]
@@ -855,12 +858,14 @@ pub enum ReviewCommand {
         json: bool,
         #[arg(long)]
         actor: Option<String>,
-        /// Retire the named repo row in favor of this write (fact id or key,
-        /// or numeric decision id). A fact cannot supersede itself.
+        /// Link the named repo row to this replacement as before (fact id or
+        /// key, or numeric decision id). This supersedes, not retires, a fact.
+        /// A fact cannot supersede itself.
         #[arg(long)]
         supersede: Option<String>,
-        /// Skip repo accept-time checks. A same-key overwrite logs the prior
-        /// value to writes_log.
+        /// Skip repo overwrite and similarity checks as before. A same-key
+        /// overwrite logs the prior value; a retired key now refuses even
+        /// with this flag, until restored with `memhub fact unretire`.
         #[arg(long)]
         force: bool,
     },
@@ -911,7 +916,8 @@ pub enum FactCommand {
         actor: Option<String>,
     },
     /// Copy an existing repo fact into the machine-global store
-    /// (copy, not move — the repo row stays and still wins locally).
+    /// (copy, not move). Eligible repo hits still take precedence;
+    /// unlike before, a retired fact won't be recalled locally.
     Promote {
         id: i64,
         /// Target the machine-global store. Required (the only
@@ -923,9 +929,29 @@ pub enum FactCommand {
         #[arg(long)]
         actor: Option<String>,
     },
+    /// List repo facts. Previously all were listed; now retired facts need --include-retired.
     List {
+        /// Include retired facts with their retirement time and reason.
+        #[arg(long)]
+        include_retired: bool,
         #[arg(long)]
         json: bool,
+    },
+    /// Take a repo fact out of recall without deleting it (CLI only).
+    Retire {
+        #[arg(value_name = "ID-OR-KEY")]
+        ident: String,
+        #[arg(long)]
+        reason: String,
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// Restore a retired repo fact without re-verifying it (CLI only).
+    Unretire {
+        #[arg(value_name = "ID-OR-KEY")]
+        ident: String,
+        #[arg(long)]
+        actor: Option<String>,
     },
     /// Refresh a fact's `verified_at` to now. Touches nothing else
     /// durable — no confidence reset, no source rewrite, no
@@ -941,13 +967,14 @@ pub enum FactCommand {
         actor: Option<String>,
     },
     /// Mark a fact superseded by another fact — demote-with-link, no-loss
-    /// (Wave 3 L3). The old fact is NOT deleted: it stays present, is
-    /// tagged with the replacement id, penalized in recall, and annotated
-    /// in render. Both `<old>` and `--by <new>` accept a numeric id or an
-    /// exact key. Durable + user-gated (CLI only); the MCP surface can only
+    /// (Wave 3 L3). The old fact is not deleted; it is tagged with the
+    /// replacement id. Before retirement it was still eligible for recall
+    /// (with a penalty) and annotated in render. That still holds unless
+    /// the old fact is separately retired. Both `<old>` and `--by <new>`
+    /// accept a numeric id or an exact key. Durable + user-gated (CLI only); the MCP surface can only
     /// stage a `propose_supersede` for `memhub review accept`.
     Supersede {
-        /// The fact being retired (numeric id or exact key).
+        /// The fact being superseded (numeric id or exact key).
         old: String,
         /// The fact that replaces it (numeric id or exact key).
         #[arg(long = "by", value_name = "NEW")]
@@ -961,8 +988,11 @@ pub enum FactCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum DocCommand {
-    /// Ingest (or re-ingest) a markdown file. Unchanged content is a
-    /// no-op; changed content replaces every chunk.
+    /// Ingest (or re-ingest) a markdown file; archived paths require `memhub doc unarchive`.
+    ///
+    /// Before archiving existed, unchanged content was a no-op and changed content
+    /// replaced every chunk on any stored path. This still holds for unarchived
+    /// paths; archived paths refuse until restored with `memhub doc unarchive`.
     Add {
         /// Path to the markdown file to ingest.
         file: PathBuf,
@@ -988,6 +1018,22 @@ pub enum DocCommand {
         global: bool,
         #[arg(long)]
         json: bool,
+    },
+    /// Take a repo document out of recall without deleting it (CLI only).
+    Archive {
+        #[arg(value_name = "ID-OR-PATH")]
+        ident: String,
+        #[arg(long)]
+        reason: String,
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// Restore an archived repo document to recall (CLI only).
+    Unarchive {
+        #[arg(value_name = "ID-OR-PATH")]
+        ident: String,
+        #[arg(long)]
+        actor: Option<String>,
     },
     /// Remove a document (and its chunks) by id or path.
     Rm {
@@ -1087,6 +1133,7 @@ pub enum TaskStatus {
     Open,
     Done,
     Blocked,
+    Dropped,
     All,
 }
 
@@ -1096,6 +1143,7 @@ impl TaskStatus {
             Self::Open => "open",
             Self::Done => "done",
             Self::Blocked => "blocked",
+            Self::Dropped => "dropped",
             Self::All => "all",
         }
     }
@@ -1129,10 +1177,37 @@ pub enum TaskCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Mark a task done. This still refreshes its update time and now also clears drop/keep undo data.
     Done {
         id: i64,
         #[arg(long)]
         json: bool,
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// Drop an open or blocked task without deleting it (CLI only).
+    Drop {
+        id: i64,
+        #[arg(long)]
+        reason: String,
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// Restore a dropped task to its previous status and update time (CLI only).
+    Undrop {
+        id: i64,
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// Refresh an open or blocked task's last-updated time (CLI only).
+    Keep {
+        id: i64,
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// Restore the update time saved by the latest task keep (CLI only).
+    Unkeep {
+        id: i64,
         #[arg(long)]
         actor: Option<String>,
     },

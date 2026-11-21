@@ -145,6 +145,18 @@ fn tools_list_exposes_full_tool_surface() {
             "tools/list missing `{name}`; got {names:?}",
         );
     }
+    for name in [
+        "fact_retire",
+        "fact_unretire",
+        "doc_archive",
+        "doc_unarchive",
+        "task_drop",
+        "task_undrop",
+        "task_keep",
+        "task_unkeep",
+    ] {
+        assert!(!names.contains(name), "{name} must stay CLI-only");
+    }
 
     // Issue #318: `recall` advertises an optional boolean `explain`
     // parameter with a description of what it reports.

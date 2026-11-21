@@ -72,16 +72,12 @@ pub const MANIFEST_VERSION: u32 = 1;
 /// for identical content (page reordering, `VACUUM`), so a file hash
 /// would report "changed" on every comparison.
 ///
-/// `writes_log` is appended to by every durable mutation, so its
-/// `max_id` / `count` are a cheap monotonic human signal. But equality
-/// hinges on `digest` — a hash of the **durable content tables**
-/// themselves, not the log. The log records *that* a fact was added,
-/// not the fact's key/value; two repos that each added one fact log
-/// near-identical rows (differing only by a second-granularity
-/// timestamp), so a log-based digest gives dangerous false "equal"
-/// verdicts. Hashing the content tables means only genuinely identical
-/// content — e.g. one side adopted the other's snapshot byte-for-byte
-/// — compares equal, regardless of timing or page layout.
+/// Equality compares all three fields: the `writes_log` maximum ID and
+/// row count, and the digest of the **durable content tables**. The log
+/// records *that* a fact was added, not its key/value, so a log-based
+/// digest could miss different content. Conversely, lifecycle undo can
+/// restore the content digest but appends audit rows, so it does not
+/// restore logical-version equality with the pre-action snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogicalVersion {
     pub writes_log_max_id: i64,
@@ -92,18 +88,19 @@ pub struct LogicalVersion {
 /// Durable content tables and the columns that define their content.
 /// Order is fixed so the digest is deterministic.
 ///
-/// This is the authoritative list of what divergence the sync check
-/// gates on. It is a **superset** of `memhub export` — a whole-DB sync
-/// snapshot (`VACUUM INTO`) carries every table, including `documents` /
-/// `doc_chunks`, which `export` deliberately omits — so the digest must
+/// Before migration 0026 this was the entire durable-content digest list.
+/// It now defines the base stream; `LIFECYCLE_CONTENT` adds populated
+/// lifecycle metadata. The digest covers durable content that `memhub
+/// export` does not. A whole-DB sync snapshot (`VACUUM INTO`) carries
+/// every table, including `documents` / `doc_chunks`, which `export`
+/// deliberately omits — so the digest must
 /// cover them too or two machines that each ingest a different doc would
 /// compare EQUAL over real divergence (audit finding F2).
 ///
 /// Coverage is hand-maintained but drift-proofed: the
 /// `content_tables_cover_the_live_schema` test asserts every live table
-/// and column is either digested here or on an explicit exemption list
-/// with a stated reason. Adding a durable table/column without updating
-/// one of the two lists turns that test red.
+/// and column is either covered by one of the two digest lists or on an
+/// explicit exemption list with a stated reason.
 ///
 /// `project_id` is intentionally never digested (it is the constant
 /// singleton partition key, always 1, and the digest already filters
@@ -202,6 +199,25 @@ const CONTENT_TABLES: &[(&str, &[&str])] = &[
     ("doc_chunks", &["doc_id", "ord", "heading_path", "body"]),
 ];
 
+// Nullable lifecycle columns extend the stream only when populated. Merely
+// migrating a 0025 snapshot must not invalidate its recorded sync baseline.
+// The first column identifies the row; the rest are the optional metadata.
+const LIFECYCLE_CONTENT: &[(&str, &[&str])] = &[
+    ("facts", &["id", "retired_at", "retired_reason"]),
+    (
+        "tasks",
+        &[
+            "id",
+            "dropped_reason",
+            "pre_drop_status",
+            "pre_drop_updated_at",
+            "pre_keep_updated_at",
+            "kept_at",
+        ],
+    ),
+    ("documents", &["path", "archived_at", "archived_reason"]),
+];
+
 impl LogicalVersion {
     pub fn read(conn: &Connection) -> Result<Self> {
         let (max_id, count): (Option<i64>, i64) = conn.query_row(
@@ -220,10 +236,23 @@ impl LogicalVersion {
         // content — two DBs hash equal iff their digested content is
         // byte-for-byte identical, and NULL ≠ '' ≠ any other value.
         let mut hasher = Sha256::new();
-        for (table, cols) in CONTENT_TABLES {
+        let has_lifecycle = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = ?1)",
+            [db::MEMORY_LIFECYCLE_MIGRATION],
+            |r| r.get::<_, bool>(0),
+        )?;
+        for (table, cols, extension) in CONTENT_TABLES
+            .iter()
+            .map(|(table, cols)| (table, cols, false))
+            .chain(
+                LIFECYCLE_CONTENT
+                    .iter()
+                    .filter(|_| has_lifecycle)
+                    .map(|(table, cols)| (table, cols, true)),
+            )
+        {
             // Length-framed table name so no table's bytes can bleed into
             // the next.
-            hash_len_prefixed(&mut hasher, table.as_bytes());
             // Each column is CAST to TEXT individually (NULL stays NULL —
             // it is not coalesced), so integer/real columns render
             // deterministically while NULL remains distinguishable.
@@ -232,10 +261,29 @@ impl LogicalVersion {
                 .map(|c| format!("CAST({c} AS TEXT)"))
                 .collect::<Vec<_>>()
                 .join(", ");
-            let sql = format!("SELECT {select_list} FROM {table} WHERE project_id = 1 ORDER BY id");
+            let filter = if extension {
+                format!(
+                    " AND ({})",
+                    cols[1..]
+                        .iter()
+                        .map(|col| format!("{col} IS NOT NULL"))
+                        .collect::<Vec<_>>()
+                        .join(" OR ")
+                )
+            } else {
+                String::new()
+            };
+            let sql = format!(
+                "SELECT {select_list} FROM {table} WHERE project_id = 1{filter} ORDER BY id"
+            );
             let mut stmt = conn.prepare(&sql)?;
             let mut rows = stmt.query([])?;
-            while let Some(row) = rows.next()? {
+            let mut next = rows.next()?;
+            if extension && next.is_none() {
+                continue;
+            }
+            hash_len_prefixed(&mut hasher, table.as_bytes());
+            while let Some(row) = next {
                 // 0x01 = "a row follows"; distinguished from the 0x00
                 // end-of-table marker below. The column count is fixed per
                 // table, so the parse of the framed values is unambiguous.
@@ -251,6 +299,7 @@ impl LogicalVersion {
                         }
                     }
                 }
+                next = rows.next()?;
             }
             // 0x00 closes the table's row stream.
             hasher.update([TABLE_END]);
@@ -3100,10 +3149,13 @@ mod tests {
         let ctx = db::open_project(temp.path()).expect("open");
         let conn = &ctx.conn;
 
-        let digested: std::collections::HashMap<&str, Vec<&str>> = CONTENT_TABLES
+        let mut digested: std::collections::HashMap<&str, Vec<&str>> = CONTENT_TABLES
             .iter()
             .map(|(t, cols)| (*t, cols.to_vec()))
             .collect();
+        for (table, cols) in LIFECYCLE_CONTENT {
+            digested.get_mut(table).expect("base table").extend(*cols);
+        }
 
         let mut tables_stmt = conn
             .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")

@@ -120,15 +120,7 @@ pub struct AcceptOutcome {
 /// Protect a plain fact accept from overwriting a different value under the
 /// same active key. Exact and model-free; runs before any similarity probe.
 fn check_same_key_overwrite(tx: &Transaction<'_>, id: i64, key: &str, value: &str) -> Result<()> {
-    let existing: Option<(i64, String)> = tx
-        .query_row(
-            "SELECT id, value FROM facts
-             WHERE project_id = 1 AND key = ?1 AND superseded_by IS NULL",
-            params![key],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()?;
-    if let Some((existing_id, existing_value)) = existing
+    if let Some((existing_id, existing_value, false)) = fact::find_writable_fact(tx, key)?
         && existing_value != value
     {
         return Err(MemhubError::InvalidInput(format!(
@@ -178,7 +170,7 @@ fn probe_similarity(
     Ok(None)
 }
 
-/// Gather the same-kind, non-superseded rows the reranked probe scores
+/// Gather the same-kind, non-superseded, non-retired rows the reranked probe scores
 /// against, most-recent first and capped at [`PROBE_CANDIDATE_LIMIT`]. For
 /// facts, `exclude_fact_key` drops the incoming key's own row (handled by the
 /// same-key signal, and never a contradiction with itself).
@@ -192,7 +184,7 @@ fn gather_probe_candidates(
         "fact" => {
             let mut stmt = tx.prepare(
                 "SELECT id, key, value FROM facts
-                 WHERE project_id = 1 AND superseded_by IS NULL
+                 WHERE project_id = 1 AND superseded_by IS NULL AND retired_at IS NULL
                  ORDER BY id DESC LIMIT ?1",
             )?;
             let rows = stmt.query_map(params![PROBE_CANDIDATE_LIMIT], |r| {
@@ -361,7 +353,7 @@ pub fn accept(
                         candidate.label
                     ));
                 }
-                // Honor --supersede whenever supplied: retire the named row in
+                // Honor --supersede whenever supplied: supersede the named row in
                 // favor of the fact just written (L3 demote-with-link). A
                 // same-key overwrite yields the same row id, which
                 // `supersede_in_tx` rejects as self-supersede — the correct,
@@ -674,8 +666,8 @@ pub fn count_stale_queue(start: &Path) -> Result<i64> {
     Ok(stale(start)?.counts.total() as i64)
 }
 
-/// Facts at/over the L2 recall-demotion horizon
-/// (`[retrieval] fact_stale_after_days`) — the identical predicate
+/// Facts at/over the recall staleness horizon
+/// (`[retrieval] fact_stale_after_days`) — the same age test
 /// `retrieval::recall`'s hydrate path applies (issue #47 grounding:
 /// "reuse that horizon logic; don't reinvent it"), deliberately NOT the
 /// fixed `models::FACT_STALE_AFTER_DAYS` constant that `fact::list` /
@@ -686,6 +678,8 @@ pub fn count_stale_queue(start: &Path) -> Result<i64> {
 /// tracks the recall-facing one. Already-superseded facts are excluded —
 /// L3 gave them their own lifecycle signal, and re-verifying a fact that
 /// is meant to be replaced is not the fix.
+/// This legacy queue still includes retired, non-superseded facts that
+/// pass the age test, even though recall now excludes them.
 fn stale_facts(conn: &Connection, horizon_days: i64) -> Result<(usize, Vec<StaleItem>)> {
     let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM facts
@@ -1117,6 +1111,45 @@ fn derive_source_from_pending_actor(actor: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retired_facts_are_not_similarity_candidates_and_cannot_be_overwritten() {
+        let repo = tempfile::tempdir().unwrap();
+        crate::commands::init::run(repo.path()).unwrap();
+        let mut ctx = db::open_project(repo.path()).unwrap();
+        ctx.conn
+            .execute_batch(
+                "INSERT INTO facts(id, key, value) VALUES (1, 'active', 'value');
+                 INSERT INTO facts(id, key, value, retired_at, retired_reason)
+                 VALUES (2, 'retired', 'prior', CURRENT_TIMESTAMP, 'old');",
+            )
+            .unwrap();
+        let tx = ctx.conn.transaction().unwrap();
+        let candidates = gather_probe_candidates(&tx, "fact", None).unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].source_id, 1);
+        tx.rollback().unwrap();
+        drop(ctx);
+
+        let id = crate::commands::pending_write::propose_fact(
+            repo.path(),
+            "retired",
+            "new",
+            "changed",
+            "codex",
+            "openai-codex",
+            "{}",
+        )
+        .unwrap();
+        for (supersede, force) in [(None, false), (None, true), (Some("active"), false)] {
+            let err = accept(repo.path(), id, "cli:user", supersede, force).unwrap_err();
+            assert!(err.to_string().contains("memhub fact unretire"), "{err}");
+        }
+        assert_eq!(show(repo.path(), id).unwrap().status, "pending");
+        let facts = fact::list_with_retired(repo.path(), true).unwrap();
+        assert_eq!(facts[1].value, "prior");
+        assert_eq!(facts[1].retired_reason.as_deref(), Some("old"));
+    }
 
     #[test]
     fn derive_source_handles_user_and_unknown() {

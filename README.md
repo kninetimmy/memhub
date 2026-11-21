@@ -33,10 +33,10 @@ memhub is one offline binary and one SQLite file next to your code. Claude Code,
 - **Hybrid recall**: a recall that blends keyword search (FTS5 with BM25) and meaning-based search (BGE-small), then re-ranks the best candidates. The alternative, FTS-only recall, uses keyword search alone.
 - **Re-ranker**: a second small model that reads the query together with one candidate row and scores how well the row answers it. The bundled one is ms-marco-MiniLM-L-6-v2, called **ms-marco** below.
 - **Rerank cutoff**: the re-ranker score below which recall drops a row as nonsense (`[retrieval.scoring] rerank_cutoff`, default -7.0). Every other row comes back in strict score order, and the agent judges which ones answer the question. Before decision 235, recall used a higher rerank floor instead and marked the rows under it `low_confidence`; that floor and the flag are gone, and the old floor keys in a config are ignored.
-- **Named rows**: a decision, task, or fact you name by number in a query, such as "decision 201". Recall returns it first, and it skips the rerank cutoff.
-- **Compact hits**: each recall hit carries the row's type, id, scope, title, re-ranker score, date, status, and at most 300 characters of its text. `memhub get-row` (the MCP `get_row` tool) returns a row's full text. If no row clears the cutoff and no named row is returned, recall returns nothing and adds a `rerank_cutoff_dropped_all` warning.
+- **Named rows**: a decision, task, or fact you name by number in a query, such as "decision 201". Recall returns eligible named rows first, skipping the rerank cutoff. Before fact retirement, an otherwise eligible fact could always be named; now retired facts are excluded even by number. Use `memhub get-row fact <id>` to inspect one directly.
+- **Compact hits**: each recall hit carries the row's type, id, scope, title, re-ranker score, date, status, and at most 300 characters of its text. `memhub get-row` (the MCP `get_row` tool) returns a row's full text. Recall warns `rerank_cutoff_dropped_all` only if the cutoff drops at least one scored candidate, none clear it, and no named row is returned. An empty pool after filtering does not trigger this warning.
 - **Pending writes**: agent proposals (`pending_writes` in the database) that wait for your review. Each becomes a fact or decision only when you accept it.
-- **PROJECT_LEDGER.md**: a markdown file written by `memhub render` that lists decisions, the task backlog, facts, and recent write activity. Agents use recall instead of reading it.
+- **PROJECT_LEDGER.md**: a markdown file written by `memhub render` that lists decisions, the task backlog, facts, and recent write activity. It used to list all repo facts; it now omits retired facts. Agents use recall instead of reading it.
 - **Hibernated**: fully written but compiled out of normal builds, so a default binary has no commands for it. Its database tables and config keys remain. A default build still shows two traces of hibernated metrics: a skipped `metrics_health` check in `memhub doctor`, and `memhub upgrade` reporting already-installed metrics skill wrappers as orphans.
 
 </details>
@@ -674,6 +674,7 @@ Worth knowing:
 
 - Docs are excluded from `memhub export`. They are file-backed, so re-run `doc add` on another machine.
 - Re-ingesting an unchanged file is a no-op, and changed content replaces every chunk in place.
+- Before archiving, those re-ingest rules applied to every stored path and every ingested chunk could count toward `available_docs`. Now an archived document's chunks stay out of recall and its counts, and you must `memhub doc unarchive` before re-ingesting it.
 - `memhub doc ls / show / rm` manage what's ingested, and the `/doc` skill wraps `doc add`.
 - Set `include_docs_in_default = false` in config for strict opt-in.
 
@@ -742,7 +743,7 @@ memhub global disable    # opt back out (non-destructive)
 
 **What belongs in it** is only the broadly applicable kind of facts, decisions, and docs: machine and toolchain truths, standing engineering policy, a universal style guide. Never tasks, narratives, or anything naming a repo-specific path.
 
-**Writing to it is always a deliberate human action.** Write it born-global from the CLI, or promote an existing repo row (**copy, not move**; the repo row stays and still wins locally):
+**Writing to it is always a deliberate human action.** Write it born-global from the CLI, or promote an existing repo row (**copy, not move**). The repo row stays. Before retirement, it could take precedence when recalled; that still holds for eligible repo hits, but retired facts are not recalled and retiring one does not retire its global copy:
 
 ```bash
 memhub fact add ci-runner "self-hosted, 16 vCPU" --global
@@ -777,14 +778,17 @@ memhub index rebuild                   # re-generate embeddings from the importe
 
 Export covers facts, decisions, tasks, commands, pending writes, writes_log, session notes, and both narrative tables. Embeddings, ingested docs, and machine-global memory are excluded. After an import, run `memhub index rebuild`, re-run `memhub doc add` for reference docs, and re-add machine-global rows on the new machine. To keep two of your own machines in step without moving files by hand, use [sync](#cross-machine-sync). Details: [operations reference](docs/reference/operations.md#cross-machine-workflow).
 
+Previously export wrote JSON v1. It now writes v2 to preserve fact retirement and task drop/keep undo data. Import still reads v1 as well as v2; older v1-only builds refuse v2.
+
 ---
 
 ## Cross-machine sync
 
-Sync moves your repo's memory between *your own* machines (one person, not a team). It uses a folder that already syncs, such as Google Drive for Desktop or an rclone mount. memhub never makes a network call: it only reads and writes a local path. A push writes one whole-database snapshot, manifest last, so another machine never sees a half-finished push. A pull compares content digests and reports one of five verdicts. The model is animated [above](#sync-between-your-machines).
+Sync moves your repo's memory between *your own* machines (one person, not a team). It uses a folder that already syncs, such as Google Drive for Desktop or an rclone mount. memhub never makes a network call: it only reads and writes a local path. A push writes one whole-database snapshot, manifest last, so another machine never sees a half-finished push. A pull compares logical versions and reports one of five verdicts. Earlier wording mentioned only content digests, but equality has always required the digest and the `writes_log` high-water mark (maximum ID) and row count to match. A lifecycle action and its undo can restore the digest without restoring equality because both append audit rows. The model is animated [above](#sync-between-your-machines).
 
 - **Check the baseline warning before adopting.** Earlier guidance called `diverged` the one lossy case. It now also covers an incompatible baseline, such as a returned older fork, even if local has not changed. `drive-ahead` is not a guaranteed safe fast-forward: counters and content equality do not prove ancestry, and independent histories with higher counters remain undetectable. Adopting can discard local-only records; memhub shows both versions, requires an explicit yes, and never adopts automatically. An unavailable `sync check --diff` means its cutoff cannot be used, not that no unique data exists; an available audit diff is not proof of complete reconciliation.
-- **Adopt is guarded.** It writes a backup under `.memhub/backups/sync/` first. It refuses outright on a project-id mismatch, a snapshot from a newer memhub schema (run `memhub upgrade` first), or a checksum that disagrees with the manifest.
+- **Adopt is guarded.** It writes a backup under `.memhub/backups/sync/` first. It refuses outright on a project-id mismatch, a snapshot from a newer memhub schema (run `memhub upgrade` first), or a checksum that disagrees with the manifest. Before lifecycle states, two 0025 clients could adopt each other's compatible snapshots. A 0025 client now refuses a 0026 snapshot even when the logical version matches; a 0026 client can still adopt a 0025 snapshot and migrate it on reopen.
+- **Audit diff follows the same schema limit.** A 0025 client could compare another 0025 snapshot when the audit cutoff and other checks passed; it cannot use `sync check --diff` on a 0026 snapshot, even with a comparable cutoff.
 
 ### Prerequisites
 
@@ -861,6 +865,7 @@ Sync state (the `[sync]` config and the per-machine baseline marker) is wiring, 
 | `memhub arch set/show` | The architecture narrative |
 | `memhub ingest-git` | Pull commit + file history into the DB |
 | `memhub doc add/ls/rm/show` | Ingest external markdown docs; scope recall with `--source-type doc` |
+| `memhub fact retire/unretire`, `memhub doc archive/unarchive`, `memhub task drop/undrop/keep/unkeep` | [Manage outdated repo memory](docs/reference/operations.md#reversible-repo-memory-states) without deleting it (CLI only) |
 | `memhub locate <query>` | Find code by intent: ranked `file:line` breadcrumbs from the sibling code index |
 | `memhub code index/status/rm` | Build / inspect / drop the local code index (`.memhub/code_index.sqlite`) |
 | `memhub global enable/disable/status` | Opt this repo into optional machine-global memory (`~/.memhub/global.sqlite`) |
@@ -934,7 +939,7 @@ confirmation gates:
 
 - **Lookup/query:** `status`, `search`, `recall`, `get_row`, `locate`, `list_tasks`, `list_decisions`, `list_facts`, `list_pending_writes`, `get_command`
 - **Write (direct):** `task_add`, `task_done`, `record_command`, `log_session_note`, `render`, `doc_add`, `archive_transcript`
-- **Write (staged for review):** `propose_fact`, `propose_decision`, `propose_supersede` (retires an outdated fact or decision by linking the row that replaces it). The first two take an optional `global` flag (see [Machine-global memory](#machine-global-memory)).
+- **Write (staged for review):** `propose_fact`, `propose_decision`, `propose_supersede` (links an outdated fact or decision to its replacement, demoting it in recall as before; it does not retire the fact). The first two take an optional `global` flag (see [Machine-global memory](#machine-global-memory)).
 - **Hibernated:** `metrics`, which exists only in a `--features metrics` build.
 - **Sync:** the five `sync_*` tools (see [Cross-machine sync](#cross-machine-sync)).
 
@@ -1086,7 +1091,7 @@ This is a presence check: customized regular files count as present, extra user 
 
 ### Staleness and confidence
 
-- **Facts** go stale after 90 days without re-verification. Recall still returns a stale fact, ranked like a fresh one and flagged `stale`, so the agent can weigh it. `memhub fact verify <id|key>` refreshes `verified_at` only, and `/wrap-up` offers a per-item re-verify step for the oldest facts. It is CLI only, because agent self-verification is exactly what the untrusted-writer guardrail forbids.
+- **Facts** go stale after 90 days without re-verification. Before retirement, recall ranked eligible stale facts like fresh ones and flagged them `stale`. That still holds for non-retired facts; retired facts are excluded. Both `/wrap-up` paths still offer per-item re-verification for the oldest candidates on the default fact list, which used to include every repo fact and now omits retired ones. `memhub fact verify <id|key>` still works on a retired fact and refreshes `verified_at` only. Verification is CLI only, because agent self-verification is exactly what the untrusted-writer guardrail forbids.
 - **Commands** carry a derived confidence: `success_count / (success_count + fail_count)`.
 - **Embeddings** go stale when the source body changes or the bundled model changes. Recall surfaces a warning, and you decide whether to run `/reindex`.
 
@@ -1116,7 +1121,7 @@ memhub CLI / MCP
    ├── src/code_index/  tree-sitter chunker + walker + `locate` over the sibling code index
    ├── src/metrics/     hibernated token accounting (`metrics` feature)
    ├── src/render/      PROJECT.md and PROJECT_LEDGER.md emit
-   └── src/export/      v1 portable JSON
+   └── src/export/      portable JSON (formerly v1; writes v2, reads v1 and v2)
        │
        ├── SQLite (.memhub/project.sqlite) + bundled BGE-small + ms-marco ONNX
        └── SQLite (.memhub/code_index.sqlite)  ← sibling code index, locate-only

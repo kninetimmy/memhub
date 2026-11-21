@@ -75,9 +75,11 @@ after an embedding-model upgrade on either machine) or a
 `missing_embeddings` warning, follow the same rule as everywhere else:
 surface it and ask before invoking `/reindex`.
 
-The export format is JSON v1, additive: older exports import cleanly
-into newer builds via `#[serde(default)]` on later-added fields. The
-format is defined in `src/export/v1.rs`.
+Previously export wrote JSON v1, with defaults for later-added fields so
+older files still imported. Export now writes v2 to preserve fact and task
+lifecycle state. Import accepts both v1 and v2; v1-only builds refuse v2
+rather than silently dropping that state. See the [export format](export-format.md)
+and `src/export/{v1,v2}.rs`.
 
 **Config baseline travels with the repo.** The canonical defaults
 live in `.memhub/config.example.toml`, which is the **only** file
@@ -257,8 +259,9 @@ merge: each push writes a consistent single-file DB copy (`VACUUM
 INTO`) plus a `manifest.json` (the exact on-disk files and the
 crash-safe write order are in "Remote layout and publication
 atomicity" below). Divergence is decided from a **logical
-version** (a digest of the durable content tables, never file bytes —
-SQLite is byte-unstable), so `check` reports a baseline-relative verdict:
+version** (the durable-content digest and the `writes_log` maximum ID and
+row count, never file bytes — SQLite is byte-unstable), so `check` reports
+a baseline-relative verdict:
 `up-to-date` / `local-ahead` / `drive-ahead` / `diverged` /
 `no-remote`. Before the baseline-safety correction, `drive-ahead` was
 described as a safe fast-forward and `diverged` as the only lossy case
@@ -273,10 +276,20 @@ focused guard, so `drive-ahead` is not a guaranteed safe fast-forward.
 Surface its warning and preserve both histories before deciding what to
 replace. Adoption is **operator-gated**, never automatic.
 
+**Lifecycle undo (#445).** Before, this section described the logical version
+as the digest alone; equality has always required all three fields above.
+Before 0026 there were no lifecycle undo pairs. Now, for example, retire then
+unretire, archive then unarchive, drop then undrop, or keep then unkeep (with
+no prior keep undo saved) restores the original content digest if nothing
+else changed. Both actions append audit rows, so the logical version still
+differs. If Drive is still at the shared baseline, `sync check` reports
+`local-ahead` and `sync commit` refuses to record equality.
+
 `sync check --diff` validates the audit cutoff against both actual
 databases. An incompatible cutoff returns null sides with an explicit
-`unavailable_reason`, never an available empty diff. Unavailable does not
-mean there are no unique records; an available audit diff is not proof
+`unavailable_reason`, never an available empty diff. A newer remote schema
+also makes the diff unavailable, even with a comparable cutoff. Unavailable
+does not mean there are no unique records; an available audit diff is not proof
 of complete reconciliation or ancestry, either.
 
 Scope is deliberately **single-user across
@@ -332,6 +345,14 @@ Surfaces:
   upgrade`), or a checksum that disagrees with the manifest. (This
   gate is also kept inline in `CLAUDE.md` / `AGENTS.md` under Safety
   gates — it is the one destructive sync op.)
+- **Mixed versions since migration 0026:** Two 0025 clients could adopt
+  each other's compatible snapshots. A 0025 client now blocks adoption
+  of a 0026 snapshot even when no lifecycle fields are populated and its
+  logical version matches (`up-to-date`). The schema block is separate
+  from the content verdict, and `/catch-up` stops on it. A 0026 client
+  can still adopt a 0025 snapshot if the other guards pass; reopening
+  migrates it and preserves its logical baseline. The push guard still
+  checks `drive-ahead` and `diverged`, not the adopt-only schema flag.
 - Skill: `/catch-up` orchestrates the pull side (check → summarize →
   adopt with your approval).
 
@@ -423,7 +444,11 @@ takes a slot ahead of an otherwise-equal current row. Staleness is not an
 adjustment: a stale fact ranks exactly like a fresh one. The superseded penalty
 comes off one unweighted retriever component, which carries only its weight (0.5 by
 default) of the blended relevance, so in a pool ranking it counts for about half
-its strength in the blended score.
+its strength in the blended score. Before lifecycle exclusions, a matching
+fact or chunk could take a candidate slot. Now retired facts and archived
+chunks are filtered before the keyword limit, vector scoring, and re-rank
+pool fill. The limits, score adjustments, and fill order still apply to the
+eligible pool.
 This is intended: the pool is a wide net the re-ranker then judges, and the
 penalty arithmetic is unchanged. In a default recall that includes doc chunks
 (`include_docs_in_default`, no `--source-type`), `[retrieval] rerank_doc_cap`
@@ -453,7 +478,10 @@ its type. A candidate's score is its score against the query or, for a
 two-question query, its best part (see "Two-question queries" below). When
 candidates existed but none cleared the cutoff and no named row is returned,
 the response is empty and carries a `rerank_cutoff_dropped_all` warning that
-names the cutoff and the highest score seen. Override the cutoff per call with
+names the cutoff and the highest score seen. Before lifecycle exclusions,
+facts and chunks now out of circulation could participate in that decision.
+If filtering leaves no candidates or named rows, the re-ranker does not run
+and there is no cutoff warning. Override the cutoff per call with
 `memhub recall --rerank-cutoff <F>` or `memhub eval retrieval --rerank-cutoff
 <F>`. Calibration: the scores of right and wrong rows overlap, so no fixed
 threshold separates them. The default was re-measured 2026-10-17 on 344 blind
@@ -471,8 +499,8 @@ still load, have no effect, and `memhub doctor` names them under
 `config_ignored_settings`.
 
 Each hit is compact: `source_type`, `source_id`, `scope`, `title`,
-`rerank_score`, `created_at`, `status` (tasks only: `open`, `done` or
-`blocked`), `stale`, `superseded_by` and `text`, at most 300 characters of the
+`rerank_score`, `created_at`, `status` (tasks only: `open`, `done`, `blocked`
+or `dropped`), `stale`, `superseded_by` and `text`, at most 300 characters of the
 row's text (ending in `…` when cut) in place of its full body; a tagged fact
 also carries `kind`. `memhub recall --json` adds the diagnostic `rank`,
 `score`, `fts_score` and `vector_score`, and `memhub recall --full` adds each
@@ -486,20 +514,26 @@ proxy (`recall_metrics`) counts each hit's title and compact text, what the
 agent actually receives.
 
 **Partial-token FTS (issue #225).** The recall FTS path first requires every
-query token to match one row (a quoted FTS5 `AND`). When no row in the corpus
-holds every token, which is the normal case for a keyword bag or a natural
-question, recall retries with an `OR` of the query's content tokens (English
-stopwords such as "the", "how", "does" are dropped) so rows matching some of
-the tokens still contribute FTS signal. Before this, a multi-word query whose
-tokens never co-occur in one row got no FTS signal at all, the rerank
-candidate pool was picked by the narrow cosine band alone, and the right row
-could fall outside it and never reach the cross-encoder. bm25 is min-max
+query token to match one row (a quoted FTS5 `AND`). Before retirement and
+archiving, any full-token FTS hit in the searched types suppressed the retry.
+Now a retired fact or archived chunk cannot suppress it. If no eligible FTS
+hit matches every token in that store for that phrasing, recall retries with
+an `OR` of the query's content tokens (English stopwords such as "the", "how",
+"does" are dropped) so partial matches still contribute FTS signal. This is
+common for keyword bags and natural questions. A full-token hit removed only
+by the later accepted-only filter still suppresses the retry. Before
+issue #225, a multi-word query whose tokens never co-occur in one row
+got no FTS signal at all, the rerank candidate pool was picked by the narrow
+cosine band alone, and the right row could fall outside it and never reach the
+cross-encoder. bm25 is min-max
 normalized over the hits, so the best partial hit would otherwise blend as if
 it matched every token (about 0.82 against about 0.36 for a vector-only row)
 and crowd the pool; partial-token FTS scores are therefore multiplied by 0.5
 (`PARTIAL_FTS_FACTOR`). The code locator (`memhub locate`) is unchanged and
 still requires every token. The `rerank_candidate_pool` default is unchanged,
-and superseded rows are still demoted rather than excluded (decision 145).
+and superseded rows are still demoted rather than excluded for supersession
+alone (decision 145). Before retirement that applied to every otherwise
+eligible superseded fact; now a separately retired fact is excluded.
 
 **History of the empty and thin result.** A recall whose candidates all fell
 under a fixed relevance threshold first returned an empty bundle (decision
@@ -525,8 +559,11 @@ block after the results; the MCP response gains an `explain` field. Without the
 flag nothing is added and the output is unchanged. The counters are bookkeeping
 only: the rows returned, their order and their scores are identical with and
 without it. Counts are summed over every store the call searched (the repo
-store, plus the machine-global store when this repo opted in). The reasons, by
-JSON key:
+store, plus the machine-global store when this repo opted in). Before lifecycle
+filters, any otherwise eligible fact or chunk could enter these stages.
+Now these counters reflect the surviving inputs; there is no separate
+explain counter for rows excluded by retirement or archiving. The reasons,
+by JSON key:
 
 - `reranker_ran` (bool): whether the cross-encoder re-ranker ran (hybrid mode,
   `use_reranker` on, at least one candidate). No cutoff applies when it did
@@ -543,11 +580,12 @@ JSON key:
   under the cutoff are counted only in `dropped_by_cutoff`.
 - `docs_dropped_no_rerank`: default-included doc chunks dropped because the
   re-ranker did not run to vet them.
-- `docs_not_searched`: ingested doc chunks this call did not search: the full
-  chunk total (over the stores searched) when doc chunks were outside the
-  searched source types, 0 when they were searched, whether by default
-  inclusion or `--source-type doc`. A chunk that was searched but not surfaced
-  does not count here, unlike in `available_docs`. The machine-global store's
+- `docs_not_searched`: ingested doc chunks this call did not search. Before
+  archiving, any ingested chunk could count; now archived chunks never count.
+  The count is the eligible chunk total (over the stores searched) when doc
+  chunks were outside the searched source types, 0 when they were searched,
+  whether by default inclusion or `--source-type doc`. A chunk that was
+  searched but not surfaced does not count here, unlike in `available_docs`. The machine-global store's
   doc chunks are not counted when the repo has not opted in to the global
   store; `global_store_not_searched` reports that case.
 - `global_store_not_searched` (bool): a machine-global store exists but was not
@@ -561,8 +599,10 @@ whitespace and/or `#` and a number (`decision 201`, `Task #99`, `fact 7`)
 returns that row first. Only the main query is read, not the variants. The row
 must exist in the repo store and pass the call's source-type and
 accepted-only filters (accepted-only excludes a task, since tasks carry no `source`); a
-superseded row is kept, as in ranked results. Named rows come in the order the
-query names them, once each, ahead of every other hit, are exempt from the
+superseded row is kept, as in ranked results. Before fact retirement, any
+otherwise eligible repo fact could be named by ID. Now a retired fact is
+skipped even when named; use `get-row` for direct inspection. Named rows come
+in the order the query names them, once each, ahead of every other hit, are exempt from the
 cutoff (a named row is an explicit lookup, not ranking), and they count toward
 `max_results` (named rows past the limit are dropped, last named first); the
 remaining slots are filled by the normal ranking, which does not see them. When
@@ -615,7 +655,9 @@ variants and about 380 ms with them, medians of the live-set A/B at pool 20),
 plus, per variant or part, one more embedding and, in each searched store (the
 repo store and, when the repo opted in, the machine-global store), one more set
 of full-text lookups (one per searched source type, and a second set with the
-partial-token retry when no row holds every token) and one more scan of the
+partial-token retry when no eligible FTS hit holds every token; before
+lifecycle exclusions, a full-token hit from a now-retired fact or archived
+chunk could suppress that extra set) and one more scan of the
 stored vectors. When the re-ranker does not run (FTS-only mode, `--no-rerank`,
 `use_reranker = false`) no pool is cut and variant-only rows have no main-query
 score, so the merged set is ordered by each row's best blended score across
@@ -946,7 +988,9 @@ and asks recall for each one, in up to two forms:
 Superseded facts and decisions are neither sampled nor counted in the per-type
 row totals: recall ranks them below their replacements on purpose, so failing
 to surface one would not be a recall fault. Done tasks are still sampled, as
-recall keeps them visible.
+recall keeps them visible, as it does dropped tasks. Before lifecycle states,
+every non-superseded fact and every doc chunk could be sampled. Now retired
+facts and archived chunks are also excluded from both the sample and the totals.
 
 A doc chunk is checked by the passage form only, because a heading-path query
 is not a fair known-item probe for one. A chunk's heading path starts with its
@@ -1040,10 +1084,11 @@ rerank_cutoff = -7.0             # rows re-ranked below this are not returned
 enabled = false                  # opt-in via `memhub global enable`
 ```
 
-**Stale facts are returned and flagged, never excluded or demoted (decision
-236).** A fact never verified, or last verified more than
-`fact_stale_after_days` ago, ranks exactly like a freshly verified one and
-carries `stale: true` for the caller to weigh; recall emits no stale warning.
+**Staleness alone does not exclude or demote facts (decision 236).** Before
+retirement, an otherwise eligible fact never verified, or last verified more
+than `fact_stale_after_days` ago, ranked like a freshly verified one and
+carried `stale: true`; recall emitted no stale warning. That still holds
+unless the fact is retired, which excludes it independently.
 `include_stale_by_default`, `[retrieval.scoring] stale_penalty`, the
 `--include-stale` flag and the MCP `include_stale` parameter are retired: older
 configs still load with them (every `memhub init` pinned both keys, some as
@@ -1052,7 +1097,7 @@ accepted, but none of them changes which rows come back or their order.
 `memhub doctor` names the two config keys as ignored settings; deleting them is
 safe. Optional age decay (`age_half_life_days`) is separate and unchanged.
 
-`[global] enabled` is managed by `memhub global enable` / `disable` — it's per-machine, so the tracked `.memhub/config.example.toml` baseline ships `false`. The machine-global store has no `[retrieval]` block of its own; it inherits the active repo's, including `[retrieval] include_docs_in_default`, which alone decides whether global docs join that repo's default recall.
+`[global] enabled` is managed by `memhub global enable` / `disable` — it's per-machine, so the tracked `.memhub/config.example.toml` baseline ships `false`. The machine-global store has no `[retrieval]` block of its own; it inherits the active repo's. Before archiving, once that store was in scope, `[retrieval] include_docs_in_default` decided whether its docs could join default recall. It still does for non-archived docs; the archive filter applies to every searched store.
 
 ## Token Accounting
 
@@ -1183,8 +1228,8 @@ query while a code style guide surfaces. Scope to docs alone with `memhub
 recall <query> --source-type doc` (CLI) or `memhub.recall(query=...,
 source_types=["doc"])` (MCP); explicit scoping is not capped by
 `rerank_doc_cap` and is unaffected by the
-flag. Plain recall still returns `available_docs` — now the count of
-ingested chunks that did *not* surface this call — so a doc-scoped
+flag. Plain recall still returns `available_docs` — the count of
+eligible ingested chunks that did *not* surface this call — so a doc-scoped
 follow-up for the long tail stays a judgment call. Set
 `include_docs_in_default = false` to revert to strict opt-in.
 
@@ -1192,6 +1237,30 @@ Surfaces: `memhub doc add|ls|show|rm` (CLI) · `memhub.doc_add` (MCP,
 direct write — a doc is a user-pointed artifact, not an agent claim) ·
 `/doc` (skill). Re-ingesting an unchanged file is a no-op; changed
 content replaces every chunk and refreshes embeddings/FTS.
+
+Before document archiving, all ingested chunks could be searched and counted
+as available, and re-ingesting any known path followed the unchanged/changed
+rules above. Now only chunks of non-archived documents are eligible in both
+default and doc-scoped recall (including `available_docs` and
+`--explain`'s `docs_not_searched`); re-ingest refuses an archived path until it
+is unarchived. The same rule applies to CLI and MCP ingestion.
+
+**Drift hints in `memhub review stale`.** Before archiving, this command
+reported changed or unreadable ingested files and suggested `memhub doc add
+<path>` to re-ingest them once available. It still reports drift and prints
+the same hint, including for archived documents. Now re-ingest refuses an
+archived path: to restore and re-ingest it, first run `memhub doc unarchive
+<id-or-path>` and make sure the file is readable.
+
+**Retained stale queue behavior.** `memhub review stale` still suggests
+`memhub fact verify` for facts past the horizon that are not superseded,
+even if they are retired. `memhub status` still uses the same queue count.
+Before retirement, both `/wrap-up` stale-fact re-verification paths could
+pick such facts from the default `memhub fact list --json`. Both still use
+that list, but it now omits retired facts, so they are no longer wrap-up
+candidates. Direct `memhub fact verify <id-or-key>` still works on them.
+The standalone stale-fact counts in `status` and `stats` still include
+retired facts; the rendered ledger's stale-fact count does not.
 
 Doc content is **excluded from `memhub export`** — it is a disk-backed,
 re-ingestable cache. On another machine, re-run `doc add` against the
@@ -1596,7 +1665,11 @@ machine, an experimental build included, can reach the same file.
 add --global`, `fact|decision promote --global`, `review accept` of a
 global-scoped proposal, `doc add|rm --global`) still migrate an older
 store to the binary's schema and still refuse a newer one with the
-"written by a newer memhub" error. The store's schema is read from
+"written by a newer memhub" error. The same forward-only rule holds for
+normal repo opens. Before lifecycle states, 0025 was head. A 0026 build
+now migrates a 0025 store on either of these migration-capable paths;
+a 0025 build refuses to open a 0026 store through them. The global
+store's schema is read from
 its applied-migration ledger (`schema_migrations`, the ledger
 migrations themselves check), not from `projects.schema_version`,
 which only ever ratchets upward and so can stay ahead of a store a
@@ -1621,6 +1694,10 @@ come from `schema_migrations`, not from `projects.schema_version`.
 Before issue #353 every one of those reads migrated an older store to
 the binary's schema as a side effect, and failed outright (recall
 included) on a newer one with the "written by a newer memhub" error.
+With 0025 and 0026 builds, the read-only mismatch behavior applies in
+both directions: recall skips the other schema, direct global `get-row`
+and `doc ls|show --global` refuse it, and `global status` still reports
+stored counts without migrating it.
 
 When enabled, `recall` merges global hits with repo hits; every hit
 carries `scope: "repo" | "global"`. **Precedence is
@@ -1784,6 +1861,13 @@ error degrades to a `warn` row, never fails the upgrade — same posture
 as the registry/metrics writes). `--no-skills` skips the step; the
 binary + DB migrate still run. The manual `cp` recipe (fact 10) is now
 a fallback only.
+
+The lifecycle release updates `/recall` and `/doc` guidance for all four
+hosts and Claude's `/global` template through that same resync. Older
+copies do not describe the new exclusions. Refreshing a wrapper alone
+does not add CLI verbs or update MCP descriptions on an older binary.
+The serving binary supplies the MCP descriptions, so reconnect after
+upgrading it.
 
 Before issue #427, skill resync had no Antigravity target. It now also
 copies `templates/skills/antigravity/` into `~/.gemini/config/skills/`,
@@ -1983,6 +2067,124 @@ Similarity warnings are best-effort on stderr, including with `--json`;
 failure to print a warning does not affect acceptance or the success
 output on stdout. Global-targeted accepts do not run the repo checks and
 still reject `--supersede`.
+
+## Reversible repo memory states
+
+These repo-only commands take `--actor` and record successful changes in
+`writes_log`. None is an MCP write tool. They do not delete rows, document
+chunks, or embeddings. Drive snapshots retain the lifecycle fields and the
+sync digest detects changes to them. Migrating an unchanged 0025 store does
+not change its sync baseline.
+
+**Audit readers:** Before, there were no lifecycle actions to display or
+count. Now the ledger's Recent Activity uses its existing window and row
+limit to show the new action, actor, and logged reason or undo detail.
+`sync check --diff` counts each action after a comparable audit baseline as
+an update, using its existing rule that every non-insert action is an
+update. Status and stats include these entries in the existing write counts.
+Doctor includes them in write recency. CLI `status` (human and JSON) and
+`doctor` use the same render-freshness check: before, no lifecycle write
+could count as a write since render; now any of the eight actions can
+make current output stale. MCP `status` returns counts, not these checks.
+
+**Wrap-up halt and resume:** Before, writing a fact, accepting a fact
+proposal, or ingesting a document could fail, but not because a key was
+retired or a path was archived. Now those refusals can halt `/wrap-up`'s
+ordered approved writes: `fact add` and `review accept` can refuse a retired
+key, and `doc_add` or `doc add` can refuse an archived path. The
+halt-on-first-failure rule is unchanged: earlier successful writes remain
+durable, but the refusal skips render (so the files can stay stale), the
+cross-machine sync push, any approved session transcript archive, and the
+normal closing report. Report the failure, resolve it, and resume the
+remaining approved work without replaying successful writes.
+
+The post-write steps and their gates are unchanged:
+
+1. Render and report the output and backup paths. If only render fails,
+   stop and resume at render after fixing it, without repeating the writes.
+2. Check sync status. If enabled, check the verdict before pushing a
+   snapshot; `drive-ahead` or `diverged` stops the push for `/catch-up`.
+   The policy makes `sync commit` optional for baseline verification or
+   repair; the OpenCode template lists it after the snapshot.
+3. At `transcript` verbosity, Claude, Codex, and OpenCode archive the
+   session transcript only after the writes and render succeed and the user
+   explicitly approves the unredacted copy. Antigravity still reports the
+   archive as unsupported. Standalone `memhub transcript archive` and
+   `memhub transcript prune` are unchanged.
+4. Give the closing report and audit reminder. OpenCode lists what was
+   recorded, skipped, and left pending review. Rendered files are local by
+   default, any commit is the user's call, and a new session can start anytime.
+
+**Keyword index:** Before, otherwise eligible facts and chunks in the
+full-text index could be returned as hits. Now recall filters retired facts
+and archived chunks out before the keyword candidate limit, but leaves them
+in the index. They still contribute to the BM25 corpus statistics used to
+score other hits. This applies in both keyword-only and hybrid recall.
+The candidate-based `stale_embeddings` check now sees the filtered pool,
+including when checking for corrupt vectors. The store-wide
+`missing_embeddings` count still includes rows out of circulation.
+
+- **Retire a fact:** `memhub fact retire <id-or-key> --reason <text>`.
+  `memhub fact list --include-retired` shows its retirement time and reason;
+  `memhub get-row fact <id>` still reads its full text directly. `memhub fact
+  unretire <id-or-key>` clears only the retirement metadata, without changing
+  the value, verification time, or any supersession link.
+  **Before:** all facts were in the default fact list and facts ledger, and
+  eligible facts could be recalled even by naming their ID. Same-key
+  `fact add` overwrote the existing row; accept-time comparison used
+  non-superseded facts. **After:** every retired fact is excluded from
+  ranked and named-ID recall (with or without filters), rendered fact
+  views and the ledger's stale-fact count, the default CLI and MCP fact lists,
+  and accept-time similarity candidates. All same-key add/accept
+  variants, including `review accept --force`, refuse a retired key and
+  name `memhub fact unretire`. Staleness and supersession alone still do
+  not exclude a fact from recall; existing same-key rules for
+  non-retired facts are unchanged.
+  **Ledger supersession links:** Before retirement, a visible fact linked to
+  its replacement as `→ key` when the replacement was present, with `→ #id`
+  as a fallback. Now every visible fact whose replacement is retired uses
+  the `→ #id` fallback. Visible replacements still show their keys.
+- **Archive a document:** `memhub doc archive <id-or-path> --reason <text>`.
+  `memhub doc ls` marks it archived, and `doc show` still reads its stored
+  chunks. `memhub doc unarchive <id-or-path>` restores eligibility without
+  re-ingesting or modifying those chunks. If the source file is gone,
+  use the ID or the exact stored path shown by `doc ls`. See
+  [doc ingestion](#doc-ingestion) for recall and re-ingest
+  exclusions. `doc rm` still deletes, and portable export still excludes
+  documents in either state.
+- **Drop a task:** `memhub task drop <id> --reason <text>` changes an
+  `open` or `blocked` task to `dropped`. `memhub task show <id>` shows why.
+  `memhub task list --status dropped` and the existing MCP task-list
+  status filter accept the new status. Dropped tasks are not open work
+  in rendered views, but remain in the full backlog, task recall and
+  exports. Before, the ledger said "Open first, then by recency" while
+  grouping open, blocked, and done separately. It still groups those
+  statuses in that order, then puts dropped after done regardless of
+  recency. Within each group it sorts by latest update, then highest ID.
+  `memhub task undrop <id>` restores the prior status and
+  last-updated time and clears the drop reason. The former task states
+  and their filters still work. Previously CLI `task done` and MCP
+  `task_done` marked an open or blocked task done and refreshed its update
+  time. Both still do that through the same handler and now also accept
+  a dropped task directly. Marking a task done clears its drop reason and
+  any saved drop or keep undo data; earlier actions stay in the audit log.
+  `done` is terminal: `undrop` and `unkeep` cannot restore a done task.
+  Once done, the task is subject to done-task recall age decay, which does
+  not apply while dropped.
+- **Keep a task:** `memhub task keep <id>` and `memhub task unkeep <id>` are
+  both new. Keep refreshes the last-updated time shown for an open or
+  blocked task and saves the previous time. Unkeep restores that time and
+  logs the undo. Only the latest keep can be undone; unkeep refuses when
+  there is no saved time or the current time no longer matches the keep.
+  Dropping the task suspends unkeep until undrop restores the kept state.
+  Marking it done clears the saved keep.
+
+Both the minimal and shared standard/full/transcript `/wrap-up`
+read windows still use `task list --status open --brief` to match closures
+to IDs. Before, there was no drop to remove a task from that window or
+keep to refresh its sort time. Now dropping an open task removes it and
+keeping an open task can reorder it. Blocked tasks remain outside the
+window, and `task show` still supplies full notes on demand.
 
 ## Attribution
 
