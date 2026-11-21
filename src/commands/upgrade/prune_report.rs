@@ -26,8 +26,8 @@ impl Summary {
         Self::from_report(root, prune::scan(root))
     }
 
-    pub(super) fn preview(root: &Path, removed: &[std::path::PathBuf]) -> Self {
-        Self::from_report(root, prune::preview_upgrade(root, removed))
+    pub(super) fn preview(root: &Path, files: &prune::UpgradeFiles) -> Self {
+        Self::from_report(root, prune::preview_upgrade(root, files))
     }
 
     fn from_report(root: &Path, result: crate::Result<prune::Report>) -> Self {

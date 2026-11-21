@@ -915,14 +915,18 @@ struct InstanceReport {
 /// safer than propagating: the alternative was aborting *after* the new
 /// binary was already installed.
 pub fn known_projects_or_warn(warnings: &mut Vec<String>) -> Vec<db::registry::KnownProject> {
+    known_projects(warnings).unwrap_or_default()
+}
+
+fn known_projects(warnings: &mut Vec<String>) -> Option<Vec<db::registry::KnownProject>> {
     match db::registry::list_known() {
-        Ok(known) => known,
+        Ok(known) => Some(known),
         Err(e) => {
             warnings.push(format!(
                 "registry unreadable ({e}); continuing with the source repo \
                  and any --also roots only"
             ));
-            Vec::new()
+            None
         }
     }
 }
@@ -942,27 +946,7 @@ fn finish_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
         let _ = db::registry::register(p, &head);
     }
 
-    let mut roots: Vec<PathBuf> = Vec::new();
-    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let push =
-        |p: &Path, roots: &mut Vec<PathBuf>, seen: &mut std::collections::BTreeSet<String>| {
-            let key = p
-                .canonicalize()
-                .unwrap_or_else(|_| p.to_path_buf())
-                .to_string_lossy()
-                .to_string();
-            if seen.insert(key) {
-                roots.push(p.to_path_buf());
-            }
-        };
-
-    push(cwd, &mut roots, &mut seen);
-    for kp in known_projects_or_warn(&mut warnings) {
-        push(&kp.root_path, &mut roots, &mut seen);
-    }
-    for p in &args.also {
-        push(p, &mut roots, &mut seen);
-    }
+    let roots = upgrade_roots(cwd, args, &mut warnings);
 
     let mut reports: Vec<InstanceReport> = Vec::new();
     let mut prune_scans: Vec<prune_report::Summary> = Vec::new();
@@ -1167,12 +1151,32 @@ fn cleanup_stale_sync_md_twins(root: &Path) -> Vec<PathBuf> {
 }
 
 fn stale_sync_md_twins(root: &Path) -> Vec<PathBuf> {
+    use crate::fs_identity::{is_link_or_reparse_point, open_direct_file};
+
+    let Ok(root) = root.canonicalize() else {
+        return Vec::new();
+    };
     let rendered_dir = root.join(".memhub").join("rendered");
+    // Canonicalize only the selected root. Every descendant must be a direct
+    // directory/file, not a redirect or a special file opened for content.
+    for dir in [root.join(".memhub"), rendered_dir.clone()] {
+        let Ok(meta) = std::fs::symlink_metadata(&dir) else {
+            return Vec::new();
+        };
+        if !meta.is_dir() || is_link_or_reparse_point(&meta) {
+            return Vec::new();
+        }
+    }
     ["AGENTS.md", "CLAUDE.md"]
         .iter()
         .filter_map(|name| {
             let path = rendered_dir.join(name);
-            let contents = std::fs::read_to_string(&path).ok()?;
+            let meta = std::fs::symlink_metadata(&path).ok()?;
+            let mut file = open_direct_file(&path, &meta).ok()?;
+            if path.canonicalize().ok()? != path {
+                return None;
+            }
+            let contents = std::io::read_to_string(&mut file).ok()?;
             if !contents.starts_with(STALE_SYNC_MD_MARKER) {
                 return None;
             }
@@ -1192,6 +1196,9 @@ struct RetiredSettings {
     removed: Vec<&'static str>,
     left: Vec<&'static str>,
     error: Option<String>,
+    /// Exact successful/planned rewrite, shared with the prune preview.
+    #[serde(skip)]
+    text: Option<String>,
 }
 
 /// The text with every setting of `leaves` that sits on its own `key = value`
@@ -1293,6 +1300,9 @@ fn clean_retired_settings(root: &Path, write: bool) -> Option<RetiredSettings> {
                     removed.join(", ")
                 ));
             } else {
+                if !removed.is_empty() {
+                    report.text = Some(text);
+                }
                 report.removed = removed;
             }
         }
@@ -1681,60 +1691,80 @@ fn confirm(prompt: &str, yes: bool) -> bool {
 // Dry run
 // ---------------------------------------------------------------------
 
+/// Match finish's source -> sorted registry (including eligible --also
+/// registrations) -> remaining --also order, with canonical deduplication.
+fn upgrade_roots(cwd: &Path, args: &UpgradeArgs, warnings: &mut Vec<String>) -> Vec<PathBuf> {
+    let known = known_projects(warnings);
+    let registry_readable = known.is_some();
+    let mut known: std::collections::BTreeMap<String, PathBuf> = known
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|kp| !args.dry_run || kp.root_path.join(".memhub/project.sqlite").exists())
+        .map(|kp| (kp.root_path.to_string_lossy().into_owned(), kp.root_path))
+        .collect();
+    if args.dry_run && registry_readable {
+        for path in &args.also {
+            if let Ok(Some(key)) = db::registry::registration_root(path) {
+                known.insert(key.clone(), PathBuf::from(key));
+            }
+        }
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    std::iter::once(cwd)
+        .chain(known.values().map(PathBuf::as_path))
+        .chain(args.also.iter().map(PathBuf::as_path))
+        .filter(|path| seen.insert(db::registry::canonical(path)))
+        .map(Path::to_path_buf)
+        .collect()
+}
+
 fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()> {
     let head = db::latest_schema_version().to_string();
     let mut warnings: Vec<String> = Vec::new();
+    let roots = upgrade_roots(cwd, args, &mut warnings);
 
-    let mut roots: Vec<PathBuf> = vec![cwd.to_path_buf()];
-    for kp in known_projects_or_warn(&mut warnings) {
-        roots.push(kp.root_path);
-    }
-    roots.extend(args.also.iter().cloned());
-
-    // The real scan runs after source-repo GC and per-repo twin cleanup.
-    // Model those removals without changing source files or dismissal IDs.
-    let mut removed = Vec::new();
+    // GC precedes all repo scans; twins and config rewrites precede only
+    // their own repo's verification/scan. Accumulate effects in that order.
+    let mut files = super::prune::UpgradeFiles::default();
     if !args.no_prune_scan
         && !args.no_gc
         && super::gc::load_gc_config_best_effort(cwd)
             .0
             .delete_stale_backups
     {
-        removed.extend(
+        files.removed.extend(
             super::gc::stale_backup_files(cwd)
                 .into_iter()
-                .flat_map(|(_, files)| files.into_iter().map(|(path, _)| path)),
+                .flat_map(|(_, files)| files.into_iter().map(|(path, _)| path))
+                .filter_map(|path| path.canonicalize().ok()),
         );
     }
-    let mut removed: Vec<PathBuf> = removed
-        .into_iter()
-        .filter_map(|path| path.canonicalize().ok())
-        .collect();
 
     let mut previews: Vec<(String, Option<String>, &'static str, FillPreview)> = Vec::new();
     let mut retired: Vec<RetiredSettings> = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
     let mut prune_scans: Vec<prune_report::Summary> = Vec::new();
     for root in &roots {
-        let key = root
-            .canonicalize()
-            .unwrap_or_else(|_| root.clone())
-            .to_string_lossy()
-            .to_string();
-        if !seen.insert(key) {
-            continue;
+        let cleanup = clean_retired_settings(root, false);
+        if let Some(report) = cleanup {
+            if !args.no_prune_scan
+                && let Some(text) = &report.text
+                && let Ok(path) = root
+                    .join(".memhub")
+                    .join(db::CONFIG_FILENAME)
+                    .canonicalize()
+            {
+                files.rewritten.insert(path, text.clone());
+            }
+            retired.push(report);
         }
-        if !args.no_prune_scan {
-            removed.extend(stale_sync_md_twins(root).into_iter().filter_map(|path| {
-                Some(path.parent()?.canonicalize().ok()?.join(path.file_name()?))
-            }));
-        }
-        retired.extend(clean_retired_settings(root, false));
         let db_path = root.join(".memhub").join("project.sqlite");
         if !db_path.exists() {
             // Dead registry rows are summarized by `would_prune`; don't
             // flood the preview with one line per vanished tempdir.
             continue;
+        }
+        if !args.no_prune_scan {
+            files.removed.extend(stale_sync_md_twins(root));
         }
         let cur = db::probe_schema_version(&db_path).ok().flatten();
         let verdict = if cur.as_deref() == Some(head.as_str()) {
@@ -1746,7 +1776,7 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
         let fill =
             repo_would_fill(root).then(|| preview_fill(&db_path, verdict, &label, &mut warnings));
         if !args.no_prune_scan {
-            prune_scans.push(prune_report::Summary::preview(root, &removed));
+            prune_scans.push(prune_report::Summary::preview(root, &files));
         }
         previews.push((label, cur, verdict, fill));
     }
@@ -1837,7 +1867,9 @@ fn dry_run_report(cwd: &Path, args: &UpgradeArgs, cargo_bin: &Path) -> Result<()
         return Ok(());
     }
 
-    println!("memhub upgrade --dry-run (no changes made)");
+    println!(
+        "memhub upgrade --dry-run (memory rows and file contents preserved; SQLite sidecars may change)"
+    );
     if cfg!(windows) && current_exe_in_conflict_set(cwd) {
         println!(
             "  windows:      a real run would relaunch a staged %TEMP% \
@@ -3960,6 +3992,19 @@ mod tests {
         // clean no-op, never an error.
         let removed_second = cleanup_stale_sync_md_twins(repo.path());
         assert!(removed_second.is_empty());
+    }
+
+    #[test]
+    fn stale_sync_md_twins_only_inspects_direct_regular_utf8_files() {
+        let repo = tempfile::tempdir().unwrap();
+        let rendered = repo.path().join(".memhub/rendered");
+        std::fs::create_dir_all(rendered.join("AGENTS.md")).unwrap();
+        let claude = rendered.join("CLAUDE.md");
+        std::fs::write(&claude, [0xff, 0xfe]).unwrap();
+        assert!(stale_sync_md_twins(repo.path()).is_empty());
+        assert!(cleanup_stale_sync_md_twins(repo.path()).is_empty());
+        assert!(rendered.join("AGENTS.md").is_dir());
+        assert_eq!(std::fs::read(claude).unwrap(), [0xff, 0xfe]);
     }
 
     fn strip(

@@ -1892,8 +1892,14 @@ category names to their totals. A scan failure produces that repo's
 Neither stops other scans nor changes upgrade's success/failure outcome.
 `--dry-run` reports the same counts using an in-memory SQLite backup,
 including migrations needed by an older or blank database. It reads files
-at their original paths but treats planned generated-twin removals and
-source-repo backup GC deletions as absent. `--no-gc` and the existing
+at their original paths but overlays the existing retired-settings rewrite
+plan (both typed config and ingested document bytes), and treats planned
+generated-twin removals and source-repo backup GC deletions as absent.
+Preview shares the real source/registry/`--also` order, including registration
+eligibility: GC precedes all scans; each repo's twin cleanup and config
+rewrite precede its own scan, not earlier repos' scans of external documents.
+Twin inspection reads only confined, direct regular UTF-8 files and skips
+redirects, special files and non-repos in preview. `--no-gc` and the existing
 `[gc] delete_stale_backups` opt-in still control that GC plan; twin cleanup
 is independent of GC. Counts assume planned cleanup succeeds and the source
 does not change during preview. The SQLite backup API includes committed WAL
@@ -1917,7 +1923,7 @@ instance already at head schema; one behind head reads `counted after
 migrate` (`lacking_embeddings: null`), since its tables may not exist until
 migrate. A row whose vector is out of date (its text changed) is re-embedded
 by the fill but not counted here. The dry run still changes no config file
-and no database.
+contents or stored database rows; SQLite sidecars may change as noted above.
 
 Skill resync (decision 97; resolves task 50, internalizes the fact-10
 manual `cp`): the same `memhub upgrade` also refreshes the installed

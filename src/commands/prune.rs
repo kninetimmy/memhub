@@ -122,17 +122,24 @@ pub struct Report {
     pub backup_warning: Option<String>,
 }
 
+/// File effects already planned before a particular upgrade scan.
+#[derive(Default)]
+pub(super) struct UpgradeFiles {
+    pub removed: Vec<PathBuf>,
+    pub rewritten: BTreeMap<PathBuf, String>,
+}
+
 pub fn scan(start: &Path) -> Result<Report> {
-    scan_readonly(start, false, &[])
+    scan_readonly(start, false, &UpgradeFiles::default())
 }
 
-pub(super) fn preview_upgrade(start: &Path, removed: &[PathBuf]) -> Result<Report> {
-    scan_readonly(start, true, removed)
+pub(super) fn preview_upgrade(start: &Path, files: &UpgradeFiles) -> Result<Report> {
+    scan_readonly(start, true, files)
 }
 
-fn scan_readonly(start: &Path, preview: bool, removed: &[PathBuf]) -> Result<Report> {
+fn scan_readonly(start: &Path, preview: bool, files: &UpgradeFiles) -> Result<Report> {
     let paths = db::discover_paths(start)?;
-    let config = scan_config(&paths)?;
+    let config = scan_config(&paths, files)?;
     let mut conn = Connection::open_with_flags(&paths.db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     // apply_all also initializes blank databases with no migration ledger.
     if preview {
@@ -152,16 +159,24 @@ fn scan_readonly(start: &Path, preview: bool, removed: &[PathBuf]) -> Result<Rep
             )));
         }
     };
-    scan_in(&tx, &paths, &config, has_dismissals, removed)
+    scan_in(&tx, &paths, &config, has_dismissals, files)
 }
 
-fn scan_config(paths: &ProjectPaths) -> Result<ProjectConfig> {
+fn scan_config(paths: &ProjectPaths, files: &UpgradeFiles) -> Result<ProjectConfig> {
     // Match maintained-open precedence without materializing a live config.
     // A broken link is not an absent config and must not trigger fallback.
     let example = paths.memhub_dir.join(db::CONFIG_EXAMPLE_FILENAME);
     for path in [&paths.config_path, &example] {
         match fs::symlink_metadata(path) {
-            Ok(_) => return ProjectConfig::load(path),
+            Ok(_) => {
+                if let Some(text) = fs::canonicalize(path)
+                    .ok()
+                    .and_then(|path| files.rewritten.get(&path))
+                {
+                    return Ok(toml::from_str(text)?);
+                }
+                return ProjectConfig::load(path);
+            }
             Err(err) if err.kind() == ErrorKind::NotFound => {}
             Err(err) => return Err(err.into()),
         }
@@ -177,7 +192,7 @@ fn scan_config(paths: &ProjectPaths) -> Result<ProjectConfig> {
 /// Status already has a maintained open; reuse it without another open.
 pub(super) fn scan_project(ctx: &db::ProjectContext) -> Result<Report> {
     let tx = ctx.conn.unchecked_transaction()?;
-    scan_in(&tx, &ctx.paths, &ctx.config, true, &[])
+    scan_in(&tx, &ctx.paths, &ctx.config, true, &UpgradeFiles::default())
 }
 
 fn scan_in(
@@ -185,7 +200,7 @@ fn scan_in(
     paths: &ProjectPaths,
     config: &ProjectConfig,
     has_dismissals: bool,
-    removed: &[PathBuf],
+    files: &UpgradeFiles,
 ) -> Result<Report> {
     let dismissed = if has_dismissals {
         conn.prepare("SELECT identifier FROM prune_dismissals WHERE project_id = 1")?
@@ -203,7 +218,7 @@ fn scan_in(
         items: Vec::new(),
         backup_warning: None,
     };
-    report.backup_warning = visit_candidates(conn, paths, config, removed, |item| {
+    report.backup_warning = visit_candidates(conn, paths, config, files, |item| {
         if dismissed.contains(&item.id) {
             return;
         }
@@ -228,9 +243,13 @@ pub fn dismiss(start: &Path, id: &str, actor: &str) -> Result<()> {
         .conn
         .transaction_with_behavior(TransactionBehavior::Immediate)?;
     let mut found = false;
-    let warning = visit_candidates(&tx, &ctx.paths, &ctx.config, &[], |item| {
-        found |= item.id == id
-    })?;
+    let warning = visit_candidates(
+        &tx,
+        &ctx.paths,
+        &ctx.config,
+        &UpgradeFiles::default(),
+        |item| found |= item.id == id,
+    )?;
     if !found {
         let detail = warning.map_or_else(String::new, |warning| format!("; {warning}"));
         return Err(MemhubError::InvalidInput(format!(
@@ -278,13 +297,13 @@ fn visit_candidates(
     conn: &Connection,
     paths: &ProjectPaths,
     config: &ProjectConfig,
-    removed: &[PathBuf],
+    files: &UpgradeFiles,
     mut visit: impl FnMut(Item),
 ) -> Result<Option<String>> {
     facts(conn, config.retrieval.fact_stale_after_days, &mut visit)?;
     tasks(conn, &mut visit)?;
-    documents(conn, &paths.repo_root, removed, &mut visit)?;
-    match backups::surplus(paths, removed) {
+    documents(conn, &paths.repo_root, files, &mut visit)?;
+    match backups::surplus(paths, &files.removed) {
         Ok((groups, warnings)) => {
             for group in groups {
                 visit(group.item());
@@ -433,7 +452,7 @@ fn tasks(conn: &Connection, visit: &mut impl FnMut(Item)) -> Result<()> {
 fn documents(
     conn: &Connection,
     root: &Path,
-    removed: &[PathBuf],
+    files: &UpgradeFiles,
     visit: &mut impl FnMut(Item),
 ) -> Result<()> {
     let mut stmt = conn.prepare(
@@ -449,15 +468,19 @@ fn documents(
         let ingested_hash: String = row.get(3)?;
         let state: String = row.get(4)?;
         let recorded = Path::new(&path);
-        let absent = !removed.is_empty()
-            && fs::canonicalize(root)
-                .ok()
-                .is_some_and(|root| removed.contains(&root.join(recorded)));
-        let on_disk = if absent {
-            DocumentFile::Missing
-        } else {
-            document_file(root, recorded)
-        };
+        let mut on_disk = document_file(root, recorded);
+        // Only overlay paths the ordinary scanner can safely read. Keep unsafe
+        // paths fail-closed rather than making a projected rewrite readable.
+        if let DocumentFile::Readable { hash, .. } = &mut on_disk
+            && let Ok(root) = fs::canonicalize(root)
+        {
+            let expected = root.join(recorded);
+            if files.removed.contains(&expected) {
+                on_disk = DocumentFile::Missing;
+            } else if let Some(text) = files.rewritten.get(&expected) {
+                *hash = sha256_hex(text.as_bytes());
+            }
+        }
         let (reason, action) = match &on_disk {
             DocumentFile::Readable { hash, .. } if *hash == ingested_hash => continue,
             DocumentFile::Readable { .. } => (

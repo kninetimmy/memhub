@@ -152,14 +152,20 @@ fn record_open_inner(repo_root: &Path, schema_version: &str) -> Result<()> {
 /// Returns `false` when there is no global store to persist into (the
 /// path is still handled for the current run, just not remembered).
 pub fn register(repo_root: &Path, schema_version: &str) -> Result<bool> {
-    if !super::global_store_exists()? || is_ephemeral(repo_root) {
+    let Some(root) = registration_root(repo_root)? else {
         return Ok(false);
-    }
+    };
     let path = super::global_db_path()?;
     let conn = super::open_connection(&path)?;
     ensure_table(&conn)?;
-    upsert_now(&conn, &canonical(repo_root), schema_version)?;
+    upsert_now(&conn, &root, schema_version)?;
     Ok(true)
+}
+
+/// The key an explicit registration would use, without writing it. Upgrade
+/// preview uses the same eligibility check before merging --also into order.
+pub(crate) fn registration_root(repo_root: &Path) -> Result<Option<String>> {
+    Ok((super::global_store_exists()? && !is_ephemeral(repo_root)).then(|| canonical(repo_root)))
 }
 
 /// Every repo root the machine-global registry knows about. Empty when
