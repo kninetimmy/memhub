@@ -385,9 +385,9 @@ fn decision_time<'a>(conn: &Connection, date: &'a str) -> Result<Option<Decision
 
     // Use SQLite for its native calendar-bearing layouts. Reject invalid
     // calendar dates, time-only strings, and ambiguous numeric values.
-    if !date
+    if date
         .get(..10)
-        .is_some_and(|day| NaiveDate::parse_from_str(day, "%Y-%m-%d").is_ok())
+        .is_none_or(|day| NaiveDate::parse_from_str(day, "%Y-%m-%d").is_err())
     {
         return Ok(None);
     }

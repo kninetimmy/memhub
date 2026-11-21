@@ -57,75 +57,6 @@ fn dismiss_in(ctx: &mut db::ProjectContext, id: &str, actor: &str) -> Result<()>
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::Duration;
-
-    #[test]
-    fn known_model_free_id_skips_an_unavailable_similarity_corpus() {
-        let temp = tempfile::tempdir().unwrap();
-        crate::commands::init::run(temp.path()).unwrap();
-        let mut ctx = db::open_project(temp.path()).unwrap();
-        ctx.config.retrieval.use_reranker = true;
-        ctx.conn
-            .execute_batch(
-                "INSERT INTO facts(key,value) VALUES ('key','value'); DROP TABLE decisions;",
-            )
-            .unwrap();
-        let mut id = String::new();
-        facts(&ctx.conn, 60, None, &mut |item| id = item.id).unwrap();
-        for _ in 0..2 {
-            dismiss_in(&mut ctx, &id, "test").unwrap();
-        }
-        assert_eq!(
-            ctx.conn
-                .query_row(
-                    "SELECT count(*) FROM writes_log WHERE table_name = 'prune_dismissals'",
-                    [],
-                    |r| r.get::<_, i64>(0)
-                )
-                .unwrap(),
-            1
-        );
-    }
-
-    #[test]
-    fn stale_dismissal_refuses_without_taking_the_writer_lock() {
-        let temp = tempfile::tempdir().unwrap();
-        crate::commands::init::run(temp.path()).unwrap();
-        let mut ctx = db::open_project(temp.path()).unwrap();
-        ctx.conn.busy_timeout(Duration::ZERO).unwrap();
-        ctx.conn
-            .execute_batch(
-                "INSERT INTO facts(key,value) VALUES
-             ('datastore','We will run a Postgres server to hold project memory.'),
-             ('database','We will run a Postgres server to hold project memory.');",
-            )
-            .unwrap();
-        ctx.config.retrieval.use_reranker = true;
-        let mut id = None;
-        similarity::visit(&ctx.conn, &ctx.paths.repo_root, None, &mut |item| {
-            assert_eq!(item.category, Category::DuplicateFacts);
-            id = Some(item.id);
-        })
-        .unwrap();
-        let id = id.expect("similarity match");
-        ctx.conn
-            .execute("UPDATE facts SET value = 'changed' WHERE id = 2", [])
-            .unwrap();
-        let mut other = Connection::open(&ctx.paths.db_path).unwrap();
-        let _writer = other
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .unwrap();
-        let err = dismiss_in(&mut ctx, &id, "test").unwrap_err();
-        assert!(
-            err.to_string().contains("no current prune candidate"),
-            "{err}"
-        );
-    }
-}
-
 fn find(
     id: &str,
     visit: impl FnOnce(&mut dyn FnMut(Item)) -> Result<()>,
@@ -202,5 +133,74 @@ impl Candidate {
             Self::Similarity(pair) => return pair.is_current(conn, &paths.repo_root, id),
         }?;
         Ok(found.is_some())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn known_model_free_id_skips_an_unavailable_similarity_corpus() {
+        let temp = tempfile::tempdir().unwrap();
+        crate::commands::init::run(temp.path()).unwrap();
+        let mut ctx = db::open_project(temp.path()).unwrap();
+        ctx.config.retrieval.use_reranker = true;
+        ctx.conn
+            .execute_batch(
+                "INSERT INTO facts(key,value) VALUES ('key','value'); DROP TABLE decisions;",
+            )
+            .unwrap();
+        let mut id = String::new();
+        facts(&ctx.conn, 60, None, &mut |item| id = item.id).unwrap();
+        for _ in 0..2 {
+            dismiss_in(&mut ctx, &id, "test").unwrap();
+        }
+        assert_eq!(
+            ctx.conn
+                .query_row(
+                    "SELECT count(*) FROM writes_log WHERE table_name = 'prune_dismissals'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn stale_dismissal_refuses_without_taking_the_writer_lock() {
+        let temp = tempfile::tempdir().unwrap();
+        crate::commands::init::run(temp.path()).unwrap();
+        let mut ctx = db::open_project(temp.path()).unwrap();
+        ctx.conn.busy_timeout(Duration::ZERO).unwrap();
+        ctx.conn
+            .execute_batch(
+                "INSERT INTO facts(key,value) VALUES
+             ('datastore','We will run a Postgres server to hold project memory.'),
+             ('database','We will run a Postgres server to hold project memory.');",
+            )
+            .unwrap();
+        ctx.config.retrieval.use_reranker = true;
+        let mut id = None;
+        similarity::visit(&ctx.conn, &ctx.paths.repo_root, None, &mut |item| {
+            assert_eq!(item.category, Category::DuplicateFacts);
+            id = Some(item.id);
+        })
+        .unwrap();
+        let id = id.expect("similarity match");
+        ctx.conn
+            .execute("UPDATE facts SET value = 'changed' WHERE id = 2", [])
+            .unwrap();
+        let mut other = Connection::open(&ctx.paths.db_path).unwrap();
+        let _writer = other
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        let err = dismiss_in(&mut ctx, &id, "test").unwrap_err();
+        assert!(
+            err.to_string().contains("no current prune candidate"),
+            "{err}"
+        );
     }
 }
