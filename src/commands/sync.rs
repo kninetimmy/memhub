@@ -72,16 +72,12 @@ pub const MANIFEST_VERSION: u32 = 1;
 /// for identical content (page reordering, `VACUUM`), so a file hash
 /// would report "changed" on every comparison.
 ///
-/// `writes_log` is appended to by every durable mutation, so its
-/// `max_id` / `count` are a cheap monotonic human signal. But equality
-/// hinges on `digest` — a hash of the **durable content tables**
-/// themselves, not the log. The log records *that* a fact was added,
-/// not the fact's key/value; two repos that each added one fact log
-/// near-identical rows (differing only by a second-granularity
-/// timestamp), so a log-based digest gives dangerous false "equal"
-/// verdicts. Hashing the content tables means only genuinely identical
-/// content — e.g. one side adopted the other's snapshot byte-for-byte
-/// — compares equal, regardless of timing or page layout.
+/// Equality compares all three fields: the `writes_log` maximum ID and
+/// row count, and the digest of the **durable content tables**. The log
+/// records *that* a fact was added, not its key/value, so a log-based
+/// digest could miss different content. Conversely, lifecycle undo can
+/// restore the content digest but appends audit rows, so it does not
+/// restore logical-version equality with the pre-action snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogicalVersion {
     pub writes_log_max_id: i64,

@@ -190,6 +190,52 @@ fn memory_lifecycle_facts_and_docs_leave_recall_and_return_unchanged() {
 }
 
 #[test]
+fn keyword_retry_ignores_retired_and_archived_full_token_hits() {
+    let repo = Repo::new();
+    let query = "zorbax veltrix";
+    repo.ok(&["fact", "add", "full", "zorbax veltrix full match"]);
+    repo.ok(&["fact", "add", "partial", "zorbax partial match"]);
+    for (path, body) in [
+        ("full.md", "zorbax veltrix full match\n"),
+        ("partial.md", "zorbax partial match\n"),
+    ] {
+        fs::write(repo.path().join(path), body).unwrap();
+        repo.ok(&["doc", "add", path]);
+    }
+
+    // Each scope has one full-token hit that prevents the partial retry.
+    for source_type in ["fact", "doc"] {
+        let result = repo.recall(query, "fts", Some(source_type));
+        assert_eq!(result["returned_count"], 1, "{source_type}: {result}");
+        assert_eq!(result["results"][0]["text"], "zorbax veltrix full match");
+    }
+
+    repo.ok(&["fact", "retire", "full", "--reason", "obsolete"]);
+    repo.ok(&["doc", "archive", "full.md", "--reason", "obsolete"]);
+    // Both full-token hits remain indexed. Filtering them after deciding
+    // whether to retry would leave each scope's result empty.
+    for (source_type, count_full_hits) in [
+        (
+            "fact",
+            "SELECT count(*) FROM facts_fts WHERE facts_fts MATCH ?1",
+        ),
+        (
+            "doc",
+            "SELECT count(*) FROM doc_chunks_fts WHERE doc_chunks_fts MATCH ?1",
+        ),
+    ] {
+        let full_hits: i64 = repo
+            .conn()
+            .query_row(count_full_hits, [query], |row| row.get(0))
+            .unwrap();
+        assert_eq!(full_hits, 1, "{source_type}");
+        let result = repo.recall(query, "fts", Some(source_type));
+        assert_eq!(result["returned_count"], 1, "{source_type}: {result}");
+        assert_eq!(result["results"][0]["text"], "zorbax partial match");
+    }
+}
+
+#[test]
 fn memory_lifecycle_task_keep_drop_show_and_portable_export() {
     let repo = Repo::new();
     repo.ok(&["fact", "add", "legacy", "previous value"]);
@@ -277,6 +323,40 @@ fn memory_lifecycle_task_keep_drop_show_and_portable_export() {
     assert_eq!(target.json(&["task", "show", &id, "--json"]), before);
     target.assert_logged("unkeep", "task unkeep");
     target.fails_with(&["task", "unkeep", &id], "no keep to undo");
+}
+
+#[test]
+fn dropped_task_can_be_done_but_cannot_be_restored() {
+    let repo = Repo::new();
+    let task = repo.json(&["task", "add", "idle task", "--json"]);
+    let id = task["id"].to_string();
+    repo.ok(&["task", "keep", &id]);
+    repo.ok(&["task", "drop", &id, "--reason", "obsolete"]);
+    repo.conn()
+        .execute(
+            "UPDATE tasks SET updated_at = '2000-01-01 00:00:00' WHERE id = ?1",
+            [task["id"].as_i64().unwrap()],
+        )
+        .unwrap();
+
+    repo.ok(&["task", "done", &id]);
+    let done = repo.json(&["task", "show", &id, "--json"]);
+    assert_eq!(done["status"], "done");
+    assert_ne!(done["updated_at"], "2000-01-01 00:00:00");
+    assert!(done["dropped_reason"].is_null());
+    let undo_cleared: bool = repo
+        .conn()
+        .query_row(
+            "SELECT pre_drop_status IS NULL AND pre_drop_updated_at IS NULL
+                    AND pre_keep_updated_at IS NULL AND kept_at IS NULL
+             FROM tasks WHERE id = ?1",
+            [task["id"].as_i64().unwrap()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(undo_cleared);
+    repo.fails_with(&["task", "undrop", &id], "no recorded drop to undo");
+    repo.fails_with(&["task", "unkeep", &id], "no keep to undo");
 }
 
 #[test]

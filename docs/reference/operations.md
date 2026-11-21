@@ -259,8 +259,9 @@ merge: each push writes a consistent single-file DB copy (`VACUUM
 INTO`) plus a `manifest.json` (the exact on-disk files and the
 crash-safe write order are in "Remote layout and publication
 atomicity" below). Divergence is decided from a **logical
-version** (a digest of the durable content tables, never file bytes —
-SQLite is byte-unstable), so `check` reports a baseline-relative verdict:
+version** (the durable-content digest and the `writes_log` maximum ID and
+row count, never file bytes — SQLite is byte-unstable), so `check` reports
+a baseline-relative verdict:
 `up-to-date` / `local-ahead` / `drive-ahead` / `diverged` /
 `no-remote`. Before the baseline-safety correction, `drive-ahead` was
 described as a safe fast-forward and `diverged` as the only lossy case
@@ -274,6 +275,15 @@ independent histories with higher counters remain undetectable by this
 focused guard, so `drive-ahead` is not a guaranteed safe fast-forward.
 Surface its warning and preserve both histories before deciding what to
 replace. Adoption is **operator-gated**, never automatic.
+
+**Lifecycle undo (#445).** Before, this section described the logical version
+as the digest alone; equality has always required all three fields above.
+Before 0026 there were no lifecycle undo pairs. Now, for example, retire then
+unretire, archive then unarchive, drop then undrop, or keep then unkeep (with
+no prior keep undo saved) restores the original content digest if nothing
+else changed. Both actions append audit rows, so the logical version still
+differs. If Drive is still at the shared baseline, `sync check` reports
+`local-ahead` and `sync commit` refuses to record equality.
 
 `sync check --diff` validates the audit cutoff against both actual
 databases. An incompatible cutoff returns null sides with an explicit
@@ -2077,6 +2087,16 @@ Doctor includes them in write recency. CLI `status` (human and JSON) and
 could count as a write since render; now any of the eight actions can
 make current output stale. MCP `status` returns counts, not these checks.
 
+**Wrap-up halt and resume:** Before, writing a fact, accepting a fact
+proposal, or ingesting a document could fail, but not because a key was
+retired or a path was archived. Now those refusals can halt `/wrap-up`'s
+ordered approved writes: `fact add` and `review accept` can refuse a retired
+key, and `doc_add` or `doc add` can refuse an archived path. The
+halt-on-first-failure rule is unchanged: earlier successful writes remain
+durable, the rendered files can be stale, and sync does not run. Resolve
+the refusal and resume the remaining approved work without replaying
+successful writes; render and any enabled sync follow successful writes.
+
 **Keyword index:** Before, otherwise eligible facts and chunks in the
 full-text index could be returned as hits. Now recall filters retired facts
 and archived chunks out before the keyword candidate limit, but leaves them
@@ -2126,9 +2146,13 @@ including when checking for corrupt vectors. The store-wide
   `memhub task undrop <id>` restores the prior status and
   last-updated time and clears the drop reason. The former task states
   and their filters still work. Previously CLI `task done` and MCP
-  `task_done` marked the task done and refreshed its update time.
-  Both still do that through the same handler and now also clear any
-  saved drop or keep undo data; earlier actions stay in the audit log.
+  `task_done` marked an open or blocked task done and refreshed its update
+  time. Both still do that through the same handler and now also accept
+  a dropped task directly. Marking a task done clears its drop reason and
+  any saved drop or keep undo data; earlier actions stay in the audit log.
+  `done` is terminal: `undrop` and `unkeep` cannot restore a done task.
+  Once done, the task is subject to done-task recall age decay, which does
+  not apply while dropped.
 - **Keep a task:** `memhub task keep <id>` and `memhub task unkeep <id>` are
   both new. Keep refreshes the last-updated time shown for an open or
   blocked task and saves the previous time. Unkeep restores that time and

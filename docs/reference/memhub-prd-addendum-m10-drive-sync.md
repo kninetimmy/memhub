@@ -170,15 +170,22 @@ nothing if none remain. A 0025 store can still be hashed as-is; migrating
 it without other changes preserves the digest and its recorded baseline.
 The whole-database snapshot and adopt safety checks are unchanged.
 
-Equality hinges on the digest. Two subtler approaches were tried and
-rejected: row *count* collides (two repos that each added one fact look
-identical), and a digest over the `writes_log` collides too — the log
-records *that* a fact was added, not its key/value, so two repos adding
-different facts log near-identical rows differing only by a
-second-granularity timestamp. Hashing the content tables means only
-genuinely identical content compares equal, independent of timing or
-SQLite page layout. Because the digest is over content, not the file,
-it is stable across the `VACUUM INTO` snapshot and the byte-copy adopt.
+**Before:** This section said equality hinged on the digest. In fact,
+logical-version equality has always required the digest, the audit high-water
+mark (maximum ID), and the audit row count to match. No lifecycle undo pairs
+existed. **After 0026:** That equality rule still holds. Retire/unretire,
+archive/unarchive, drop/undrop, and keep/unkeep (with no prior keep undo saved)
+restore the content digest if nothing else changes, but both actions append
+audit rows. With Drive still at the shared baseline, `sync check` reports
+`local-ahead` and `sync commit` refuses to record equality.
+
+Two subtler approaches were tried and rejected: row *count* collides (two
+repos that each added one fact look identical), and a digest over the
+`writes_log` collides too — the log records *that* a fact was added, not
+its key/value, so two repos adding different facts log near-identical rows
+differing only by a second-granularity timestamp. The digest covers content
+rather than file bytes, so it is stable across the `VACUUM INTO` snapshot
+and the byte-copy adopt.
 
 A file checksum is still recorded in the manifest, but only as an
 integrity check against a torn/partial download — never as the
