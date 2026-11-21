@@ -2093,9 +2093,27 @@ retired or a path was archived. Now those refusals can halt `/wrap-up`'s
 ordered approved writes: `fact add` and `review accept` can refuse a retired
 key, and `doc_add` or `doc add` can refuse an archived path. The
 halt-on-first-failure rule is unchanged: earlier successful writes remain
-durable, the rendered files can be stale, and sync does not run. Resolve
-the refusal and resume the remaining approved work without replaying
-successful writes; render and any enabled sync follow successful writes.
+durable, but the refusal skips render (so the files can stay stale), the
+cross-machine sync push, any approved session transcript archive, and the
+normal closing report. Report the failure, resolve it, and resume the
+remaining approved work without replaying successful writes.
+
+The post-write steps and their gates are unchanged:
+
+1. Render and report the output and backup paths. If only render fails,
+   stop and resume at render after fixing it, without repeating the writes.
+2. Check sync status. If enabled, check the verdict before pushing a
+   snapshot; `drive-ahead` or `diverged` stops the push for `/catch-up`.
+   The policy makes `sync commit` optional for baseline verification or
+   repair; the OpenCode template lists it after the snapshot.
+3. At `transcript` verbosity, Claude, Codex, and OpenCode archive the
+   session transcript only after the writes and render succeed and the user
+   explicitly approves the unredacted copy. Antigravity still reports the
+   archive as unsupported. Standalone `memhub transcript archive` and
+   `memhub transcript prune` are unchanged.
+4. Give the closing report and audit reminder. OpenCode lists what was
+   recorded, skipped, and left pending review. Rendered files are local by
+   default, any commit is the user's call, and a new session can start anytime.
 
 **Keyword index:** Before, otherwise eligible facts and chunks in the
 full-text index could be returned as hits. Now recall filters retired facts
