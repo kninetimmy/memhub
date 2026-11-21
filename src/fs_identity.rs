@@ -54,20 +54,54 @@ fn unix_file_info(metadata: &fs::Metadata) -> FileInfo {
     }
 }
 
+/// Identify the entry itself after the caller checks its ancestors. Do not
+/// request content access or follow the final entry on Windows.
+pub(crate) fn entry_identity(path: &Path, metadata: &fs::Metadata) -> Option<FileIdentity> {
+    #[cfg(unix)]
+    {
+        let _ = path;
+        let identity = unix_file_info(metadata).identity;
+        (identity.second != 0).then_some(identity)
+    }
+    #[cfg(windows)]
+    {
+        let _ = metadata;
+        let file = open_metadata(path, OPEN_REPARSE_POINT).ok()?;
+        if final_path(&file, 0).ok()? != path {
+            return None;
+        }
+        file_info_from_handle(&file).ok().map(|info| info.identity)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (path, metadata);
+        None
+    }
+}
+
 /// Open after the caller checks the exact path and its ancestors. On Unix,
 /// verify against the prior non-following metadata before reading any bytes.
 pub(crate) fn open_direct_file(path: &Path, expected: &fs::Metadata) -> io::Result<fs::File> {
+    if !expected.is_file() || is_link_or_reparse_point(expected) {
+        return Err(io::Error::other("not a direct regular file"));
+    }
     let mut options = fs::File::options();
     options.read(true);
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
-        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        options.custom_flags(OPEN_REPARSE_POINT);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // A path that stops naming a regular file must not block the open
+        // before we can validate the new handle.
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     let file = options.open(path)?;
     let actual = file.metadata()?;
-    if !expected.is_file() || !actual.is_file() || is_link_or_reparse_point(&actual) {
+    if !actual.is_file() || is_link_or_reparse_point(&actual) {
         return Err(io::Error::other("not a direct regular file"));
     }
     #[cfg(windows)]
@@ -113,7 +147,15 @@ pub(crate) fn final_path(file: &fs::File, flags: u32) -> io::Result<std::path::P
 }
 
 #[cfg(windows)]
+const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
+#[cfg(windows)]
 pub(crate) fn file_info(path: &Path) -> io::Result<FileInfo> {
+    file_info_from_handle(&open_metadata(path, 0)?)
+}
+
+#[cfg(windows)]
+fn open_metadata(path: &Path, flags: u32) -> io::Result<fs::File> {
     use std::os::windows::fs::OpenOptionsExt;
 
     const FILE_SHARE_READ: u32 = 0x0000_0001;
@@ -121,12 +163,11 @@ pub(crate) fn file_info(path: &Path) -> io::Result<FileInfo> {
     const FILE_SHARE_DELETE: u32 = 0x0000_0004;
     const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
 
-    let file = fs::File::options()
+    fs::File::options()
         .access_mode(0)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-        .open(path)?;
-    file_info_from_handle(&file)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | flags)
+        .open(path)
 }
 
 #[cfg(windows)]
@@ -201,4 +242,23 @@ pub(crate) fn file_info_from_handle(_file: &fs::File) -> io::Result<FileInfo> {
         io::ErrorKind::Unsupported,
         "filesystem identity verification is unsupported",
     ))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::fd::AsRawFd;
+
+    #[test]
+    fn prune_content_open_is_nonblocking_and_reads_regular_files() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        fs::write(temp.path(), "reviewed").unwrap();
+        let meta = fs::symlink_metadata(temp.path()).unwrap();
+        let mut file = open_direct_file(temp.path(), &meta).unwrap();
+        // SAFETY: the descriptor is live; F_GETFL needs no additional argument.
+        let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+        assert_ne!(flags, -1);
+        assert_ne!(flags & libc::O_NONBLOCK, 0);
+        assert_eq!(io::read_to_string(&mut file).unwrap(), "reviewed");
+    }
 }

@@ -2310,6 +2310,19 @@ Before the next review fix, a direct file opened successfully but containing
 invalid UTF-8 could still match the old dismissal after a same-byte,
 same-mtime replacement. Now that state also includes the opened file's
 identity; those earlier invalid-UTF-8 dismissal IDs no longer match.
+Previously a redirect or a file that could not be read could also match
+its earlier dismissal after replacement with the same observable
+metadata. Now scan and the CLI status review count fingerprint the
+identity of the redirect entry itself or the unreadable direct entry
+when the OS exposes it. A Windows metadata-only open does not follow the
+entry or ask for content access. Unix uses non-following metadata and
+opens candidate content nonblocking before validating the regular file;
+that also applies to backup content reads, not to other identity callers.
+Prior IDs for these unavailable documents change only where identity is
+now observed. If the OS cannot supply an identity, the fingerprint still
+uses the available metadata and error; a replacement that changes none
+of that evidence cannot be detected. Missing-document, stale-fact and
+idle-task IDs are unchanged from PR #455.
 Returning to exactly the dismissed state matches the same ID again.
 The scan does not prune or otherwise edit old dismissal records. It
 reads schema 0026 or 0027 without applying migrations; `dismiss` and
@@ -2340,13 +2353,20 @@ Selection still uses regular, single-link `.bak` files under
 `.memhub/backups/` (the extension used by render and the former markdown
 backup writer). It excludes linked paths, directories, unrelated files,
 the legacy K9 copy, and the `backups/{sync,import,migrations}` safety slots.
+PR #455 excluded those immediate safety-slot directories and their
+subtrees only at their exact spelling. Now scan and cleanup use ASCII
+case-insensitive matching on every OS, even on case-sensitive filesystems.
+This exclusion does not apply to same-named directories deeper in an
+ordinary backup tree, or change `gc`'s scope.
 Retention still keeps the newest 20 per directory by modified time,
-including times before 1970, with filename breaking ties. The Windows
-action requires a current batch fingerprint covering the directory and
-all eligible files, including the kept 20. The fingerprint now includes
-filesystem identities, so replacing a file with an otherwise identical
-copy requires a fresh review; prior backup candidate identifiers and
-dismissals don't match the new format.
+including times before 1970, with filename breaking ties. PR #455 hashed
+the repo-relative directory and ordered native filenames, mtimes, sizes
+and content hashes, including the kept 20. Now all platforms also bind
+backup IDs to the canonical repo location and the directory and file
+identities. Replacing a file with an otherwise identical copy requires
+a fresh review. PR #455 backup IDs and dismissals do not match the new
+format on any platform. Rescan to review or keep the batch again; old
+dismissal and audit records are not rewritten.
 
 Cleanup requires a direct path on a fixed, local NTFS volume that
 supports Transactional NTFS. Windows pins the directory chain against
@@ -2366,7 +2386,15 @@ Before the first review fix, scan could offer delete after checking
 storage alone. Now both formats omit delete, but still offer keep, when
 inspection already detects a cleanup blocker such as encryption, a
 read-only file, or unreviewed streams on a target.
-Cleanup still rechecks eligibility under lock; a later sharing conflict
+Before eligibility was part of the Windows fingerprint, a keep could
+hide a batch that became actionable. The Windows ID now includes
+observed storage support and each included file's read-only and encrypted
+bits and eligibility result, including the stream check on otherwise
+eligible targets. This replaces the intermediate PR #460 Windows backup
+IDs too; the intermediate report-only Unix backup ID format is unchanged.
+Unchanged observations give the same ID; error message wording and locks
+that cannot be detected until deletion are not fingerprint inputs.
+Cleanup still rechecks eligibility under lock, so a later sharing conflict
 can refuse an action that was previously available.
 
 Cleanup sets `FileDispositionInfo` on each verified deletion handle and

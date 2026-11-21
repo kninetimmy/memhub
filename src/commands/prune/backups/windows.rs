@@ -25,6 +25,7 @@ const DELETE: u32 = 0x0001_0000;
 const OPEN_EXISTING: u32 = 3;
 const FILE_ATTRIBUTE_READONLY: u32 = 0x0001;
 const FILE_ATTRIBUTE_ENCRYPTED: u32 = 0x4000;
+pub(super) const CLEANUP_ATTRIBUTE_MASK: u32 = FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_ENCRYPTED;
 const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
 const BACKUP_SEMANTICS: u32 = 0x0200_0000;
 const VOLUME_NAME_GUID: u32 = 1;
@@ -370,18 +371,18 @@ fn transaction(path: &Path) -> Result<OwnedHandle> {
 }
 
 fn pin_reviewed_directory(
+    mut path: PathBuf,
     physical: &Path,
     reviewed: &Path,
     identity: &FileIdentity,
 ) -> Result<Vec<File>> {
-    let mut path = volume_root(physical).ok_or_else(|| unsupported(reviewed))?;
+    let children = physical
+        .strip_prefix(&path)
+        .map_err(|_| changed(reviewed))?;
     // Pin each ancestor before opening its child. The read-only share mask
     // excludes directory opens with write-data or rename/delete access.
     let mut dirs = vec![pin_directory(&path)?];
-    for component in physical
-        .components()
-        .filter(|part| !matches!(part, Component::Prefix(_) | Component::RootDir))
-    {
+    for component in children.components() {
         let Component::Normal(name) = component else {
             return Err(changed(reviewed));
         };
@@ -392,7 +393,7 @@ fn pin_reviewed_directory(
     // a reparse point. Require the pinned leaf to prove both the reviewed
     // location and identity, not just the identity of an earlier probe.
     verify_directory(
-        dirs.last().expect("volume root is pinned"),
+        dirs.last().expect("chain start is pinned"),
         reviewed,
         identity,
     )?;
@@ -406,7 +407,9 @@ pub(super) fn delete(group: Group) -> Result<usize> {
     let physical = storage_path(&group.directory, &group.directory_identity)?;
     // Address the verified volume by GUID, not by its mutable drive letter.
     // Keep the verified chain pinned until commit or rollback.
-    let _dirs = pin_reviewed_directory(&physical, &group.directory, &group.directory_identity)?;
+    let root = volume_root(&physical).ok_or_else(|| unsupported(&group.directory))?;
+    let _dirs =
+        pin_reviewed_directory(root, &physical, &group.directory, &group.directory_identity)?;
     let tx = transaction(&group.directory)?;
     let mut files = Vec::new();
     for (index, expected) in group.files.iter().enumerate() {
@@ -474,10 +477,25 @@ mod tests {
         let first_id = crate::fs_identity::file_identity(&first).unwrap();
         let second_id = crate::fs_identity::file_identity(&second).unwrap();
         assert_ne!(first_id, second_id);
-        let physical = storage_path(&first, &first_id).unwrap();
+        let probe = directory(&first, SHARE_ALL).unwrap();
+        let physical = final_path(&probe, VOLUME_NAME_GUID).unwrap();
+        drop(probe);
 
-        let pins = pin_reviewed_directory(&physical, &first, &first_id).unwrap();
-        assert_eq!(pins.len(), physical.ancestors().count());
+        // The host volume root and system parents can have unrelated writers.
+        // Exercise the same pinning loop on a chain owned by this fixture.
+        let parent = physical.parent().unwrap();
+        let pin = |reviewed, identity| {
+            pin_reviewed_directory(parent.to_path_buf(), &physical, reviewed, identity)
+        };
+        let pins = pin(&first, &first_id).unwrap();
+        assert_eq!(pins.len(), 2);
+        for (wrong_path, wrong_id) in [(&second, &first_id), (&first, &second_id)] {
+            let err = pin(wrong_path, wrong_id).unwrap_err();
+            assert!(
+                err.to_string().contains("changed or is not a direct path"),
+                "{err}"
+            );
+        }
         let open_for_delete = |path: &Path| {
             File::options()
                 .access_mode(DELETE)
@@ -494,13 +512,6 @@ mod tests {
         drop(pins);
         for path in [&first, first.parent().unwrap()] {
             open_for_delete(path).unwrap();
-        }
-        for (wrong_path, wrong_id) in [(&second, &first_id), (&first, &second_id)] {
-            let err = pin_reviewed_directory(&physical, wrong_path, wrong_id).unwrap_err();
-            assert!(
-                err.to_string().contains("changed or is not a direct path"),
-                "{err}"
-            );
         }
     }
 

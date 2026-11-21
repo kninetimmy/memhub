@@ -15,7 +15,7 @@ use serde::Serialize;
 use crate::config::ProjectConfig;
 use crate::db::{self, ProjectPaths};
 use crate::fs_identity::{
-    FileIdentity, file_info_from_handle, is_link_or_reparse_point, open_direct_file,
+    FileIdentity, entry_identity, file_info_from_handle, is_link_or_reparse_point, open_direct_file,
 };
 use crate::retrieval::util::sha256_hex;
 use crate::{MemhubError, Result};
@@ -477,11 +477,18 @@ enum DocumentFile {
         identity: FileIdentity,
     },
     Missing,
-    Linked(Vec<u8>, Option<Vec<u8>>, Option<Timestamp>),
+    Linked(
+        Vec<u8>,
+        Option<Vec<u8>>,
+        Option<Timestamp>,
+        #[serde(skip_serializing_if = "Option::is_none")] Option<FileIdentity>,
+    ),
     Unreadable(
         Option<i32>,
         Option<(String, FileIdentity)>,
         Option<(u64, Option<Timestamp>)>,
+        // Used when there is no content hash and identity from a read handle.
+        #[serde(skip_serializing_if = "Option::is_none")] Option<FileIdentity>,
     ),
 }
 
@@ -493,18 +500,18 @@ fn document_file(root: &Path, path: &Path) -> DocumentFile {
             .components()
             .any(|c| c == std::path::Component::ParentDir)
         {
-            return DocumentFile::Unreadable(None, None, None);
+            return DocumentFile::Unreadable(None, None, None, None);
         }
         path.to_path_buf()
     } else {
         let Ok(root) = fs::canonicalize(root) else {
-            return DocumentFile::Unreadable(None, None, None);
+            return DocumentFile::Unreadable(None, None, None, None);
         };
         if path
             .components()
             .any(|c| !matches!(c, std::path::Component::Normal(_)))
         {
-            return DocumentFile::Unreadable(None, None, None);
+            return DocumentFile::Unreadable(None, None, None, None);
         }
         root.join(path)
     };
@@ -515,7 +522,7 @@ fn document_file(root: &Path, path: &Path) -> DocumentFile {
         let meta = match fs::symlink_metadata(component) {
             Ok(meta) => meta,
             Err(e) if e.kind() == ErrorKind::NotFound => return DocumentFile::Missing,
-            Err(e) => return DocumentFile::Unreadable(e.raw_os_error(), None, None),
+            Err(e) => return DocumentFile::Unreadable(e.raw_os_error(), None, None, None),
         };
         let modified = meta.modified().ok().map(timestamp);
         if is_link_or_reparse_point(&meta) {
@@ -525,15 +532,22 @@ fn document_file(root: &Path, path: &Path) -> DocumentFile {
                     .ok()
                     .map(|target| target.as_os_str().as_encoded_bytes().to_vec()),
                 modified,
+                entry_identity(component, &meta),
             );
         }
         if component == expected {
             let stamp = Some((meta.len(), modified));
             // Keep the existing exact-path check before reading an ordinary file.
             if !meta.is_file() || fs::canonicalize(&expected).ok().as_ref() != Some(&expected) {
-                return DocumentFile::Unreadable(None, None, stamp);
+                return DocumentFile::Unreadable(
+                    None,
+                    None,
+                    stamp,
+                    entry_identity(component, &meta),
+                );
             }
-            let read = || -> std::io::Result<_> {
+            let mut observed_identity = None;
+            let mut read = || -> std::io::Result<_> {
                 use std::io::Read;
 
                 let mut file = open_direct_file(&expected, &meta)?;
@@ -543,6 +557,7 @@ fn document_file(root: &Path, path: &Path) -> DocumentFile {
                         "document path changed before reading",
                     ));
                 }
+                observed_identity = Some(identity.clone());
                 let mut bytes = Vec::new();
                 file.read_to_end(&mut bytes)?;
                 Ok((identity, bytes))
@@ -554,12 +569,38 @@ fn document_file(root: &Path, path: &Path) -> DocumentFile {
                         identity,
                     }
                 }
-                Ok((identity, bytes)) => {
-                    DocumentFile::Unreadable(None, Some((sha256_hex(&bytes), identity)), stamp)
-                }
-                Err(e) => DocumentFile::Unreadable(e.raw_os_error(), None, stamp),
+                Ok((identity, bytes)) => DocumentFile::Unreadable(
+                    None,
+                    Some((sha256_hex(&bytes), identity)),
+                    stamp,
+                    None,
+                ),
+                Err(e) => DocumentFile::Unreadable(
+                    e.raw_os_error(),
+                    None,
+                    stamp,
+                    observed_identity.or_else(|| entry_identity(component, &meta)),
+                ),
             };
         }
     }
-    DocumentFile::Unreadable(None, None, None)
+    DocumentFile::Unreadable(None, None, None, None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DocumentFile;
+    use serde_json::{json, to_value};
+
+    #[test]
+    fn missing_entry_identity_keeps_the_prior_fingerprint_shape() {
+        assert_eq!(
+            to_value(DocumentFile::Linked(vec![1], Some(vec![2]), None, None)).unwrap(),
+            json!({"Linked": [[1], [2], null]})
+        );
+        assert_eq!(
+            to_value(DocumentFile::Unreadable(Some(5), None, None, None)).unwrap(),
+            json!({"Unreadable": [5, null, null]})
+        );
+    }
 }

@@ -506,6 +506,52 @@ fn assert_replacement_reopens_dismissal(bytes: &[u8], reason: &str) {
     assert_eq!(after, f.scan());
 }
 
+#[cfg(windows)]
+#[test]
+fn replacing_a_document_denied_content_access_reopens_its_dismissal() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let f = Fixture::new();
+    f.document("locked.md", Some(b"# Changed"), false);
+    let source = f.temp.path().join("locked.md");
+    let old = f.temp.path().join("old.md");
+    let stamp = fs::metadata(&source).unwrap().modified().unwrap();
+    let lock = || {
+        File::options()
+            .read(true)
+            .share_mode(0)
+            .open(&source)
+            .unwrap()
+    };
+    let handle = lock();
+    let before = f.scan();
+    let previous = row_item(&before, "out_of_date_document", 1);
+    assert!(previous["reason"].as_str().unwrap().contains("unreadable"));
+    f.ok(&action(previous, "keep"));
+    assert_eq!(f.scan()["total"], 0);
+    drop(handle);
+
+    fs::rename(&source, &old).unwrap();
+    fs::copy(&old, &source).unwrap();
+    File::options()
+        .write(true)
+        .open(&source)
+        .unwrap()
+        .set_times(FileTimes::new().set_modified(stamp))
+        .unwrap();
+    assert_eq!(fs::metadata(&source).unwrap().modified().unwrap(), stamp);
+    let _handle = lock();
+    let after = f.scan();
+    let current = row_item(&after, "out_of_date_document", 1);
+    assert_ne!(previous["id"], current["id"]);
+    assert_eq!(previous["reason"], current["reason"]);
+    assert_eq!(after, f.scan());
+    assert_eq!(
+        f.json(&["status", "--json"])["status"]["prune_review_count"],
+        1
+    );
+}
+
 #[test]
 fn a_dangling_document_link_does_not_match_a_missing_file_dismissal() {
     let f = Fixture::new();
@@ -515,23 +561,28 @@ fn a_dangling_document_link_does_not_match_a_missing_file_dismissal() {
     f.ok(&action(missing, "keep"));
     assert_eq!(f.scan()["total"], 0);
 
+    let source = f.temp.path().join("gone.md");
     let target = f.temp.path().join("link-target");
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(&target, f.temp.path().join("gone.md")).unwrap();
-    #[cfg(windows)]
-    {
-        // Junctions require no symlink privilege and carry reparse metadata.
-        let out = Command::new("cmd")
-            .current_dir(f.temp.path())
-            .args(["/C", "mklink", "/J", "gone.md", "link-target"])
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
+    let create_link = || {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &source).unwrap();
+        #[cfg(windows)]
+        {
+            // Junctions require no symlink privilege and carry reparse metadata.
+            let out = Command::new("cmd")
+                .current_dir(f.temp.path())
+                .args(["/C", "mklink", "/J", "gone.md", "link-target"])
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    };
+    create_link();
+    let stamp = set_link_fixture_mtime(&source);
     assert!(!target.exists());
     let report = f.scan();
     let linked = row_item(&report, "out_of_date_document", 1);
@@ -548,6 +599,55 @@ fn a_dangling_document_link_does_not_match_a_missing_file_dismissal() {
         report,
         "the target is not part of the fingerprint"
     );
+    f.ok(&action(linked, "keep"));
+    f.ok(&action(linked, "keep"));
+    assert_eq!(f.scan()["total"], 0);
+
+    fs::rename(&source, f.temp.path().join("old-link")).unwrap();
+    create_link();
+    assert_eq!(set_link_fixture_mtime(&source), stamp);
+    let after = f.scan();
+    let replacement = row_item(&after, "out_of_date_document", 1);
+    assert_eq!(replacement["reason"], linked["reason"]);
+    assert_ne!(replacement["id"], linked["id"]);
+    assert_eq!(after, f.scan());
+}
+
+fn set_link_fixture_mtime(path: &Path) -> SystemTime {
+    #[cfg(unix)]
+    {
+        let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        let times = [libc::timespec {
+            tv_sec: 1_700_000_000,
+            tv_nsec: 0,
+        }; 2];
+        // SAFETY: valid C string and two timestamps; only the fixture link is touched.
+        let result = unsafe {
+            libc::utimensat(
+                libc::AT_FDCWD,
+                name.as_ptr(),
+                times.as_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        };
+        assert_eq!(result, 0, "{}", std::io::Error::last_os_error());
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        File::options()
+            .access_mode(0x100) // FILE_WRITE_ATTRIBUTES
+            .custom_flags(0x0220_0000) // BACKUP_SEMANTICS | OPEN_REPARSE_POINT
+            .open(path)
+            .unwrap()
+            .set_times(
+                FileTimes::new()
+                    .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000)),
+            )
+            .unwrap();
+    }
+    fs::symlink_metadata(path).unwrap().modified().unwrap()
 }
 
 #[cfg(windows)]
@@ -697,8 +797,71 @@ fn scan_and_cleanup_reject_known_readonly_or_alternate_stream_targets() {
     assert!(!human.contains("memhub prune backups --yes --candidate"));
     assert_eq!(file_count(readonly.parent().unwrap()), 22);
     assert_eq!(file_count(streamed.parent().unwrap()), 22);
-    assert_eq!(fs::read_to_string(stream).unwrap(), "additional content");
-    fs::set_permissions(readonly, readonly_meta.permissions()).unwrap();
+    assert_eq!(fs::read_to_string(&stream).unwrap(), "additional content");
+
+    let blocked = &items(&scan)[0];
+    assert_eq!(f.scan(), scan);
+    f.ok(&action(blocked, "keep"));
+    f.ok(&action(blocked, "keep"));
+    assert_eq!(items(&f.scan()), &items(&scan)[1..]);
+    fs::set_permissions(&readonly, readonly_meta.permissions()).unwrap();
+    let after = f.scan();
+    assert_eq!(after["total"], 2);
+    let restored = &items(&after)[0];
+    assert_eq!(restored["subjects"], blocked["subjects"]);
+    assert_ne!(restored["id"], blocked["id"]);
+    assert_eq!(
+        action(restored, "delete").last().copied(),
+        restored["id"].as_str()
+    );
+    assert_eq!(
+        fs::metadata(&readonly).unwrap().modified().unwrap(),
+        readonly_meta.modified().unwrap()
+    );
+    assert_eq!(fs::read(&readonly).unwrap(), b"a");
+    let old_dismissal = f.run(&action(blocked, "keep"));
+    assert!(!old_dismissal.status.success());
+    assert!(String::from_utf8_lossy(&old_dismissal.stderr).contains("no current prune candidate"));
+    assert_eq!(&items(&after)[1], &items(&scan)[1]);
+    assert_eq!(f.scan(), after);
+
+    let blocked_stream = &items(&after)[1];
+    f.ok(&action(blocked_stream, "keep"));
+    assert_eq!(f.scan()["total"], 1);
+    fs::remove_file(&stream).unwrap();
+    File::options()
+        .write(true)
+        .open(&streamed)
+        .unwrap()
+        .set_times(FileTimes::new().set_modified(modified))
+        .unwrap();
+    let after = f.scan();
+    assert_eq!(after["total"], 2);
+    let restored = &items(&after)[1];
+    assert_eq!(restored["subjects"], blocked_stream["subjects"]);
+    assert_ne!(restored["id"], blocked_stream["id"]);
+    assert_eq!(
+        action(restored, "delete").last().copied(),
+        restored["id"].as_str()
+    );
+}
+
+#[test]
+fn backup_safety_slots_ignore_ascii_case_on_all_platforms() {
+    let f = Fixture::new();
+    for name in ["SyNc", "ImPoRt", "MiGrAtIoNs"] {
+        f.backups(name, 21);
+    }
+    f.backups("ordinary/SyNc", 21);
+    let report = f.scan();
+    assert_eq!(report["total"], 1);
+    let suffix = format!("ordinary{}SyNc", std::path::MAIN_SEPARATOR);
+    assert!(
+        items(&report)[0]["subjects"][0]["directory"]
+            .as_str()
+            .unwrap()
+            .ends_with(&suffix)
+    );
 }
 
 // APFS does not allow creating the invalid UTF-8 entry used by this fixture.

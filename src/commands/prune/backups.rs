@@ -28,6 +28,8 @@ struct Backup {
     modified: SystemTime,
     bytes: u64,
     hash: String,
+    #[cfg(windows)]
+    cleanup_eligibility: (u32, bool),
 }
 
 pub(super) struct Group {
@@ -46,7 +48,6 @@ impl Group {
         #[cfg(windows)]
         let unavailable = self
             .cleanup_blocker
-            .or_else(|| windows::storage_path(&self.directory, &self.directory_identity).err())
             .map(|e| format!("Backup cleanup unavailable: {e}"));
         #[cfg(not(windows))]
         let unavailable = Some(REPORT_ONLY.to_owned());
@@ -227,12 +228,14 @@ fn inspect_directory(
                 return Err(changed(&path));
             }
             #[cfg(windows)]
-            if cleanup_blocker.is_none() {
+            let cleanup_eligibility = {
                 use std::os::windows::fs::MetadataExt;
-                cleanup_blocker =
-                    windows::check_file(&file, actual.file_attributes(), &path, index >= RETAIN)
-                        .err();
-            }
+                let attributes = actual.file_attributes();
+                let check = windows::check_file(&file, attributes, &path, index >= RETAIN);
+                let eligible = check.is_ok();
+                cleanup_blocker = cleanup_blocker.take().or_else(|| check.err());
+                (attributes & windows::CLEANUP_ATTRIBUTE_MASK, eligible)
+            };
             let hash = sha256_reader(&file).map_err(|err| {
                 MemhubError::InvalidInput(format!(
                     "cannot hash backup '{}': {err}",
@@ -245,6 +248,8 @@ fn inspect_directory(
                 modified,
                 bytes: meta.len(),
                 hash,
+                #[cfg(windows)]
+                cleanup_eligibility,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -252,24 +257,32 @@ fn inspect_directory(
     let fingerprint: Vec<_> = files
         .iter()
         .map(|f| {
-            (
+            let state = (
                 f.path.file_name().expect("entry name").as_encoded_bytes(),
                 &f.identity,
                 timestamp(f.modified),
                 f.bytes,
                 &f.hash,
-            )
+            );
+            #[cfg(windows)]
+            let state = (state, f.cleanup_eligibility);
+            state
         })
         .collect();
-    let id = identifier(
-        Category::SurplusBackups,
-        (
-            root.as_os_str().as_encoded_bytes(),
-            relative.as_os_str().as_encoded_bytes(),
-            &directory_identity,
-            fingerprint,
-        ),
-    )?;
+    let state = (
+        root.as_os_str().as_encoded_bytes(),
+        relative.as_os_str().as_encoded_bytes(),
+        &directory_identity,
+        fingerprint,
+    );
+    #[cfg(windows)]
+    let state = {
+        let storage = windows::storage_path(dir, &directory_identity);
+        let supported = storage.is_ok();
+        cleanup_blocker = cleanup_blocker.or_else(|| storage.err());
+        (state, supported)
+    };
+    let id = identifier(Category::SurplusBackups, state)?;
     Ok(Some(Group {
         id,
         directory: dir.to_path_buf(),
