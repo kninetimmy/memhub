@@ -36,7 +36,7 @@ memhub is one offline binary and one SQLite file next to your code. Claude Code,
 - **Named rows**: a decision, task, or fact you name by number in a query, such as "decision 201". Recall returns eligible named rows first, skipping the rerank cutoff. Before fact retirement, an otherwise eligible fact could always be named; now retired facts are excluded even by number. Use `memhub get-row fact <id>` to inspect one directly.
 - **Compact hits**: each recall hit carries the row's type, id, scope, title, re-ranker score, date, status, and at most 300 characters of its text. `memhub get-row` (the MCP `get_row` tool) returns a row's full text. If no row clears the cutoff and no named row is returned, recall returns nothing and adds a `rerank_cutoff_dropped_all` warning.
 - **Pending writes**: agent proposals (`pending_writes` in the database) that wait for your review. Each becomes a fact or decision only when you accept it.
-- **PROJECT_LEDGER.md**: a markdown file written by `memhub render` that lists decisions, the task backlog, facts, and recent write activity. Agents use recall instead of reading it.
+- **PROJECT_LEDGER.md**: a markdown file written by `memhub render` that lists decisions, the task backlog, facts, and recent write activity. It used to list all repo facts; it now omits retired facts. Agents use recall instead of reading it.
 - **Hibernated**: fully written but compiled out of normal builds, so a default binary has no commands for it. Its database tables and config keys remain. A default build still shows two traces of hibernated metrics: a skipped `metrics_health` check in `memhub doctor`, and `memhub upgrade` reporting already-installed metrics skill wrappers as orphans.
 
 </details>
@@ -743,7 +743,7 @@ memhub global disable    # opt back out (non-destructive)
 
 **What belongs in it** is only the broadly applicable kind of facts, decisions, and docs: machine and toolchain truths, standing engineering policy, a universal style guide. Never tasks, narratives, or anything naming a repo-specific path.
 
-**Writing to it is always a deliberate human action.** Write it born-global from the CLI, or promote an existing repo row (**copy, not move**; the repo row stays and still wins locally):
+**Writing to it is always a deliberate human action.** Write it born-global from the CLI, or promote an existing repo row (**copy, not move**). The repo row stays. Before retirement, it could take precedence when recalled; that still holds for eligible repo hits, but retired facts are not recalled and retiring one does not retire its global copy:
 
 ```bash
 memhub fact add ci-runner "self-hosted, 16 vCPU" --global
@@ -777,6 +777,8 @@ memhub index rebuild                   # re-generate embeddings from the importe
 ```
 
 Export covers facts, decisions, tasks, commands, pending writes, writes_log, session notes, and both narrative tables. Embeddings, ingested docs, and machine-global memory are excluded. After an import, run `memhub index rebuild`, re-run `memhub doc add` for reference docs, and re-add machine-global rows on the new machine. To keep two of your own machines in step without moving files by hand, use [sync](#cross-machine-sync). Details: [operations reference](docs/reference/operations.md#cross-machine-workflow).
+
+Previously export wrote JSON v1. It now writes v2 to preserve fact retirement and task drop/keep undo data. Import still reads v1 as well as v2; older v1-only builds refuse v2.
 
 ---
 
@@ -936,7 +938,7 @@ confirmation gates:
 
 - **Lookup/query:** `status`, `search`, `recall`, `get_row`, `locate`, `list_tasks`, `list_decisions`, `list_facts`, `list_pending_writes`, `get_command`
 - **Write (direct):** `task_add`, `task_done`, `record_command`, `log_session_note`, `render`, `doc_add`, `archive_transcript`
-- **Write (staged for review):** `propose_fact`, `propose_decision`, `propose_supersede` (retires an outdated fact or decision by linking the row that replaces it). The first two take an optional `global` flag (see [Machine-global memory](#machine-global-memory)).
+- **Write (staged for review):** `propose_fact`, `propose_decision`, `propose_supersede` (links an outdated fact or decision to its replacement, demoting it in recall as before; it does not retire the fact). The first two take an optional `global` flag (see [Machine-global memory](#machine-global-memory)).
 - **Hibernated:** `metrics`, which exists only in a `--features metrics` build.
 - **Sync:** the five `sync_*` tools (see [Cross-machine sync](#cross-machine-sync)).
 
@@ -1088,7 +1090,7 @@ This is a presence check: customized regular files count as present, extra user 
 
 ### Staleness and confidence
 
-- **Facts** go stale after 90 days without re-verification. Recall still returns a stale fact, ranked like a fresh one and flagged `stale`, so the agent can weigh it. `memhub fact verify <id|key>` refreshes `verified_at` only, and `/wrap-up` offers a per-item re-verify step for the oldest facts. It is CLI only, because agent self-verification is exactly what the untrusted-writer guardrail forbids.
+- **Facts** go stale after 90 days without re-verification. Before retirement, recall ranked eligible stale facts like fresh ones and flagged them `stale`. That still holds for non-retired facts; retired facts are excluded. `memhub fact verify <id|key>` refreshes `verified_at` only, and `/wrap-up` offers a per-item re-verify step for the oldest facts on the default fact list. Verification is CLI only, because agent self-verification is exactly what the untrusted-writer guardrail forbids.
 - **Commands** carry a derived confidence: `success_count / (success_count + fail_count)`.
 - **Embeddings** go stale when the source body changes or the bundled model changes. Recall surfaces a warning, and you decide whether to run `/reindex`.
 
@@ -1118,7 +1120,7 @@ memhub CLI / MCP
    ├── src/code_index/  tree-sitter chunker + walker + `locate` over the sibling code index
    ├── src/metrics/     hibernated token accounting (`metrics` feature)
    ├── src/render/      PROJECT.md and PROJECT_LEDGER.md emit
-   └── src/export/      v1 portable JSON
+   └── src/export/      portable JSON (formerly v1; writes v2, reads v1 and v2)
        │
        ├── SQLite (.memhub/project.sqlite) + bundled BGE-small + ms-marco ONNX
        └── SQLite (.memhub/code_index.sqlite)  ← sibling code index, locate-only

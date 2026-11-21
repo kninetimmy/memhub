@@ -32,7 +32,9 @@ pub const DEFAULT_VECTOR_WEIGHT: f64 = 0.5;
 pub const DEFAULT_STALE_PENALTY: f64 = 0.3;
 /// Blended-score demotion applied to a superseded fact/decision in recall
 /// (Wave 3 L3, decision 145's demote-with-link ruling). A superseded row is
-/// never excluded — it is kept, tagged `superseded_by: N`, and pushed down.
+/// not excluded for supersession alone — it is tagged `superseded_by: N` and
+/// pushed down. Before retirement this also applied to every eligible
+/// superseded fact; now retired facts are excluded independently.
 /// Supersession is an explicit "this was replaced" signal, stronger than
 /// mere age, yet still a demotion rather than a filter.
 pub const DEFAULT_SUPERSEDED_PENALTY: f64 = 0.4;
@@ -44,7 +46,8 @@ pub const DEFAULT_SUPERSEDED_PENALTY: f64 = 0.4;
 /// — halving every `age_half_life_days` — keyed on `verified_at` for facts
 /// and `updated_at` for *done* tasks. Decisions and doc chunks are excluded
 /// entirely (Q2 / decision 145: decisions retire by supersession, not age),
-/// as are open/blocked tasks and never-verified facts. Under the
+/// as are never-verified facts and all non-done tasks (previously
+/// open/blocked, now also dropped). Under the
 /// cross-encoder re-ranker the practical effect is limited — decay mostly
 /// shifts which candidates enter the rerank pool, not the final reranked
 /// order (see `recall::finalize`).
@@ -61,8 +64,9 @@ pub const DEFAULT_AGE_HALF_LIFE_DAYS: i64 = 0;
 /// key of its own.
 pub const DEFAULT_RERANK_CUTOFF: f32 = -7.0;
 pub const DEFAULT_ACCEPTED_ONLY: bool = false;
-/// Retired: recall always returns stale facts, flagged `stale: true` and
-/// ranked like fresh ones (decision 236). `[retrieval]
+/// Retired setting (decision 236): staleness only flags, it never filters.
+/// Before fact retirement this applied to every otherwise eligible stale
+/// fact; now retired facts are independently excluded. `[retrieval]
 /// include_stale_by_default` still loads, because older configs pin it
 /// (often as `false`), but it is ignored and never written to new
 /// configs; `memhub doctor` reports it as an ignored setting. The
@@ -307,8 +311,9 @@ pub struct RetrievalConfig {
     #[serde(default = "default_include_stale", skip_serializing)]
     pub include_stale_by_default: bool,
     /// Age in days after which a fact is treated as stale by recall — never
-    /// verified, or last verified more than this many days ago. Stale facts
-    /// are returned and ranked like fresh ones, flagged `stale: true`.
+    /// verified, or last verified more than this many days ago. Before
+    /// retirement, eligible stale facts were ranked like fresh ones and
+    /// flagged `stale: true`. That still holds for non-retired facts.
     /// Defaults to the established 90-day window
     /// (`DEFAULT_FACT_STALE_AFTER_DAYS`).
     #[serde(default = "default_fact_stale_after_days")]
@@ -333,7 +338,9 @@ pub struct RetrievalConfig {
     pub rerank_doc_cap: usize,
     /// When true, plain `memhub recall` (no `--source-type`) makes
     /// ingested doc chunks eligible for the default bundle, gated by
-    /// `scoring.rerank_cutoff` like every other row. Off by default (decision 86);
+    /// `scoring.rerank_cutoff` like every other row. Before archiving this
+    /// covered every doc; now archived docs are excluded in any scope.
+    /// Off by default (decision 86);
     /// the first successful `memhub doc add` in a project flips this
     /// to true in that repo's `.memhub/config.toml`. Explicit
     /// `--source-type doc` recall is unaffected by this flag.

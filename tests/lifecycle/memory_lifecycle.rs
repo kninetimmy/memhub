@@ -280,6 +280,64 @@ fn memory_lifecycle_task_keep_drop_show_and_portable_export() {
 }
 
 #[test]
+fn task_drop_round_trips_legacy_blank_updated_at() {
+    assert_legacy_task_undo(
+        "open",
+        &["task", "drop", "1", "--reason", "obsolete"],
+        "undrop",
+    );
+}
+
+#[test]
+fn task_keep_round_trips_legacy_blank_updated_at() {
+    assert_legacy_task_undo("blocked", &["task", "keep", "1"], "unkeep");
+}
+
+fn assert_legacy_task_undo(status: &str, action: &[&str], undo: &str) {
+    let source = Repo::new();
+    let path = source.path().join("legacy.json");
+    let legacy = serde_json::json!({
+        "memhub_export_version": 1,
+        "exported_at": "2025-01-01T00:00:00Z",
+        "exported_by": "memhub legacy",
+        "source_schema_version": "0025_arch_sections",
+        "project": {
+            "root_path_at_export": source.path().to_string_lossy(),
+            "created_at": "2025-01-01T00:00:00Z",
+        },
+        "facts": [],
+        "decisions": [],
+        "tasks": [{
+            "id": 1,
+            "title": "legacy task",
+            "status": status,
+            "notes": "keep these",
+            "created_at": "2025-01-01 00:00:00",
+            "updated_at": "",
+        }],
+        "commands": [],
+        "pending_writes": [],
+        "writes_log": [],
+    });
+    fs::write(&path, legacy.to_string()).unwrap();
+    source.ok(&["import", path.to_str().unwrap()]);
+    let show = ["task", "show", "1", "--json"];
+    let before = source.json(&show);
+    assert_eq!(before["updated_at"], "");
+    source.ok(action);
+    let after = source.json(&show);
+    assert_ne!(after["updated_at"], before["updated_at"]);
+
+    let path = source.path().join("export.json");
+    source.ok(&["export", path.to_str().unwrap()]);
+    let target = Repo::new();
+    target.ok(&["import", path.to_str().unwrap()]);
+    assert_eq!(target.json(&show), after);
+    target.ok(&["task", undo, "1"]);
+    assert_eq!(target.json(&show), before);
+}
+
+#[test]
 fn task_add_with_status_cannot_bypass_drop() {
     use memhub::commands::task;
 

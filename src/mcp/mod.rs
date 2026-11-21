@@ -946,7 +946,7 @@ impl MemhubServer {
 
     #[tool(
         name = "propose_supersede",
-        description = "Stage a proposed SUPERSESSION — retire an outdated fact or decision by linking it to the row that replaces it — into pending_writes for human review. NEVER writes durably: the demote-with-link (the old row is kept, tagged, and penalized in recall, never deleted) happens only when the user runs `memhub review accept`. Set target_kind to \"fact\" or \"decision\"; `old` and `new` identify the retired row and its replacement (fact: numeric id or exact key; decision: numeric id). Use when you find a durable fact/decision that a newer one has clearly replaced — you are proposing the retirement, not performing it (untrusted-writer guardrail)."
+        description = "Stage a proposed SUPERSESSION — link an outdated fact or decision to the row that replaces it — into pending_writes for human review. NEVER writes durably: the link is set only when the user runs `memhub review accept`. Before fact retirement, an otherwise eligible superseded row stayed in recall, tagged and penalized, not deleted. That still holds unless the fact is separately retired; supersession alone never excludes the row. Set target_kind to \"fact\" or \"decision\"; `old` and `new` identify the superseded row and its replacement (fact: numeric id or exact key; decision: numeric id). Use when you find a durable fact/decision that a newer one has clearly replaced — you are proposing the supersession, not performing it (untrusted-writer guardrail)."
     )]
     async fn propose_supersede(
         &self,
@@ -1000,7 +1000,7 @@ impl MemhubServer {
 
     #[tool(
         name = "task_done",
-        description = "Mark an existing task as done by id."
+        description = "Mark an existing task as done by id, as before. Like CLI task done, this now also clears any saved drop or keep undo state."
     )]
     async fn task_done(
         &self,
@@ -1013,7 +1013,7 @@ impl MemhubServer {
 
     #[tool(
         name = "list_facts",
-        description = "List durable facts. Use this to look up build/test/run commands or other key-value records the user has confirmed."
+        description = "List durable facts. This used to list all repo facts; now retired facts are omitted. Use get_row by id to read a retired fact. Use this list to look up build/test/run commands or other key-value records the user has confirmed."
     )]
     async fn list_facts(
         &self,
@@ -1720,8 +1720,8 @@ struct RecallParams {
     /// Tasks, architecture sections and session notes carry no such
     /// source, so they are never returned when this is true.
     accepted_only: Option<bool>,
-    /// Accepted and ignored: stale facts are always returned, flagged
-    /// `stale: true`.
+    /// Accepted and ignored. Staleness still only marks eligible facts
+    /// `stale: true`; unlike before, retired facts cannot surface at all.
     include_stale: Option<bool>,
     /// Up to 4 extra phrasings of the same question, to catch rows the main
     /// `query` wording misses: a keyword form ("task review writes"), or a
@@ -1781,11 +1781,12 @@ struct RecallToolResponse {
     results: Vec<RecallToolHit>,
     candidate_count: i64,
     returned_count: i64,
-    /// Ingested doc chunks that exist but were NOT searched because the
-    /// call did not scope to `doc`. Non-zero is a cue to consider a
-    /// follow-up `recall(..., source_types=["doc"])` when the question is
-    /// design/spec/architecture-flavored. After a repo's first doc add,
-    /// doc chunks join the default bundle (decision 90).
+    /// Ingested doc chunks not surfaced in this call, across the stores
+    /// searched. Before archiving, any ingested chunk could count; now
+    /// archived documents' chunks never count. Zero when explicitly scoped
+    /// to docs. Non-zero is a cue to consider a doc-scoped follow-up for
+    /// design/spec/architecture questions. After a repo's first doc add,
+    /// eligible doc chunks join the default bundle (decision 90).
     available_docs: i64,
     warnings: Vec<RecallToolWarning>,
     provenance: RecallToolProvenance,
@@ -1799,8 +1800,9 @@ struct RecallToolResponse {
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 struct RecallToolHit {
     source_type: String,
-    /// `"repo"` or `"global"` (M9). Repo-local always wins on
-    /// conflict; a `"global"` hit may be overridden by repo memory.
+    /// `"repo"` or `"global"` (M9). On conflict the caller still prefers
+    /// an eligible repo hit. Before retirement any matching repo fact
+    /// could surface; now retired ones are excluded from recall.
     scope: String,
     source_id: i64,
     title: String,

@@ -156,6 +156,9 @@ M9 extends the M8 recall pipeline. The contract:
 - `available_docs` becomes the count of repo **plus** global ingested
   doc chunks not surfaced this call (global docs are in scope).
   `warnings` aggregates stale-embedding signals from both DBs.
+  **Lifecycle follow-up (#445):** all ingested chunks could previously
+  count. Archived documents' chunks now never count; the repo/global
+  scope rule is unchanged.
 
 ## 5. New CLI surface (§13 extension)
 
@@ -183,6 +186,11 @@ are UNIQUE per DB, so re-promoting a key updates the global fact.
 Decisions have no natural key, so re-promoting warns if a global
 decision with the same title exists, then inserts (documented
 limitation; revisit only if it bites).
+
+**Lifecycle follow-up (#445):** a repo fact could previously surface
+locally and take precedence over its global copy. This still holds for
+eligible repo hits, but retired repo facts are excluded and do not
+retire their global copies.
 
 **Enable-gate.** When `[global] enabled` is false, every global write
 (`--global` add, `promote --global`, accepted global proposals)
@@ -255,6 +263,8 @@ proposal a human accepts.*
   matching the docs-are-export-excluded precedent). Cross-machine
   carry of global memory is out of scope (deferred; task 45's lean
   scopes global sync out).
+  **Lifecycle follow-up (#445):** export now writes v2 instead of v1;
+  import still reads v1 and the format remains repo-scoped.
 - **Security / privacy §15.** No new exfiltration surface. The global
   DB is a local file under `~/.memhub/`. Nothing leaves the machine.
 - **M8 recall contract.** The hybrid scoring formula, floors, and

@@ -75,9 +75,11 @@ after an embedding-model upgrade on either machine) or a
 `missing_embeddings` warning, follow the same rule as everywhere else:
 surface it and ask before invoking `/reindex`.
 
-The export format is JSON v1, additive: older exports import cleanly
-into newer builds via `#[serde(default)]` on later-added fields. The
-format is defined in `src/export/v1.rs`.
+Previously export wrote JSON v1, with defaults for later-added fields so
+older files still imported. Export now writes v2 to preserve fact and task
+lifecycle state. Import accepts both v1 and v2; v1-only builds refuse v2
+rather than silently dropping that state. See the [export format](export-format.md)
+and `src/export/{v1,v2}.rs`.
 
 **Config baseline travels with the repo.** The canonical defaults
 live in `.memhub/config.example.toml`, which is the **only** file
@@ -499,7 +501,9 @@ it matched every token (about 0.82 against about 0.36 for a vector-only row)
 and crowd the pool; partial-token FTS scores are therefore multiplied by 0.5
 (`PARTIAL_FTS_FACTOR`). The code locator (`memhub locate`) is unchanged and
 still requires every token. The `rerank_candidate_pool` default is unchanged,
-and superseded rows are still demoted rather than excluded (decision 145).
+and superseded rows are still demoted rather than excluded for supersession
+alone (decision 145). Before retirement that applied to every otherwise
+eligible superseded fact; now a separately retired fact is excluded.
 
 **History of the empty and thin result.** A recall whose candidates all fell
 under a fixed relevance threshold first returned an empty bundle (decision
@@ -543,11 +547,12 @@ JSON key:
   under the cutoff are counted only in `dropped_by_cutoff`.
 - `docs_dropped_no_rerank`: default-included doc chunks dropped because the
   re-ranker did not run to vet them.
-- `docs_not_searched`: ingested doc chunks this call did not search: the full
-  chunk total (over the stores searched) when doc chunks were outside the
-  searched source types, 0 when they were searched, whether by default
-  inclusion or `--source-type doc`. A chunk that was searched but not surfaced
-  does not count here, unlike in `available_docs`. The machine-global store's
+- `docs_not_searched`: ingested doc chunks this call did not search. Before
+  archiving, any ingested chunk could count; now archived chunks never count.
+  The count is the eligible chunk total (over the stores searched) when doc
+  chunks were outside the searched source types, 0 when they were searched,
+  whether by default inclusion or `--source-type doc`. A chunk that was
+  searched but not surfaced does not count here, unlike in `available_docs`. The machine-global store's
   doc chunks are not counted when the repo has not opted in to the global
   store; `global_store_not_searched` reports that case.
 - `global_store_not_searched` (bool): a machine-global store exists but was not
@@ -1044,10 +1049,11 @@ rerank_cutoff = -7.0             # rows re-ranked below this are not returned
 enabled = false                  # opt-in via `memhub global enable`
 ```
 
-**Stale facts are returned and flagged, never excluded or demoted (decision
-236).** A fact never verified, or last verified more than
-`fact_stale_after_days` ago, ranks exactly like a freshly verified one and
-carries `stale: true` for the caller to weigh; recall emits no stale warning.
+**Staleness alone does not exclude or demote facts (decision 236).** Before
+retirement, an otherwise eligible fact never verified, or last verified more
+than `fact_stale_after_days` ago, ranked like a freshly verified one and
+carried `stale: true`; recall emitted no stale warning. That still holds
+unless the fact is retired, which excludes it independently.
 `include_stale_by_default`, `[retrieval.scoring] stale_penalty`, the
 `--include-stale` flag and the MCP `include_stale` parameter are retired: older
 configs still load with them (every `memhub init` pinned both keys, some as
@@ -1187,8 +1193,8 @@ query while a code style guide surfaces. Scope to docs alone with `memhub
 recall <query> --source-type doc` (CLI) or `memhub.recall(query=...,
 source_types=["doc"])` (MCP); explicit scoping is not capped by
 `rerank_doc_cap` and is unaffected by the
-flag. Plain recall still returns `available_docs` — now the count of
-ingested chunks that did *not* surface this call — so a doc-scoped
+flag. Plain recall still returns `available_docs` — the count of
+eligible ingested chunks that did *not* surface this call — so a doc-scoped
 follow-up for the long tail stays a judgment call. Set
 `include_docs_in_default = false` to revert to strict opt-in.
 
@@ -1210,6 +1216,12 @@ reported changed or unreadable ingested files and suggested `memhub doc add
 the same hint, including for archived documents. Now re-ingest refuses an
 archived path: to restore and re-ingest it, first run `memhub doc unarchive
 <id-or-path>` and make sure the file is readable.
+
+**Retained stale queue behavior.** `memhub review stale` still suggests
+`memhub fact verify` for facts past the horizon that are not superseded,
+even if they are retired. `memhub status` still uses the same queue count.
+The standalone stale-fact counts in `status` and `stats` still include
+retired facts; the rendered ledger's stale-fact count does not.
 
 Doc content is **excluded from `memhub export`** — it is a disk-backed,
 re-ingestable cache. On another machine, re-run `doc add` against the
@@ -2045,9 +2057,10 @@ not change its sync baseline.
   in rendered views, but remain in the full backlog, task recall and
   exports. `memhub task undrop <id>` restores the prior status and
   last-updated time and clears the drop reason. The former task states
-  and their filters still work. Marking a dropped task done replaces
-  its dropped status and clears the saved undo data; the old drop stays
-  in the audit log.
+  and their filters still work. Previously CLI `task done` and MCP
+  `task_done` marked the task done and refreshed its update time.
+  Both still do that through the same handler and now also clear any
+  saved drop or keep undo data; earlier actions stay in the audit log.
 - **Keep a task:** `memhub task keep <id>` and `memhub task unkeep <id>` are
   both new. Keep refreshes the last-updated time shown for an open or
   blocked task and saves the previous time. Unkeep restores that time and

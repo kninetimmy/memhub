@@ -306,15 +306,17 @@ fn insert_decisions(tx: &Transaction<'_>, rows: &[v1::Decision]) -> Result<()> {
 }
 
 fn validate_task_undo(task: &v2::Task) -> Result<()> {
-    let present = |value: Option<&str>| value.is_some_and(|value| !value.trim().is_empty());
+    let nonblank = |value: Option<&str>| value.is_some_and(|value| !value.trim().is_empty());
     let invalid = |detail: &str| {
         MemhubError::InvalidInput(format!("task {} has invalid {detail}", task.base.id))
     };
     let dropped = task.base.status == "dropped";
+    // Saved prior timestamps are verbatim copies of updated_at, which can
+    // be any non-null string (including blank on a legacy import).
     if dropped {
-        if !present(task.dropped_reason.as_deref())
+        if !nonblank(task.dropped_reason.as_deref())
             || !matches!(task.pre_drop_status.as_deref(), Some("open" | "blocked"))
-            || !present(task.pre_drop_updated_at.as_deref())
+            || task.pre_drop_updated_at.is_none()
         {
             return Err(invalid(
                 "drop metadata: expected a nonblank reason, an open or blocked prior status, \
@@ -338,8 +340,8 @@ fn validate_task_undo(task: &v2::Task) -> Result<()> {
         (None, None) => true,
         (prior, kept_at) => {
             matches!(task.base.status.as_str(), "open" | "blocked" | "dropped")
-                && present(prior)
-                && present(kept_at)
+                && prior.is_some()
+                && nonblank(kept_at)
                 && kept_at == kept_update_time
         }
     };

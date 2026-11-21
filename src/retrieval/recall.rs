@@ -109,8 +109,8 @@ pub struct RecallOptions {
     /// architecture sections, plus doc chunks when the repo includes docs
     /// in default recall. Never session notes; scope to `Note` explicitly.
     pub source_types: Vec<SourceType>,
-    /// Accepted for compatibility and ignored: stale facts are always
-    /// returned, flagged `stale: true` and ranked like fresh ones.
+    /// Accepted for compatibility and ignored. Staleness still only marks
+    /// eligible facts `stale: true`; unlike before, retired facts cannot surface.
     pub include_stale: Option<bool>,
     /// Override of `accepted_only_by_default`.
     pub accepted_only: Option<bool>,
@@ -231,18 +231,14 @@ pub struct RecallResponse {
     pub warnings: Vec<RecallWarning>,
     pub matcher: String,
     pub elapsed_ms: u128,
-    /// Count of ingested doc chunks that exist in this repo but were NOT
-    /// surfaced in `results` on this call. Zero when the caller explicitly
-    /// scoped to docs (`--source-type doc`), when none are ingested, or
-    /// when every ingested chunk made the returned bundle. A non-zero
-    /// value is a cheap cue for the agent to decide whether a follow-up
-    /// doc-scoped recall is worthwhile. Doc chunks join the *default*
-    /// bundle (no explicit `source_types`) only when `[retrieval]
-    /// include_docs_in_default` is set — auto-enabled by the first `doc
-    /// add` (decision 90) — and even then at most `rerank_doc_cap` of them
-    /// are re-ranked and only those that score high enough take a slot, so
-    /// most ingested chunks still don't surface and this count stays
-    /// meaningfully non-zero.
+    /// Counts ingested doc chunks not surfaced in `results`, over the
+    /// stores searched. Before archiving, any ingested chunk could count;
+    /// now archived documents' chunks never count. Zero when explicitly
+    /// scoped to docs, when no eligible chunks exist, or when all surfaced.
+    /// Non-zero is a cue to consider a doc-scoped follow-up. The first repo
+    /// `doc add` enables `[retrieval] include_docs_in_default` (decision 90);
+    /// default-included chunks still compete for `rerank_doc_cap` pool slots
+    /// and must score high enough to surface.
     pub available_docs: usize,
     /// Per-reason accounting of rows this call dropped, demoted or cut.
     /// Always computed (a handful of counters); the CLI and MCP surfaces
@@ -276,8 +272,10 @@ pub struct RecallExplain {
     /// run to vet them.
     pub docs_dropped_no_rerank: usize,
     /// Ingested doc chunks (over the stores searched) this call did not
-    /// search: the full chunk total when doc chunks were not among the
-    /// searched source types, 0 when they were (default inclusion or an
+    /// search. Before archiving, any ingested chunk could count; now
+    /// archived documents' chunks never count. The count is the eligible
+    /// chunk total when doc chunks were not among the searched source
+    /// types, 0 when they were (default inclusion or an
     /// explicit doc scope). Unlike `available_docs`, a chunk that was
     /// searched but not surfaced does not count. The machine-global store's
     /// chunks are not counted when this repo has not opted in to it;
@@ -768,9 +766,9 @@ struct GatherResult {
     /// them.
     candidate_count: usize,
     warnings: Vec<RecallWarning>,
-    /// `COUNT(*)` of `doc_chunks` in this corpus, summed across corpora by
-    /// the orchestrator. It feeds both `available_docs` and
-    /// `RecallExplain::docs_not_searched`.
+    /// Previously `COUNT(*)` of all `doc_chunks` in this corpus; now only
+    /// chunks of non-archived documents. Summed across corpora to feed
+    /// `available_docs` and `RecallExplain::docs_not_searched`.
     doc_chunk_total: i64,
     /// Rows a retriever found that the accepted-only filter then excluded;
     /// already counted in `explain`.
@@ -845,8 +843,9 @@ fn gather_scored(
     hydrate_sources(conn, &mut candidates, opts.fact_stale_after_days)?;
 
     // Apply filters (per §4 of the addendum, filters apply before scoring).
-    // Staleness is informational (decision 236): stale facts are never
-    // filtered or demoted, only flagged `stale: true`.
+    // Staleness is informational (decision 236): before retirement, eligible
+    // facts were only flagged, not filtered or demoted for staleness. This
+    // still holds; the separate retirement exclusion happens before scoring.
     let mut explain = RecallExplain::default();
     let mut excluded = HashSet::new();
     let surviving: Vec<CandidateRow> = candidates
@@ -1224,8 +1223,9 @@ fn named_rows(query: &str) -> Vec<(SourceType, i64)> {
 /// Pull the repo-store rows the query names by number (`named_rows`) out of
 /// the per-phrasing pools and return them in query order, at most
 /// `max_results`. A named row is skipped when its source type is outside the
-/// search scope, it does not exist, or the stale / accepted-only filters
-/// exclude it; global-store rows are never touched (their ids are their own).
+/// search scope, it does not exist, or the accepted-only filter excludes it.
+/// Before retirement, any otherwise eligible fact could be named; now retired
+/// facts are skipped too. Global-store rows are never touched (their ids are their own).
 /// A row the retrievers already found keeps its blended hit and the counts the
 /// ranked gather gave it. Any other row is loaded and counted as the gather
 /// would have counted it had a retriever found it: in `candidate_count`, the
@@ -1972,7 +1972,8 @@ struct HydratedSource {
     created_at: String,
     /// Decay-eligible age in days (Wave 3 L6): `Some` only for facts (from
     /// `verified_at`) and *done* tasks (from `updated_at`); `None` for
-    /// decisions, doc chunks, open/blocked tasks, and never-verified facts.
+    /// decisions, doc chunks, never-verified facts, and all non-done tasks
+    /// (previously open/blocked, now also dropped).
     age_days: Option<f64>,
     /// Optional, unenforced classifier tag (Wave 6 W4, migration 0021).
     /// `Some` only for a tagged fact; always `None` for decisions, tasks,
@@ -2063,8 +2064,8 @@ fn load_source_row(
         }
         SourceType::Task => {
             // Age decay keys on `updated_at` for *done* tasks only (Wave 3
-            // L6); open/blocked tasks are live work and carry no decay age
-            // (`NULL` => `None`).
+            // L6); all other tasks carry no decay age (`NULL` => `None`):
+            // previously open/blocked, now also dropped.
             let mut stmt = conn.prepare(
                 "SELECT title, notes, created_at, \
                     CASE WHEN status = 'done' \
@@ -2320,8 +2321,9 @@ fn score(rows: &[CandidateRow], scoring: &RetrievalScoringConfig) -> Vec<ScoredH
 ///
 /// When enabled (`> 0`), a row whose decay-eligible age is `days` old is
 /// scaled by `2^(-days / half_life)`, i.e. it halves every `half_life_days`.
-/// `age_days == None` (decisions, doc chunks, open/blocked tasks, or a fact
-/// never verified) and non-positive ages both return `1.0`: decay only ever
+/// `age_days == None` (e.g. decisions, doc chunks, non-done tasks, or a fact
+/// never verified) and non-positive ages both return `1.0`. Non-done used
+/// to cover open/blocked only; now it also covers dropped. Decay only ever
 /// demotes an aged row, it never boosts a fresh or timestamp-less one.
 fn age_decay_multiplier(age_days: Option<f64>, half_life_days: i64) -> f64 {
     if half_life_days <= 0 {

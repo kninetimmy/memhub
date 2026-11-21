@@ -80,8 +80,10 @@ alone, scope explicitly:
 memhub.recall(query="<question>", source_types=["doc"])
 ```
 
-Plain recall also returns an `available_docs` count — doc chunks that
-did NOT surface this call; when it is non-zero and the question is
+Plain recall also returns an `available_docs` count of chunks that did
+NOT surface this call. Before archiving, any ingested chunk could count;
+now archived documents' chunks are excluded from the count and every
+recall scope. When the count is non-zero and the question is
 design/spec/architecture-flavored, a doc-scoped follow-up can still be
 worth running (judgment, not reflex). Doc hits return with
 `source_type: "doc_chunk"` and a `<title> — <section breadcrumb>`

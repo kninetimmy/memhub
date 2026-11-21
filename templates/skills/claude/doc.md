@@ -92,8 +92,10 @@ memhub.recall(query="<question>", source_types=["doc"])
 ```
 
 In normal recall (no `source_types`), the response also carries an
-`available_docs` count — ingested doc chunks that did NOT surface this
-call. When it is non-zero and the question is
+`available_docs` count of chunks that did NOT surface this call.
+Before archiving, any ingested chunk could count; now archived
+documents' chunks are excluded from the count and every recall scope.
+When the count is non-zero and the question is
 design/spec/architecture-flavored, the `/recall` skill's guidance
 applies: a doc-scoped follow-up can still be worth running. Use
 judgment — not every turn.

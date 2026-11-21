@@ -194,9 +194,11 @@ pub fn add_global_with_kind(
     })
 }
 
-/// Copy an existing repo fact into the machine-global store (copy,
-/// not move — the repo row stays and still wins locally). Fact keys
-/// are UNIQUE per DB, so re-promoting a key updates the global fact.
+/// Copy an existing repo fact into the machine-global store, leaving
+/// the repo row intact. Before retirement the repo copy was eligible
+/// for local recall; now a retired repo fact is not, but its global
+/// copy is independent. Fact keys are UNIQUE per DB, so re-promoting
+/// a key updates the global fact.
 pub fn promote(start: &Path, id: i64, actor: &str) -> Result<GlobalFactOutcome> {
     let repo = db::open_project(start)?;
     crate::commands::global::ensure_enabled(&repo.config)?;
@@ -355,11 +357,12 @@ pub struct FactSupersedeOutcome {
 
 /// Mark `old_ident`'s fact superseded by `new_ident`'s fact (Wave 3 L3).
 /// Demote-with-link, no-loss: the old row is NOT deleted — it stays present
-/// with `superseded_by` set, is penalized in recall, and is annotated in
-/// render. Both idents accept a numeric id or an exact key (mirroring
-/// `fact verify`). Errors if either side is missing or if a fact would
-/// supersede itself. Transaction-scoped so it composes with the CLI verb and
-/// the review-accept path.
+/// with `superseded_by` set. Before retirement it could still surface,
+/// penalized in recall and annotated in render; that still holds unless
+/// the old fact is separately retired. Both idents accept a numeric id or an
+/// exact key (mirroring `fact verify`). Errors if either side is missing or
+/// if a fact would supersede itself. Transaction-scoped so it composes
+/// with the CLI verb and the review-accept path.
 pub fn supersede_in_tx(
     tx: &Transaction<'_>,
     old_ident: &str,

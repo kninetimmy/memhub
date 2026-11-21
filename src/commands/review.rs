@@ -353,7 +353,7 @@ pub fn accept(
                         candidate.label
                     ));
                 }
-                // Honor --supersede whenever supplied: retire the named row in
+                // Honor --supersede whenever supplied: supersede the named row in
                 // favor of the fact just written (L3 demote-with-link). A
                 // same-key overwrite yields the same row id, which
                 // `supersede_in_tx` rejects as self-supersede — the correct,
@@ -666,8 +666,8 @@ pub fn count_stale_queue(start: &Path) -> Result<i64> {
     Ok(stale(start)?.counts.total() as i64)
 }
 
-/// Facts at/over the L2 recall-demotion horizon
-/// (`[retrieval] fact_stale_after_days`) — the identical predicate
+/// Facts at/over the recall staleness horizon
+/// (`[retrieval] fact_stale_after_days`) — the same age test
 /// `retrieval::recall`'s hydrate path applies (issue #47 grounding:
 /// "reuse that horizon logic; don't reinvent it"), deliberately NOT the
 /// fixed `models::FACT_STALE_AFTER_DAYS` constant that `fact::list` /
@@ -678,6 +678,8 @@ pub fn count_stale_queue(start: &Path) -> Result<i64> {
 /// tracks the recall-facing one. Already-superseded facts are excluded —
 /// L3 gave them their own lifecycle signal, and re-verifying a fact that
 /// is meant to be replaced is not the fix.
+/// This legacy queue still includes retired, non-superseded facts that
+/// pass the age test, even though recall now excludes them.
 fn stale_facts(conn: &Connection, horizon_days: i64) -> Result<(usize, Vec<StaleItem>)> {
     let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM facts

@@ -120,9 +120,9 @@ output_dir = ".memhub/rendered"
 mode = "hybrid"
 default_max_results = 6
 accepted_only_by_default = false
-# Staleness is informational (decision 236): recall always returns facts
-# past fact_stale_after_days, ranked like fresh ones and flagged
-# stale:true; nothing excludes or demotes them. (The retired keys
+# Staleness is informational (decision 236): before retirement, otherwise
+# eligible stale facts ranked like fresh ones and were flagged stale:true.
+# That still holds for non-retired facts. (The retired keys
 # include_stale_by_default and stale_penalty still load from older configs
 # but are ignored; `memhub doctor` names them.)
 # Fact-staleness horizon in days: a fact never verified, or last verified
@@ -148,6 +148,8 @@ rerank_candidate_pool = 20
 rerank_doc_cap = 3
 # Make ingested doc chunks eligible for the *default* recall bundle
 # (no --source-type needed), gated by scoring.rerank_cutoff.
+# Before archiving this applied to every doc; now archived chunks are
+# excluded even with an explicit doc scope.
 # Canonical baseline is false (decision 86: docs are opt-in). The
 # first successful `memhub doc add` in a repo flips the LOCAL
 # config.toml to true so the user-pointed write that establishes
@@ -170,8 +172,9 @@ log_queries = false
 fts_weight = 0.5
 vector_weight = 0.5
 # Blended-score demotion for a SUPERSEDED fact/decision (Wave 3 L3,
-# decision 145's demote-with-link ruling). A superseded row is never
-# excluded — it stays, is tagged superseded_by:N, and is pushed down.
+# decision 145's demote-with-link ruling). Before fact retirement, an
+# otherwise eligible superseded row stayed, tagged superseded_by:N and
+# pushed down. That still holds unless the fact is retired separately.
 # Supersession is an explicit "replaced" signal, yet still a demotion,
 # not a filter.
 superseded_penalty = 0.4
@@ -181,7 +184,8 @@ superseded_penalty = 0.4
 # halving every age_half_life_days — keyed on verified_at for facts and
 # updated_at for DONE tasks. Decisions and doc chunks are excluded entirely
 # (Q2 / decision 145: decisions retire by supersession, not age), as are
-# open/blocked tasks and never-verified facts. Under the cross-encoder
+# non-done tasks (previously open/blocked, now also dropped) and
+# never-verified facts. Under the cross-encoder
 # reranker the practical effect is limited: decay mostly shifts which
 # candidates enter the rerank pool, not the final reranked order. Kept at 0
 # in this baseline so the canonical install stays byte-identical.

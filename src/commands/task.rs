@@ -139,6 +139,8 @@ pub(crate) fn read_task(row: &Row<'_>) -> rusqlite::Result<Task> {
     })
 }
 
+/// Shared by CLI `task done` and MCP `task_done`. The old status change
+/// and timestamp refresh remain; both now also clear any saved drop/keep undo.
 pub fn done(start: &Path, task_id: i64, actor: &str) -> Result<()> {
     let mut ctx = db::open_project(start)?;
     let tx = ctx.conn.transaction()?;

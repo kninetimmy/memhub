@@ -377,6 +377,8 @@ pub(crate) fn print_stored_row_human(row: &crate::retrieval::StoredRow) {
 /// The "ingested doc chunks" note. `explain.docs_not_searched` is the true
 /// not-searched count; a non-zero `available_docs` with none unsearched means
 /// the chunks were searched (default inclusion) but did not make the bundle.
+/// Before archiving all ingested chunks could count; now neither count
+/// includes archived chunks.
 fn doc_chunks_note(response: &RecallResponse) -> Option<String> {
     if response.explain.docs_not_searched > 0 {
         Some(format!(

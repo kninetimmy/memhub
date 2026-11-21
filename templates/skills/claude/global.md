@@ -62,8 +62,10 @@ memhub decision add "<title>" --rationale "<why>" --global
 memhub doc add <path/to/guide.md> --global
 ```
 
-Promote an existing repo row (copy, not move — the repo row stays and
-still wins locally):
+Promote an existing repo row (copy, not move). The repo row stays.
+Before retirement it could take precedence in recall; eligible repo
+hits still do, but a retired fact does not surface and its global copy
+is unaffected:
 
 ```bash
 memhub fact promote <id> --global

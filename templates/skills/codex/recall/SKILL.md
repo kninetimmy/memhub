@@ -96,9 +96,11 @@ sections.
   `git`, or `observed` rows that would otherwise leak in. It also
   drops tasks, architecture sections, and session notes, which carry
   no such source.
-- `include_stale=true` / `--include-stale`: accepted and ignored. Stale
-  facts (past the 90-day verification window) are always returned,
-  ranked like fresh ones and flagged `stale = true`.
+- `include_stale=true` / `--include-stale`: accepted and ignored. Before
+  retirement, otherwise eligible stale facts (past the verification
+  window, 90 days by default) ranked like fresh ones and were flagged
+  `stale = true`. That still holds for non-retired facts; retired facts
+  are excluded regardless of staleness.
 
 ## Interpreting the response
 
@@ -218,7 +220,9 @@ When `results` is empty or does not answer the question:
    relevance, candidate-pool, and result-limit cuts. `reranker_ran`
    indicates whether reranking and its cutoff applied.
    `docs_not_searched` and `docs_dropped_no_rerank` report unsearched or
-   excluded doc chunks; `global_store_not_searched` flags an existing
+   excluded doc chunks. Before archiving, any ingested chunk could
+   count; now archived documents' chunks never count.
+   `global_store_not_searched` flags an existing
    global store skipped because this repo has not opted in. Diagnostics
    do not search additional stores or restore dropped rows. Keep user
    filters and retrieval configuration unchanged.

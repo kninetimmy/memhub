@@ -228,8 +228,8 @@ pub enum TopLevelCommand {
         max_results: Option<usize>,
         #[arg(long, value_enum)]
         mode: Option<RecallModeArg>,
-        /// Accepted and ignored: stale facts are always returned, flagged
-        /// `stale`.
+        /// Accepted and ignored. Staleness still only flags eligible facts
+        /// as `stale`; unlike before, retired facts cannot surface at all.
         #[arg(long)]
         include_stale: bool,
         /// Keep only rows whose source is `user` or `user+agent:<id>`.
@@ -510,6 +510,9 @@ pub enum EvalCommand {
     /// reports how many came back first and within the top 3, plus the
     /// misses. Adds or changes no rows (like every command, it runs
     /// maintenance-on-open); the same database draws the same sample.
+    ///
+    /// Before lifecycle states, any non-superseded fact and any doc chunk
+    /// could be sampled; now retired facts and archived chunks are skipped.
     SelfCheck {
         /// Rows sampled per type.
         #[arg(long, default_value_t = commands::self_check::DEFAULT_SAMPLE)]
@@ -911,7 +914,8 @@ pub enum FactCommand {
         actor: Option<String>,
     },
     /// Copy an existing repo fact into the machine-global store
-    /// (copy, not move — the repo row stays and still wins locally).
+    /// (copy, not move). Eligible repo hits still take precedence;
+    /// unlike before, a retired fact won't be recalled locally.
     Promote {
         id: i64,
         /// Target the machine-global store. Required (the only
@@ -923,6 +927,7 @@ pub enum FactCommand {
         #[arg(long)]
         actor: Option<String>,
     },
+    /// List repo facts. Previously all were listed; now retired facts need --include-retired.
     List {
         /// Include retired facts with their retirement time and reason.
         #[arg(long)]
@@ -960,13 +965,14 @@ pub enum FactCommand {
         actor: Option<String>,
     },
     /// Mark a fact superseded by another fact — demote-with-link, no-loss
-    /// (Wave 3 L3). The old fact is NOT deleted: it stays present, is
-    /// tagged with the replacement id, penalized in recall, and annotated
-    /// in render. Both `<old>` and `--by <new>` accept a numeric id or an
-    /// exact key. Durable + user-gated (CLI only); the MCP surface can only
+    /// (Wave 3 L3). The old fact is not deleted; it is tagged with the
+    /// replacement id. Before retirement it was still eligible for recall
+    /// (with a penalty) and annotated in render. That still holds unless
+    /// the old fact is separately retired. Both `<old>` and `--by <new>`
+    /// accept a numeric id or an exact key. Durable + user-gated (CLI only); the MCP surface can only
     /// stage a `propose_supersede` for `memhub review accept`.
     Supersede {
-        /// The fact being retired (numeric id or exact key).
+        /// The fact being superseded (numeric id or exact key).
         old: String,
         /// The fact that replaces it (numeric id or exact key).
         #[arg(long = "by", value_name = "NEW")]
@@ -1169,6 +1175,7 @@ pub enum TaskCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Mark a task done. This still refreshes its update time and now also clears drop/keep undo data.
     Done {
         id: i64,
         #[arg(long)]
