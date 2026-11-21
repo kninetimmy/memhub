@@ -204,7 +204,7 @@ fn pairs(
             let b = later.excerpt.source_id;
             let mut actions = Vec::new();
             if category == Category::DuplicateFacts {
-                for (action, id) in [("retire_earlier", a), ("retire_later", b)] {
+                for (action, id) in [("retire_first_fact", a), ("retire_second_fact", b)] {
                     if id < 0 {
                         reason.push_str(&format!(
                             " Retire unavailable for fact #{id}: negative IDs are not offered as CLI operands."
@@ -440,12 +440,34 @@ fn decision_time<'a>(conn: &Connection, date: &'a str) -> Result<Option<Decision
         }));
     }
 
-    // Use SQLite for its native calendar-bearing layouts. Reject invalid
-    // calendar dates, time-only strings, and ambiguous numeric values.
-    if date
-        .get(..10)
-        .is_none_or(|day| NaiveDate::parse_from_str(day, "%Y-%m-%d").is_err())
-    {
+    let Some((day, tail)) = date.split_at_checked(10) else {
+        return Ok(None);
+    };
+    if NaiveDate::parse_from_str(day, "%Y-%m-%d").is_err() || date.contains('\0') {
+        return Ok(None);
+    }
+    // SQLite validates native clock ranges and offsets, but its epoch result
+    // can fill in missing clock fields. Require explicit hours and minutes
+    // for a minute interval, and explicit seconds for an instant.
+    let clock = tail.trim_start_matches(|c: char| c == 'T' || c.is_ascii_whitespace());
+    let uncertainty = match clock.as_bytes() {
+        [] if tail.is_empty() => Some(86_400),
+        [
+            b'0'..=b'9',
+            b'0'..=b'9',
+            b':',
+            b'0'..=b'9',
+            b'0'..=b'9',
+            rest @ ..,
+        ] => match rest {
+            [b':', b'0'..=b'9', b'0'..=b'9', ..] => None,
+            _ => Some(60),
+        },
+        _ => return Ok(None),
+    };
+    // Only exact end-of-day midnight is allowed at hour 24; keep this
+    // validation before replacing any fraction with zero.
+    if clock.starts_with("24:") && !fraction.is_empty() {
         return Ok(None);
     }
     // Leave a zero fraction in place so SQLite validates its placement but
@@ -458,14 +480,6 @@ fn decision_time<'a>(conn: &Connection, date: &'a str) -> Result<Option<Decision
         [whole.as_deref().unwrap_or(date)],
         |r| r.get(0),
     )?;
-    // SQLite fills in missing fields with zeroes, but an imported day or
-    // minute is not evidence of the exact instant those zeroes imply.
-    let uncertainty = if date.len() == 10 {
-        Some(86_400)
-    } else {
-        let clock = date[10..].split(['+', '-', 'Z', 'z']).next().unwrap_or("");
-        (clock.matches(':').count() == 1).then_some(60)
-    };
     Ok(seconds.map(|seconds| DecisionTime {
         start: (seconds, false, fraction),
         end_second: uncertainty.map(|width| seconds + width),
@@ -673,7 +687,16 @@ mod tests {
                 decision_time(&conn, "2025-01-01T00:00:00.0001Z").unwrap()
             );
         }
-        for unknown in ["unset", "now", "00:00:00", "2025-02-30 00:00:00"] {
+        for unknown in [
+            "unset",
+            "now",
+            "00:00:00",
+            "2025-02-30 00:00:00",
+            "2025-01-01T",
+            "2025-01-01 T T",
+            "2025-01-01T12:60:00",
+            "2025-01-01 24:00:00.0001",
+        ] {
             assert_eq!(decision_time(&conn, unknown).unwrap(), None, "{unknown}");
         }
     }
@@ -695,5 +718,9 @@ mod tests {
         }
         assert!(day.is_before(time("2025-01-02T00:00:00Z")));
         assert!(minute.is_before(time("2025-01-01T00:01:00Z")));
+        assert_eq!(
+            time("2025-01-01 24:00:00.0000"),
+            time("2025-01-02T00:00:00Z")
+        );
     }
 }

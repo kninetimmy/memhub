@@ -108,11 +108,11 @@ fn similarity_categories_filter_sources_and_preserve_exact_paired_excerpts_witho
     let duplicates = category(&report, "duplicate_facts");
     assert_eq!(duplicates.len(), 1);
     assert_eq!(
-        &action(duplicates[0], "retire_earlier")[..3],
+        &action(duplicates[0], "retire_first_fact")[..3],
         ["fact", "retire", "1"]
     );
     assert_eq!(
-        &action(duplicates[0], "retire_later")[..3],
+        &action(duplicates[0], "retire_second_fact")[..3],
         ["fact", "retire", "2"]
     );
     let decisions = category(&report, "unlinked_decisions");
@@ -351,6 +351,38 @@ fn imported_decisions_offer_supersession_only_for_non_overlapping_chronology() {
 }
 
 #[test]
+fn clockless_decision_keeps_match_without_supersession() {
+    let f = fixture();
+    let clockless = "2025-01-01T";
+    for (id, date) in [(1, clockless), (2, "2025-01-01T12:00:00Z")] {
+        f.db()
+            .execute(
+                "INSERT INTO decisions(id,title,rationale,decided_at)
+                 VALUES (?1,'Adopt Postgres as the datastore',?2,?3)",
+                params![id, CLAIM, date],
+            )
+            .unwrap();
+    }
+    let report = f.scan();
+    let decisions = category(&report, "unlinked_decisions");
+    assert_eq!(decisions.len(), 1);
+    let pair = decisions[0];
+    assert_eq!(pair["excerpts"]["first"]["recorded_at"], clockless);
+    assert!(
+        pair["reason"]
+            .as_str()
+            .unwrap()
+            .contains("chronology is unknown"),
+        "clockless date supplied a direction: {pair}"
+    );
+    assert_eq!(
+        action(pair, "keep_both"),
+        ["prune", "dismiss", pair["id"].as_str().unwrap()]
+    );
+    assert_eq!(pair["actions"].as_array().unwrap().len(), 1);
+}
+
+#[test]
 fn unusable_imported_targets_stay_reviewable_without_corrective_commands() {
     let f = fixture();
     f.db()
@@ -373,7 +405,7 @@ fn unusable_imported_targets_stay_reviewable_without_corrective_commands() {
     let report = f.scan();
     let duplicate = category(&report, "duplicate_facts")[0];
     assert_eq!(
-        &action(duplicate, "retire_later")[..3],
+        &action(duplicate, "retire_second_fact")[..3],
         ["fact", "retire", "1"],
     );
     assert_eq!(duplicate["actions"].as_array().unwrap().len(), 2);
@@ -685,6 +717,53 @@ fn stored_document_matches_survive_redirected_paths_without_unsafe_reingest_acti
     assert_eq!(
         fs::read_to_string(target.join("guide.md")).unwrap(),
         "Unrelated destination."
+    );
+}
+
+#[test]
+#[cfg(windows)]
+fn oversized_document_command_keeps_correction_evidence_and_dismissal() {
+    let f = fixture();
+    let doc = f.repo.join("guide.md");
+    let title = "Long title ".repeat(3000);
+    let excerpt = format!("# Storage\n\n{CLAIM}");
+    fs::write(&doc, format!("# {title}\n\n{excerpt}")).unwrap();
+    let ingested = f.json(&["doc", "add", "--json", "guide.md"]);
+    assert_eq!(ingested["title"], title.trim_end());
+    f.db()
+        .execute(
+            "INSERT INTO facts(key,value,retired_at) VALUES ('old',?1,CURRENT_TIMESTAMP)",
+            [CLAIM],
+        )
+        .unwrap();
+    fs::write(&doc, "Edited on disk.").unwrap();
+
+    let report = f.scan();
+    let hit = category(&report, "correction_sweep")
+        .into_iter()
+        .find(|item| item["excerpts"]["possible_restatement"]["text"] == excerpt)
+        .expect("the stored matching chunk must still be reported");
+    assert_eq!(hit["subjects"][1]["document_id"], ingested["id"]);
+    let out_of_date = row_item(
+        &report,
+        "out_of_date_document",
+        ingested["id"].as_i64().unwrap(),
+    );
+    for item in [hit, out_of_date] {
+        let actions = item["actions"].as_array().unwrap();
+        assert_eq!(actions.len(), 1, "must not advertise an oversized command");
+        assert_eq!(
+            action(item, "keep"),
+            ["prune", "dismiss", item["id"].as_str().unwrap()]
+        );
+        assert!(item["reason"].as_str().unwrap().contains("command line"));
+        f.ok(&action(item, "keep"));
+    }
+    let dismissed = f.scan();
+    assert!(
+        !items(&dismissed)
+            .iter()
+            .any(|item| item["id"] == hit["id"] || item["id"] == out_of_date["id"])
     );
 }
 

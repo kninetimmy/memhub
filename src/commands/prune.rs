@@ -634,10 +634,38 @@ fn re_ingest_action(
     if title.trim().is_empty() || title.contains('\0') {
         return Err("`doc add` cannot preserve the stored title as a command argument.");
     }
-    Ok(Action::new(
-        action,
-        ["doc", "add", &format!("--title={title}"), "--", recorded],
-    ))
+    let title_arg = format!("--title={title}");
+    let args = ["doc", "add", &title_arg, "--", recorded];
+    #[cfg(windows)]
+    {
+        let executable = std::env::current_exe()
+            .map_err(|_| "cannot verify the executable for the Windows command line.")?;
+        if !fits_windows_command(executable.as_os_str(), &args) {
+            return Err(
+                "the complete command cannot be safely represented within the Windows process command line limit without changing the stored title or path.",
+            );
+        }
+    }
+    Ok(Action::new(action, args))
+}
+
+#[cfg(windows)]
+fn fits_windows_command(executable: &std::ffi::OsStr, args: &[&str]) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+
+    // Budget a fully qualified, quoted argv[0]. For each argument count a
+    // space, enclosing quotes, and one extra unit per possible escape.
+    let program = executable.encode_wide().count().max("memhub.exe".len()) + 2;
+    let arguments: usize = args
+        .iter()
+        .map(|arg| {
+            arg.encode_utf16().count()
+                + arg.bytes().filter(|&b| matches!(b, b'\\' | b'"')).count()
+                + 3
+        })
+        .sum();
+    // Leave one of the 32,767 units for the terminating NUL.
+    program + arguments < 32_767
 }
 
 #[derive(Clone, Serialize)]
@@ -767,6 +795,26 @@ fn document_file(root: &Path, path: &Path) -> DocumentFile {
 mod tests {
     use super::DocumentFile;
     use serde_json::{json, to_value};
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_document_command_budget_counts_the_whole_quoted_invocation() {
+        use super::fits_windows_command;
+        use std::ffi::OsStr;
+
+        let exe = OsStr::new(r"C:\Program Files\memhub.exe");
+        let path = r"C:\two words\guide.md";
+        // This command uses 32,767 UTF-16 units with the conservative quoting
+        // budget, including the executable, path and terminating NUL.
+        let title_arg = format!(r#"--title={}x\""#, "🦀".repeat(16_339));
+        let args = ["doc", "add", &title_arg, "--", path];
+        assert!(fits_windows_command(exe, &args));
+        let too_long = format!("{title_arg}x");
+        assert!(!fits_windows_command(
+            exe,
+            &["doc", "add", &too_long, "--", path],
+        ));
+    }
 
     #[test]
     fn missing_entry_identity_keeps_the_prior_fingerprint_shape() {
