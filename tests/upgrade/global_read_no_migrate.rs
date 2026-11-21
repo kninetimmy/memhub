@@ -354,7 +354,10 @@ fn make_ledger_older(f: &Fixture, head: &str) -> String {
 }
 
 fn remove_last_migration(conn: &Connection, head: &str) -> String {
-    if head == "0026_memory_lifecycle" {
+    if head == "0027_prune_dismissals" {
+        conn.execute("DROP TABLE prune_dismissals", [])
+            .expect("undo prune dismissal table");
+    } else if head == "0026_memory_lifecycle" {
         // 0026 adds columns with ALTER TABLE, so omitting the ledger entry
         // alone would leave an impossible fixture with duplicate columns.
         conn.execute_batch(

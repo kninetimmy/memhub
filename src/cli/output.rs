@@ -6,7 +6,7 @@ use crate::commands;
 use crate::commands::audit_md::{AuditMdReport, Finding, Severity};
 use crate::commands::doctor::{Check, DoctorReport, Group, Status};
 use crate::commands::import::ImportSummary;
-use crate::commands::review::{StaleCategory, StaleReport};
+use crate::commands::prune::{Report as PruneReport, Subject as PruneSubject};
 use crate::commands::wrapup_policy::WrapupPolicyReport;
 use crate::config::RetrievalMode;
 use crate::models::{
@@ -1176,7 +1176,10 @@ pub(crate) fn import_summary_to_json(summary: &ImportSummary) -> serde_json::Val
     })
 }
 
-pub(crate) fn status_summary_to_json(s: &StatusSummary) -> serde_json::Value {
+pub(crate) fn status_summary_to_json(
+    s: &StatusSummary,
+    prune_review_count: usize,
+) -> serde_json::Value {
     json!({
         "project_name": s.project_name,
         "repo_root": s.repo_root.display().to_string(),
@@ -1195,7 +1198,9 @@ pub(crate) fn status_summary_to_json(s: &StatusSummary) -> serde_json::Value {
         "pending_writes": s.pending_writes,
         "writes_logged": s.writes_logged,
         "deny_patterns": s.deny_patterns,
-        "stale_queue": s.stale_queue,
+        "prune_review_count": prune_review_count,
+        // Compatibility key; the old queue itself is now an alias of prune scan.
+        "stale_queue": prune_review_count,
     })
 }
 
@@ -1543,80 +1548,126 @@ pub(crate) fn print_audit_md_report_human(r: &AuditMdReport) {
     );
 }
 
-/// `{"review_stale": {...}}` — the wrapped noun-keyed shape (Q29),
-/// matching `doctor`/`audit_md`'s own siblings. `counts.total` is
-/// redundant with `items.len()` for a script that only wants "is the
-/// queue empty?" without counting the array — `items` itself is capped
-/// per category (`review::DEFAULT_LIST_LIMIT`) while `counts` is not, so
-/// the two can differ on a large backlog; `counts` is the authoritative
-/// number for `status`'s own one-line summary.
-pub(crate) fn review_stale_report_to_json(r: &StaleReport) -> serde_json::Value {
-    json!({
-        "counts": {
-            "fact_near_horizon": r.counts.fact_near_horizon,
-            "done_task_aged": r.counts.done_task_aged,
-            "pending_expired": r.counts.pending_expired,
-            "doc_hash_drift": r.counts.doc_hash_drift,
-            "total": r.counts.total(),
-        },
-        "items": r.items.iter().map(|item| json!({
-            "category": item.category.as_str(),
-            "id": item.source_id,
-            "message": item.message,
-            "verb": item.verb,
-        })).collect::<Vec<_>>(),
-    })
-}
-
-fn stale_category_heading(category: StaleCategory) -> &'static str {
-    match category {
-        StaleCategory::FactNearHorizon => "Facts near staleness horizon",
-        StaleCategory::DoneTaskAged => "Done tasks aged out",
-        StaleCategory::PendingExpired => "Expired pending writes",
-        StaleCategory::DocHashDrift => "Docs drifted from on-disk file",
-    }
-}
-
-pub(crate) fn print_review_stale_report_human(r: &StaleReport) {
-    println!("memhub review stale");
-    println!();
-
-    if r.items.is_empty() {
-        println!("Stale queue is empty — nothing needs attention.");
+pub(crate) fn print_prune_report(r: &PruneReport, as_json: bool, envelope: &str) {
+    if as_json {
+        println!("{}", json!({ envelope: r }));
         return;
     }
 
-    const CATEGORY_ORDER: &[StaleCategory] = &[
-        StaleCategory::FactNearHorizon,
-        StaleCategory::DoneTaskAged,
-        StaleCategory::PendingExpired,
-        StaleCategory::DocHashDrift,
-    ];
-    for &category in CATEGORY_ORDER {
-        let in_category: Vec<_> = r.items.iter().filter(|i| i.category == category).collect();
-        if in_category.is_empty() {
-            continue;
-        }
-        println!(
-            "{} ({})",
-            stale_category_heading(category),
-            in_category.len()
-        );
-        for item in in_category {
-            println!("  #{} {}", item.source_id, item.message);
-            println!("      fix: {}", item.verb);
-        }
-        println!();
+    println!("Prune review: {} candidate(s)", r.total);
+    if let Some(warning) = &r.backup_warning {
+        println!("  {}", warning.escape_debug());
     }
+    for (&category, count) in r.counts.iter().filter(|(_, count)| count.total != 0) {
+        println!(
+            "\n{} ({}, {} more)",
+            category.heading(),
+            count.total,
+            count.overflow
+        );
+        for item in r.items.iter().filter(|i| i.category == category) {
+            println!("  {}: {}", item.id, item.reason.escape_debug());
+            for subject in &item.subjects {
+                match subject {
+                    PruneSubject::Fact { id, key } => println!("    fact #{id}: {key:?}"),
+                    PruneSubject::Task { id, title } => println!("    task #{id}: {title:?}"),
+                    PruneSubject::Document { id, path } => println!("    document #{id}: {path:?}"),
+                    PruneSubject::BackupFiles { directory, files } => {
+                        println!("    {directory:?}:");
+                        for file in files {
+                            println!("      {file:?}");
+                        }
+                    }
+                }
+            }
+            for action in &item.actions {
+                // Keep multiline/control-character arguments reviewable via exact JSON argv.
+                let command = if action
+                    .command
+                    .iter()
+                    .any(|arg| arg.chars().any(char::is_control))
+                {
+                    format!("argv {}", json!(action.command))
+                } else {
+                    render_prune_command(&action.command)
+                };
+                println!("    {}: {command}", action.action);
+            }
+        }
+    }
+}
 
-    println!(
-        "Summary: {} item(s) — {} fact(s), {} task(s), {} pending write(s), {} doc(s)",
-        r.counts.total(),
-        r.counts.fact_near_horizon,
-        r.counts.done_task_aged,
-        r.counts.pending_expired,
-        r.counts.doc_hash_drift,
-    );
+fn render_prune_command(argv: &[String]) -> String {
+    let command = argv
+        .iter()
+        .map(|arg| quote_prune_arg(arg))
+        .collect::<Vec<_>>()
+        .join(" ");
+    #[cfg(windows)]
+    if argv.iter().any(|arg| needs_legacy_native_quotes(arg)) {
+        // Only the enclosing script block uses legacy native argv conversion.
+        // 5.1 always does so; PowerShell 7 otherwise preserves the extra quotes.
+        return format!("& {{ $PSNativeCommandArgumentPassing = 'Legacy'; {command} }}");
+    }
+    command
+}
+
+#[cfg(windows)]
+fn needs_legacy_native_quotes(arg: &str) -> bool {
+    arg.is_empty()
+        || arg.contains('"')
+        || arg.eq_ignore_ascii_case("--%")
+        || (arg.ends_with('\\') && arg.chars().any(char::is_whitespace))
+}
+
+#[cfg(windows)]
+fn quote_legacy_native_arg(arg: &str) -> String {
+    // Encode one Windows native argv element before quoting the result for
+    // PowerShell's parser. Double runs of slashes before quotes or the end.
+    let mut encoded = String::from("\"");
+    let mut slashes = 0;
+    for c in arg.chars() {
+        if c == '\\' {
+            slashes += 1;
+        } else {
+            let count = if c == '"' { slashes * 2 + 1 } else { slashes };
+            encoded.extend(std::iter::repeat_n('\\', count));
+            encoded.push(c);
+            slashes = 0;
+        }
+    }
+    encoded.extend(std::iter::repeat_n('\\', slashes * 2));
+    encoded.push('"');
+    encoded
+}
+
+fn quote_prune_arg(arg: &str) -> String {
+    if !arg.is_empty()
+        && arg
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_=./:".contains(&b))
+    {
+        return arg.into();
+    }
+    #[cfg(windows)]
+    let escaped = {
+        let native = if needs_legacy_native_quotes(arg) {
+            quote_legacy_native_arg(arg)
+        } else {
+            arg.into()
+        };
+        let mut escaped = String::new();
+        for c in native.chars() {
+            if matches!(c, '\'' | '‘' | '’' | '‚' | '‛') {
+                escaped.push(c);
+            }
+            escaped.push(c);
+        }
+        escaped
+    };
+    #[cfg(not(windows))]
+    let escaped = arg.replace('\'', "'\\''");
+    format!("'{escaped}'")
 }
 
 /// `{"wrapup_policy": {...}}` — the wrapped noun-keyed shape (Q29),

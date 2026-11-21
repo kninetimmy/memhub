@@ -183,6 +183,10 @@ restored durable rows or from git:
 - `.memhub/backups/` — local-machine artifacts, not durable state.
 - Ingested documents, including their archive state — re-ingest source
   files in the target repo if needed. Import leaves existing documents alone.
+- Prune dismissal records — like existing ingested documents, the
+  target's records are left in place. The exported `writes_log` keeps
+  its usual audit entries; importing one does not recreate a dismissal.
+  Full Drive snapshots, unlike JSON exports, carry dismissal records.
 
 ## Import contract
 

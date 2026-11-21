@@ -164,6 +164,13 @@ hardcode `is_stale: false`.
 Also: retire or repurpose the vestigial confidence field (§11 Q5), and make
 pending-write expiry automatic at `open_project` (§11 Q6).
 
+**L4 follow-up (#451).** Before: `review stale` showed stale facts, aged
+done tasks, expired proposals, and document drift, and `status` counted
+that queue. After: both use the [prune scan](../reference/operations.md#prune-review).
+It excludes retired facts and archived documents, replaces the aged
+done-task and expired-proposal categories with idle tasks and surplus
+backups, and lists the available actions without running them.
+
 **L5 follow-up (#443).** Before: an above-threshold rerank hit blocked plain
 accept for both facts under different keys and decisions. After: only the
 decision hit still blocks; a different-key fact hit warns without linking or

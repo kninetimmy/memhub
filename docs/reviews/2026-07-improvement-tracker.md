@@ -298,6 +298,12 @@ pre-flighted with a throwaway local merge + full suite before the canonical squa
   count via the same `stale()` call so the two can't disagree; `--json` as `{"review_stale":{...}}`
   (Q29); read-only invariant proven by a before/after rowcount+writes_log snapshot test. Full-suite
   pre-flight 671 green. — 2026-07-07, PR #60 / 3a87254 (issue #47).
+  **#451 follow-up:** Before, this was the four-signal L4 queue above.
+  Now it is a read-only alias of [prune scan](../reference/operations.md#prune-review).
+  `status` counts undismissed items in the new queue: active stale facts,
+  idle open or blocked tasks, drifted non-archived docs, and surplus backups.
+  Done tasks and expired proposals are no longer queue items; the
+  `review_stale` JSON envelope stays, with the prune report inside it.
 - [x] L5 accept-time contradiction probe — MCP `review accept` compares an incoming fact/decision
   against the current durable value and logs a `prior_value` on change (advisory probe, not a hard
   block; agents stay untrusted writers). tier:opus. Full-suite pre-flight 679 green. **Decision 147:
