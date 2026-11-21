@@ -3,12 +3,23 @@ use std::path::Path;
 use crate::Result;
 use crate::commands::doctor;
 use crate::commands::fact;
-use crate::commands::review;
+use crate::commands::prune;
 use crate::db;
 use crate::models::StatusSummary;
 
 pub fn run(start: &Path) -> Result<StatusSummary> {
     let ctx = db::open_project(start)?;
+    summarize(start, ctx)
+}
+
+/// CLI status includes the prune review; MCP status exposes only memory counts.
+pub fn run_with_prune(start: &Path) -> Result<(StatusSummary, usize)> {
+    let ctx = db::open_project(start)?;
+    let count = prune::scan_project(&ctx)?.total;
+    Ok((summarize(start, ctx)?, count))
+}
+
+fn summarize(start: &Path, ctx: db::ProjectContext) -> Result<StatusSummary> {
     let conn = &ctx.conn;
 
     let schema_version: String = conn.query_row(
@@ -36,11 +47,6 @@ pub fn run(start: &Path) -> Result<StatusSummary> {
     )?;
     let writes_logged: i64 =
         conn.query_row("SELECT COUNT(*) FROM writes_log", [], |row| row.get(0))?;
-    // Wave 3 L4 (issue #47): one-line visibility into the read-only
-    // `memhub review stale` audit queue. Reuses that command's exact
-    // computation (`review::count_stale_queue`) rather than a second
-    // implementation, so the two counts can never silently disagree.
-    let stale_queue = review::count_stale_queue(start)?;
 
     let deny_patterns = ctx.config.deny_list.patterns.len();
     let project_name = ctx.config.project_name;
@@ -66,7 +72,6 @@ pub fn run(start: &Path) -> Result<StatusSummary> {
         pending_writes,
         writes_logged,
         deny_patterns,
-        stale_queue,
     })
 }
 
@@ -117,20 +122,17 @@ mod tests {
         );
     }
 
-    // Wave 3 L4 (issue #47): `status` gains a one-line stale-queue count,
-    // reusing `review::count_stale_queue` rather than a second tally.
     #[test]
-    fn run_reports_zero_stale_queue_on_a_clean_repo() {
+    fn run_reports_zero_prune_candidates_on_a_clean_repo() {
         let temp = tempdir().expect("tempdir");
         init::run(temp.path()).expect("init");
 
-        let summary = run(temp.path()).expect("status");
-        assert_eq!(summary.stale_queue, 0);
+        let (_, count) = run_with_prune(temp.path()).expect("status");
+        assert_eq!(count, 0);
     }
 
     #[test]
-    fn run_stale_queue_matches_review_count_stale_queue() {
-        use crate::commands::{fact, review};
+    fn run_prune_review_count_matches_scan() {
         let temp = tempdir().expect("tempdir");
         init::run(temp.path()).expect("init");
 
@@ -144,9 +146,9 @@ mod tests {
             .expect("backdate");
         drop(ctx);
 
-        let summary = run(temp.path()).expect("status");
-        let direct = review::count_stale_queue(temp.path()).expect("count");
-        assert_eq!(summary.stale_queue, direct);
-        assert_eq!(summary.stale_queue, 1);
+        let (_, count) = run_with_prune(temp.path()).expect("status");
+        let report = prune::scan(temp.path()).expect("scan");
+        assert_eq!(count, report.total);
+        assert_eq!(count, 1);
     }
 }

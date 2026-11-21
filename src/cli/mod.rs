@@ -11,8 +11,9 @@ pub use args::MetricsCommand;
 pub use args::{
     AuditCommand, Cli, CodeCommand, CommandCommand, CommandKind, DecisionCommand, DocCommand,
     EvalCommand, FactCommand, GlobalCommand, HookCommand, IndexCommand, NarrativeCommand,
-    NoteCommand, PendingStatus, RecallModeArg, RecallSourceTypeArg, ReviewCommand, StatsWindowArg,
-    SyncCommand, TaskCommand, TaskStatus, TopLevelCommand, TranscriptAgentArg, TranscriptCommand,
+    NoteCommand, PendingStatus, PruneCommand, RecallModeArg, RecallSourceTypeArg, ReviewCommand,
+    StatsWindowArg, SyncCommand, TaskCommand, TaskStatus, TopLevelCommand, TranscriptAgentArg,
+    TranscriptCommand,
 };
 use output::{
     audit_md_report_to_json, code_status_to_json, doctor_report_to_json, eval_comparison_to_json,
@@ -21,11 +22,11 @@ use output::{
     pending_write_record_to_json, print_audit_md_report_human, print_code_status,
     print_doctor_report_human, print_eval_comparison, print_eval_summary, print_index_status,
     print_init_result, print_locate, print_locate_eval_summary, print_not_carried_checklist,
-    print_overwritten_writes_log_warning, print_recall_explain, print_recall_human,
-    print_retained_docs_hint, print_review_stale_report_human, print_stats_human, print_stats_json,
+    print_overwritten_writes_log_warning, print_prune_report, print_recall_explain,
+    print_recall_human, print_retained_docs_hint, print_stats_human, print_stats_json,
     print_status_checks_human, print_stored_row_human, print_wrapup_policy_human,
-    recall_response_to_json, review_stale_report_to_json, status_checks_to_json,
-    status_summary_to_json, stored_row_to_json, wrapup_policy_report_to_json,
+    recall_response_to_json, status_checks_to_json, status_summary_to_json, stored_row_to_json,
+    wrapup_policy_report_to_json,
 };
 #[cfg(feature = "metrics")]
 use output::{metrics_status_to_json, print_metrics_status_human};
@@ -377,12 +378,12 @@ pub fn run(cli: Cli) -> Result<()> {
             }
         },
         TopLevelCommand::Status { json: as_json } => {
-            let summary = commands::status::run(&cwd)?;
+            let (summary, prune_review_count) = commands::status::run_with_prune(&cwd)?;
             // Cheap subsystem-state checks (issue #22) — a subset of
             // `doctor`'s own checks, reused rather than duplicated.
             let checks = commands::status::checks(&cwd)?;
             if as_json {
-                let mut status_json = status_summary_to_json(&summary);
+                let mut status_json = status_summary_to_json(&summary, prune_review_count);
                 status_json["checks"] = status_checks_to_json(&checks);
                 println!("{}", json!({ "status": status_json }));
             } else {
@@ -404,9 +405,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 println!("Pending writes: {}", summary.pending_writes);
                 println!("Writes logged: {}", summary.writes_logged);
                 println!("Deny patterns: {}", summary.deny_patterns);
-                // Wave 3 L4 (issue #47): one-line pointer at the
-                // read-only `memhub review stale` audit queue.
-                println!("Stale queue: {}", summary.stale_queue);
+                println!("Prune review: {prune_review_count}");
                 // Subsystem-state lines (issue #22): schema, render
                 // freshness, retrieval mode, embeddings, sync (when
                 // enabled), metrics (when enabled).
@@ -1505,15 +1504,26 @@ pub fn run(cli: Cli) -> Result<()> {
                 );
             }
             ReviewCommand::Stale { json: as_json } => {
-                let report = commands::review::stale(&cwd)?;
-                if as_json {
-                    println!(
-                        "{}",
-                        json!({ "review_stale": review_stale_report_to_json(&report) })
-                    );
-                } else {
-                    print_review_stale_report_human(&report);
+                print_prune_report(&commands::prune::scan(&cwd)?, as_json, "review_stale");
+            }
+        },
+        TopLevelCommand::Prune { command } => match command {
+            PruneCommand::Scan { json: as_json } => {
+                print_prune_report(&commands::prune::scan(&cwd)?, as_json, "prune_scan");
+            }
+            PruneCommand::Dismiss { identifier, actor } => {
+                let actor = resolve_actor(actor.as_deref())?;
+                commands::prune::dismiss(&cwd, &identifier, &actor)?;
+                println!("Dismissed prune candidate {identifier}");
+            }
+            PruneCommand::Backups { yes, candidate } => {
+                if !yes {
+                    return Err(MemhubError::InvalidInput(
+                        "backup deletion requires --yes; review `memhub prune scan` first".into(),
+                    ));
                 }
+                let removed = commands::prune::delete_backups(&cwd, candidate.as_deref())?;
+                println!("Deleted {removed} surplus backup file(s)");
             }
         },
         TopLevelCommand::State { command } => {

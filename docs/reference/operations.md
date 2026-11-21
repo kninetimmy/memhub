@@ -104,10 +104,13 @@ auto-expires aged `pending_writes` rows via the same logic `memhub
 review expire` runs manually (Wave 3 Q6, PRD §11.3; see
 `commands::review::auto_expire_best_effort`).
 
-This is intentional, not an oversight: every command goes through the
-same `open_project` path, including read-only commands — `recall`,
-`status`, `doctor`, `eval` — so they perform the same maintenance a
-write command would. The migration apply and the `projects` upsert are
+This is intentional, not an oversight: before prune review even `review
+stale` went through the same `open_project` path as `recall`, `status`,
+`doctor`, and `eval`. Now `prune scan` and its `review stale` alias use
+an explicitly read-only SQLite connection and bypass all open maintenance.
+`recall`, `status`, `doctor`, and `eval` still use `open_project`, so they
+perform the same maintenance a write command would. The migration apply
+and the `projects` upsert are
 load-bearing and fail-closed by design: an error from either one
 propagates and fails the calling command, read or not — that is the
 project's "fail loudly" guardrail, not an oversight to fix. Only the
@@ -117,10 +120,9 @@ debounced, so none of those three can turn a read into a failure; a
 `memhub status` or `memhub recall` call that happens to run right
 after a schema bump, or with a 31-day-old pending write sitting
 around, quietly brings the DB up to date as a byproduct once the
-migration itself has succeeded. There is deliberately no
-`open_project_readonly` / `open_project_maintained` split — one open
-path keeps every command's behavior consistent and is simpler to
-reason about than a two-path one, at the cost of a read command
+migration itself has succeeded. There is still no general-purpose
+`open_project_readonly` / `open_project_maintained` switch — one maintained
+open path keeps its callers' behavior consistent, at the cost of a read command
 occasionally doing the small amount of writing (a migration, a
 registry upsert, an expiry pass) that a purist "reads never write"
 rule would forbid. This contract covers the repo DB only: the
@@ -156,8 +158,9 @@ written under the directory that holds the DB file (`.memhub/` for a
 repo DB, `~/.memhub/` for the machine-global store). If a copy cannot be
 written, the operation fails before it changes the DB, and the error
 names the backup path. `memhub gc` prunes only `backups/rendered/` and
-`backups/markdown/`, so it never prunes any of these three; delete one
-by hand once you no longer need it.
+`backups/markdown/`, so it never prunes any of these three. The new
+`memhub prune backups` excludes all three safety-slot directories too;
+delete one by hand once you no longer need it.
 
 All three call `db::write_backup_slot` and therefore write the same way.
 The copy first goes to a temp file beside its slot, named `.<slot file
@@ -285,6 +288,15 @@ else changed. Both actions append audit rows, so the logical version still
 differs. If Drive is still at the shared baseline, `sync check` reports
 `local-ahead` and `sync commit` refuses to record equality.
 
+**Prune dismissals (#451).** Before 0027, there were no dismissals to
+copy or compare. The whole-DB snapshot and adopt now carry
+`prune_dismissals`, and a populated table contributes to the logical
+digest as well as its logged inserts contributing to the audit counters.
+An empty table does not change the pre-0027 digest or baseline. Other
+memory, audit-cutoff rules, and schema/checksum/confirmation gates are
+unchanged. `sync check --diff` shows dismissals as inserts into
+`prune_dismissals` when the audit cutoff is comparable.
+
 `sync check --diff` validates the audit cutoff against both actual
 databases. An incompatible cutoff returns null sides with an explicit
 `unavailable_reason`, never an available empty diff. A newer remote schema
@@ -353,6 +365,10 @@ Surfaces:
   can still adopt a 0025 snapshot if the other guards pass; reopening
   migrates it and preserves its logical baseline. The push guard still
   checks `drive-ahead` and `diverged`, not the adopt-only schema flag.
+- **Mixed versions since migration 0027:** The same existing rule now
+  rejects 0027 snapshots for adopt and `sync check --diff` on a 0026
+  client, even with an empty dismissal table. A 0027 client can still
+  adopt a compatible 0026 snapshot and migrate on reopen.
 - Skill: `/catch-up` orchestrates the pull side (check → summarize →
   adopt with your approval).
 
@@ -1247,14 +1263,19 @@ is unarchived. The same rule applies to CLI and MCP ingestion.
 
 **Drift hints in `memhub review stale`.** Before archiving, this command
 reported changed or unreadable ingested files and suggested `memhub doc add
-<path>` to re-ingest them once available. It still reports drift and prints
-the same hint, including for archived documents. Now re-ingest refuses an
-archived path: to restore and re-ingest it, first run `memhub doc unarchive
-<id-or-path>` and make sure the file is readable.
+<path>` to re-ingest them once available. After archiving was introduced,
+the command still printed that hint even for archived documents. Now
+`review stale` uses the [prune scan](#prune-review): it offers re-ingest
+for changed files and archive for missing or unreadable files, and
+does not flag archived documents. Re-ingest still refuses an archived
+path: to restore and re-ingest it, first run `memhub doc unarchive
+<id-or-path>` and make sure the file is readable. This restriction still
+applies to both CLI and MCP ingestion, not just the prune hint.
 
-**Retained stale queue behavior.** `memhub review stale` still suggests
-`memhub fact verify` for facts past the horizon that are not superseded,
-even if they are retired. `memhub status` still uses the same queue count.
+**Stale facts in review and wrap-up.** Before prune review, `memhub review
+stale` suggested `memhub fact verify` for facts past the horizon that
+were not superseded, even if they were retired. It now excludes retired
+facts as well. `memhub status` still uses the same queue count.
 Before retirement, both `/wrap-up` stale-fact re-verification paths could
 pick such facts from the default `memhub fact list --json`. Both still use
 that list, but it now omits retired facts, so they are no longer wrap-up
@@ -1697,7 +1718,10 @@ included) on a newer one with the "written by a newer memhub" error.
 With 0025 and 0026 builds, the read-only mismatch behavior applies in
 both directions: recall skips the other schema, direct global `get-row`
 and `doc ls|show --global` refuse it, and `global status` still reports
-stored counts without migrating it.
+stored counts without migrating it. The same rules now apply across
+0026 and 0027; the shared schema includes `prune_dismissals`, but prune
+commands only read or write repo memory, even in a repo that opts in to
+the global store.
 
 When enabled, `recall` merges global hits with repo hits; every hit
 carries `scope: "repo" | "global"`. **Precedence is
@@ -2185,6 +2209,70 @@ to IDs. Before, there was no drop to remove a task from that window or
 keep to refresh its sort time. Now dropping an open task removes it and
 keeping an open task can reorder it. Blocked tasks remain outside the
 window, and `task show` still supplies full notes on demand.
+
+## Prune review
+
+`memhub prune scan` assembles a read-only review for the current repo.
+Use `--json` for `{"prune_scan": {"total": ..., "counts": ..., "items":
+...}}`. Each item names a category, affected row or files, a reason, a
+stable identifier, and its available actions. An action's `command` is
+an argument array including `memhub`; run it as separate arguments, not
+through a shell. An action with `replace` needs the human's new value in
+place of that argument. No action is run by the scan.
+
+| Category | Before in `review stale` | Now in both commands |
+|---|---|---|
+| `stale_fact` | Non-superseded facts past the configured horizon (including never-verified and retired facts); verify hint only. | Same `[retrieval] fact_stale_after_days` horizon; retired and superseded facts are excluded. Verify by ID, update value through same-key `fact add` (its usual source, confidence, and verification behavior applies), or retire by ID. |
+| `idle_task` | Done tasks over 30 days old, with a `task list --status done` inspect hint. | Open or blocked tasks last updated more than 60 days ago. Keep with `task keep` to refresh the clock, or drop or mark done. Done and dropped tasks are not candidates. |
+| `out_of_date_document` | Changed or unreadable files, including archived rows, with a single re-ingest hint. | Changed, missing or unreadable files for non-archived rows only. Re-ingest a changed file (keeping the title), archive a missing or unreadable one, or keep the item. Ingested documents can be external to the repo; drift checks the recorded source path, not a redirected symlink target. |
+| `surplus_backups` | No backup candidates. `gc` separately reports/prunes rendered and legacy markdown backups under its own rules. | One item per backup directory over 20 eligible files, showing the surplus paths. Delete that reviewed batch or keep it. |
+| Expired pending writes | All expired proposals, with a `review show` inspect hint. | Not prune candidates. Inspect with `memhub review list --status expired` or `memhub review show <id>`. Proposal expiry on maintained open still holds. |
+
+Each category shows up to 25 undismissed items, with an `overflow` count
+for the rest. `total` counts all undismissed items, including overflow.
+`memhub review stale` still answers only when asked; it now prints the
+same report, including in JSON under its existing `review_stale` key.
+Previously its items exposed an integer `id`, `message`, and one `verb`;
+now they expose an opaque string `id`, `subjects`, `reason`, and `actions`.
+CLI `memhub status` replaces `Stale queue:` with `Prune review:` and adds
+`prune_review_count` in JSON; the old `stale_queue` key mirrors the new
+count. The CLI's separate stale-fact count and all other counts and checks
+keep their existing definitions. MCP `status` still returns stored counts
+and exposes neither the prune count nor any prune action.
+
+`memhub prune dismiss <identifier> [--actor <actor>]` records a keep
+decision without editing the source row or file. It matches a current
+candidate and writes one `prune_dismissals` row and its `writes_log` entry
+in the same transaction. Repeating an unchanged dismissal does not log
+twice. The ID fingerprints the current row and, where applicable, the
+on-disk file state. A changed source state still eligible for review
+gets a new ID; presenting an old ID does not dismiss that changed item.
+Returning to exactly the dismissed state matches the same ID again.
+The scan does not prune or otherwise edit old dismissal records. It
+reads schema 0026 or 0027 without applying migrations; `dismiss` and
+`status` retain the ordinary maintained open. Dismissal audit entries
+use the existing render Recent Activity and freshness, doctor recency,
+status and stats write counts, and sync audit readers. Drive snapshots
+carry the table; JSON export/import do not transfer dismissal state.
+
+`memhub prune backups --yes` deletes only the surplus backups in the
+current repo and works without a `Cargo.toml`. Eligible files are regular,
+single-link `.bak` files under `.memhub/backups/`, the extension used by
+render and the former markdown backup writer. Retention keeps the
+newest 20 per directory by modified time, with filename breaking ties.
+The scan's delete action includes `--candidate <identifier>` to limit
+deletion to the reviewed directory and file set; it refuses if the set
+has changed. The identifier covers kept files as well, since their state
+determines which files are surplus. Omitting `--candidate` explicitly cleans every eligible
+directory, regardless of dismissals. Neither form opens the database,
+follows linked paths, or removes directories, unrelated files, the
+legacy K9 copy, or files in `backups/{sync,import,migrations}`. These
+restrictions apply to both forms of `prune backups`, not to all cleanup
+commands: `memhub gc` retains its existing Rust-project requirement,
+scope and `[gc] delete_stale_backups`/`--dry-run` behavior.
+Cleanup rechecks paths and file identity before each unlink. It is not
+an atomic filesystem snapshot; avoid moving or editing the backup tree
+while it runs.
 
 ## Attribution
 

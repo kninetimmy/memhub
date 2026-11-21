@@ -19,6 +19,7 @@ pub mod lifecycle;
 pub mod metrics;
 pub mod narrative;
 pub mod pending_write;
+pub mod prune;
 pub mod render;
 pub mod review;
 pub mod search;
