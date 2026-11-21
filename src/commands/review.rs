@@ -25,7 +25,7 @@ const AUTO_EXPIRE_ACTOR: &str = "review:auto_expire";
 /// compatible same-subject rows can also clear the cutoff. Before #443,
 /// reranked hits blocked plain fact and decision accepts. Now a fact hit
 /// warns; a decision hit still blocks. This cutoff does not feed recall.
-const ACCEPT_SIMILARITY_RERANK_THRESHOLD: f32 = 2.0;
+pub(crate) const ACCEPT_SIMILARITY_RERANK_THRESHOLD: f32 = 2.0;
 
 /// Upper bound on same-kind rows the reranked probe scores at accept time.
 /// Accept is human-gated and infrequent, but a pathologically large corpus
@@ -104,6 +104,8 @@ pub struct AcceptOutcome {
     pub durable_id: i64,
     pub durable_table: &'static str,
     pub fact_similarity_warning: Option<String>,
+    /// Old repo row for the CLI's post-commit, read-only correction report.
+    pub correction_source: Option<(&'static str, i64)>,
 }
 
 /// Protect a plain fact accept from overwriting a different value under the
@@ -294,6 +296,7 @@ pub fn accept(
     }
 
     let mut fact_similarity_warning = None;
+    let mut correction_source = None;
     let (durable_id, durable_table) = if target_global {
         write_durable_global(
             &config,
@@ -348,7 +351,9 @@ pub fn accept(
                 // `supersede_in_tx` rejects as self-supersede — the correct,
                 // loud outcome (use --force for a same-key overwrite).
                 if let Some(old_ident) = supersede {
-                    fact::supersede_in_tx(&tx, old_ident, &fact_id.to_string(), actor)?;
+                    let outcome =
+                        fact::supersede_in_tx(&tx, old_ident, &fact_id.to_string(), actor)?;
+                    correction_source = Some(("fact", outcome.old_id));
                 }
                 (fact_id, "facts")
             }
@@ -399,6 +404,7 @@ pub fn accept(
                         ))
                     })?;
                     decision::supersede_in_tx(&tx, old_id, decision_id, actor)?;
+                    correction_source = Some(("decision", old_id));
                 }
                 (decision_id, "decisions")
             }
@@ -423,12 +429,14 @@ pub fn accept(
                 match target_kind {
                     "fact" => {
                         let outcome = fact::supersede_in_tx(&tx, old, new, actor)?;
+                        correction_source = Some(("fact", outcome.old_id));
                         (outcome.old_id, "facts")
                     }
                     "decision" => {
                         let old_id = parse_decision_id(id, "old", old)?;
                         let new_id = parse_decision_id(id, "new", new)?;
                         let outcome = decision::supersede_in_tx(&tx, old_id, new_id, actor)?;
+                        correction_source = Some(("decision", outcome.old_id));
                         (outcome.old_id, "decisions")
                     }
                     other => {
@@ -475,6 +483,7 @@ pub fn accept(
         durable_id,
         durable_table,
         fact_similarity_warning,
+        correction_source,
     })
 }
 

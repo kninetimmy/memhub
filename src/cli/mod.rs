@@ -680,6 +680,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 let id =
                     commands::lifecycle::set_fact_retirement(&cwd, &ident, Some(&reason), &actor)?;
                 println!("Retired fact #{id}.");
+                output::print_correction_report(&output::post_change_correction(&cwd, "fact", id));
             }
             FactCommand::Unretire { ident, actor } => {
                 let actor = resolve_actor(actor.as_deref())?;
@@ -726,6 +727,7 @@ pub fn run(cli: Cli) -> Result<()> {
             } => {
                 let actor = resolve_actor(actor.as_deref())?;
                 let outcome = commands::fact::supersede(&cwd, &old, &by, &actor)?;
+                let correction = output::post_change_correction(&cwd, "fact", outcome.old_id);
                 if as_json {
                     println!(
                         "{}",
@@ -735,6 +737,7 @@ pub fn run(cli: Cli) -> Result<()> {
                             "old_key": outcome.old_key,
                             "new_id": outcome.new_id,
                             "new_key": outcome.new_key,
+                            "correction_sweep": correction,
                         })
                     );
                 } else {
@@ -742,6 +745,7 @@ pub fn run(cli: Cli) -> Result<()> {
                         "Superseded fact {} ({}) by fact {} ({})",
                         outcome.old_id, outcome.old_key, outcome.new_id, outcome.new_key
                     );
+                    output::print_correction_report(&correction);
                 }
             }
         },
@@ -872,6 +876,7 @@ pub fn run(cli: Cli) -> Result<()> {
             } => {
                 let actor = resolve_actor(actor.as_deref())?;
                 let outcome = commands::decision::supersede(&cwd, old, by, &actor)?;
+                let correction = output::post_change_correction(&cwd, "decision", outcome.old_id);
                 if as_json {
                     println!(
                         "{}",
@@ -881,6 +886,7 @@ pub fn run(cli: Cli) -> Result<()> {
                             "old_title": outcome.old_title,
                             "new_id": outcome.new_id,
                             "new_title": outcome.new_title,
+                            "correction_sweep": correction,
                         })
                     );
                 } else {
@@ -888,6 +894,7 @@ pub fn run(cli: Cli) -> Result<()> {
                         "Superseded decision {} ({}) by decision {} ({})",
                         outcome.old_id, outcome.old_title, outcome.new_id, outcome.new_title
                     );
+                    output::print_correction_report(&correction);
                 }
             }
             DecisionCommand::List { json: as_json } => {
@@ -1466,23 +1473,32 @@ pub fn run(cli: Cli) -> Result<()> {
                 let actor = resolve_actor(actor.as_deref())?;
                 let outcome =
                     commands::review::accept(&cwd, id, &actor, supersede.as_deref(), force)?;
+                let correction = outcome
+                    .correction_source
+                    .map(|(kind, id)| output::post_change_correction(&cwd, kind, id));
                 if let Some(warning) = &outcome.fact_similarity_warning {
                     // The accept already committed; a stderr error must not hide success.
                     let _ = writeln!(std::io::stderr().lock(), "Warning: {warning}");
                 }
                 if as_json {
-                    let payload = json!({
+                    let mut payload = json!({
                         "pending_id": outcome.pending_id,
                         "kind": outcome.kind,
                         "durable_table": outcome.durable_table,
                         "durable_id": outcome.durable_id,
                     });
+                    if let Some(correction) = &correction {
+                        payload["correction_sweep"] = json!(correction);
+                    }
                     println!("{payload}");
                 } else {
                     println!(
                         "Accepted pending write {} ({}) -> {} row {}",
                         outcome.pending_id, outcome.kind, outcome.durable_table, outcome.durable_id
                     );
+                    if let Some(correction) = &correction {
+                        output::print_correction_report(correction);
+                    }
                 }
             }
             ReviewCommand::Reject {

@@ -2272,6 +2272,8 @@ CLI `memhub status` replaces `Stale queue:` with `Prune review:` and adds
 count. The CLI's separate stale-fact count and all other counts and checks
 keep their existing definitions. MCP `status` still returns stored counts
 and exposes neither the prune count nor any prune action.
+The status prune count includes only the four model-free categories above;
+it does not run or count the similarity categories below.
 Before, the CLI stale queue did not read backup files. CLI status now uses
 the same full backup content hashing as the scan for every surplus group,
 including its 20 retention witnesses. This can add substantial disk reads;
@@ -2330,6 +2332,62 @@ reads schema 0026 or 0027 without applying migrations; `dismiss` and
 use the existing render Recent Activity and freshness, doctor recency,
 status and stats write counts, and sync audit readers. Drive snapshots
 carry the table; JSON export/import do not transfer dismissal state.
+
+### Similarity categories and correction sweep
+
+With `[retrieval] use_reranker = true`, `prune scan` and `review stale`
+also use the existing bundled compact ms-marco-MiniLM reranker, even in
+FTS retrieval mode. They use the accept-time similarity cutoff (2.0),
+not recall's relevance cutoff. With the reranker disabled, both commands
+still report all model-free categories and explicitly state that similarity
+checks were skipped (`similarity_warning` in JSON).
+
+- `duplicate_facts`: pairs of active, non-retired facts under different
+  keys. Retire either fact, or keep both by dismissing the pair.
+- `unlinked_decisions`: pairs of active decisions without supersession
+  links. Compare the later decision against the earlier one, ordered by
+  recorded decision date with row ID as the tie-breaker. Mark the earlier
+  decision superseded by the later one, or keep both.
+- `correction_sweep`: for every superseded fact or decision and every
+  retired fact, list active, non-retired facts, current architecture
+  sections, non-archived document chunks and open tasks that still overlap
+  the old text. Exclude the old row's replacement (including its replacement
+  chain), all decisions as correction targets, and session notes.
+
+A match measures **textual overlap, not contradiction**. Compatible claims
+about different versions can match. Every correction pair includes both
+complete, unabridged source texts together, labeled **old claim** and
+**possible restatement**, with source type, row ID and recorded date when
+known. JSON carries them in `excerpts.old_claim` and
+`excerpts.possible_restatement` (`source_type`, `source_id`, `recorded_at`,
+`text`). Titles, headings, rationale/summary, notes and version qualifiers
+are preserved, not replaced with a model-generated explanation.
+
+Correction actions are retire for a fact; edit the source file then run
+the provided title-preserving `doc add` command for a document; rewrite
+the **complete** architecture using the provided `arch set` command
+(not just the matching section); or drop/refresh a task with `task drop`
+or `task keep`. Every pair also offers keep through `prune dismiss`.
+Editing a file or composing replacement architecture is human work;
+the scanner never performs it or invents an edit command.
+
+These categories share the 25-item per-category cap, overflow counts and
+source-state dismissal identifiers. Both rows' stored state participates
+in each pair's identifier, including document-parent or architecture-source
+state where relevant. All eligible pairs are scored; the cap limits the
+display, not the search. This exhaustive manual review can take longer on
+large corpora, but loads no embedding model and writes no memory, index,
+query log or file. The four original categories and their IDs are unchanged.
+
+After successful `fact supersede`, `decision supersede`, `review accept
+--supersede` (also accepted staged supersession), or `fact retire`, the CLI
+prints that old row's report-only correction sweep. Supersede and accept
+JSON remain one structured object, with an added `correction_sweep` report
+only when a supersession occurred. The write commits first; disabled
+similarity checks or a reporting failure are stated in the report and do
+not undo or disguise the successful write. Producing the report itself
+uses the read-only scan open: no migration, expiry, semantic write or
+automatic correction occurs. Dismissals and caps apply to this report too.
 
 **Before (#451 implementation):** `memhub prune backups --yes` could
 select all eligible batches regardless of dismissals, on any platform.

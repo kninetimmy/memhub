@@ -1558,6 +1558,9 @@ pub(crate) fn print_prune_report(r: &PruneReport, as_json: bool, envelope: &str)
     if let Some(warning) = &r.backup_warning {
         println!("  {}", warning.escape_debug());
     }
+    if let Some(warning) = &r.similarity_warning {
+        println!("  {}", warning.escape_debug());
+    }
     for (&category, count) in r.counts.iter().filter(|(_, count)| count.total != 0) {
         println!(
             "\n{} ({}, {} more)",
@@ -1572,11 +1575,49 @@ pub(crate) fn print_prune_report(r: &PruneReport, as_json: bool, envelope: &str)
                     PruneSubject::Fact { id, key } => println!("    fact #{id}: {key:?}"),
                     PruneSubject::Task { id, title } => println!("    task #{id}: {title:?}"),
                     PruneSubject::Document { id, path } => println!("    document #{id}: {path:?}"),
+                    PruneSubject::Decision { id, title } => {
+                        println!("    decision #{id}: {title:?}")
+                    }
+                    PruneSubject::ArchitectureSection { id, heading } => {
+                        println!("    arch_section #{id}: {heading:?}");
+                    }
+                    PruneSubject::DocumentChunk {
+                        id,
+                        document_id,
+                        path,
+                        title,
+                        heading,
+                    } => {
+                        println!(
+                            "    doc_chunk #{id} (document #{document_id}, {title:?}): {path:?}, {heading:?}"
+                        );
+                    }
                     PruneSubject::BackupFiles { directory, files } => {
                         println!("    {directory:?}:");
                         for file in files {
                             println!("      {file:?}");
                         }
+                    }
+                }
+            }
+            if let Some(excerpts) = &item.excerpts {
+                for (label, source) in [
+                    ("old claim", &excerpts.old_claim),
+                    ("possible restatement", &excerpts.possible_restatement),
+                ] {
+                    println!(
+                        "    {label} ({} #{}, recorded {}):",
+                        source.source_type,
+                        source.source_id,
+                        source
+                            .recorded_at
+                            .as_deref()
+                            .unwrap_or("unknown")
+                            .escape_debug(),
+                    );
+                    // No clipping: version qualifiers can occur anywhere in the source.
+                    for line in source.text.split('\n') {
+                        println!("      {}", line.escape_debug());
                     }
                 }
             }
@@ -1594,6 +1635,42 @@ pub(crate) fn print_prune_report(r: &PruneReport, as_json: bool, envelope: &str)
                 println!("    {}: {command}", action.action);
             }
         }
+    }
+}
+
+/// A reporting failure must not turn an already committed write into failure.
+#[derive(serde::Serialize)]
+pub(crate) struct CorrectionOutput {
+    #[serde(flatten)]
+    report: Option<PruneReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+pub(crate) fn post_change_correction(
+    start: &std::path::Path,
+    source_type: &str,
+    id: i64,
+) -> CorrectionOutput {
+    match commands::prune::correction_sweep(start, source_type, id) {
+        Ok(report) => CorrectionOutput {
+            report: Some(report),
+            error: None,
+        },
+        Err(error) => CorrectionOutput {
+            report: None,
+            error: Some(error.to_string()),
+        },
+    }
+}
+
+pub(crate) fn print_correction_report(output: &CorrectionOutput) {
+    println!("Correction sweep (report only; change already committed)");
+    if let Some(report) = &output.report {
+        print_prune_report(report, false, "correction_sweep");
+    }
+    if let Some(error) = &output.error {
+        println!("  Correction sweep unavailable: {}", error.escape_debug());
     }
 }
 

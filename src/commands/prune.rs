@@ -1,6 +1,7 @@
 //! Pull-based, repo-local cleanup review. Only explicit actions write.
 
 mod backups;
+mod similarity;
 pub(super) use backups::RETAIN as BACKUPS_RETENTION_COUNT;
 
 use std::collections::{BTreeMap, HashSet};
@@ -30,6 +31,9 @@ pub enum Category {
     IdleTask,
     OutOfDateDocument,
     SurplusBackups,
+    DuplicateFacts,
+    UnlinkedDecisions,
+    CorrectionSweep,
 }
 
 impl Category {
@@ -39,6 +43,11 @@ impl Category {
         Self::OutOfDateDocument,
         Self::SurplusBackups,
     ];
+    const SIMILARITY: [Self; 3] = [
+        Self::DuplicateFacts,
+        Self::UnlinkedDecisions,
+        Self::CorrectionSweep,
+    ];
 
     pub fn heading(self) -> &'static str {
         match self {
@@ -46,11 +55,14 @@ impl Category {
             Self::IdleTask => "Idle tasks",
             Self::OutOfDateDocument => "Out-of-date documents",
             Self::SurplusBackups => "Surplus backups",
+            Self::DuplicateFacts => "Near-duplicate facts",
+            Self::UnlinkedDecisions => "Unlinked decisions",
+            Self::CorrectionSweep => "Correction sweep",
         }
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Subject {
     Fact {
@@ -64,6 +76,21 @@ pub enum Subject {
     Document {
         id: i64,
         path: String,
+    },
+    Decision {
+        id: i64,
+        title: String,
+    },
+    ArchitectureSection {
+        id: i64,
+        heading: String,
+    },
+    DocumentChunk {
+        id: i64,
+        document_id: i64,
+        path: String,
+        title: String,
+        heading: String,
     },
     BackupFiles {
         directory: String,
@@ -105,6 +132,24 @@ pub struct Item {
     pub subjects: Vec<Subject>,
     pub reason: String,
     pub actions: Vec<Action>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub excerpts: Option<CorrectionExcerpts>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SourceExcerpt {
+    pub source_type: &'static str,
+    pub source_id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recorded_at: Option<String>,
+    /// Full source text, not a model-truncated or paraphrased snippet.
+    pub text: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CorrectionExcerpts {
+    pub old_claim: SourceExcerpt,
+    pub possible_restatement: SourceExcerpt,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -120,9 +165,21 @@ pub struct Report {
     pub items: Vec<Item>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backup_warning: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub similarity_warning: Option<String>,
 }
 
 pub fn scan(start: &Path) -> Result<Report> {
+    scan_readonly(start, None)
+}
+
+/// Report only the named old row's correction sweep after a committed change.
+/// Uses the same read-only open as scan: no maintenance, expiry or query logs.
+pub fn correction_sweep(start: &Path, source_type: &str, id: i64) -> Result<Report> {
+    scan_readonly(start, Some((source_type, id)))
+}
+
+fn scan_readonly(start: &Path, old: Option<(&str, i64)>) -> Result<Report> {
     let paths = db::discover_paths(start)?;
     let config = scan_config(&paths)?;
     let mut conn = Connection::open_with_flags(&paths.db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -140,7 +197,7 @@ pub fn scan(start: &Path) -> Result<Report> {
             )));
         }
     };
-    scan_in(&tx, &paths, &config, has_dismissals)
+    scan_in(&tx, &paths, &config, has_dismissals, true, old)
 }
 
 fn scan_config(paths: &ProjectPaths) -> Result<ProjectConfig> {
@@ -165,7 +222,7 @@ fn scan_config(paths: &ProjectPaths) -> Result<ProjectConfig> {
 /// Status already has a maintained open; reuse it without another open.
 pub(super) fn scan_project(ctx: &db::ProjectContext) -> Result<Report> {
     let tx = ctx.conn.unchecked_transaction()?;
-    scan_in(&tx, &ctx.paths, &ctx.config, true)
+    scan_in(&tx, &ctx.paths, &ctx.config, true, false, None)
 }
 
 fn scan_in(
@@ -173,6 +230,8 @@ fn scan_in(
     paths: &ProjectPaths,
     config: &ProjectConfig,
     has_dismissals: bool,
+    include_similarity: bool,
+    old: Option<(&str, i64)>,
 ) -> Result<Report> {
     let dismissed = if has_dismissals {
         conn.prepare("SELECT identifier FROM prune_dismissals WHERE project_id = 1")?
@@ -185,12 +244,17 @@ fn scan_in(
         total: 0,
         counts: Category::ALL
             .into_iter()
+            .filter(|_| old.is_none())
+            .chain(Category::SIMILARITY.into_iter().filter(|category| {
+                include_similarity && (old.is_none() || *category == Category::CorrectionSweep)
+            }))
             .map(|category| (category, CategoryCount::default()))
             .collect(),
         items: Vec::new(),
         backup_warning: None,
+        similarity_warning: None,
     };
-    report.backup_warning = visit_candidates(conn, paths, config, |item| {
+    let mut visit = |item: Item| {
         if dismissed.contains(&item.id) {
             return;
         }
@@ -205,7 +269,20 @@ fn scan_in(
         } else {
             count.overflow += 1;
         }
-    })?;
+    };
+    let backup_warning = if old.is_none() {
+        visit_candidates(conn, paths, config, &mut visit)?
+    } else {
+        None
+    };
+    if include_similarity && config.retrieval.use_reranker {
+        similarity::visit(conn, old, &mut visit)?;
+    }
+    report.backup_warning = backup_warning;
+    if include_similarity && !config.retrieval.use_reranker {
+        report.similarity_warning =
+            Some("Similarity checks skipped: [retrieval] use_reranker is disabled.".into());
+    }
     Ok(report)
 }
 
@@ -216,6 +293,9 @@ pub fn dismiss(start: &Path, id: &str, actor: &str) -> Result<()> {
         .transaction_with_behavior(TransactionBehavior::Immediate)?;
     let mut found = false;
     let warning = visit_candidates(&tx, &ctx.paths, &ctx.config, |item| found |= item.id == id)?;
+    if !found && ctx.config.retrieval.use_reranker {
+        similarity::visit(&tx, None, &mut |item| found |= item.id == id)?;
+    }
     if !found {
         let detail = warning.map_or_else(String::new, |warning| format!("; {warning}"));
         return Err(MemhubError::InvalidInput(format!(
@@ -364,6 +444,7 @@ fn facts(conn: &Connection, horizon: i64, visit: &mut impl FnMut(Item)) -> Resul
                     ],
                 ),
             ],
+            excerpts: None,
         });
     }
     Ok(())
@@ -409,6 +490,7 @@ fn tasks(conn: &Connection, visit: &mut impl FnMut(Item)) -> Result<()> {
                 ),
                 Action::new("done", ["task", "done", &ident]),
             ],
+            excerpts: None,
         });
     }
     Ok(())
@@ -465,6 +547,7 @@ fn documents(conn: &Connection, root: &Path, visit: &mut impl FnMut(Item)) -> Re
             subjects: vec![Subject::Document { id: row_id, path }],
             reason: reason.into(),
             actions,
+            excerpts: None,
         });
     }
     Ok(())

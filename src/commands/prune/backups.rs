@@ -72,6 +72,7 @@ impl Group {
             }],
             reason,
             actions,
+            excerpts: None,
         }
     }
 }
