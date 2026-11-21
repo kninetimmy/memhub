@@ -1,10 +1,14 @@
 //! Exhaustive, report-only overlap checks using the bundled compact reranker.
 
 use std::collections::HashSet;
+use std::path::Path;
 
 use rusqlite::Connection;
 
-use super::{Action, Category, CorrectionExcerpts, Item, SourceExcerpt, Subject, identifier};
+use super::{
+    Action, Category, CorrectionExcerpts, DocumentFile, Item, SourceExcerpt, Subject,
+    document_file, identifier,
+};
 use crate::Result;
 use crate::commands::review::ACCEPT_SIMILARITY_RERANK_THRESHOLD;
 use crate::retrieval::{
@@ -18,21 +22,48 @@ struct Row {
     state: String,
     active: bool,
     replacement: Option<i64>,
+    document_file: Option<DocumentFile>,
 }
 
 pub(super) fn visit(
     conn: &Connection,
+    root: &Path,
     old: Option<(&str, i64)>,
+    visit: &mut impl FnMut(Item),
+) -> Result<()> {
+    visit_matching(conn, root, old, None, true, visit)
+}
+
+/// Score only the requested pair before taking the writer lock; at commit,
+/// revalidate its exact source states and eligibility without running the model.
+pub(super) fn contains(conn: &Connection, root: &Path, id: &str, score: bool) -> Result<bool> {
+    let mut found = false;
+    visit_matching(conn, root, None, Some(id), score, &mut |_| found = true)?;
+    Ok(found)
+}
+
+fn visit_matching(
+    conn: &Connection,
+    root: &Path,
+    old: Option<(&str, i64)>,
+    requested: Option<&str>,
+    score: bool,
     visit: &mut impl FnMut(Item),
 ) -> Result<()> {
     let facts = facts(conn)?;
     let decisions = decisions(conn)?;
     if old.is_none() {
-        pairs(&facts, Category::DuplicateFacts, visit)?;
-        pairs(&decisions, Category::UnlinkedDecisions, visit)?;
+        pairs(&facts, Category::DuplicateFacts, requested, score, visit)?;
+        pairs(
+            &decisions,
+            Category::UnlinkedDecisions,
+            requested,
+            score,
+            visit,
+        )?;
     }
     let mut targets: Vec<&Row> = facts.iter().filter(|row| row.active).collect();
-    let other_targets = correction_targets(conn)?;
+    let other_targets = correction_targets(conn, root)?;
     targets.extend(&other_targets);
     // ponytail: exhaustive pair scoring; use a measured candidate index if
     // corpus size makes this manual scan too slow, not a silent candidate cap.
@@ -41,25 +72,30 @@ pub(super) fn visit(
             continue;
         }
         let replacements = replacements(source, &facts);
-        let candidates: Vec<_> = targets
-            .iter()
-            .copied()
-            .filter(|target| {
-                source.excerpt.source_type != target.excerpt.source_type
-                    || (source.excerpt.source_id != target.excerpt.source_id
-                        && !replacements.contains(&target.excerpt.source_id))
-            })
-            .collect();
-        for target in matches(&source.excerpt.text, &candidates)? {
-            let category = Category::CorrectionSweep;
+        let category = Category::CorrectionSweep;
+        let mut candidates = Vec::new();
+        for &target in &targets {
+            if (source.excerpt.source_type != target.excerpt.source_type
+                || (source.excerpt.source_id != target.excerpt.source_id
+                    && !replacements.contains(&target.excerpt.source_id)))
+                && selected(category, source, target, requested)?
+            {
+                candidates.push(target);
+            }
+        }
+        for target in matches(&source.excerpt.text, &candidates, score)? {
             let id = identifier(category, (&source.state, &target.state))?;
             let mut actions = correction_actions(target);
+            let mut reason = "Textual overlap with an old claim; not evidence of contradiction. Check version qualifiers before choosing keep or correcting the row.".to_string();
+            if matches!(&target.subject, Subject::DocumentChunk { .. }) && actions.is_empty() {
+                reason.push_str(" Edit and re-ingest unavailable: the recorded path is missing, unreadable, or redirected. Restore a regular UTF-8 file at that exact path before rescanning; the excerpt is the stored chunk, not redirected content.");
+            }
             actions.push(Action::keep(&id));
             visit(Item {
                 id,
                 category,
                 subjects: vec![source.subject.clone(), target.subject.clone()],
-                reason: "Textual overlap with an old claim; not evidence of contradiction. Check version qualifiers before choosing keep or correcting the row.".into(),
+                reason,
                 actions,
                 excerpts: Some(CorrectionExcerpts {
                     old_claim: source.excerpt.clone(),
@@ -88,7 +124,17 @@ fn replacements(source: &Row, facts: &[Row]) -> HashSet<i64> {
     out
 }
 
-fn matches<'a>(query: &str, candidates: &[&'a Row]) -> Result<Vec<&'a Row>> {
+fn selected(category: Category, a: &Row, b: &Row, requested: Option<&str>) -> Result<bool> {
+    match requested {
+        Some(id) => Ok(identifier(category, (&a.state, &b.state))? == id),
+        None => Ok(true),
+    }
+}
+
+fn matches<'a>(query: &str, candidates: &[&'a Row], score: bool) -> Result<Vec<&'a Row>> {
+    if !score || candidates.is_empty() {
+        return Ok(candidates.to_vec());
+    }
     let docs: Vec<_> = candidates
         .iter()
         .map(|row| row.excerpt.text.clone())
@@ -103,18 +149,26 @@ fn matches<'a>(query: &str, candidates: &[&'a Row]) -> Result<Vec<&'a Row>> {
         .collect())
 }
 
-fn pairs(rows: &[Row], category: Category, visit: &mut impl FnMut(Item)) -> Result<()> {
+fn pairs(
+    rows: &[Row],
+    category: Category,
+    requested: Option<&str>,
+    score: bool,
+    visit: &mut impl FnMut(Item),
+) -> Result<()> {
     let active: Vec<_> = rows.iter().filter(|row| row.active).collect();
     for (i, later) in active.iter().enumerate() {
-        let earlier: Vec<_> = active[..i]
-            .iter()
-            .copied()
-            .filter(|earlier| match (&earlier.subject, &later.subject) {
+        let mut earlier_rows = Vec::new();
+        for &earlier in &active[..i] {
+            let different_keys = match (&earlier.subject, &later.subject) {
                 (Subject::Fact { key: a, .. }, Subject::Fact { key: b, .. }) => a != b,
                 _ => true,
-            })
-            .collect();
-        for earlier in matches(&later.excerpt.text, &earlier)? {
+            };
+            if different_keys && selected(category, earlier, later, requested)? {
+                earlier_rows.push(earlier);
+            }
+        }
+        for earlier in matches(&later.excerpt.text, &earlier_rows, score)? {
             let id = identifier(category, (&earlier.state, &later.state))?;
             let actions = if category == Category::DuplicateFacts {
                 vec![
@@ -180,6 +234,9 @@ fn correction_actions(row: &Row) -> Vec<Action> {
             Action::new("keep_task", ["task", "keep", &id.to_string()]),
         ],
         Subject::DocumentChunk { path, title, .. } => {
+            if !matches!(row.document_file, Some(DocumentFile::Readable { .. })) {
+                return Vec::new();
+            }
             // Editing is human work, not an invented memhub edit verb.
             vec![Action::new(
                 "edit_and_re_ingest",
@@ -189,9 +246,14 @@ fn correction_actions(row: &Row) -> Vec<Action> {
         Subject::ArchitectureSection { .. } => {
             let mut action = Action::new(
                 "rewrite",
-                ["arch", "set", "--", "<complete-rewritten-architecture>"],
+                [
+                    "arch",
+                    "set",
+                    "--from-file",
+                    "<rewritten-architecture-file>",
+                ],
             );
-            action.replace = Some("<complete-rewritten-architecture>");
+            action.replace = Some("<rewritten-architecture-file>");
             vec![action]
         }
         _ => unreachable!("only correction target types"),
@@ -222,6 +284,7 @@ fn facts(conn: &Connection) -> Result<Vec<Row>> {
                 state: r.get(6)?,
                 active: replacement.is_none() && retired.is_none(),
                 replacement,
+                document_file: None,
             })
         })?
         .collect::<rusqlite::Result<_>>()?)
@@ -257,35 +320,46 @@ fn decisions(conn: &Connection) -> Result<Vec<Row>> {
                 state: r.get(7)?,
                 active: status == "active" && replacement.is_none(),
                 replacement,
+                document_file: None,
             })
         })?
         .collect::<rusqlite::Result<_>>()?)
 }
 
-fn correction_targets(conn: &Connection) -> Result<Vec<Row>> {
+fn correction_targets(conn: &Connection, root: &Path) -> Result<Vec<Row>> {
     let mut out = Vec::new();
     let mut stmt = conn.prepare(
         "SELECT s.id, s.heading_path, s.body, a.created_at,
                 json_array('arch_section', s.id, s.arch_id, s.ord, s.heading_path, s.body,
-                           s.created_at, a.body, a.actor, a.actor_raw, a.created_at)
+                           s.created_at, a.body, a.actor, a.actor_raw, a.created_at),
+                a.body, s.ord
          FROM arch_sections s JOIN project_arch a ON a.id = s.arch_id
-         WHERE s.project_id = 1 AND a.id = (SELECT max(id) FROM project_arch WHERE project_id = 1)
+         WHERE s.project_id = 1 AND a.id = (
+             SELECT id FROM project_arch WHERE project_id = 1
+             ORDER BY created_at DESC, id DESC LIMIT 1)
          ORDER BY s.id",
     )?;
     for row in stmt.query_map([], |r| {
         let id = r.get(0)?;
         let heading: String = r.get(1)?;
+        let source: String = r.get(5)?;
+        let ord: usize = r.get(6)?;
+        let sections = crate::commands::narrative::arch_sections(&source);
+        let source_heading = sections.get(ord).map_or(heading.as_str(), |section| {
+            section.source_heading_path.as_str()
+        });
         Ok(Row {
             excerpt: SourceExcerpt {
                 source_type: "arch_section",
                 source_id: id,
                 recorded_at: r.get(3)?,
-                text: arch_section_embed_text(&heading, &r.get::<_, String>(2)?),
+                text: arch_section_embed_text(source_heading, &r.get::<_, String>(2)?),
             },
             subject: Subject::ArchitectureSection { id, heading },
             state: r.get(4)?,
             active: true,
             replacement: None,
+            document_file: None,
         })
     })? {
         out.push(row?);
@@ -318,9 +392,16 @@ fn correction_targets(conn: &Connection) -> Result<Vec<Row>> {
             state: r.get(7)?,
             active: true,
             replacement: None,
+            document_file: None,
         })
     })? {
-        out.push(row?);
+        let mut row = row?;
+        if let Subject::DocumentChunk { path, .. } = &row.subject {
+            let on_disk = document_file(root, Path::new(path));
+            row.state = serde_json::to_string(&(&row.state, &on_disk))?;
+            row.document_file = Some(on_disk);
+        }
+        out.push(row);
     }
     let mut stmt = conn.prepare(
         "SELECT id, title, notes, created_at,
@@ -342,9 +423,62 @@ fn correction_targets(conn: &Connection) -> Result<Vec<Row>> {
             state: r.get(4)?,
             active: true,
             replacement: None,
+            document_file: None,
         })
     })? {
         out.push(row?);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::TransactionBehavior;
+
+    #[test]
+    fn dismissal_scores_in_a_read_snapshot_then_revalidates_current_state_without_inference() {
+        let temp = tempfile::tempdir().unwrap();
+        crate::commands::init::run(temp.path()).unwrap();
+        let paths = crate::db::discover_paths(temp.path()).unwrap();
+        let mut reader = Connection::open(&paths.db_path).unwrap();
+        reader
+            .execute_batch(
+                "INSERT INTO facts(key,value) VALUES
+             ('datastore','We will run a Postgres server to hold project memory.'),
+             ('database','We will run a Postgres server to hold project memory.'),
+             ('animal','Cats are domesticated felines kept as household pets.');",
+            )
+            .unwrap();
+        let rows = facts(&reader).unwrap();
+        let duplicate =
+            identifier(Category::DuplicateFacts, (&rows[0].state, &rows[1].state)).unwrap();
+        let unrelated =
+            identifier(Category::DuplicateFacts, (&rows[0].state, &rows[2].state)).unwrap();
+        let snapshot = reader.transaction().unwrap();
+        // Establish the read snapshot before another connection changes a source.
+        assert!(contains(&snapshot, temp.path(), &duplicate, false).unwrap());
+        let mut writer = Connection::open(&paths.db_path).unwrap();
+        let write = writer
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        // Model scoring needs no writer lock, and only the requested pair is scored.
+        assert!(contains(&snapshot, temp.path(), &duplicate, true).unwrap());
+        assert!(!contains(&snapshot, temp.path(), &unrelated, true).unwrap());
+        write
+            .execute("UPDATE facts SET value='new value' WHERE id=2", [])
+            .unwrap();
+        write.commit().unwrap();
+        assert!(contains(&snapshot, temp.path(), &duplicate, false).unwrap());
+        drop(snapshot);
+        let commit = reader
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        assert!(!contains(&commit, temp.path(), &duplicate, false).unwrap());
+        assert!(!contains(&commit, temp.path(), "not-a-candidate", false).unwrap());
+        let rows = facts(&commit).unwrap();
+        let current =
+            identifier(Category::DuplicateFacts, (&rows[0].state, &rows[1].state)).unwrap();
+        assert!(contains(&commit, temp.path(), &current, false).unwrap());
+    }
 }

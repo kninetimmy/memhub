@@ -276,7 +276,7 @@ fn scan_in(
         None
     };
     if include_similarity && config.retrieval.use_reranker {
-        similarity::visit(conn, old, &mut visit)?;
+        similarity::visit(conn, &paths.repo_root, old, &mut visit)?;
     }
     report.backup_warning = backup_warning;
     if include_similarity && !config.retrieval.use_reranker {
@@ -288,13 +288,19 @@ fn scan_in(
 
 pub fn dismiss(start: &Path, id: &str, actor: &str) -> Result<()> {
     let mut ctx = db::open_project(start)?;
+    let similarity_match = if ctx.config.retrieval.use_reranker {
+        let snapshot = ctx.conn.transaction()?;
+        similarity::contains(&snapshot, &ctx.paths.repo_root, id, true)?
+    } else {
+        false
+    };
     let tx = ctx
         .conn
         .transaction_with_behavior(TransactionBehavior::Immediate)?;
     let mut found = false;
     let warning = visit_candidates(&tx, &ctx.paths, &ctx.config, |item| found |= item.id == id)?;
-    if !found && ctx.config.retrieval.use_reranker {
-        similarity::visit(&tx, None, &mut |item| found |= item.id == id)?;
+    if !found && similarity_match {
+        found = similarity::contains(&tx, &ctx.paths.repo_root, id, false)?;
     }
     if !found {
         let detail = warning.map_or_else(String::new, |warning| format!("; {warning}"));

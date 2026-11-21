@@ -212,7 +212,12 @@ fn similarity_categories_filter_sources_and_preserve_exact_paired_excerpts_witho
             ),
             "arch_section" => assert_eq!(
                 action(hit, "rewrite"),
-                ["arch", "set", "--", "<complete-rewritten-architecture>"]
+                [
+                    "arch",
+                    "set",
+                    "--from-file",
+                    "<rewritten-architecture-file>"
+                ]
             ),
             "task" => {
                 assert_eq!(&action(hit, "drop")[..3], ["task", "drop", "1"]);
@@ -247,6 +252,159 @@ fn similarity_categories_filter_sources_and_preserve_exact_paired_excerpts_witho
     assert_eq!(
         status["status"]["prune_review_count"].as_u64().unwrap(),
         report["total"].as_u64().unwrap() - similarity_total
+    );
+}
+
+fn imported_architecture(f: &Fixture) -> String {
+    let body = format!("# Architecture v1.0 only, not v2.0\n\n## Storage\n\n{CLAIM}");
+    let db = f.db();
+    for (id, date, text) in [
+        (10, "2025-01-01", "Cats are domesticated felines."),
+        (11, "2025-01-01", body.as_str()),
+        (12, "2020-01-01", "Dogs are domesticated canines."),
+    ] {
+        db.execute(
+            "INSERT INTO project_arch(id,body,actor,actor_raw,created_at)
+             VALUES (?1,?2,'fixture','fixture',?3)",
+            params![id, text, date],
+        )
+        .unwrap();
+    }
+    drop(db);
+    let export = f.repo.join("imported.json");
+    f.ok(&["export", export.to_str().unwrap()]);
+    f.ok(&["import", export.to_str().unwrap(), "--force"]);
+    let shown = f.json(&["arch", "show", "--json"]);
+    assert_eq!(shown["id"], 11);
+    assert_eq!(shown["body"], body);
+    body
+}
+
+#[test]
+fn correction_uses_current_imported_architecture_and_preserves_enclosing_version_heading() {
+    let f = fixture();
+    imported_architecture(&f);
+    f.db()
+        .execute(
+            "INSERT INTO facts(id,key,value,retired_at) VALUES (1,'old',?1,CURRENT_TIMESTAMP)",
+            [CLAIM],
+        )
+        .unwrap();
+    let report = f.scan();
+    let hits = category(&report, "correction_sweep");
+    let hit = hits
+        .iter()
+        .find(|i| i["excerpts"]["possible_restatement"]["source_type"] == "arch_section")
+        .unwrap();
+    assert_eq!(
+        hit["excerpts"]["possible_restatement"]["text"],
+        format!("Architecture v1.0 only, not v2.0 > Storage\n\n## Storage\n\n{CLAIM}")
+    );
+    assert_eq!(
+        hit["excerpts"]["possible_restatement"]["recorded_at"],
+        "2025-01-01"
+    );
+    let human = String::from_utf8(f.ok(&["prune", "scan"])).unwrap();
+    assert!(
+        human.contains("Architecture v1.0 only, not v2.0"),
+        "{human}"
+    );
+    // The proposed rewrite works with a body larger than Windows' argv limit.
+    let rewrite = f.repo.join("rewritten.md");
+    let large_body = format!(
+        "# Architecture v2.0\n\n{}",
+        "New architecture. ".repeat(2500)
+    );
+    fs::write(&rewrite, &large_body).unwrap();
+    let mut command = action(hit, "rewrite");
+    assert_eq!(command.pop(), Some("<rewritten-architecture-file>"));
+    command.push(rewrite.to_str().unwrap());
+    f.ok(&command);
+    assert_eq!(
+        f.json(&["arch", "show", "--json"])["body"],
+        large_body.trim()
+    );
+}
+
+#[test]
+fn stored_document_matches_survive_redirected_paths_without_unsafe_reingest_actions() {
+    let f = fixture();
+    let source = f.repo.join("source");
+    let moved = f.repo.join("moved");
+    let target = f.repo.join("target");
+    fs::create_dir(&source).unwrap();
+    fs::create_dir(&target).unwrap();
+    let doc = source.join("guide.md");
+    fs::write(&doc, format!("# Guide v1.0 only\n\n{CLAIM}")).unwrap();
+    f.ok(&["doc", "add", doc.to_str().unwrap()]);
+    f.db()
+        .execute(
+            "INSERT INTO facts(id,key,value,retired_at) VALUES (1,'old',?1,CURRENT_TIMESTAMP)",
+            [CLAIM],
+        )
+        .unwrap();
+    let before = f.scan();
+    let before_hit = category(&before, "correction_sweep")[0];
+    assert_eq!(
+        &action(before_hit, "edit_and_re_ingest")[..2],
+        ["doc", "add"]
+    );
+    f.ok(&action(before_hit, "keep"));
+    fs::rename(&source, &moved).unwrap();
+    fs::write(target.join("guide.md"), "Unrelated destination.").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&target, &source).unwrap();
+    #[cfg(windows)]
+    {
+        let out = Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&source)
+            .arg(&target)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let db_path = f.repo.join(".memhub/project.sqlite");
+    let snapshot = fs::read(&db_path).unwrap();
+    let report = f.scan();
+    let hits = category(&report, "correction_sweep");
+    let hit = hits[0];
+    assert_ne!(hit["id"], before_hit["id"]);
+    assert!(
+        hit["excerpts"]["possible_restatement"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Guide v1.0 only")
+    );
+    assert!(
+        hit["excerpts"]["possible_restatement"]["text"]
+            .as_str()
+            .unwrap()
+            .contains(CLAIM)
+    );
+    assert_eq!(hit["actions"].as_array().unwrap().len(), 1);
+    assert_eq!(&action(hit, "keep")[..2], ["prune", "dismiss"]);
+    assert!(
+        hit["reason"]
+            .as_str()
+            .unwrap()
+            .contains("re-ingest unavailable")
+    );
+    assert_eq!(fs::read(&db_path).unwrap(), snapshot);
+    let post = serde_json::to_value(
+        memhub::commands::prune::correction_sweep(&f.repo, "fact", 1).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(category(&post, "correction_sweep"), hits);
+    f.ok(&action(hit, "keep"));
+    assert!(category(&f.scan(), "correction_sweep").is_empty());
+    assert_eq!(
+        fs::read_to_string(target.join("guide.md")).unwrap(),
+        "Unrelated destination."
     );
 }
 
@@ -364,6 +522,7 @@ fn every_committed_supersession_and_retirement_reports_only_its_old_rows_sweep()
         "retire",
     ] {
         let f = fixture();
+        imported_architecture(&f);
         let db = f.db();
         for (id, key) in [(1, "datastore"), (2, "replacement")] {
             db.execute(
@@ -435,6 +594,7 @@ fn every_committed_supersession_and_retirement_reports_only_its_old_rows_sweep()
                     "old claim",
                     "possible restatement",
                     "Version 1.0 only",
+                    "Architecture v1.0 only, not v2.0",
                 ] {
                     assert!(human.contains(text), "{human}");
                 }
@@ -455,6 +615,20 @@ fn every_committed_supersession_and_retirement_reports_only_its_old_rows_sweep()
             sweep
                 .iter()
                 .any(|i| i["excerpts"]["possible_restatement"]["source_type"] == "task")
+        );
+        let architecture = sweep
+            .iter()
+            .find(|i| i["excerpts"]["possible_restatement"]["source_type"] == "arch_section")
+            .unwrap();
+        assert!(
+            architecture["excerpts"]["possible_restatement"]["text"]
+                .as_str()
+                .unwrap()
+                .contains("Architecture v1.0 only, not v2.0")
+        );
+        assert_eq!(
+            architecture["excerpts"]["possible_restatement"]["recorded_at"],
+            "2025-01-01"
         );
         for item in sweep {
             assert_eq!(item["excerpts"]["old_claim"]["source_type"], kind);

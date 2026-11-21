@@ -2353,6 +2353,9 @@ checks were skipped (`similarity_warning` in JSON).
   sections, non-archived document chunks and open tasks that still overlap
   the old text. Exclude the old row's replacement (including its replacement
   chain), all decisions as correction targets, and session notes.
+  Current architecture uses the same latest `created_at`, then row ID,
+  ordering as `arch show` and section materialization, including imports
+  whose IDs and dates are out of order.
 
 A match measures **textual overlap, not contradiction**. Compatible claims
 about different versions can match. Every correction pair includes both
@@ -2362,22 +2365,34 @@ known. JSON carries them in `excerpts.old_claim` and
 `excerpts.possible_restatement` (`source_type`, `source_id`, `recorded_at`,
 `text`). Titles, headings, rationale/summary, notes and version qualifiers
 are preserved, not replaced with a model-generated explanation.
+Architecture excerpts retain the original enclosing heading breadcrumb,
+including a version-qualified wrapper omitted from the recall index.
 
 Correction actions are retire for a fact; edit the source file then run
 the provided title-preserving `doc add` command for a document; rewrite
-the **complete** architecture using the provided `arch set` command
+the **complete** architecture using the provided `arch set --from-file` command
 (not just the matching section); or drop/refresh a task with `task drop`
 or `task keep`. Every pair also offers keep through `prune dismiss`.
 Editing a file or composing replacement architecture is human work;
 the scanner never performs it or invents an edit command.
+Stored document matches remain reviewable when the recorded path is missing,
+unreadable, or redirected, but offer no `doc add` command until the existing
+exact-path, regular-file and UTF-8 checks pass. Restore the recorded source
+and rescan first; the excerpt never comes from a redirected destination.
 
 These categories share the 25-item per-category cap, overflow counts and
 source-state dismissal identifiers. Both rows' stored state participates
 in each pair's identifier, including document-parent or architecture-source
-state where relevant. All eligible pairs are scored; the cap limits the
-display, not the search. This exhaustive manual review can take longer on
+state where relevant. Document path/content state also participates, so a
+changed or redirected source invalidates its prior dismissal. All eligible
+pairs are scored during scans; the cap limits the display, not the search.
+This exhaustive manual review can take longer on
 large corpora, but loads no embedding model and writes no memory, index,
 query log or file. The four original categories and their IDs are unchanged.
+Similarity dismissal scores only the requested pair in a read snapshot,
+before taking the writer lock. Under that lock it revalidates current
+eligibility and exact source-state fingerprints without model inference;
+a changed candidate refuses the old identifier.
 
 After successful `fact supersede`, `decision supersede`, `review accept
 --supersede` (also accepted staged supersession), or `fact retire`, the CLI
