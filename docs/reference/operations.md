@@ -2327,8 +2327,10 @@ of that evidence cannot be detected. Missing-document, stale-fact and
 idle-task IDs are unchanged from PR #455.
 Returning to exactly the dismissed state matches the same ID again.
 The scan does not prune or otherwise edit old dismissal records. It
-reads schema 0026 or 0027 without applying migrations; `dismiss` and
-`status` retain the ordinary maintained open. Dismissal audit entries
+reads schema 0026 or 0027 without applying migrations. `dismiss` skips
+open maintenance, including proposal expiry. On schema 0026 only, a
+valid dismissal adds dismissal storage using the standard migration backup.
+`status` retains the ordinary maintained open. Dismissal audit entries
 use the existing render Recent Activity and freshness, doctor recency,
 status and stats write counts, and sync audit readers. Drive snapshots
 carry the table; JSON export/import do not transfer dismissal state.

@@ -28,6 +28,81 @@ fn assert_evidence_only(item: &Value) {
 }
 
 #[test]
+fn valid_similarity_dismissal_changes_only_dismissal_state() {
+    assert_dismissal_skips_maintenance(true);
+}
+
+#[test]
+fn rejected_similarity_dismissal_changes_nothing() {
+    assert_dismissal_skips_maintenance(false);
+}
+
+fn assert_dismissal_skips_maintenance(valid: bool) {
+    let f = fixture();
+    f.db()
+        .execute_batch(
+            "INSERT INTO facts(key,value,verified_at) VALUES
+                 ('database','We will run a Postgres server to hold project memory.',CURRENT_TIMESTAMP),
+                 ('datastore','We will run a Postgres server to hold project memory.',CURRENT_TIMESTAMP);
+             INSERT INTO pending_writes(kind,payload_json,rationale,status,actor,actor_raw,created_at)
+                 VALUES ('fact','{}','aged fixture','pending','fixture','fixture','2000-01-01');
+             UPDATE projects SET root_path = 'previous checkout';",
+        )
+        .unwrap();
+    let before = memhub::commands::sync::LogicalVersion::read(&f.db()).unwrap();
+    let db_path = f.repo.join(".memhub/project.sqlite");
+    let before_bytes = fs::read(&db_path).unwrap();
+    let report = f.scan();
+    let pairs = category(&report, "duplicate_facts");
+    assert_eq!(pairs.len(), 1);
+    let id = pairs[0]["id"].as_str().unwrap();
+    if valid {
+        f.ok(&action(pairs[0], "dismiss"));
+        assert!(category(&f.scan(), "duplicate_facts").is_empty());
+    } else {
+        let rejected = f.run(&["prune", "dismiss", "not-a-current-id"]);
+        assert!(!rejected.status.success());
+        assert!(String::from_utf8_lossy(&rejected.stderr).contains("no current prune candidate"));
+    }
+
+    let mut db = f.db();
+    let tx = db.transaction().unwrap();
+    let proposal: (String, Option<String>) = tx
+        .query_row("SELECT status, reviewed_at FROM pending_writes", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(proposal, ("pending".to_string(), None));
+    let root: String = tx
+        .query_row("SELECT root_path FROM projects", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(root, "previous checkout");
+    assert_eq!(
+        tx.execute(
+            "DELETE FROM writes_log WHERE table_name = 'prune_dismissals' AND action = 'insert'
+                 AND row_id = (SELECT id FROM prune_dismissals WHERE identifier = ?1)",
+            [id],
+        )
+        .unwrap(),
+        usize::from(valid)
+    );
+    assert_eq!(
+        tx.execute("DELETE FROM prune_dismissals WHERE identifier = ?1", [id])
+            .unwrap(),
+        usize::from(valid)
+    );
+    assert_eq!(
+        memhub::commands::sync::LogicalVersion::read(&tx).unwrap(),
+        before
+    );
+    tx.rollback().unwrap();
+    drop(db);
+    if !valid {
+        assert_eq!(fs::read(db_path).unwrap(), before_bytes);
+    }
+}
+
+#[test]
 fn impossible_decision_timestamp_is_evidence_only_in_json_and_text() {
     let f = fixture();
     let dates = ["2025-01-01T12:01:00Z", "2025-01-01T12:00:60Z"];

@@ -15,12 +15,29 @@ enum Candidate {
 }
 
 pub fn dismiss(start: &Path, id: &str, actor: &str) -> Result<()> {
-    dismiss_in(&mut db::open_project(start)?, id, actor)
+    let paths = db::discover_paths(start)?;
+    if !paths.db_path.try_exists()? {
+        return Err(MemhubError::MissingDatabase {
+            memhub_dir: paths.memhub_dir,
+            db_path: paths.db_path,
+        });
+    }
+    let config = scan_config(&paths)?;
+    // Do not create a DB, change its journal mode, or run open maintenance.
+    let conn = Connection::open_with_flags(&paths.db_path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+    conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA recursive_triggers = OFF;")?;
+    let mut ctx = db::ProjectContext {
+        paths,
+        config,
+        conn,
+    };
+    dismiss_in(&mut ctx, id, actor)
 }
 
 fn dismiss_in(ctx: &mut db::ProjectContext, id: &str, actor: &str) -> Result<()> {
     let (candidate, warning) = {
         let snapshot = ctx.conn.transaction()?;
+        schema_has_dismissals(&snapshot)?;
         prepare(&snapshot, &ctx.paths, &ctx.config, id)?
     };
     let not_current = || {
@@ -35,8 +52,12 @@ fn dismiss_in(ctx: &mut db::ProjectContext, id: &str, actor: &str) -> Result<()>
     let tx = ctx
         .conn
         .transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let has_dismissals = schema_has_dismissals(&tx)?;
     if !candidate.is_current(&tx, &ctx.paths, &ctx.config, id)? {
         return Err(not_current());
+    }
+    if !has_dismissals {
+        db::migrate_for_prune_dismissal(&tx, &ctx.paths)?;
     }
     if tx.execute(
         "INSERT INTO prune_dismissals(identifier) VALUES (?1)
@@ -55,6 +76,18 @@ fn dismiss_in(ctx: &mut db::ProjectContext, id: &str, actor: &str) -> Result<()>
     }
     tx.commit()?;
     Ok(())
+}
+
+fn schema_has_dismissals(conn: &Connection) -> Result<bool> {
+    let schema = db::ledger_schema(conn)?;
+    match schema.as_deref() {
+        Some(db::PRUNE_DISMISSALS_MIGRATION) => Ok(true),
+        Some(db::MEMORY_LIFECYCLE_MIGRATION) => Ok(false),
+        _ => Err(MemhubError::InvalidInput(format!(
+            "prune dismiss cannot write schema {}; run `memhub upgrade` and try again",
+            schema.as_deref().unwrap_or("(unknown)")
+        ))),
+    }
 }
 
 fn find(
