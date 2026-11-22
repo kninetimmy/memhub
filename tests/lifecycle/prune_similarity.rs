@@ -18,6 +18,50 @@ fn category<'a>(report: &'a Value, name: &str) -> Vec<&'a Value> {
         .collect()
 }
 
+fn assert_evidence_only(item: &Value) {
+    assert_eq!(
+        item["actions"],
+        json!([{"action": "dismiss", "command": ["memhub", "prune", "dismiss", item["id"]]}]),
+        "a similarity finding must offer only explicit dismissal: {}",
+        item["actions"]
+    );
+}
+
+#[test]
+fn impossible_decision_timestamp_is_evidence_only_in_json_and_text() {
+    let f = fixture();
+    let dates = ["2025-01-01T12:01:00Z", "2025-01-01T12:00:60Z"];
+    for date in dates {
+        f.db()
+            .execute(
+                "INSERT INTO decisions(title,rationale,decided_at)
+                 VALUES ('Adopt Postgres as the datastore',?1,?2)",
+                params![CLAIM, date],
+            )
+            .unwrap();
+    }
+    let report = f.scan();
+    let pairs = category(&report, "unlinked_decisions");
+    assert_eq!(pairs.len(), 1);
+    let pair = pairs[0];
+    assert_evidence_only(pair);
+    // Display is in ID order, but the pinned PR's dismissal ID still resolves.
+    assert_eq!(
+        pair["id"],
+        "a1762736ee752f1dbbc989a5979925c42caf8038823633905a382cbf8b8a6c54"
+    );
+    assert_eq!(pair["excerpts"]["first"]["recorded_at"], dates[0]);
+    assert_eq!(pair["excerpts"]["second"]["recorded_at"], dates[1]);
+    let human = String::from_utf8(f.ok(&["prune", "scan"])).unwrap();
+    for (side, id, date) in [("first", 1, dates[0]), ("second", 2, dates[1])] {
+        assert!(human.contains(&format!("{side} match (decision #{id}, recorded {date})")));
+    }
+    assert!(!human.contains("decision supersede"), "{human}");
+    assert!(!human.contains("chronology"), "{human}");
+    f.ok(&action(pair, "dismiss"));
+    assert!(category(&f.scan(), "unlinked_decisions").is_empty());
+}
+
 #[test]
 fn similarity_categories_filter_sources_and_preserve_exact_paired_excerpts_without_writes() {
     let f = fixture();
@@ -28,7 +72,6 @@ fn similarity_categories_filter_sources_and_preserve_exact_paired_excerpts_witho
     );
     fs::write(&doc, &body).unwrap();
     f.ok(&["doc", "add", "--title=Guide", "--", doc.to_str().unwrap()]);
-    let recorded_doc = fs::canonicalize(&doc).unwrap();
     f.ok(&["arch", "set", "--", &body]);
     let backups = f.backups("rendered", 21);
     let db = f.db();
@@ -53,7 +96,7 @@ fn similarity_categories_filter_sources_and_preserve_exact_paired_excerpts_witho
          VALUES (6,'favorite animal','Cats are domesticated felines kept as household pets.',CURRENT_TIMESTAMP);",
     )
     .unwrap();
-    // Recorded date, not insertion order, determines earlier/later.
+    // The paired evidence retains recorded dates even when they run against ID order.
     for (id, date, status, replacement) in [
         (1, "2025-01-01", "active", None),
         (2, "2020-01-01", "active", None),
@@ -107,20 +150,19 @@ fn similarity_categories_filter_sources_and_preserve_exact_paired_excerpts_witho
     assert!(report.get("similarity_warning").is_none());
     let duplicates = category(&report, "duplicate_facts");
     assert_eq!(duplicates.len(), 1);
-    assert_eq!(
-        &action(duplicates[0], "retire_first_fact")[..3],
-        ["fact", "retire", "1"]
-    );
-    assert_eq!(
-        &action(duplicates[0], "retire_second_fact")[..3],
-        ["fact", "retire", "2"]
-    );
+    assert_evidence_only(duplicates[0]);
     let decisions = category(&report, "unlinked_decisions");
     assert_eq!(decisions.len(), 1);
-    assert_eq!(
-        action(decisions[0], "supersede_earlier"),
-        ["decision", "supersede", "2", "--by", "1"]
-    );
+    assert_evidence_only(decisions[0]);
+    for (pair, kind) in [(duplicates[0], "fact"), (decisions[0], "decision")] {
+        for (side, id) in [("first", 1), ("second", 2)] {
+            let excerpt = &pair["excerpts"][side];
+            assert_eq!(excerpt["source_type"], kind);
+            assert_eq!(excerpt["source_id"], id);
+            assert!(excerpt["recorded_at"].is_string());
+            assert_eq!(excerpt["text"], CLAIM);
+        }
+    }
     let sweep = category(&report, "correction_sweep");
     for old in [
         ("fact", 3),
@@ -139,6 +181,7 @@ fn similarity_categories_filter_sources_and_preserve_exact_paired_excerpts_witho
         );
     }
     for item in &sweep {
+        assert_evidence_only(item);
         let old = &item["excerpts"]["old_claim"];
         let target = &item["excerpts"]["possible_restatement"];
         assert!(old["recorded_at"].is_string());
@@ -200,41 +243,12 @@ fn similarity_categories_filter_sources_and_preserve_exact_paired_excerpts_witho
             hit["excerpts"]["possible_restatement"]["text"],
             expected_text
         );
-        match kind {
-            "fact" => assert_eq!(&action(hit, "retire")[..2], ["fact", "retire"]),
-            "doc_chunk" => assert_eq!(
-                action(hit, "edit_and_re_ingest"),
-                [
-                    "doc",
-                    "add",
-                    "--title=Guide",
-                    "--",
-                    recorded_doc.to_str().unwrap()
-                ]
-            ),
-            "arch_section" => assert_eq!(
-                action(hit, "rewrite"),
-                [
-                    "arch",
-                    "set",
-                    "--from-file",
-                    "<rewritten-architecture-file>"
-                ]
-            ),
-            "task" => {
-                assert_eq!(
-                    hit["excerpts"]["possible_restatement"]["notes"],
-                    "Version 1.0 only"
-                );
-                assert_eq!(&action(hit, "drop")[..3], ["task", "drop", "1"]);
-                assert_eq!(action(hit, "keep_task"), ["task", "keep", "1"]);
-            }
-            _ => unreachable!(),
+        if kind == "task" {
+            assert_eq!(
+                hit["excerpts"]["possible_restatement"]["notes"],
+                "Version 1.0 only"
+            );
         }
-        assert_eq!(
-            action(hit, "keep"),
-            ["prune", "dismiss", hit["id"].as_str().unwrap()]
-        );
     }
     assert!(
         !sweep
@@ -249,6 +263,16 @@ fn similarity_categories_filter_sources_and_preserve_exact_paired_excerpts_witho
         "recorded 2020-01-01",
     ] {
         assert!(human.contains(text), "missing {text:?} in human output");
+    }
+    for command in [
+        "memhub fact retire",
+        "memhub decision supersede",
+        "memhub doc add",
+        "memhub arch set",
+        "memhub task drop",
+        "memhub task keep",
+    ] {
+        assert!(!human.contains(command), "scan advertised {command}");
     }
     let status = f.json(&["status", "--json"]);
     let similarity_total: u64 = ["duplicate_facts", "unlinked_decisions", "correction_sweep"]
@@ -287,22 +311,24 @@ fn imported_architecture(f: &Fixture) -> String {
 }
 
 #[test]
-fn imported_decisions_offer_supersession_only_for_non_overlapping_chronology() {
+fn imported_decisions_keep_recorded_dates_without_ordering_the_evidence_by_time() {
     let f = fixture();
-    for (id, date) in [
-        (1, "2025-01-01t00:00:00.0000000002z"),
-        (2, "2025-01-01 00:00:00.0000000001"),
-        (3, "2025-01-03"),
-        (4, "2025-01-02T01:00:00.0001+02:00"),
-        (5, "2025-01-03T00:00:00.00010Z"),
-        (6, "2025-01-03 01:00:00.000100+01:00"),
-        (7, "unknown"),
-    ] {
+    let dates = [
+        "2025-01-01t00:00:00.0000000002z",
+        "2025-01-01 00:00:00.0000000001",
+        "2025-01-03",
+        "2025-01-02T01:00:00.0001+02:00",
+        "2025-01-03T00:00:00.00010Z",
+        "2025-01-03 01:00:00.000100+01:00",
+        "unknown",
+        "2025-01-01T",
+    ];
+    for (index, date) in dates.iter().enumerate() {
         f.db()
             .execute(
                 "INSERT INTO decisions(id,title,rationale,decided_at)
-             VALUES (?1,'Adopt Postgres as the datastore',?2,?3)",
-                params![id, CLAIM, date],
+                 VALUES (?1,'Adopt Postgres as the datastore',?2,?3)",
+                params![index + 1, CLAIM, date],
             )
             .unwrap();
     }
@@ -310,76 +336,23 @@ fn imported_decisions_offer_supersession_only_for_non_overlapping_chronology() {
     f.ok(&["export", export.to_str().unwrap()]);
     f.ok(&["import", export.to_str().unwrap(), "--force"]);
     let report = f.scan();
-    for (earlier, later) in [(2, 1), (4, 3)] {
-        let pair = category(&report, "unlinked_decisions")
-            .into_iter()
-            .find(|item| item["subjects"][0]["id"] == earlier && item["subjects"][1]["id"] == later)
-            .unwrap();
-        assert_eq!(
-            action(pair, "supersede_earlier"),
-            [
-                "decision",
-                "supersede",
-                &earlier.to_string(),
-                "--by",
-                &later.to_string()
-            ]
-        );
-    }
     let decisions = category(&report, "unlinked_decisions");
-    assert_eq!(decisions.len(), 21);
-    let unknown: Vec<_> = decisions
-        .into_iter()
-        .filter(|pair| {
-            let a = pair["subjects"][0]["id"].as_i64().unwrap();
-            let b = pair["subjects"][1]["id"].as_i64().unwrap();
-            a == 7 || b == 7 || matches!((a, b), (3, 5) | (3, 6) | (5, 6))
-        })
-        .collect();
-    assert_eq!(unknown.len(), 9);
-    for pair in unknown {
-        assert_eq!(pair["actions"].as_array().unwrap().len(), 1);
-        assert_eq!(&action(pair, "keep_both")[..2], ["prune", "dismiss"]);
-        assert!(
-            pair["reason"]
-                .as_str()
-                .unwrap()
-                .contains("chronology is unknown")
+    assert_eq!(report["counts"]["unlinked_decisions"]["total"], 28);
+    for pair in decisions {
+        let first = &pair["excerpts"]["first"];
+        let second = &pair["excerpts"]["second"];
+        let a = first["source_id"].as_u64().unwrap() as usize;
+        let b = second["source_id"].as_u64().unwrap() as usize;
+        assert!(a < b, "{pair}");
+        assert_eq!(first["recorded_at"], dates[a - 1]);
+        assert_eq!(second["recorded_at"], dates[b - 1]);
+        assert_eq!(
+            pair["reason"],
+            "Textual overlap meets the accept-time similarity cutoff; not evidence of contradiction."
         );
+        assert_evidence_only(pair);
     }
     assert_eq!(f.scan(), report);
-}
-
-#[test]
-fn clockless_decision_keeps_match_without_supersession() {
-    let f = fixture();
-    let clockless = "2025-01-01T";
-    for (id, date) in [(1, clockless), (2, "2025-01-01T12:00:00Z")] {
-        f.db()
-            .execute(
-                "INSERT INTO decisions(id,title,rationale,decided_at)
-                 VALUES (?1,'Adopt Postgres as the datastore',?2,?3)",
-                params![id, CLAIM, date],
-            )
-            .unwrap();
-    }
-    let report = f.scan();
-    let decisions = category(&report, "unlinked_decisions");
-    assert_eq!(decisions.len(), 1);
-    let pair = decisions[0];
-    assert_eq!(pair["excerpts"]["first"]["recorded_at"], clockless);
-    assert!(
-        pair["reason"]
-            .as_str()
-            .unwrap()
-            .contains("chronology is unknown"),
-        "clockless date supplied a direction: {pair}"
-    );
-    assert_eq!(
-        action(pair, "keep_both"),
-        ["prune", "dismiss", pair["id"].as_str().unwrap()]
-    );
-    assert_eq!(pair["actions"].as_array().unwrap().len(), 1);
 }
 
 #[test]
@@ -404,26 +377,12 @@ fn unusable_imported_targets_stay_reviewable_without_corrective_commands() {
     f.ok(&["import", export.to_str().unwrap(), "--force"]);
     let report = f.scan();
     let duplicate = category(&report, "duplicate_facts")[0];
-    assert_eq!(
-        &action(duplicate, "retire_second_fact")[..3],
-        ["fact", "retire", "1"],
-    );
-    assert_eq!(duplicate["actions"].as_array().unwrap().len(), 2);
-    assert!(
-        duplicate["reason"]
-            .as_str()
-            .unwrap()
-            .contains("negative ID")
-    );
+    assert_evidence_only(duplicate);
+    assert_eq!(duplicate["excerpts"]["first"]["source_id"], -1);
     let decision = category(&report, "unlinked_decisions")[0];
-    assert_eq!(decision["actions"].as_array().unwrap().len(), 1);
-    assert!(decision["reason"].as_str().unwrap().contains("negative ID"));
-    assert_eq!(decision["excerpts"]["second"]["source_id"], -1);
-    for (kind, id, reason) in [
-        ("fact", -1, "negative ID"),
-        ("task", -1, "negative ID"),
-        ("arch_section", 1, "not guaranteed to become current"),
-    ] {
+    assert_evidence_only(decision);
+    assert_eq!(decision["excerpts"]["first"]["source_id"], -1);
+    for (kind, id) in [("fact", -1), ("task", -1), ("arch_section", 1)] {
         let hit = category(&report, "correction_sweep")
             .into_iter()
             .find(|item| {
@@ -431,15 +390,14 @@ fn unusable_imported_targets_stay_reviewable_without_corrective_commands() {
                 target["source_type"] == kind && target["source_id"] == id
             })
             .unwrap_or_else(|| panic!("missing {kind} #{id} in {report}"));
-        assert_eq!(hit["actions"].as_array().unwrap().len(), 1, "{hit}");
-        assert!(hit["reason"].as_str().unwrap().contains(reason), "{hit}");
+        assert_evidence_only(hit);
         assert!(
             hit["excerpts"]["possible_restatement"]["text"]
                 .as_str()
                 .unwrap()
                 .contains(CLAIM)
         );
-        f.ok(&action(hit, "keep"));
+        f.ok(&action(hit, "dismiss"));
     }
 }
 
@@ -610,25 +568,12 @@ fn correction_uses_current_imported_architecture_and_preserves_enclosing_version
         human.contains("Architecture v1.0 only, not v2.0"),
         "{human}"
     );
-    // The proposed rewrite works with a body larger than Windows' argv limit.
-    let rewrite = f.repo.join("rewritten.md");
-    let large_body = format!(
-        "# Architecture v2.0\n\n{}",
-        "New architecture. ".repeat(2500)
-    );
-    fs::write(&rewrite, &large_body).unwrap();
-    let mut command = action(hit, "rewrite");
-    assert_eq!(command.pop(), Some("<rewritten-architecture-file>"));
-    command.push(rewrite.to_str().unwrap());
-    f.ok(&command);
-    assert_eq!(
-        f.json(&["arch", "show", "--json"])["body"],
-        large_body.trim()
-    );
+    assert_evidence_only(hit);
+    assert!(!human.contains("memhub arch set"), "{human}");
 }
 
 #[test]
-fn stored_document_matches_survive_redirected_paths_without_unsafe_reingest_actions() {
+fn stored_document_matches_survive_redirected_paths_and_invalidate_dismissal() {
     let f = fixture();
     let source = f.repo.join("source");
     let moved = f.repo.join("moved");
@@ -650,11 +595,8 @@ fn stored_document_matches_survive_redirected_paths_without_unsafe_reingest_acti
         .unwrap();
     let before = f.scan();
     let before_hit = category(&before, "correction_sweep")[0];
-    assert_eq!(
-        &action(before_hit, "edit_and_re_ingest")[..2],
-        ["doc", "add"]
-    );
-    f.ok(&action(before_hit, "keep"));
+    assert_evidence_only(before_hit);
+    f.ok(&action(before_hit, "dismiss"));
     fs::rename(&source, &moved).unwrap();
     fs::write(target.join("guide.md"), "Unrelated destination.").unwrap();
     #[cfg(unix)]
@@ -698,21 +640,14 @@ fn stored_document_matches_survive_redirected_paths_without_unsafe_reingest_acti
     assert!(human.contains("Original wording unavailable"));
     assert!(human.contains("## Storage for C#"));
     assert!(!human.contains("# Guide v1.0 only ###"));
-    assert_eq!(hit["actions"].as_array().unwrap().len(), 1);
-    assert_eq!(&action(hit, "keep")[..2], ["prune", "dismiss"]);
-    assert!(
-        hit["reason"]
-            .as_str()
-            .unwrap()
-            .contains("re-ingest unavailable")
-    );
+    assert_evidence_only(hit);
     assert_eq!(fs::read(&db_path).unwrap(), snapshot);
     let post = serde_json::to_value(
         memhub::commands::prune::correction_sweep(&f.repo, "fact", 1).unwrap(),
     )
     .unwrap();
     assert_eq!(category(&post, "correction_sweep"), hits);
-    f.ok(&action(hit, "keep"));
+    f.ok(&action(hit, "dismiss"));
     assert!(category(&f.scan(), "correction_sweep").is_empty());
     assert_eq!(
         fs::read_to_string(target.join("guide.md")).unwrap(),
@@ -721,50 +656,77 @@ fn stored_document_matches_survive_redirected_paths_without_unsafe_reingest_acti
 }
 
 #[test]
-#[cfg(windows)]
-fn oversized_document_command_keeps_correction_evidence_and_dismissal() {
+fn oversized_document_title_is_evidence_only_in_scan_and_post_change() {
     let f = fixture();
     let doc = f.repo.join("guide.md");
-    let title = "Long title ".repeat(3000);
+    // Exceeds both Windows' command-line budget and Linux's 128 KiB
+    // per-argument limit on systems with 4 KiB pages.
+    let title = "Long title ".repeat(12_000);
     let excerpt = format!("# Storage\n\n{CLAIM}");
     fs::write(&doc, format!("# {title}\n\n{excerpt}")).unwrap();
     let ingested = f.json(&["doc", "add", "--json", "guide.md"]);
     assert_eq!(ingested["title"], title.trim_end());
     f.db()
-        .execute(
-            "INSERT INTO facts(key,value,retired_at) VALUES ('old',?1,CURRENT_TIMESTAMP)",
-            [CLAIM],
-        )
+        .execute("INSERT INTO facts(key,value) VALUES ('old',?1)", [CLAIM])
         .unwrap();
-    fs::write(&doc, "Edited on disk.").unwrap();
-
+    let post_human =
+        String::from_utf8(f.ok(&["fact", "retire", "1", "--reason", "obsolete"])).unwrap();
     let report = f.scan();
     let hit = category(&report, "correction_sweep")
         .into_iter()
         .find(|item| item["excerpts"]["possible_restatement"]["text"] == excerpt)
         .expect("the stored matching chunk must still be reported");
     assert_eq!(hit["subjects"][1]["document_id"], ingested["id"]);
-    let out_of_date = row_item(
-        &report,
-        "out_of_date_document",
-        ingested["id"].as_i64().unwrap(),
+    assert_eq!(hit["subjects"][1]["title"], title.trim_end());
+    assert_eq!(
+        hit["reason"],
+        "Textual overlap with an old claim; not evidence of contradiction."
     );
-    for item in [hit, out_of_date] {
-        let actions = item["actions"].as_array().unwrap();
-        assert_eq!(actions.len(), 1, "must not advertise an oversized command");
-        assert_eq!(
-            action(item, "keep"),
-            ["prune", "dismiss", item["id"].as_str().unwrap()]
+    assert_evidence_only(hit);
+    let post = serde_json::to_value(
+        memhub::commands::prune::correction_sweep(&f.repo, "fact", 1).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(category(&post, "correction_sweep"), vec![hit]);
+    let human = String::from_utf8(f.ok(&["prune", "scan"])).unwrap();
+    for output in [&human, &post_human] {
+        assert!(output.contains("possible restatement (doc_chunk"));
+        assert!(output.contains(&format!(
+            "dismiss: memhub prune dismiss {}",
+            hit["id"].as_str().unwrap()
+        )));
+        assert!(
+            !output.contains("memhub doc add"),
+            "report offered re-ingest"
         );
-        assert!(item["reason"].as_str().unwrap().contains("command line"));
-        f.ok(&action(item, "keep"));
     }
-    let dismissed = f.scan();
-    assert!(
-        !items(&dismissed)
-            .iter()
-            .any(|item| item["id"] == hit["id"] || item["id"] == out_of_date["id"])
-    );
+    f.ok(&action(hit, "dismiss"));
+    assert!(category(&f.scan(), "correction_sweep").is_empty());
+
+    #[cfg(windows)]
+    {
+        fs::write(&doc, "Edited on disk.").unwrap();
+        let report = f.scan();
+        let out_of_date = row_item(
+            &report,
+            "out_of_date_document",
+            ingested["id"].as_i64().unwrap(),
+        );
+        assert_eq!(
+            out_of_date["actions"].as_array().unwrap().len(),
+            1,
+            "the original drift category must still guard the Windows command-line budget"
+        );
+        assert_eq!(&action(out_of_date, "keep")[..2], ["prune", "dismiss"]);
+        assert!(
+            out_of_date["reason"]
+                .as_str()
+                .unwrap()
+                .contains("command line")
+        );
+        f.ok(&action(out_of_date, "keep"));
+        assert!(category(&f.scan(), "out_of_date_document").is_empty());
+    }
 }
 
 #[test]
@@ -827,22 +789,28 @@ fn document_actions_from_a_subdirectory_only_target_the_canonical_ingest_row() {
                 .unwrap()
                 .contains(&body)
         );
-        for item in [item, row_item(&report, "out_of_date_document", id)] {
-            assert_eq!(item["actions"].as_array().unwrap().len(), 1);
-            assert_eq!(&action(item, "keep")[..2], ["prune", "dismiss"]);
-            assert!(
-                item["reason"]
-                    .as_str()
-                    .unwrap()
-                    .contains("stored path is relative")
-            );
-        }
+        assert_evidence_only(item);
+        let drift = row_item(&report, "out_of_date_document", id);
+        assert_eq!(drift["actions"].as_array().unwrap().len(), 1);
+        assert_eq!(&action(drift, "keep")[..2], ["prune", "dismiss"]);
+        assert!(
+            drift["reason"]
+                .as_str()
+                .unwrap()
+                .contains("stored path is relative")
+        );
     }
     let item = category(&report, "correction_sweep")
         .into_iter()
         .find(|item| item["subjects"][1]["document_id"] == original["id"])
         .unwrap();
-    let mut argv = action(item, "edit_and_re_ingest");
+    assert_evidence_only(item);
+    let drift = row_item(
+        &report,
+        "out_of_date_document",
+        original["id"].as_i64().unwrap(),
+    );
+    let mut argv = action(drift, "re_ingest");
     assert_eq!(
         argv.last().copied(),
         fs::canonicalize(&doc).unwrap().to_str()
@@ -903,12 +871,8 @@ fn all_similarity_categories_cap_after_dismissal_and_fingerprint_both_sources() 
         .map(|name| category(&before, name)[0])
         .collect();
     for item in &selected {
-        let keep = if item["category"] == "correction_sweep" {
-            "keep"
-        } else {
-            "keep_both"
-        };
-        f.ok(&action(item, keep));
+        assert_evidence_only(item);
+        f.ok(&action(item, "dismiss"));
     }
     f.ok(&["prune", "dismiss", selected[0]["id"].as_str().unwrap()]);
     assert_eq!(
@@ -1050,6 +1014,9 @@ fn every_committed_supersession_and_retirement_reports_only_its_old_rows_sweep()
                 ] {
                     assert!(human.contains(text), "{human}");
                 }
+                for command in ["memhub task drop", "memhub task keep", "memhub arch set"] {
+                    assert!(!human.contains(command), "{case}: {human}");
+                }
                 (
                     serde_json::to_value(
                         memhub::commands::prune::correction_sweep(&f.repo, kind, 1).unwrap(),
@@ -1083,6 +1050,7 @@ fn every_committed_supersession_and_retirement_reports_only_its_old_rows_sweep()
             "2025-01-01"
         );
         for item in sweep {
+            assert_evidence_only(item);
             assert_eq!(item["excerpts"]["old_claim"]["source_type"], kind);
             assert_eq!(item["excerpts"]["old_claim"]["source_id"], 1);
             let target = &item["excerpts"]["possible_restatement"];

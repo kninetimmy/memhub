@@ -10,8 +10,8 @@ use chrono::{DateTime, NaiveDate};
 use rusqlite::Connection;
 
 use super::{
-    Action, ArchitectureSource, Category, DocumentFile, Item, PairExcerpts, SourceExcerpt, Subject,
-    document_file, identifier, re_ingest_action,
+    Action, ArchitectureSource, Category, Item, PairExcerpts, SourceExcerpt, Subject,
+    document_file, identifier,
 };
 use crate::Result;
 use crate::commands::review::ACCEPT_SIMILARITY_RERANK_THRESHOLD;
@@ -26,7 +26,6 @@ struct Row {
     state: String,
     active: bool,
     replacement: Option<i64>,
-    document_file: Option<DocumentFile>,
 }
 
 impl Row {
@@ -96,20 +95,14 @@ fn visit_matching(
         }
         for target in matches(&source.match_text(), &candidates)? {
             let id = identifier(category, (&source.state, &target.state))?;
-            let mut reason = "Textual overlap with an old claim; not evidence of contradiction. Check version qualifiers before choosing keep or correcting the row.".to_string();
-            let mut actions = correction_actions(target).unwrap_or_else(|why| {
-                reason.push(' ');
-                reason.push_str(&why);
-                Vec::new()
-            });
-            actions.push(Action::keep(&id));
             visit(
                 Item {
+                    actions: vec![Action::dismiss(&id)],
                     id,
                     category,
                     subjects: vec![source.subject.clone(), target.subject.clone()],
-                    reason,
-                    actions,
+                    reason: "Textual overlap with an old claim; not evidence of contradiction."
+                        .into(),
                     excerpts: Some(PairExcerpts::Correction {
                         old_claim: source.excerpt.clone(),
                         possible_restatement: target.excerpt.clone(),
@@ -173,158 +166,51 @@ fn pairs(
     for row in rows.iter().filter(|row| row.active) {
         let time = match &row.subject {
             Subject::Decision { .. } => {
-                decision_time(conn, row.excerpt.recorded_at.as_deref().unwrap_or(""))?
+                decision_sort_key(conn, row.excerpt.recorded_at.as_deref().unwrap_or(""))?
             }
             _ => None,
         };
         active.push((time, row));
     }
-    // ID only stabilizes enumeration and fingerprints; it is never evidence of order.
-    active.sort_by_key(|(time, row)| (time.map(|t| t.start), row.excerpt.source_id));
-    let times: HashMap<_, _> = active
-        .iter()
-        .map(|&(time, row)| (row.excerpt.source_id, time))
-        .collect();
-    for (i, &(later_time, later)) in active.iter().enumerate() {
-        let mut earlier_rows = Vec::new();
-        for &(_, earlier) in &active[..i] {
-            let different_keys = match (&earlier.subject, &later.subject) {
+    // Preserve the existing asymmetric rerank inputs and dismissal fingerprints.
+    // Display order is separate and must not imply chronology or preference.
+    active.sort_by_key(|(time, row)| (*time, row.excerpt.source_id));
+    for (i, &(_, query)) in active.iter().enumerate() {
+        let mut candidates = Vec::new();
+        for &(_, candidate) in &active[..i] {
+            let different_keys = match (&candidate.subject, &query.subject) {
                 (Subject::Fact { key: a, .. }, Subject::Fact { key: b, .. }) => a != b,
                 _ => true,
             };
-            if different_keys && selected(category, earlier, later, requested)? {
-                earlier_rows.push(earlier);
+            if different_keys && selected(category, candidate, query, requested)? {
+                candidates.push(candidate);
             }
         }
-        for earlier in matches(&later.match_text(), &earlier_rows)? {
-            let id = identifier(category, (&earlier.state, &later.state))?;
-            let mut reason = "Textual overlap meets the accept-time similarity cutoff; not evidence of contradiction.".to_string();
-            let keep = Action::new("keep_both", ["prune", "dismiss", &id]);
-            let a = earlier.excerpt.source_id;
-            let b = later.excerpt.source_id;
-            let mut actions = Vec::new();
-            if category == Category::DuplicateFacts {
-                for (action, id) in [("retire_first_fact", a), ("retire_second_fact", b)] {
-                    if id < 0 {
-                        reason.push_str(&format!(
-                            " Retire unavailable for fact #{id}: negative IDs are not offered as CLI operands."
-                        ));
-                    } else {
-                        actions.push(retire(action, id));
-                    }
-                }
-            } else if !times[&a]
-                .zip(later_time)
-                .is_some_and(|(a, b)| a.is_before(b))
-            {
-                reason.push_str(" Decision chronology is unknown (missing, equal, or overlapping); no supersession command is offered.");
-            } else if a < 0 || b < 0 {
-                reason.push_str(
-                    " Supersession unavailable: negative IDs are not offered as CLI operands.",
-                );
+        for candidate in matches(&query.match_text(), &candidates)? {
+            let id = identifier(category, (&candidate.state, &query.state))?;
+            let (first, second) = if candidate.excerpt.source_id < query.excerpt.source_id {
+                (candidate, query)
             } else {
-                actions.push(Action::new(
-                    "supersede_earlier",
-                    [
-                        "decision",
-                        "supersede",
-                        &a.to_string(),
-                        "--by",
-                        &b.to_string(),
-                    ],
-                ));
-            }
-            actions.push(keep);
+                (query, candidate)
+            };
             visit(
                 Item {
+                    actions: vec![Action::dismiss(&id)],
                     id,
                     category,
-                    subjects: vec![earlier.subject.clone(), later.subject.clone()],
-                    reason,
-                    actions,
+                    subjects: vec![first.subject.clone(), second.subject.clone()],
+                    reason: "Textual overlap meets the accept-time similarity cutoff; not evidence of contradiction.".into(),
                     excerpts: Some(PairExcerpts::Comparison {
-                        first: earlier.excerpt.clone(),
-                        second: later.excerpt.clone(),
+                        first: first.excerpt.clone(),
+                        second: second.excerpt.clone(),
                     }),
                 },
-                earlier,
-                later,
+                candidate,
+                query,
             );
         }
     }
     Ok(())
-}
-
-fn retire(action: &'static str, id: i64) -> Action {
-    Action::new(
-        action,
-        [
-            "fact",
-            "retire",
-            &id.to_string(),
-            "--reason",
-            "prune review: obsolete fact",
-        ],
-    )
-}
-
-fn correction_actions(row: &Row) -> std::result::Result<Vec<Action>, String> {
-    Ok(match &row.subject {
-        Subject::Fact { id, .. } | Subject::Task { id, .. } if *id < 0 => {
-            return Err(
-                "Correction commands unavailable: negative IDs are not offered as CLI operands."
-                    .into(),
-            );
-        }
-        Subject::Fact { id, .. } => vec![retire("retire", *id)],
-        Subject::Task { id, .. } => vec![
-            Action::new(
-                "drop",
-                [
-                    "task",
-                    "drop",
-                    &id.to_string(),
-                    "--reason",
-                    "prune review: obsolete task",
-                ],
-            ),
-            Action::new("keep_task", ["task", "keep", &id.to_string()]),
-        ],
-        Subject::DocumentChunk { path, title, .. } => {
-            // Editing is human work, not an invented memhub edit verb.
-            vec![
-                re_ingest_action(
-                    "edit_and_re_ingest",
-                    row.document_file.as_ref().expect("document file state"),
-                    path,
-                    title,
-                )
-                .map_err(|why| format!("Edit and re-ingest unavailable: {why}"))?,
-            ]
-        }
-        Subject::ArchitectureSection { .. } => {
-            if !row
-                .excerpt
-                .architecture_source
-                .as_ref()
-                .is_some_and(|arch| arch.rewrite_supported)
-            {
-                return Err("Rewrite unavailable: an appended architecture is not guaranteed to become current under the stored timestamp and ID ordering.".into());
-            }
-            let mut action = Action::new(
-                "rewrite",
-                [
-                    "arch",
-                    "set",
-                    "--from-file",
-                    "<rewritten-architecture-file>",
-                ],
-            );
-            action.replace = Some("<rewritten-architecture-file>");
-            vec![action]
-        }
-        _ => unreachable!("only correction target types"),
-    })
 }
 
 fn row_filter(id: Option<i64>) -> &'static str {
@@ -360,7 +246,6 @@ fn facts(conn: &Connection, id: Option<i64>) -> Result<Vec<Row>> {
                 state: r.get(6)?,
                 active: replacement.is_none() && retired.is_none(),
                 replacement,
-                document_file: None,
             })
         })?
         .collect::<rusqlite::Result<_>>()?)
@@ -397,32 +282,16 @@ fn decisions(conn: &Connection, id: Option<i64>) -> Result<Vec<Row>> {
                 state: r.get(7)?,
                 active: status == "active" && replacement.is_none(),
                 replacement,
-                document_file: None,
             })
         })?
         .collect::<rusqlite::Result<_>>()?)
 }
 
-// Order by UTC second (including leap seconds), then the exact decimal
-// fraction: the parsers' built-in subsecond precision can round or truncate.
-type Instant<'a> = (i64, bool, &'a str);
+// Existing model-input order: UTC second, leap-second flag, exact fraction.
+// Retained solely for match and fingerprint compatibility, not as evidence.
+type DecisionSortKey<'a> = (i64, bool, &'a str);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct DecisionTime<'a> {
-    start: Instant<'a>,
-    end_second: Option<i64>,
-}
-
-impl DecisionTime<'_> {
-    fn is_before(self, other: Self) -> bool {
-        match self.end_second {
-            Some(end) => end <= other.start.0,
-            None => self.start < other.start,
-        }
-    }
-}
-
-fn decision_time<'a>(conn: &Connection, date: &'a str) -> Result<Option<DecisionTime<'a>>> {
+fn decision_sort_key<'a>(conn: &Connection, date: &'a str) -> Result<Option<DecisionSortKey<'a>>> {
     let date = date.trim();
     let decimal = date.split_once('.').map(|(prefix, suffix)| {
         let digits = suffix.bytes().take_while(u8::is_ascii_digit).count();
@@ -430,14 +299,11 @@ fn decision_time<'a>(conn: &Connection, date: &'a str) -> Result<Option<Decision
     });
     let fraction = decimal.map_or("", |(_, digits, _)| digits.trim_end_matches('0'));
     if let Ok(time) = DateTime::parse_from_rfc3339(date) {
-        return Ok(Some(DecisionTime {
-            start: (
-                time.timestamp(),
-                time.timestamp_subsec_nanos() >= 1_000_000_000,
-                fraction,
-            ),
-            end_second: None,
-        }));
+        return Ok(Some((
+            time.timestamp(),
+            time.timestamp_subsec_nanos() >= 1_000_000_000,
+            fraction,
+        )));
     }
 
     let Some((day, tail)) = date.split_at_checked(10) else {
@@ -446,25 +312,17 @@ fn decision_time<'a>(conn: &Connection, date: &'a str) -> Result<Option<Decision
     if NaiveDate::parse_from_str(day, "%Y-%m-%d").is_err() || date.contains('\0') {
         return Ok(None);
     }
-    // SQLite validates native clock ranges and offsets, but its epoch result
-    // can fill in missing clock fields. Require explicit hours and minutes
-    // for a minute interval, and explicit seconds for an instant.
+    // Keep the prior sort-key behavior for date-only values and for clocks
+    // with explicit hours and minutes; SQLite can fill in a missing clock.
     let clock = tail.trim_start_matches(|c: char| c == 'T' || c.is_ascii_whitespace());
-    let uncertainty = match clock.as_bytes() {
-        [] if tail.is_empty() => Some(86_400),
-        [
-            b'0'..=b'9',
-            b'0'..=b'9',
-            b':',
-            b'0'..=b'9',
-            b'0'..=b'9',
-            rest @ ..,
-        ] => match rest {
-            [b':', b'0'..=b'9', b'0'..=b'9', ..] => None,
-            _ => Some(60),
-        },
-        _ => return Ok(None),
-    };
+    if !tail.is_empty()
+        && !matches!(
+            clock.as_bytes(),
+            [b'0'..=b'9', b'0'..=b'9', b':', b'0'..=b'9', b'0'..=b'9', ..]
+        )
+    {
+        return Ok(None);
+    }
     // Only exact end-of-day midnight is allowed at hour 24; keep this
     // validation before replacing any fraction with zero.
     if clock.starts_with("24:") && !fraction.is_empty() {
@@ -480,10 +338,7 @@ fn decision_time<'a>(conn: &Connection, date: &'a str) -> Result<Option<Decision
         [whole.as_deref().unwrap_or(date)],
         |r| r.get(0),
     )?;
-    Ok(seconds.map(|seconds| DecisionTime {
-        start: (seconds, false, fraction),
-        end_second: uncertainty.map(|width| seconds + width),
-    }))
+    Ok(seconds.map(|seconds| (seconds, false, fraction)))
 }
 
 fn correction_targets(
@@ -497,9 +352,7 @@ fn correction_targets(
             "SELECT s.id, s.heading_path, s.body, a.created_at,
                 json_array('arch_section', s.id, s.arch_id, s.ord, s.heading_path, s.body,
                            s.created_at, a.body, a.actor, a.actor_raw, a.created_at),
-                a.body, a.id, s.ord,
-                (a.created_at < CURRENT_TIMESTAMP OR (a.created_at = CURRENT_TIMESTAMP
-                 AND (SELECT max(id) FROM project_arch) < 9223372036854775807))
+                 a.body, a.id, s.ord
          FROM arch_sections s JOIN project_arch a ON a.id = s.arch_id
          WHERE s.project_id = 1 AND a.id = (
              SELECT id FROM project_arch WHERE project_id = 1
@@ -534,14 +387,12 @@ fn correction_targets(
                             text: original,
                             architecture_id: r.get(6)?,
                             section_ordinal: r.get(7)?,
-                            rewrite_supported: r.get(8)?,
                         }),
                     },
                     subject: Subject::ArchitectureSection { id, heading },
                     state: r.get(4)?,
                     active: true,
                     replacement: None,
-                    document_file: None,
                 })
             },
         )? {
@@ -591,7 +442,6 @@ fn correction_targets(
                     state: r.get(7)?,
                     active: true,
                     replacement: None,
-                    document_file: None,
                 })
             },
         )? {
@@ -601,7 +451,6 @@ fn correction_targets(
                     .entry(path.clone())
                     .or_insert_with(|| document_file(root, Path::new(path)));
                 row.state = serde_json::to_string(&(&row.state, &*on_disk))?;
-                row.document_file = Some(on_disk.clone());
             }
             out.push(row);
         }
@@ -634,7 +483,6 @@ fn correction_targets(
                     state: r.get(4)?,
                     active: true,
                     replacement: None,
-                    document_file: None,
                 })
             },
         )? {
@@ -649,7 +497,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn decision_time_preserves_decimal_precision_across_offsets_and_second_boundaries() {
+    fn decision_sort_key_preserves_decimal_precision_across_offsets_and_second_boundaries() {
         let conn = Connection::open_in_memory().unwrap();
         for (earlier, later) in [
             ("2025-01-01T00:00:00.0001Z", "2025-01-01T00:00:00.0002Z"),
@@ -671,10 +519,8 @@ mod tests {
             ("2016-12-31T23:59:60.999Z", "2017-01-01T00:00:00Z"),
         ] {
             assert!(
-                decision_time(&conn, earlier)
-                    .unwrap()
-                    .unwrap()
-                    .is_before(decision_time(&conn, later).unwrap().unwrap()),
+                decision_sort_key(&conn, earlier).unwrap().unwrap()
+                    < decision_sort_key(&conn, later).unwrap().unwrap(),
                 "{earlier} < {later}"
             );
         }
@@ -683,8 +529,8 @@ mod tests {
             "2025-01-01 01:00:00.0001+01:00",
         ] {
             assert_eq!(
-                decision_time(&conn, same).unwrap(),
-                decision_time(&conn, "2025-01-01T00:00:00.0001Z").unwrap()
+                decision_sort_key(&conn, same).unwrap(),
+                decision_sort_key(&conn, "2025-01-01T00:00:00.0001Z").unwrap()
             );
         }
         for unknown in [
@@ -697,27 +543,23 @@ mod tests {
             "2025-01-01T12:60:00",
             "2025-01-01 24:00:00.0001",
         ] {
-            assert_eq!(decision_time(&conn, unknown).unwrap(), None, "{unknown}");
+            assert_eq!(
+                decision_sort_key(&conn, unknown).unwrap(),
+                None,
+                "{unknown}"
+            );
         }
     }
 
     #[test]
-    fn decision_order_requires_non_overlapping_times() {
+    fn decision_sort_key_preserves_date_only_and_minute_buckets() {
         let conn = Connection::open_in_memory().unwrap();
-        let time = |date| decision_time(&conn, date).unwrap().unwrap();
+        let time = |date| decision_sort_key(&conn, date).unwrap().unwrap();
         let day = time("2025-01-01");
         let minute = time("2025-01-01 01:00+01:00");
         let instant = time("2025-01-01T00:00:00.1Z");
-        for (a, b) in [
-            (day, instant),
-            (day, day),
-            (minute, instant),
-            (instant, instant),
-        ] {
-            assert!(!a.is_before(b) && !b.is_before(a));
-        }
-        assert!(day.is_before(time("2025-01-02T00:00:00Z")));
-        assert!(minute.is_before(time("2025-01-01T00:01:00Z")));
+        assert_eq!(day, minute);
+        assert!(minute < instant);
         assert_eq!(
             time("2025-01-01 24:00:00.0000"),
             time("2025-01-02T00:00:00Z")

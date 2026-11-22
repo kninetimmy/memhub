@@ -127,6 +127,10 @@ impl Action {
     fn keep(id: &str) -> Self {
         Self::new("keep", ["prune", "dismiss", id])
     }
+
+    fn dismiss(id: &str) -> Self {
+        Self::new("dismiss", ["prune", "dismiss", id])
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -165,8 +169,6 @@ pub struct ArchitectureSource {
     pub section_ordinal: i64,
     /// Original architecture Markdown, not a reconstructed heading breadcrumb.
     pub text: String,
-    #[serde(skip)]
-    rewrite_supported: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -668,7 +670,7 @@ fn fits_windows_command(executable: &std::ffi::OsStr, args: &[&str]) -> bool {
     program + arguments < 32_767
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Serialize)]
 enum DocumentFile {
     Readable {
         hash: String,
