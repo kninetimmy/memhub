@@ -33,8 +33,8 @@ struct Backup {
 }
 
 pub(super) struct Group {
-    id: String,
-    directory: PathBuf,
+    pub(super) id: String,
+    pub(super) directory: PathBuf,
     #[cfg(windows)]
     directory_identity: FileIdentity,
     #[cfg(windows)]
@@ -72,6 +72,7 @@ impl Group {
             }],
             reason,
             actions,
+            excerpts: None,
         }
     }
 }
@@ -148,6 +149,34 @@ pub(super) fn surplus(paths: &ProjectPaths) -> Result<(Vec<Group>, Vec<String>)>
     groups.sort_by(|a, b| a.directory.cmp(&b.directory));
     warnings.sort();
     Ok((groups, warnings))
+}
+
+/// Recheck one previously discovered directory, without scanning siblings or
+/// following any replaced ancestor into a different directory.
+pub(super) fn group_is_current(paths: &ProjectPaths, dir: &Path, id: &str) -> Result<bool> {
+    let root = fs::canonicalize(&paths.repo_root)?;
+    let memhub = root.join(MEMHUB_DIR);
+    let backups = memhub.join("backups");
+    let Ok(relative) = dir.strip_prefix(&backups) else {
+        return Ok(false);
+    };
+    if require_directory(&memhub).is_err() || require_directory(&backups).is_err() {
+        return Ok(false);
+    }
+    let mut parent = backups.clone();
+    for part in relative.components() {
+        let std::path::Component::Normal(name) = part else {
+            return Ok(false);
+        };
+        parent.push(name);
+        if require_directory(&parent).is_err() {
+            return Ok(false);
+        }
+    }
+    Ok(matches!(
+        inspect_directory(&root, &backups, dir, &mut Vec::new()),
+        Ok(Some(group)) if group.id == id
+    ))
 }
 
 fn inspect_directory(

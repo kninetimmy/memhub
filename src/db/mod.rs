@@ -255,6 +255,20 @@ fn migrate(conn: &mut Connection, paths: &ProjectPaths) -> Result<Vec<String>> {
     migrations::apply_all(conn, Some(&pre_migration_backup_path(paths)))
 }
 
+/// Add dismissal storage only after the caller has verified schema 0026 and
+/// a current candidate under the write lock. Keep the normal migration backup.
+pub(crate) fn migrate_for_prune_dismissal(
+    tx: &rusqlite::Transaction<'_>,
+    paths: &ProjectPaths,
+) -> Result<()> {
+    migrations::apply_in_transaction(tx, Some(&pre_migration_backup_path(paths)))?;
+    tx.execute(
+        "UPDATE projects SET schema_version = MAX(schema_version, ?1) WHERE id = 1",
+        [PRUNE_DISMISSALS_MIGRATION],
+    )?;
+    Ok(())
+}
+
 fn open_connection(path: &Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;

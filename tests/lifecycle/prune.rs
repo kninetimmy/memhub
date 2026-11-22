@@ -22,6 +22,7 @@ impl Fixture {
         let config = this.repo.join(".memhub/config.toml");
         let mut cfg = memhub::config::ProjectConfig::load(&config).unwrap();
         cfg.retrieval.mode = memhub::config::RetrievalMode::Fts;
+        cfg.retrieval.use_reranker = false;
         cfg.retrieval.fact_stale_after_days = 10;
         cfg.save(&config).unwrap();
         this
@@ -107,6 +108,9 @@ impl Fixture {
     }
 }
 
+#[path = "prune_similarity.rs"]
+mod similarity;
+
 fn items(scan: &Value) -> &[Value] {
     scan["items"].as_array().unwrap()
 }
@@ -168,6 +172,15 @@ fn scan_reports_the_four_categories_and_alias_and_status_agree_without_acting() 
     let before = fs::read(&db_file).unwrap();
     let report = f.scan();
     assert_eq!(report["total"], 8);
+    assert!(
+        report["similarity_warning"]
+            .as_str()
+            .unwrap()
+            .contains("skipped")
+    );
+    for category in ["duplicate_facts", "unlinked_decisions", "correction_sweep"] {
+        assert_eq!(report["counts"][category]["total"], 0);
+    }
     for (category, count) in [
         ("stale_fact", 2),
         ("idle_task", 2),

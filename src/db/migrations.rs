@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use rusqlite::{Connection, TransactionBehavior};
+use rusqlite::{Connection, Transaction, TransactionBehavior};
 
 use crate::{MemhubError, Result};
 
@@ -220,6 +220,17 @@ fn apply_locked(conn: &mut Connection, backup: Option<&Path>) -> Result<Vec<Stri
         TransactionBehavior::Deferred
     };
     let tx = conn.transaction_with_behavior(behavior)?;
+    let applied = apply_in_transaction(&tx, backup)?;
+    tx.commit()?;
+    Ok(applied)
+}
+
+/// Reuse the guarded migration path in a caller's transaction. A file-backed
+/// caller must already hold the write lock so the backup covers all commits.
+pub(super) fn apply_in_transaction(
+    tx: &Transaction<'_>,
+    backup: Option<&Path>,
+) -> Result<Vec<String>> {
     tx.execute(
         "CREATE TABLE IF NOT EXISTS schema_migrations (
             version TEXT PRIMARY KEY,
@@ -231,7 +242,7 @@ fn apply_locked(conn: &mut Connection, backup: Option<&Path>) -> Result<Vec<Stri
     // Refuse to touch a DB written by a newer binary. This check is under
     // the same lock as migration so a concurrent in-place restore cannot
     // replace an earlier observation with a newer schema before we write.
-    if let Some(newer) = newer_than_compiled(&tx)? {
+    if let Some(newer) = newer_than_compiled(tx)? {
         return Err(crate::MemhubError::InvalidInput(format!(
             "this database was written by a newer memhub (schema '{newer}' is \
              unknown to this build, newest known is '{}'); refusing to open it \
@@ -241,7 +252,7 @@ fn apply_locked(conn: &mut Connection, backup: Option<&Path>) -> Result<Vec<Stri
     }
 
     if let Some(slot) = backup
-        && existing_db_has_pending(&tx)?
+        && existing_db_has_pending(tx)?
     {
         // `VACUUM INTO` cannot run inside a transaction, so a second
         // connection reads the last committed state while `tx` holds the
@@ -259,7 +270,7 @@ fn apply_locked(conn: &mut Connection, backup: Option<&Path>) -> Result<Vec<Stri
         // untouched.
         log::info!("wrote pre-migration backup {}", slot.display());
         #[cfg(test)]
-        tests::after_copy(&tx);
+        tests::after_copy(tx);
     }
     let mut applied = Vec::new();
 
@@ -284,10 +295,9 @@ fn apply_locked(conn: &mut Connection, backup: Option<&Path>) -> Result<Vec<Stri
     // FTS-only: ordinary project open never loads the embedding model;
     // `memhub index rebuild` embeds these in hybrid mode.
     if applied.iter().any(|v| v == ARCH_SECTIONS_MIGRATION) {
-        crate::commands::narrative::rederive_arch_sections(&tx, crate::config::RetrievalMode::Fts)?;
+        crate::commands::narrative::rederive_arch_sections(tx, crate::config::RetrievalMode::Fts)?;
     }
 
-    tx.commit()?;
     Ok(applied)
 }
 

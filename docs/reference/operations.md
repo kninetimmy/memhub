@@ -2272,6 +2272,8 @@ CLI `memhub status` replaces `Stale queue:` with `Prune review:` and adds
 count. The CLI's separate stale-fact count and all other counts and checks
 keep their existing definitions. MCP `status` still returns stored counts
 and exposes neither the prune count nor any prune action.
+The status prune count includes only the four model-free categories above;
+it does not run or count the similarity categories below.
 Before, the CLI stale queue did not read backup files. CLI status now uses
 the same full backup content hashing as the scan for every surplus group,
 including its 20 retention witnesses. This can add substantial disk reads;
@@ -2292,8 +2294,8 @@ still count. Human output names the omitted directory; JSON carries
 This only changes the review count, not the maintained open or its
 pre-migration backup.
 
-`memhub prune dismiss <identifier> [--actor <actor>]` records a keep
-decision without editing the source row or file. It matches a current
+`memhub prune dismiss <identifier> [--actor <actor>]` hides a finding
+without editing the source row or file. It matches a current
 candidate and writes one `prune_dismissals` row and its `writes_log` entry
 in the same transaction. Repeating an unchanged dismissal does not log
 twice. The ID fingerprints the current row and, where applicable, the
@@ -2325,11 +2327,102 @@ of that evidence cannot be detected. Missing-document, stale-fact and
 idle-task IDs are unchanged from PR #455.
 Returning to exactly the dismissed state matches the same ID again.
 The scan does not prune or otherwise edit old dismissal records. It
-reads schema 0026 or 0027 without applying migrations; `dismiss` and
-`status` retain the ordinary maintained open. Dismissal audit entries
+reads schema 0026 or 0027 without applying migrations. `dismiss` skips
+open maintenance, including proposal expiry. On schema 0026 only, a
+valid dismissal adds dismissal storage using the standard migration backup.
+`status` retains the ordinary maintained open. Dismissal audit entries
 use the existing render Recent Activity and freshness, doctor recency,
 status and stats write counts, and sync audit readers. Drive snapshots
 carry the table; JSON export/import do not transfer dismissal state.
+
+### Similarity categories and correction sweep
+
+With `[retrieval] use_reranker = true`, `prune scan` and `review stale`
+also use the existing bundled compact ms-marco-MiniLM reranker, even in
+FTS retrieval mode. They use the accept-time similarity cutoff (2.0),
+not recall's relevance cutoff. With the reranker disabled, both commands
+still report all model-free categories and explicitly state that similarity
+checks were skipped (`similarity_warning` in JSON).
+
+- `duplicate_facts`: pairs of active, non-retired facts under different
+  keys.
+- `unlinked_decisions`: pairs of active decisions without supersession
+  links.
+- `correction_sweep`: for every superseded fact or decision and every
+  retired fact, list active, non-retired facts, current architecture
+  sections, non-archived document chunks and open tasks that still overlap
+  the old text. Exclude the old row's replacement (including its replacement
+  chain), all decisions as correction targets, and session notes.
+  Current architecture uses the same latest `created_at`, then row ID,
+  ordering as `arch show` and section materialization, including imports
+  whose IDs and dates are out of order.
+
+A match measures **textual overlap, not contradiction**. Compatible claims
+about different versions can match. Every pair shows retained evidence from
+both sides, with source type, row ID and recorded date when known. Fact
+and decision comparisons use `excerpts.first` and `excerpts.second` in JSON;
+the labels are for display, not chronology or preference. The correction
+sweep labels the historical source **old claim** and the active match
+**possible restatement**, in `excerpts.old_claim` and
+`excerpts.possible_restatement`.
+`text` contains the stored fact value, decision rationale, task title,
+indexed architecture section, or document chunk as applicable. Decision
+summaries and task notes are separate fields; keys and titles also appear
+in `subjects`.
+
+Document chunks can retain a heading line in their stored text, but the
+normalized `heading_context` is context, not a quotation. The scan says
+when original document wording, such as an exact ancestor heading, is
+unavailable. It does not reconstruct it or quote a local file as the
+original. Architecture pairs show the stored indexed section and attach
+the full retained Markdown as `architecture_source.text`, with
+`architecture_id` and the zero-based `section_ordinal` to identify the
+match even when headings repeat or legacy sections are present. Use the
+full retained source for exact wording when the indexed section is not
+a verbatim slice.
+
+Similarity findings do not pick a record to keep or change, or suggest a
+command to change either record. Leaving both records alone or investigating
+manually requires no write. The only action offered is explicit dismissal
+with `prune dismiss`, which hides that finding and records its dismissal
+without changing either record. The four model-free categories retain their
+own actions.
+Stored document matches remain reviewable when the recorded path is missing,
+unreadable, redirected, or stored under a relative or noncanonical path.
+Evidence never comes from a redirected destination. For the separate
+`out_of_date_document` category, re-ingest is offered only for a readable,
+direct UTF-8 file whose canonical absolute path is the exact existing row key
+`doc add` uses; a relative path would resolve against the caller's directory
+and could create or update a different row.
+
+These categories share the 25-item per-category cap, overflow counts and
+source-state dismissal identifiers. Both rows' stored state participates
+in each pair's identifier, including document-parent or architecture-source
+state where relevant. Document path/content state also participates, so a
+changed or redirected source invalidates its prior dismissal. All eligible
+pairs are scored during scans; the cap limits the display, not the search.
+This exhaustive manual review can take longer on
+large corpora, but loads no embedding model and writes no memory, index,
+query log or file. The four original categories retain their IDs.
+`memhub status` counts only those four categories, not similarity matches.
+Dismissal resolves model-free matches first, in a read snapshot. Only
+if none matches does it look for and score the requested similarity pair.
+After the usual maintained open, no writer transaction starts for an
+unmatched ID. Before recording a dismissal, the writer transaction
+revalidates eligibility and the fingerprint of only the matched rows
+and applicable file or backup directory. Changes to that state refuse
+the old ID.
+
+After successful `fact supersede`, `decision supersede`, `review accept
+--supersede` (also accepted staged supersession), or `fact retire`, the CLI
+prints that old row's evidence-only correction sweep, with the same paired
+excerpts and no corrective recommendations. Supersede and accept
+JSON remain one structured object, with an added `correction_sweep` report
+only when a supersession occurred. The write commits first; disabled
+similarity checks or a reporting failure are stated in the report and do
+not undo or disguise the successful write. Producing the report itself
+uses the read-only scan open: no migration, expiry, semantic write or
+automatic correction occurs. Dismissals and caps apply to this report too.
 
 **Before (#451 implementation):** `memhub prune backups --yes` could
 select all eligible batches regardless of dismissals, on any platform.
