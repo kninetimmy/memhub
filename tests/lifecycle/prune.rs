@@ -14,6 +14,23 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        // Windows cleanup pins the physical volume root, not just this directory.
+        #[cfg(windows)]
+        let temp = match std::env::var_os("MEMHUB_TEST_PRUNE_ROOT") {
+            Some(root) => {
+                let root = PathBuf::from(root);
+                assert!(root.is_absolute(), "prune fixture root must be absolute");
+                tempfile::tempdir_in(root).expect("create prune fixture on controlled storage")
+            }
+            None => {
+                assert!(
+                    std::env::var_os("CI").is_none(),
+                    "Windows CI must run scripts/test-windows.ps1 with controlled prune storage"
+                );
+                tempfile::tempdir().unwrap()
+            }
+        };
+        #[cfg(not(windows))]
         let temp = tempfile::tempdir().unwrap();
         let repo = temp.path().join("fixture");
         fs::create_dir(&repo).unwrap();
@@ -110,6 +127,9 @@ impl Fixture {
 
 #[path = "prune_similarity.rs"]
 mod similarity;
+#[cfg(windows)]
+#[path = "prune_storage.rs"]
+mod storage;
 
 fn items(scan: &Value) -> &[Value] {
     scan["items"].as_array().unwrap()
@@ -962,7 +982,7 @@ fn backup_cleanup_requires_confirmation_and_only_removes_reviewed_surplus() {
         fs::metadata(&oldest).unwrap().modified().unwrap(),
         pre_epoch
     );
-    let safety = f.backups("MiGrAtIoNs", 21);
+    let safety = ["MiGrAtIoNs", "SyNc", "ImPoRt"].map(|name| f.backups(name, 21));
     let unrelated = rendered.join("readme.txt");
     fs::write(&unrelated, "not a backup").unwrap();
     let hardlink = rendered.join("not-a-backup.bak");
@@ -1012,6 +1032,21 @@ fn backup_cleanup_requires_confirmation_and_only_removes_reviewed_surplus() {
         })
         .unwrap();
     let before = fs::read(f.repo.join(".memhub/project.sqlite")).unwrap();
+    let reviewed: Vec<_> = first["subjects"][0]["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| Path::new(file.as_str().unwrap()).file_name().unwrap())
+        .collect();
+    let retained: Vec<_> = fs::read_dir(&rendered)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| !reviewed.contains(&path.file_name().unwrap()))
+        .map(|path| {
+            let bytes = fs::read(&path).unwrap();
+            (path, bytes)
+        })
+        .collect();
     f.ok(&action(first, "delete"));
     assert_eq!(file_count(&rendered), 22);
     assert_eq!(
@@ -1023,6 +1058,9 @@ fn backup_cleanup_requires_confirmation_and_only_removes_reviewed_surplus() {
         let name = Path::new(file.as_str().unwrap()).file_name().unwrap();
         assert!(!rendered.join(name).exists(), "{file}");
     }
+    for (path, bytes) in retained {
+        assert_eq!(fs::read(path).unwrap(), bytes);
+    }
     let report = f.scan();
     assert_eq!(report["total"], 1);
     f.ok(&action(&items(&report)[0], "delete"));
@@ -1032,7 +1070,12 @@ fn backup_cleanup_requires_confirmation_and_only_removes_reviewed_surplus() {
     }
     assert_eq!(fs::read_to_string(&unrelated).unwrap(), "not a backup");
     assert!(hardlink.is_file());
-    assert_eq!(file_count(&safety), 21);
+    for safety in safety {
+        assert_eq!(file_count(&safety), 21);
+        for i in 0..21 {
+            assert_eq!(fs::read(safety.join(format!("{i:02}.bak"))).unwrap(), b"a");
+        }
+    }
     assert_eq!(
         fs::read(f.repo.join(".memhub/project.sqlite")).unwrap(),
         before
@@ -1048,6 +1091,9 @@ fn backup_cleanup_refuses_before_any_deletion_when_a_keeper_or_victim_is_busy() 
     let dir = f.backups("rendered", 22);
     let report = f.scan();
     let delete = action(&items(&report)[0], "delete");
+    let before: Vec<_> = (0..22)
+        .map(|i| fs::read(dir.join(format!("{i:02}.bak"))).unwrap())
+        .collect();
     for name in ["21.bak", "00.bak"] {
         let busy = File::options()
             .write(true)
@@ -1056,12 +1102,36 @@ fn backup_cleanup_refuses_before_any_deletion_when_a_keeper_or_victim_is_busy() 
             .unwrap();
         let out = f.run(&delete);
         assert!(!out.status.success(), "{out:?}");
+        let error = String::from_utf8_lossy(&out.stderr);
+        // TxF may return ERROR_TRANSACTIONAL_CONFLICT instead of a sharing violation.
+        assert!(
+            error.contains(name)
+                && (error.contains("os error 32") || error.contains("os error 6800")),
+            "expected sharing conflict on fixture file {name}: {out:?}"
+        );
+        assert!(out.stdout.is_empty(), "{out:?}");
         assert_eq!(file_count(&dir), 22);
         drop(busy);
+        for (i, bytes) in before.iter().enumerate() {
+            assert_eq!(fs::read(dir.join(format!("{i:02}.bak"))).unwrap(), *bytes);
+        }
+        assert_eq!(
+            f.scan(),
+            report,
+            "release must leave the candidate unchanged"
+        );
     }
     assert_eq!(f.scan(), report);
     f.ok(&delete);
     assert_eq!(file_count(&dir), 20);
+    for (i, bytes) in before.iter().enumerate() {
+        let path = dir.join(format!("{i:02}.bak"));
+        if i < 2 {
+            assert!(!path.exists());
+        } else {
+            assert_eq!(fs::read(path).unwrap(), *bytes);
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -1189,7 +1259,13 @@ fn backup_cleanup_skips_linked_children_and_refuses_a_linked_backup_root() {
     let id = item["id"].as_str().unwrap();
     let argv = ["prune", "backups", "--yes", "--candidate", id];
     #[cfg(windows)]
-    f.ok(&argv);
+    {
+        f.ok(&argv);
+        assert!(!dir.join("00.bak").exists());
+        for i in 1..21 {
+            assert_eq!(fs::read(dir.join(format!("{i:02}.bak"))).unwrap(), b"a");
+        }
+    }
     #[cfg(not(windows))]
     assert!(!f.run(&argv).status.success());
     #[cfg(unix)]
@@ -1227,6 +1303,12 @@ fn backup_cleanup_skips_linked_children_and_refuses_a_linked_backup_root() {
     assert!(!f.run(&argv).status.success());
     assert_eq!(fs::read_to_string(&victim).unwrap(), "outside");
     assert_eq!(file_count(&outside), 22);
+    for i in 0..21 {
+        assert_eq!(
+            fs::read_to_string(outside.join(format!("{i:02}.bak"))).unwrap(),
+            "outside"
+        );
+    }
 }
 
 #[cfg(unix)]

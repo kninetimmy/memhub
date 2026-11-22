@@ -110,4 +110,12 @@ jobs:
         run: cargo build --locked ${{ matrix.features && format('--features {0}', matrix.features) || '' }}
 
       - name: cargo test --locked
+        if: runner.os != 'Windows'
         run: cargo test --locked ${{ matrix.features && format('--features {0}', matrix.features) || '' }}
+
+      - name: Windows tests on owned disposable prune storage
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./scripts/test-windows-checks.ps1
+          ./scripts/test-windows.ps1
