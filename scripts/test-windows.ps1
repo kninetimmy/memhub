@@ -70,21 +70,20 @@ function Get-OwnedDisk {
     $disks = @($mounted | Get-Disk)
     if ($disks.Count -ne 1) { throw 'Expected exactly one owned virtual disk.' }
     $current = $disks[0]
-    # STORAGE_BUS_TYPE 15 is FileBackedVirtual (not a host SATA/NVMe disk).
+    # Get-Disk adapts BusType to text; the raw UInt16 enum 15 is FileBackedVirtual.
+    $busProperty = $current.CimInstanceProperties['BusType']
+    $busType = if ($null -ne $busProperty) { $busProperty.Value } else { $null }
     Assert-FixtureIdentity 'NumberNotPreexisting' ($current.Number -notin $existingDisks) $current.Number "not in [$($existingDisks -join ', ')]"
     Assert-FixtureIdentity 'IsBoot' (-not $current.IsBoot) $current.IsBoot $false
     Assert-FixtureIdentity 'IsSystem' (-not $current.IsSystem) $current.IsSystem $false
-    if ($current.BusType -ne 15 -and $null -ne $current.PSObject.Properties['CimInstanceProperties']) {
-        $rawBusType = $current.CimInstanceProperties['BusType'].Value
-        Write-Host "[DEBUG-469] BusType CIM value: actual=$rawBusType (type=$($rawBusType.GetType().FullName)); expected=15."
-    }
-    Assert-FixtureIdentity 'BusType' ($current.BusType -eq 15) $current.BusType 15
+    Assert-FixtureIdentity 'BusType' ($busType -is [uint16] -and $busType -eq 15) $busType 'UInt16 15 (FileBackedVirtual)'
     Assert-FixtureIdentity 'Size' ($current.Size -eq 256MB) $current.Size 256MB
     Assert-FixtureIdentity 'DevicePath' ($null -eq $diskPath -or $current.Path -eq $diskPath) $current.Path $diskPath
     return $current
 }
 
 function Invoke-CheckedTests([string[]] $CargoArguments) {
+    Write-Host "Running fixture-backed tests: cargo $CargoArguments"
     $output = @()
     & cargo @CargoArguments -- --format pretty --color never 2>&1 |
         Tee-Object -Variable output | ForEach-Object { Write-Host $_ }
@@ -103,6 +102,7 @@ function Invoke-CheckedTests([string[]] $CargoArguments) {
             throw "Required Windows prune test did not run and pass exactly once: $name"
         }
     }
+    Write-Host "Verified required Windows prune tests: cargo $CargoArguments"
 }
 
 function Invoke-FixtureRun([scriptblock] $Action, [scriptblock] $Teardown) {

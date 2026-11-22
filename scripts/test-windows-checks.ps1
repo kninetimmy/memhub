@@ -56,21 +56,32 @@ function Assert-OwnedPaths { $script:pathsChecked++ }
 $mounted = [pscustomobject]@{ Attached = $true; ImagePath = $image }
 $disk = [pscustomobject]@{
     Number = 2; IsBoot = $false; IsSystem = $false
-    BusType = 15; Size = 256MB; Path = $diskPath
+    BusType = 'File Backed Virtual'; Size = 256MB; Path = $diskPath
+    CimInstanceProperties = @{ BusType = [pscustomobject]@{ Value = [uint16] 15 } }
 }
 function Get-DiskImage { param($ImagePath) return $mounted }
 function Get-Disk { process { return $disk } }
 if ((Get-OwnedDisk).Number -ne 2 -or $script:pathsChecked -ne 1) { throw 'Valid disk rejected or paths unchecked.' }
-foreach ($property in @('Number', 'IsBoot', 'IsSystem', 'BusType', 'Size', 'Path')) {
+foreach ($property in @('Number', 'IsBoot', 'IsSystem', 'Size', 'Path')) {
     $original = $disk.$property
     $disk.$property = switch ($property) {
         Number { 0 }; IsBoot { $true }; IsSystem { $true }
-        BusType { 11 }; Size { 1TB }; Path { 'different-device' }
+        Size { 1TB }; Path { 'different-device' }
     }
     $check = switch ($property) { Number { 'NumberNotPreexisting' }; Path { 'DevicePath' }; default { $property } }
     Assert-Refusal { Get-OwnedDisk } "Fixture identity check '$check' failed: actual="
     $disk.$property = $original
 }
+# The display label cannot authorize a wrong, missing or untyped raw storage enum.
+foreach ($bad in @([uint16] 11, [uint16] 17, 15, '15', 'File Backed Virtual', $null)) {
+    $disk.CimInstanceProperties['BusType'].Value = $bad
+    Assert-Refusal { Get-OwnedDisk } "Fixture identity check 'BusType' failed: actual="
+}
+$busProperty = $disk.CimInstanceProperties['BusType']
+$disk.CimInstanceProperties.Remove('BusType')
+Assert-Refusal { Get-OwnedDisk } "Fixture identity check 'BusType' failed: actual=null"
+$busProperty.Value = [uint16] 15
+$disk.CimInstanceProperties['BusType'] = $busProperty
 $singleDisk = $disk
 $disk = @()
 Assert-Refusal { Get-OwnedDisk } 'exactly one owned virtual disk'
