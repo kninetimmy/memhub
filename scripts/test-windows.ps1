@@ -54,6 +54,13 @@ function Assert-OwnedPaths {
     if (Test-Path -LiteralPath $image) { Assert-PlainPath $image }
 }
 
+function Assert-FixtureIdentity([string] $Name, [bool] $Matches, $Actual, $Expected) {
+    if (-not $Matches) {
+        $type = if ($null -eq $Actual) { 'null' } else { $Actual.GetType().FullName }
+        throw "Fixture identity check '$Name' failed: actual=$(ConvertTo-Json -InputObject $Actual -Compress) (type=$type); expected=$(ConvertTo-Json -InputObject $Expected -Compress). Refusing storage operations."
+    }
+}
+
 function Get-OwnedDisk {
     Assert-OwnedPaths
     $mounted = Get-DiskImage -ImagePath $image
@@ -64,11 +71,16 @@ function Get-OwnedDisk {
     if ($disks.Count -ne 1) { throw 'Expected exactly one owned virtual disk.' }
     $current = $disks[0]
     # STORAGE_BUS_TYPE 15 is FileBackedVirtual (not a host SATA/NVMe disk).
-    if ($current.Number -in $existingDisks -or $current.IsBoot -or $current.IsSystem -or
-        $current.BusType -ne 15 -or $current.Size -ne 256MB -or
-        ($null -ne $diskPath -and $current.Path -ne $diskPath)) {
-        throw 'Refusing to operate on a disk not identified as the new fixture VHD.'
+    Assert-FixtureIdentity 'NumberNotPreexisting' ($current.Number -notin $existingDisks) $current.Number "not in [$($existingDisks -join ', ')]"
+    Assert-FixtureIdentity 'IsBoot' (-not $current.IsBoot) $current.IsBoot $false
+    Assert-FixtureIdentity 'IsSystem' (-not $current.IsSystem) $current.IsSystem $false
+    if ($current.BusType -ne 15 -and $null -ne $current.PSObject.Properties['CimInstanceProperties']) {
+        $rawBusType = $current.CimInstanceProperties['BusType'].Value
+        Write-Host "[DEBUG-469] BusType CIM value: actual=$rawBusType (type=$($rawBusType.GetType().FullName)); expected=15."
     }
+    Assert-FixtureIdentity 'BusType' ($current.BusType -eq 15) $current.BusType 15
+    Assert-FixtureIdentity 'Size' ($current.Size -eq 256MB) $current.Size 256MB
+    Assert-FixtureIdentity 'DevicePath' ($null -eq $diskPath -or $current.Path -eq $diskPath) $current.Path $diskPath
     return $current
 }
 
@@ -93,7 +105,21 @@ function Invoke-CheckedTests([string[]] $CargoArguments) {
     }
 }
 
-try {
+function Invoke-FixtureRun([scriptblock] $Action, [scriptblock] $Teardown) {
+    $failure = $null
+    try { . $Action } catch {
+        $failure = $_
+        Write-Host "Fixture setup/tests failed: $($_.Exception.Message)"
+    } finally {
+        try { . $Teardown } catch {
+            Write-Host "Fixture teardown failed: $($_.Exception.Message)"
+            if ($null -eq $failure) { $failure = $_ }
+        }
+    }
+    if ($null -ne $failure) { throw $failure }
+}
+
+Invoke-FixtureRun -Action {
     Assert-OwnedPaths
     & diskpart /s $create
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $image -PathType Leaf)) {
@@ -125,7 +151,7 @@ try {
     Invoke-CheckedTests -CargoArguments @('test', '--locked', '--test', 'lifecycle_harness', 'prune::')
     # Keep the same root for the second invocation through the full suite.
     Invoke-CheckedTests -CargoArguments @('test', '--locked')
-} finally {
+} -Teardown {
     $env:MEMHUB_TEST_PRUNE_ROOT = $previousRoot
     Assert-OwnedPaths
     if (Test-Path -LiteralPath $image) {
@@ -146,4 +172,5 @@ try {
         }
     }
     [IO.Directory]::Delete($owned)
+    Write-Host 'Fixture teardown succeeded: VHD detached and owned files/directory removed.'
 }

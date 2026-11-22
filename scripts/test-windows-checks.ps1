@@ -6,7 +6,7 @@ $tokens = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile(
     (Join-Path $PSScriptRoot 'test-windows.ps1'), [ref] $tokens, [ref] $errors)
 if ($errors.Count) { throw "Invalid runner script: $errors" }
-foreach ($name in @('Assert-PlainPath', 'Assert-OwnedPaths', 'Get-OwnedDisk', 'Invoke-CheckedTests')) {
+foreach ($name in @('Assert-PlainPath', 'Assert-OwnedPaths', 'Assert-FixtureIdentity', 'Get-OwnedDisk', 'Invoke-CheckedTests', 'Invoke-FixtureRun')) {
     $function = $ast.Find({ param($node)
         $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
     }, $false)
@@ -67,7 +67,8 @@ foreach ($property in @('Number', 'IsBoot', 'IsSystem', 'BusType', 'Size', 'Path
         Number { 0 }; IsBoot { $true }; IsSystem { $true }
         BusType { 11 }; Size { 1TB }; Path { 'different-device' }
     }
-    Assert-Refusal { Get-OwnedDisk } 'not identified as the new fixture VHD'
+    $check = switch ($property) { Number { 'NumberNotPreexisting' }; Path { 'DevicePath' }; default { $property } }
+    Assert-Refusal { Get-OwnedDisk } "Fixture identity check '$check' failed: actual="
     $disk.$property = $original
 }
 $singleDisk = $disk
@@ -81,6 +82,24 @@ Assert-Refusal { Get-OwnedDisk } 'expected image path'
 $mounted.ImagePath = $image
 $mounted.Attached = $false
 Assert-Refusal { Get-OwnedDisk } 'not attached'
+Assert-Refusal { Assert-FixtureIdentity 'Sample' $false ([uint16] 15) 15 } 'actual=15 (type=System.UInt16); expected=15'
+
+# Preserve the first error even when teardown also refuses, and never hide teardown-only failures.
+$messages = @()
+Assert-Refusal {
+    Invoke-FixtureRun { throw 'original setup failure' } { throw 'separate teardown failure' } 6>&1 |
+        ForEach-Object { $script:messages += "$_" }
+} 'original setup failure'
+foreach ($message in @('Fixture setup/tests failed: original setup failure', 'Fixture teardown failed: separate teardown failure')) {
+    if ($message -notin $messages) { throw "Missing separate error report: $message" }
+}
+Assert-Refusal { Invoke-FixtureRun {} { throw 'teardown-only failure' } 6> $null } 'teardown-only failure'
+$script:sequence = @()
+Invoke-FixtureRun { $script:sequence += 'action'; $fixtureState = 'owned' } {
+    if ($fixtureState -ne 'owned') { throw 'Fixture state did not survive until teardown.' }
+    $script:sequence += 'teardown'
+}
+if (($script:sequence -join ',') -ne 'action,teardown') { throw 'Fixture run order is incorrect.' }
 
 # Mock cargo only; exercise the real coverage and exit-status verifier.
 $script:cargoExit = 0
