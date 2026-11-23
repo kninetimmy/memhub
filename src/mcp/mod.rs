@@ -1,15 +1,22 @@
 mod binding;
+#[cfg(test)]
+mod stdio_tests;
+mod stdio_wire;
 
+use std::borrow::Cow;
 use std::future::{self, Future};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use log::info;
 use rmcp::ErrorData as McpError;
+use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
 use rmcp::model::{
-    ClientJsonRpcMessage, ClientRequest, ErrorCode, Implementation, InitializeRequestParams,
-    InitializeResult, Meta, RequestId, ServerCapabilities, ServerInfo, ServerJsonRpcMessage,
-    ToolAnnotations,
+    CallToolRequestMethod, CallToolRequestParams, CallToolResponse, ClientJsonRpcMessage,
+    ClientRequest, CustomRequest, DiscoverRequestMethod, Implementation, InitializeRequestParams,
+    InitializeResult, MetaObject, ProtocolVersion, RequestId, ServerCapabilities, ServerConfig,
+    ServerJsonRpcMessage, ServerResult, ToolAnnotations,
 };
 use rmcp::service::RequestContext;
 use rmcp::transport::{Transport, async_rw::AsyncRwTransport};
@@ -35,8 +42,10 @@ use crate::retrieval::{
     self, RecallHit, RecallOptions, RecallResponse, RecallSurface, RecallWarning, SourceType,
 };
 use binding::{BindingEvidence, ServerBinding};
+use stdio_wire::{LegacyTaskControl, StdioWireRole, into_sdk_message};
 
 const LOOKUP_ONLY_TOOLS: [&str; 4] = ["status", "recall", "get_row", "locate"];
+const STDIO_PROTOCOL_CEILING: ProtocolVersion = ProtocolVersion::V_2025_11_25;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, clap::ValueEnum)]
 pub enum ServerProfile {
@@ -92,8 +101,9 @@ pub(crate) fn serve_bound_with_profile(
 
     runtime.block_on(async move {
         let transport = PreInitializeTolerance {
-            inner: AsyncRwTransport::new_server(tokio::io::stdin(), tokio::io::stdout()),
+            inner: AsyncRwTransport::new(tokio::io::stdin(), tokio::io::stdout()),
             initialize_seen: false,
+            legacy_initialize_echo: None,
         };
         let service = server
             .serve(transport)
@@ -111,50 +121,77 @@ pub(crate) fn serve_bound_with_profile(
 /// `server/discover` probe (Antigravity CLI) falls back to `initialize`
 /// instead of ending the session: until `initialize` arrives, discover gets
 /// a method-not-found error and notifications (e.g.
-/// `notifications/roots/list_changed`) are dropped. Every message from
-/// `initialize` on passes through unchanged (issue #419).
-// shortcut: tolerates only discover + early notifications, remove when memhub moves to an MCP library with native 2026-07-28 support.
+/// `notifications/roots/list_changed`) are dropped (issue #419).
+/// Before rmcp 3.11 all messages from initialize on passed through, with the
+/// SDK treating later discover requests as unknown. Now we translate later
+/// discover requests to retain that error, and still refuse other openers
+/// except ping.
 struct PreInitializeTolerance<T> {
     inner: T,
     initialize_seen: bool,
+    legacy_initialize_echo: Option<RequestId>,
 }
 
-impl<T: Transport<RoleServer>> Transport<RoleServer> for PreInitializeTolerance<T> {
+impl<T: Transport<StdioWireRole>> Transport<RoleServer> for PreInitializeTolerance<T> {
     type Error = T::Error;
 
     fn send(
         &mut self,
-        item: ServerJsonRpcMessage,
+        mut item: ServerJsonRpcMessage,
     ) -> impl Future<Output = std::result::Result<(), Self::Error>> + Send + 'static {
+        // rmcp 1.8 echoed this explicit version. Restore only the wire reply:
+        // rmcp 3.11 treats the same version as the new inline lifecycle.
+        if let ServerJsonRpcMessage::Response(response) = &mut item
+            && self.legacy_initialize_echo.as_ref() == Some(&response.id)
+            && let ServerResult::InitializeResult(result) = &mut response.result
+        {
+            result.protocol_version = ProtocolVersion::V_2026_07_28;
+            self.legacy_initialize_echo = None;
+        }
         self.inner.send(item)
     }
 
     async fn receive(&mut self) -> Option<ClientJsonRpcMessage> {
         loop {
-            let message = self.inner.receive().await?;
-            if self.initialize_seen {
-                return Some(message);
-            }
+            let message = into_sdk_message(self.inner.receive().await?);
             match &message {
-                ClientJsonRpcMessage::Request(request) => match &request.request {
-                    ClientRequest::CustomRequest(custom) if custom.method == "server/discover" => {
-                        let reply = ServerJsonRpcMessage::error(
-                            McpError::new(ErrorCode::METHOD_NOT_FOUND, "server/discover", None),
-                            Some(request.id.clone()),
-                        );
-                        if let Err(err) = self.inner.send(reply).await {
-                            log::warn!("mcp: failed to answer server/discover: {err}");
-                            return None;
-                        }
+                ClientJsonRpcMessage::Request(request)
+                    if request.request.method() == "server/discover" =>
+                {
+                    if self.initialize_seen {
+                        // Use the SDK's normal unknown-method response, not
+                        // its discovery handler or inline metadata checks.
+                        return Some(ClientJsonRpcMessage::request(
+                            ClientRequest::CustomRequest(CustomRequest::new(
+                                "server/discover",
+                                None,
+                            )),
+                            request.id.clone(),
+                        ));
                     }
-                    ClientRequest::InitializeRequest(_) => {
+                    let reply = ServerJsonRpcMessage::error(
+                        McpError::method_not_found::<DiscoverRequestMethod>(),
+                        Some(request.id.clone()),
+                    );
+                    if let Err(err) = self.inner.send(reply).await {
+                        log::warn!("mcp: failed to answer server/discover: {err}");
+                        return None;
+                    }
+                }
+                _ if self.initialize_seen => return Some(message),
+                ClientJsonRpcMessage::Request(request) => match &request.request {
+                    ClientRequest::PingRequest(_) => return Some(message),
+                    ClientRequest::InitializeRequest(initialize) => {
                         self.initialize_seen = true;
+                        if initialize.params.protocol_version == ProtocolVersion::V_2026_07_28 {
+                            self.legacy_initialize_echo = Some(request.id.clone());
+                        }
                         return Some(message);
                     }
-                    _ => return Some(message),
+                    _ => return None,
                 },
                 ClientJsonRpcMessage::Notification(_) => {}
-                _ => return Some(message),
+                _ => return None,
             }
         }
     }
@@ -168,6 +205,7 @@ impl<T: Transport<RoleServer>> Transport<RoleServer> for PreInitializeTolerance<
 struct MemhubServer {
     binding: ServerBinding,
     profile: ServerProfile,
+    initialize_request: OnceLock<InitializeRequestParams>,
     #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
 }
@@ -188,6 +226,7 @@ impl MemhubServer {
         Ok(Self {
             binding: ServerBinding::resolve(start, memory_root, code_root)?,
             profile,
+            initialize_request: OnceLock::new(),
             tool_router: Self::build_tool_router(profile),
         })
     }
@@ -199,6 +238,10 @@ impl MemhubServer {
 
     fn binding_evidence(&self) -> BindingEvidence {
         self.binding.evidence()
+    }
+
+    fn pending_write_provenance(&self, context: &RequestContext<RoleServer>) -> String {
+        pending_write_provenance_json(&context.id, &context.meta, self.initialize_request.get())
     }
 
     fn build_tool_router(profile: ServerProfile) -> ToolRouter<Self> {
@@ -925,7 +968,7 @@ impl MemhubServer {
         request_context: RequestContext<RoleServer>,
     ) -> std::result::Result<Json<ProposeFactToolResponse>, McpError> {
         let actor = current_client_identity(&request_context);
-        let provenance_json = current_pending_write_provenance(&request_context);
+        let provenance_json = self.pending_write_provenance(&request_context);
         self.propose_fact_impl(params, actor, provenance_json).await
     }
 
@@ -939,7 +982,7 @@ impl MemhubServer {
         request_context: RequestContext<RoleServer>,
     ) -> std::result::Result<Json<ProposeDecisionToolResponse>, McpError> {
         let actor = current_client_identity(&request_context);
-        let provenance_json = current_pending_write_provenance(&request_context);
+        let provenance_json = self.pending_write_provenance(&request_context);
         self.propose_decision_impl(params, actor, provenance_json)
             .await
     }
@@ -954,7 +997,7 @@ impl MemhubServer {
         request_context: RequestContext<RoleServer>,
     ) -> std::result::Result<Json<ProposeSupersedeToolResponse>, McpError> {
         let actor = current_client_identity(&request_context);
-        let provenance_json = current_pending_write_provenance(&request_context);
+        let provenance_json = self.pending_write_provenance(&request_context);
         self.propose_supersede_impl(params, actor, provenance_json)
             .await
     }
@@ -1149,8 +1192,39 @@ impl MemhubServer {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for MemhubServer {
-    fn get_info(&self) -> ServerInfo {
-        let info = ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> std::result::Result<CallToolResponse, McpError> {
+        // rmcp 1.8 rejected task augmentation without dispatching a tool.
+        // rmcp 3.11 drops the legacy control, so preserve the old refusal
+        // before delegating ordinary calls to the same launch-fixed router.
+        if let Some(task) = context.extensions.get::<LegacyTaskControl>() {
+            return Err(match task {
+                LegacyTaskControl::Malformed => {
+                    McpError::method_not_found::<CallToolRequestMethod>()
+                }
+                LegacyTaskControl::Object if self.tool_router.get(&request.name).is_some() => {
+                    McpError::invalid_params("Tool does not support task-based invocation", None)
+                }
+                LegacyTaskControl::Object => {
+                    McpError::internal_error("Task processing not implemented", None)
+                }
+            });
+        }
+        self.tool_router
+            .call(ToolCallContext::new(self, request, context))
+            .await
+    }
+
+    fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
+        Cow::Borrowed(ProtocolVersion::known_up_to(&STDIO_PROTOCOL_CEILING))
+    }
+
+    fn get_info(&self) -> ServerConfig {
+        let info = ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+            .with_protocol_version(STDIO_PROTOCOL_CEILING)
             .with_server_info(Implementation::new("memhub", env!("CARGO_PKG_VERSION")));
         match self.profile {
             ServerProfile::Full => info.with_instructions(
@@ -1196,13 +1270,12 @@ The profile governs this server's MCP surface only. Agent-role authorization and
     fn initialize(
         &self,
         request: InitializeRequestParams,
-        context: RequestContext<RoleServer>,
+        _context: RequestContext<RoleServer>,
     ) -> impl Future<Output = std::result::Result<InitializeResult, McpError>> + '_ {
-        if context.peer.peer_info().is_none() {
-            context.peer.set_peer_info(request.clone());
-        }
-
         let actor = current_client_identity_from_initialize(Some(&request));
+        // rmcp 3.11 updates peer_info to the negotiated version. Provenance
+        // has always recorded the version requested by the original opener.
+        let _ = self.initialize_request.set(request);
         info!(
             "mcp client initialized: normalized={} raw={}",
             sanitize_for_log(&actor.normalized),
@@ -2426,17 +2499,9 @@ fn current_client_identity_from_initialize(
     }
 }
 
-fn current_pending_write_provenance(request_context: &RequestContext<RoleServer>) -> String {
-    pending_write_provenance_json(
-        &request_context.id,
-        &request_context.meta,
-        request_context.peer.peer_info().as_deref(),
-    )
-}
-
 fn pending_write_provenance_json(
     request_id: &RequestId,
-    request_meta: &Meta,
+    request_meta: &MetaObject,
     peer_info: Option<&InitializeRequestParams>,
 ) -> String {
     let provenance = match peer_info {
@@ -2447,7 +2512,7 @@ fn pending_write_provenance_json(
             protocol_version: info.protocol_version.to_string(),
             client_name: info.client_info.name.clone(),
             client_version: info.client_info.version.clone(),
-            initialize_meta: optional_meta_value(info.meta.as_ref()),
+            initialize_meta: optional_meta_value(info.meta.as_deref()),
         },
         None => PendingWriteProvenance {
             source: "mcp",
@@ -2463,7 +2528,7 @@ fn pending_write_provenance_json(
     serde_json::to_string(&provenance).expect("pending write provenance should serialize")
 }
 
-fn optional_meta_value(meta: Option<&Meta>) -> Option<Value> {
+fn optional_meta_value(meta: Option<&MetaObject>) -> Option<Value> {
     meta.filter(|meta| !meta.0.is_empty())
         .map(|meta| serde_json::to_value(meta).expect("mcp meta should serialize"))
 }
@@ -2898,12 +2963,15 @@ mod tests {
             Implementation::new(" openai-codex ", "1.2.3"),
         )
         .with_protocol_version(rmcp::model::ProtocolVersion::V_2025_06_18);
-        initialize.meta = Some(Meta(
-            [("workspace".to_string(), Value::String("repo".to_string()))]
-                .into_iter()
-                .collect(),
-        ));
-        let request_meta = Meta(
+        initialize.meta = Some(
+            MetaObject(
+                [("workspace".to_string(), Value::String("repo".to_string()))]
+                    .into_iter()
+                    .collect(),
+            )
+            .into(),
+        );
+        let request_meta = MetaObject(
             [(
                 "progressToken".to_string(),
                 Value::String("progress-1".to_string()),
@@ -2941,7 +3009,7 @@ mod tests {
 
         let fact_provenance = pending_write_provenance_json(
             &NumberOrString::String("req-fact".into()),
-            &Meta::default(),
+            &MetaObject::default(),
             Some(&InitializeRequestParams::new(
                 Default::default(),
                 Implementation::new(" openai-codex ", "1.2.3"),
@@ -2949,7 +3017,7 @@ mod tests {
         );
         let decision_provenance = pending_write_provenance_json(
             &NumberOrString::String("req-decision".into()),
-            &Meta::default(),
+            &MetaObject::default(),
             Some(&InitializeRequestParams::new(
                 Default::default(),
                 Implementation::new("claude-ai", "2.0.0"),
@@ -3297,7 +3365,7 @@ mod tests {
 
         let provenance_json = pending_write_provenance_json(
             &NumberOrString::Number(7),
-            &Meta::default(),
+            &MetaObject::default(),
             Some(&InitializeRequestParams::new(
                 Default::default(),
                 Implementation::new("codex", "1.0.0"),
@@ -3355,7 +3423,7 @@ mod tests {
         let actor = current_client_identity_from_initialize(Some(&initialize));
         let provenance_json = pending_write_provenance_json(
             &NumberOrString::String("req-opencode".into()),
-            &Meta::default(),
+            &MetaObject::default(),
             Some(&initialize),
         );
 

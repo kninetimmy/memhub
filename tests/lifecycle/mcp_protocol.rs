@@ -421,10 +421,13 @@ fn lookup_only_lists_exact_catalog_annotations_and_instructions() {
     let temp = tempdir().unwrap();
     init::run(temp.path()).unwrap();
     let serve_args = vec!["--profile".to_string(), "lookup-only".to_string()];
+    let mut discover = antigravity_discover();
+    discover["id"] = json!(3);
     let replies = replay_with_serve_args(
         temp.path(),
         &serve_args,
         &[
+            discover,
             json!({
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -438,8 +441,10 @@ fn lookup_only_lists_exact_catalog_annotations_and_instructions() {
             json!({"jsonrpc":"2.0","method":"notifications/initialized","params":{}}),
             json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
         ],
-        &[1, 2],
+        &[1, 2, 3],
     );
+    assert_eq!(replies[&3]["error"]["code"], -32601);
+    assert_eq!(replies[&1]["result"]["protocolVersion"], "2025-06-18");
 
     let instructions = replies[&1]["result"]["instructions"]
         .as_str()
@@ -1761,6 +1766,96 @@ fn antigravity_discover_error_is_consistent_after_initialize() {
     );
     assert_eq!(replies[&1]["error"]["code"], -32601);
     assert_eq!(replies[&1]["error"], replies[&4]["error"]);
+}
+
+#[test]
+fn tool_requests_still_require_stdio_initialize() {
+    let temp = tempdir().unwrap();
+    init::run(temp.path()).unwrap();
+    let mut child = Command::new(memhub_bin())
+        .arg("serve")
+        .current_dir(temp.path())
+        .env("HOME", temp.path().join(".test-home"))
+        .env("USERPROFILE", temp.path().join(".test-home"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let list = json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}});
+    writeln!(stdin, "{list}").unwrap();
+    drop(stdin);
+    if child
+        .wait_timeout(Duration::from_secs(60))
+        .unwrap()
+        .is_none()
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("server did not close after a pre-initialize tool request");
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty(), "{:?}", output.stdout);
+}
+
+#[test]
+fn legacy_initialize_preserves_base_versions_and_capabilities() {
+    let temp = tempdir().unwrap();
+    init::run(temp.path()).unwrap();
+    for args in [
+        vec![],
+        vec!["--profile".to_string(), "lookup-only".to_string()],
+    ] {
+        for (requested, expected) in [("2026-07-28", "2026-07-28"), ("2099-01-01", "2025-11-25")] {
+            let mut initialize = antigravity_initialize();
+            initialize["params"]["protocolVersion"] = json!(requested);
+            let [initialized, list] = antigravity_tail();
+            let ping = json!({"jsonrpc":"2.0","id":4,"method":"ping"});
+            let inline = json!({"jsonrpc":"2.0","id":5,"method":"tools/list","params":{
+                "_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}
+            }});
+            let replies = replay_with_serve_args(
+                temp.path(),
+                &args,
+                &[initialize, initialized, list, ping, inline],
+                &[2, 3, 4, 5],
+            );
+            let result = &replies[&2]["result"];
+            assert_eq!(result["protocolVersion"], expected, "{args:?}: {requested}");
+            assert_eq!(result["capabilities"], json!({"tools": {}}));
+            assert!(replies[&3]["result"]["tools"].is_array());
+            assert_eq!(replies[&4]["result"], json!({}));
+            assert_eq!(replies[&5]["error"]["code"], -32022);
+        }
+    }
+}
+
+#[test]
+fn legacy_initialize_keeps_requested_version_in_provenance() {
+    let temp = tempdir().unwrap();
+    init::run(temp.path()).unwrap();
+    let mut initialize = antigravity_initialize();
+    initialize["params"]["protocolVersion"] = json!("2026-07-28");
+    let [initialized, _] = antigravity_tail();
+    let fact = json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"propose_fact","arguments":{"key":"test-version-echo","value":"fixture only","rationale":"Keep requested version"}}});
+    let replies = replay(temp.path(), &[initialize, initialized, fact], &[2, 4]);
+    assert_eq!(replies[&2]["result"]["protocolVersion"], "2026-07-28");
+    assert_eq!(structured(&replies[&4])["actor"], "antigravity");
+    let ctx = memhub::db::open_project(temp.path()).unwrap();
+    let provenance: String = ctx
+        .conn
+        .query_row(
+            "SELECT provenance_json FROM pending_writes WHERE status = 'pending'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&provenance).unwrap()["protocol_version"],
+        "2026-07-28"
+    );
 }
 
 #[test]
