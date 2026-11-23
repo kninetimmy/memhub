@@ -1801,15 +1801,47 @@ fn tool_requests_still_require_stdio_initialize() {
 }
 
 #[test]
-fn legacy_initialize_fallback_keeps_requested_version_in_provenance() {
+fn legacy_initialize_preserves_base_versions_and_capabilities() {
+    let temp = tempdir().unwrap();
+    init::run(temp.path()).unwrap();
+    for args in [
+        vec![],
+        vec!["--profile".to_string(), "lookup-only".to_string()],
+    ] {
+        for (requested, expected) in [("2026-07-28", "2026-07-28"), ("2099-01-01", "2025-11-25")] {
+            let mut initialize = antigravity_initialize();
+            initialize["params"]["protocolVersion"] = json!(requested);
+            let [initialized, list] = antigravity_tail();
+            let ping = json!({"jsonrpc":"2.0","id":4,"method":"ping"});
+            let inline = json!({"jsonrpc":"2.0","id":5,"method":"tools/list","params":{
+                "_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}
+            }});
+            let replies = replay_with_serve_args(
+                temp.path(),
+                &args,
+                &[initialize, initialized, list, ping, inline],
+                &[2, 3, 4, 5],
+            );
+            let result = &replies[&2]["result"];
+            assert_eq!(result["protocolVersion"], expected, "{args:?}: {requested}");
+            assert_eq!(result["capabilities"], json!({"tools": {}}));
+            assert!(replies[&3]["result"]["tools"].is_array());
+            assert_eq!(replies[&4]["result"], json!({}));
+            assert_eq!(replies[&5]["error"]["code"], -32022);
+        }
+    }
+}
+
+#[test]
+fn legacy_initialize_keeps_requested_version_in_provenance() {
     let temp = tempdir().unwrap();
     init::run(temp.path()).unwrap();
     let mut initialize = antigravity_initialize();
     initialize["params"]["protocolVersion"] = json!("2026-07-28");
     let [initialized, _] = antigravity_tail();
-    let fact = json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"propose_fact","arguments":{"key":"test-version-fallback","value":"fixture only","rationale":"Keep requested version"}}});
+    let fact = json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"propose_fact","arguments":{"key":"test-version-echo","value":"fixture only","rationale":"Keep requested version"}}});
     let replies = replay(temp.path(), &[initialize, initialized, fact], &[2, 4]);
-    assert_eq!(replies[&2]["result"]["protocolVersion"], "2025-11-25");
+    assert_eq!(replies[&2]["result"]["protocolVersion"], "2026-07-28");
     assert_eq!(structured(&replies[&4])["actor"], "antigravity");
     let ctx = memhub::db::open_project(temp.path()).unwrap();
     let provenance: String = ctx

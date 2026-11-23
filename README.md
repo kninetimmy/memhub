@@ -939,6 +939,30 @@ Task-augmented `tools/call` requests remain unsupported in both profiles:
 the legacy `params.task` control cannot dispatch a tool. It is distinct from
 any tool-defined argument under `params.arguments`.
 
+Both profiles keep the legacy `initialize` handshake. As with rmcp 1.8, a
+client explicitly requesting `2026-07-28` gets that version in the initialize
+reply, and an unknown version falls back to `2025-11-25`. The echo changes
+only the reply field, not the session lifecycle or the tools-only capabilities.
+`server/discover` still returns method-not-found.
+
+- **Request metadata:** rmcp 1.8 did not use
+  `params._meta["io.modelcontextprotocol/protocolVersion"]` to select or
+  validate a version. rmcp 3.11 validates that field on subsequent requests
+  dispatched by the SDK: the four legacy versions (`2024-11-05`,
+  `2025-03-26`, `2025-06-18`, `2025-11-25`) can select the request's version;
+  any other string, including `2026-07-28`, returns `-32022` before the
+  handler runs. An absent or non-string value does not select a version.
+  This does not affect the initialize reply, the discovery refusal, or (in
+  the full profile) the handshake identity and version recorded for staged
+  writes.
+- **Malformed input:** rmcp 1.8 returned an id-less `-32700` (Parse error)
+  on JSON syntax and message decoding failures. rmcp 3.11 drops syntactically
+  invalid JSON lines without replying and sends id-less `-32600` (Invalid
+  request) for valid JSON rejected by the message decoder. This is separate
+  from errors for decoded requests, and the SDK still silently ignores some
+  nonstandard notifications. A final line without a newline was processed
+  at EOF in 1.8 and is discarded in 3.11.
+
 Before issue #439 every launch exposed the full catalog below. After issue
 #439, omission of `--profile` or an explicit `--profile full` retains that
 behavior, including direct/staged writes, attribution, and the existing

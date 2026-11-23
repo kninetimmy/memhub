@@ -50,6 +50,7 @@ async fn legacy_task_control_refuses_before_tool_dispatch_in_both_profiles() {
             let transport = PreInitializeTolerance {
                 inner: AsyncRwTransport::new(read, write),
                 initialize_seen: false,
+                legacy_initialize_echo: None,
             };
             let server = tokio::spawn(async move {
                 server.serve(transport).await.unwrap().waiting().await.unwrap();

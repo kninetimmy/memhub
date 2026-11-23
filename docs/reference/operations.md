@@ -1661,6 +1661,14 @@ by the cache; only the content hashes identify dirty returned bytes.
 | `code_index::locate::locate_bound` and checkout-local code cache | Existing binding, primary-config use, tracked/denied-file scope, refresh, verification, and incomplete-result behavior hold. Lookup-only permits the same refresh writes to the disposable cache and no semantic memory-write route. |
 | README/operations wire descriptions and stdio protocol fixtures | Before, broad catalog prose described all launches as full. After, the same prose records that removed lookup-only exposure as a before/after while retaining full compatibility, and tests distinguish source-level protocol verification from installation or child-host qualification. Host role policy and shell/CLI access are untouched. |
 
+Issue #473 retains the catalog and routing rules above but changes the SDK's
+wire handling in both profiles. The protocol-version metadata was not
+validated in rmcp 1.8; rmcp 3.11 can reject a request with that field before
+dispatch. The old parse-error reply for malformed lines is now either no
+reply (bad JSON) or an Invalid Request reply (bad message shape).
+See [MCP server](../../README.md#mcp-server) for the exact version and
+decoding rules.
+
 **Scoring config is independent of recall (R11, issue #73).** Locate's
 fusion weights and the test-path down-weight live under their own
 `[code_index]` table — `fts_weight`, `vector_weight`, `test_path_penalty`

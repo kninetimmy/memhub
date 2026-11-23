@@ -16,7 +16,7 @@ use rmcp::model::{
     CallToolRequestMethod, CallToolRequestParams, CallToolResponse, ClientJsonRpcMessage,
     ClientRequest, CustomRequest, DiscoverRequestMethod, Implementation, InitializeRequestParams,
     InitializeResult, MetaObject, ProtocolVersion, RequestId, ServerCapabilities, ServerConfig,
-    ServerJsonRpcMessage, ToolAnnotations,
+    ServerJsonRpcMessage, ServerResult, ToolAnnotations,
 };
 use rmcp::service::RequestContext;
 use rmcp::transport::{Transport, async_rw::AsyncRwTransport};
@@ -103,6 +103,7 @@ pub(crate) fn serve_bound_with_profile(
         let transport = PreInitializeTolerance {
             inner: AsyncRwTransport::new(tokio::io::stdin(), tokio::io::stdout()),
             initialize_seen: false,
+            legacy_initialize_echo: None,
         };
         let service = server
             .serve(transport)
@@ -122,11 +123,13 @@ pub(crate) fn serve_bound_with_profile(
 /// a method-not-found error and notifications (e.g.
 /// `notifications/roots/list_changed`) are dropped (issue #419).
 /// Before rmcp 3.11 all messages from initialize on passed through, with the
-/// SDK treating later discover requests as unknown. Now we translate only
-/// discover to retain that error, and still refuse other openers except ping.
+/// SDK treating later discover requests as unknown. Now we translate later
+/// discover requests to retain that error, and still refuse other openers
+/// except ping.
 struct PreInitializeTolerance<T> {
     inner: T,
     initialize_seen: bool,
+    legacy_initialize_echo: Option<RequestId>,
 }
 
 impl<T: Transport<StdioWireRole>> Transport<RoleServer> for PreInitializeTolerance<T> {
@@ -134,8 +137,17 @@ impl<T: Transport<StdioWireRole>> Transport<RoleServer> for PreInitializeToleran
 
     fn send(
         &mut self,
-        item: ServerJsonRpcMessage,
+        mut item: ServerJsonRpcMessage,
     ) -> impl Future<Output = std::result::Result<(), Self::Error>> + Send + 'static {
+        // rmcp 1.8 echoed this explicit version. Restore only the wire reply:
+        // rmcp 3.11 treats the same version as the new inline lifecycle.
+        if let ServerJsonRpcMessage::Response(response) = &mut item
+            && self.legacy_initialize_echo.as_ref() == Some(&response.id)
+            && let ServerResult::InitializeResult(result) = &mut response.result
+        {
+            result.protocol_version = ProtocolVersion::V_2026_07_28;
+            self.legacy_initialize_echo = None;
+        }
         self.inner.send(item)
     }
 
@@ -169,8 +181,11 @@ impl<T: Transport<StdioWireRole>> Transport<RoleServer> for PreInitializeToleran
                 _ if self.initialize_seen => return Some(message),
                 ClientJsonRpcMessage::Request(request) => match &request.request {
                     ClientRequest::PingRequest(_) => return Some(message),
-                    ClientRequest::InitializeRequest(_) => {
+                    ClientRequest::InitializeRequest(initialize) => {
                         self.initialize_seen = true;
+                        if initialize.params.protocol_version == ProtocolVersion::V_2026_07_28 {
+                            self.legacy_initialize_echo = Some(request.id.clone());
+                        }
                         return Some(message);
                     }
                     _ => return None,
