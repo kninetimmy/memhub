@@ -1,4 +1,7 @@
 mod binding;
+#[cfg(test)]
+mod stdio_tests;
+mod stdio_wire;
 
 use std::borrow::Cow;
 use std::future::{self, Future};
@@ -7,11 +10,13 @@ use std::sync::OnceLock;
 
 use log::info;
 use rmcp::ErrorData as McpError;
+use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
 use rmcp::model::{
-    ClientJsonRpcMessage, ClientRequest, CustomRequest, DiscoverRequestMethod, Implementation,
-    InitializeRequestParams, InitializeResult, MetaObject, ProtocolVersion, RequestId,
-    ServerCapabilities, ServerConfig, ServerJsonRpcMessage, ToolAnnotations,
+    CallToolRequestMethod, CallToolRequestParams, CallToolResponse, ClientJsonRpcMessage,
+    ClientRequest, CustomRequest, DiscoverRequestMethod, Implementation, InitializeRequestParams,
+    InitializeResult, MetaObject, ProtocolVersion, RequestId, ServerCapabilities, ServerConfig,
+    ServerJsonRpcMessage, ToolAnnotations,
 };
 use rmcp::service::RequestContext;
 use rmcp::transport::{Transport, async_rw::AsyncRwTransport};
@@ -37,6 +42,7 @@ use crate::retrieval::{
     self, RecallHit, RecallOptions, RecallResponse, RecallSurface, RecallWarning, SourceType,
 };
 use binding::{BindingEvidence, ServerBinding};
+use stdio_wire::{LegacyTaskControl, StdioWireRole, into_sdk_message};
 
 const LOOKUP_ONLY_TOOLS: [&str; 4] = ["status", "recall", "get_row", "locate"];
 const STDIO_PROTOCOL_CEILING: ProtocolVersion = ProtocolVersion::V_2025_11_25;
@@ -95,7 +101,7 @@ pub(crate) fn serve_bound_with_profile(
 
     runtime.block_on(async move {
         let transport = PreInitializeTolerance {
-            inner: AsyncRwTransport::new_server(tokio::io::stdin(), tokio::io::stdout()),
+            inner: AsyncRwTransport::new(tokio::io::stdin(), tokio::io::stdout()),
             initialize_seen: false,
         };
         let service = server
@@ -123,7 +129,7 @@ struct PreInitializeTolerance<T> {
     initialize_seen: bool,
 }
 
-impl<T: Transport<RoleServer>> Transport<RoleServer> for PreInitializeTolerance<T> {
+impl<T: Transport<StdioWireRole>> Transport<RoleServer> for PreInitializeTolerance<T> {
     type Error = T::Error;
 
     fn send(
@@ -135,7 +141,7 @@ impl<T: Transport<RoleServer>> Transport<RoleServer> for PreInitializeTolerance<
 
     async fn receive(&mut self) -> Option<ClientJsonRpcMessage> {
         loop {
-            let message = self.inner.receive().await?;
+            let message = into_sdk_message(self.inner.receive().await?);
             match &message {
                 ClientJsonRpcMessage::Request(request)
                     if request.request.method() == "server/discover" =>
@@ -1171,6 +1177,32 @@ impl MemhubServer {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for MemhubServer {
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> std::result::Result<CallToolResponse, McpError> {
+        // rmcp 1.8 rejected task augmentation without dispatching a tool.
+        // rmcp 3.11 drops the legacy control, so preserve the old refusal
+        // before delegating ordinary calls to the same launch-fixed router.
+        if let Some(task) = context.extensions.get::<LegacyTaskControl>() {
+            return Err(match task {
+                LegacyTaskControl::Malformed => {
+                    McpError::method_not_found::<CallToolRequestMethod>()
+                }
+                LegacyTaskControl::Object if self.tool_router.get(&request.name).is_some() => {
+                    McpError::invalid_params("Tool does not support task-based invocation", None)
+                }
+                LegacyTaskControl::Object => {
+                    McpError::internal_error("Task processing not implemented", None)
+                }
+            });
+        }
+        self.tool_router
+            .call(ToolCallContext::new(self, request, context))
+            .await
+    }
+
     fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
         Cow::Borrowed(ProtocolVersion::known_up_to(&STDIO_PROTOCOL_CEILING))
     }

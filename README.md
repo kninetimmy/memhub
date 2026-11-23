@@ -932,11 +932,17 @@ Every write records two things. `source` on facts and decisions says where a cla
 
 ### MCP server
 
-`memhub serve` starts a stdio MCP server. Before issue #439 every launch
-exposed the full catalog below. After issue #439, omission of `--profile` or
-an explicit `--profile full` retains that behavior, including direct/staged
-writes, attribution, and the existing sync-adopt and raw-transcript
-confirmation gates:
+`memhub serve` starts a stdio MCP server. Before the rmcp 3.11 upgrade, incoming
+JSON-RPC lines had no size limit. Now both profiles use the SDK's 16 MiB limit
+per incoming line; oversized lines are discarded without closing the session.
+Task-augmented `tools/call` requests remain unsupported in both profiles:
+the legacy `params.task` control cannot dispatch a tool. It is distinct from
+any tool-defined argument under `params.arguments`.
+
+Before issue #439 every launch exposed the full catalog below. After issue
+#439, omission of `--profile` or an explicit `--profile full` retains that
+behavior, including direct/staged writes, attribution, and the existing
+sync-adopt and raw-transcript confirmation gates:
 
 - **Lookup/query:** `status`, `search`, `recall`, `get_row`, `locate`, `list_tasks`, `list_decisions`, `list_facts`, `list_pending_writes`, `get_command`
 - **Write (direct):** `task_add`, `task_done`, `record_command`, `log_session_note`, `render`, `doc_add`, `archive_transcript`
