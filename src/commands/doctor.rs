@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, params};
 
+use super::omp::{self, Registration};
 use crate::Result;
 use crate::commands::{index, sync};
 use crate::config::{ProjectConfig, RetrievalMode};
@@ -116,14 +117,19 @@ pub struct DoctorReport {
 }
 
 pub fn run(start: &Path, strict: bool) -> Result<DoctorReport> {
-    run_with_home(start, strict, db::home_dir().ok())
+    run_with_home(start, strict, db::home_dir().ok(), omp::active_agent_dir())
 }
 
 /// Core orchestration. `home` is injected (rather than resolved inline)
 /// so the integration checks are hermetically testable - they
 /// must never depend on the ambient state of the machine running
 /// `cargo test`.
-fn run_with_home(start: &Path, strict: bool, home: Option<PathBuf>) -> Result<DoctorReport> {
+fn run_with_home(
+    start: &Path,
+    strict: bool,
+    home: Option<PathBuf>,
+    omp_agent: std::io::Result<Option<PathBuf>>,
+) -> Result<DoctorReport> {
     let ctx = db::open_project(start)?;
     // Project (absorbs /check-init).
     let mut checks = vec![
@@ -149,6 +155,7 @@ fn run_with_home(start: &Path, strict: bool, home: Option<PathBuf>) -> Result<Do
     checks.push(check_mcp_opencode(&ctx.paths.repo_root, home.as_deref()));
     checks.push(check_mcp_antigravity(home.as_deref()));
     checks.extend(check_installed_skills(home.as_deref()));
+    checks.extend(check_omp(start, omp_agent));
     checks.push(check_sync_freshness(start, &ctx.config));
 
     Ok(build_report(&ctx.config.project_name, checks, strict))
@@ -1140,6 +1147,148 @@ const ACTIVE_SKILL_NAMES: &[&str] = &[
     "wrap-up",
 ];
 
+fn check_omp(cwd: &Path, agent: std::io::Result<Option<PathBuf>>) -> [Check; 2] {
+    const REGISTRATION: &str = "mcp_registration_omp";
+    const SKILLS: &str = "installed_skills_omp";
+    const STATIC_ONLY: &str = "Static OMP 19.1.1 check for the server named memhub; +        not a connectivity test. Imported providers, project-config filtering +        (mcp.enableProjectConfig), environment expansion, and runtime policy can change the result.";
+    let agent = match agent {
+        Ok(Some(agent)) => agent,
+        other => {
+            let (status, message) = match other {
+                Err(e) => (
+                    Status::Warn,
+                    format!("cannot resolve active OMP agent directory: {e}"),
+                ),
+                _ => (
+                    Status::Skipped,
+                    "OMP not set up (active agent directory absent)".into(),
+                ),
+            };
+            return [
+                Check::new(REGISTRATION, Group::Integrations, status, message.clone()),
+                Check::new(SKILLS, Group::Integrations, status, message),
+            ];
+        }
+    };
+
+    let (registration, malformed) = omp::registration(cwd, &agent);
+    let (status, message) = match registration {
+        Registration::Configured(source) => (
+            Status::Ok,
+            format!("memhub configured for OMP in {}", source.display()),
+        ),
+        Registration::Disabled(source) => (
+            Status::Warn,
+            format!(
+                "memhub disabled for OMP (entry or active-profile list); source: {}",
+                source.display()
+            ),
+        ),
+        Registration::Malformed(source) => (
+            Status::Warn,
+            format!(
+                "malformed or unreadable OMP MCP configuration: {}",
+                source.display()
+            ),
+        ),
+        Registration::Missing => (
+            Status::Warn,
+            format!(
+                "memhub registration missing in inspected OMP files at {} and {}",
+                cwd.display(),
+                agent.display()
+            ),
+        ),
+    };
+    let mut detail = STATIC_ONLY.to_string();
+    if !malformed.is_empty() {
+        detail.push_str(" Skipped malformed or unreadable files: ");
+        detail.push_str(
+            &malformed
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join("; "),
+        );
+    }
+    let registration =
+        Check::new(REGISTRATION, Group::Integrations, status, message).with_detail(detail);
+
+    let absent = ACTIVE_SKILL_NAMES
+        .iter()
+        .copied()
+        .filter(|name| {
+            let relative = Path::new("skills").join(name).join("SKILL.md");
+            !matches!(omp::direct_metadata(&agent, &relative), Ok(Some(meta)) if meta.is_file())
+        })
+        .collect::<Vec<_>>();
+    let target = agent.join("skills");
+    let (status, message) = if absent.is_empty() {
+        (
+            Status::Ok,
+            format!(
+                "all {} active Memhub entrypoint files present at {}",
+                ACTIVE_SKILL_NAMES.len(),
+                target.display()
+            ),
+        )
+    } else {
+        (
+            Status::Warn,
+            format!(
+                "missing or unavailable active Memhub entrypoints at {}: {}. Run +            `memhub upgrade` from the Memhub source checkout to sync installed skills",
+                target.display(),
+                absent.join(", ")
+            ),
+        )
+    };
+    let skills = Check::new(SKILLS, Group::Integrations, status, message).with_detail(
+        "Presence only: content freshness and OMP discovery are not checked. Nothing is repaired automatically.",
+    );
+    [registration, skills]
+}
+
+#[cfg(test)]
+#[test]
+fn omp_doctor_reports_presence_without_repair_or_endpoint_disclosure() {
+    let temp = tempfile::tempdir().unwrap();
+    let cwd = temp.path().join("project");
+    let agent = temp.path().join("agent");
+    fs::create_dir(&cwd).unwrap();
+    fs::create_dir(&agent).unwrap();
+    let skipped = check_omp(&cwd, Ok(None));
+    assert!(skipped.iter().all(|c| c.status == Status::Skipped));
+    let inspect = || check_omp(&cwd, Ok(Some(agent.clone())));
+    let [registration, skills] = inspect();
+    assert_eq!(registration.status, Status::Warn);
+    assert!(registration.message.contains("missing"));
+    assert_eq!(skills.status, Status::Warn);
+    assert!(skills.message.contains("wrap-up"));
+    assert!(!agent.join("skills").exists());
+    let config = cwd.join(".mcp.json");
+    let text = r#"{"mcpServers":{"memhub":{"url":"https://example.invalid/opaque-fixture"}}}"#;
+    fs::write(&config, text).unwrap();
+    let [registration, _] = inspect();
+    assert_eq!(registration.id, "mcp_registration_omp");
+    assert_eq!(registration.status, Status::Ok);
+    assert!(registration.message.contains(".mcp.json"));
+    assert!(
+        registration
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("not a connectivity test")
+    );
+    assert!(!format!("{registration:?}").contains("opaque-fixture"));
+    assert_eq!(fs::read_to_string(config).unwrap(), text);
+    for name in ACTIVE_SKILL_NAMES {
+        let dir = agent.join("skills").join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("SKILL.md"), "custom skill").unwrap();
+    }
+    assert_eq!(inspect()[1].status, Status::Ok);
+}
+
 // (check id, home-relative install directory, directory-per-skill layout)
 const SKILL_INSTALL_SURFACES: &[(&str, &str, bool)] = &[
     ("installed_skills_claude", ".claude/commands", false),
@@ -2025,8 +2174,13 @@ mod tests {
         let temp = healthy_repo();
         let home = empty_home();
 
-        let report =
-            run_with_home(temp.path(), false, Some(home.path().to_path_buf())).expect("doctor");
+        let report = run_with_home(
+            temp.path(),
+            false,
+            Some(home.path().to_path_buf()),
+            Ok(None),
+        )
+        .expect("doctor");
 
         assert_eq!(report.overall, Status::Ok, "checks: {:#?}", report.checks);
         assert_eq!(report.exit_code, 0);
@@ -2044,16 +2198,21 @@ mod tests {
         // seeds exactly one warn (render_freshness).
         fact::add(temp.path(), "k", "v", "user", "cli:user").expect("fact");
 
-        let plain =
-            run_with_home(temp.path(), false, Some(home.path().to_path_buf())).expect("doctor");
+        let plain = run_with_home(
+            temp.path(),
+            false,
+            Some(home.path().to_path_buf()),
+            Ok(None),
+        )
+        .expect("doctor");
         assert!(plain.counts.warn >= 1, "checks: {:#?}", plain.checks);
         assert_eq!(
             plain.exit_code, 0,
             "a warn alone must not fail the plain (non-strict) exit code"
         );
 
-        let strict =
-            run_with_home(temp.path(), true, Some(home.path().to_path_buf())).expect("doctor");
+        let strict = run_with_home(temp.path(), true, Some(home.path().to_path_buf()), Ok(None))
+            .expect("doctor");
         assert_eq!(strict.exit_code, 1, "checks: {:#?}", strict.checks);
         assert_eq!(strict.overall, Status::Warn);
     }

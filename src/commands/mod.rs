@@ -18,6 +18,7 @@ pub mod lifecycle;
 #[cfg(feature = "metrics")]
 pub mod metrics;
 pub mod narrative;
+mod omp;
 pub mod pending_write;
 pub mod prune;
 pub mod render;

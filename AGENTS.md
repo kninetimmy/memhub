@@ -1,6 +1,6 @@
-# memhub — Codex / OpenCode / Antigravity instructions
+# memhub — Codex / OpenCode / Antigravity / Oh My Pi instructions
 
-Local-first Rust CLI for durable per-repo project memory shared between Codex, Claude Code, OpenCode, and Antigravity. Treat [docs/reference/memhub-prd.md](docs/reference/memhub-prd.md) as the product authority and do not silently diverge from it.
+Local-first Rust CLI for durable per-repo project memory shared between Codex, Claude Code, OpenCode, Antigravity, and Oh My Pi. Treat [docs/reference/memhub-prd.md](docs/reference/memhub-prd.md) as the product authority and do not silently diverge from it.
 
 Operational detail for every subsystem — retrieval, token accounting, doc ingestion, the code index, machine-global memory, cross-machine workflow and Drive sync, and machine-wide upgrade/GC — now lives in [docs/reference/operations.md](docs/reference/operations.md) and is memhub-recall-searchable. Recall it on demand rather than loading it every session; this file keeps only what an agent needs inline from turn one.
 
@@ -11,7 +11,7 @@ rendered: .memhub/rendered/
 config: .memhub/config.toml
 <!-- /memhub:managed-block -->
 
-This file is the Codex / OpenCode / Antigravity counterpart to `CLAUDE.md`, and is **generated** from it by `generate_agents_md` — do not hand-edit it; edit `CLAUDE.md` and regenerate with `MEMHUB_REGEN=1 cargo test skill_parity`. The two exist so Codex CLI, OpenCode CLI, Antigravity CLI, and Claude Code sessions get the same orientation when they open this repo; where they diverge it is intentional (a different H1, plus the Codex/OpenCode/Antigravity-only sections injected at the end).
+This file is the counterpart to `CLAUDE.md` for Codex, OpenCode, Antigravity, and Oh My Pi. It is **generated** by `generate_agents_md` — do not hand-edit it; edit `CLAUDE.md` and regenerate with `MEMHUB_REGEN=1 cargo test skill_parity`. The orientation is shared; the title and host-specific sections differ intentionally.
 
 ## Session Continuity
 
@@ -97,7 +97,7 @@ cargo run -- init
 cargo run -- status
 ```
 
-## Agent attribution (Codex / OpenCode / Antigravity)
+## Agent attribution (Codex / OpenCode / Antigravity / Oh My Pi)
 
 When you write to memhub from the CLI, identify yourself so the row gets attributed correctly. Two flags matter:
 
@@ -111,12 +111,13 @@ Use your own host's ids (never another host's):
 | Codex | `user+agent:codex` | `codex:wrap-up` |
 | OpenCode | `user+agent:opencode` | `opencode:wrap-up` |
 | Antigravity | `user+agent:antigravity` | `antigravity:wrap-up` |
+| Oh My Pi (OMP) | `user+agent:omp` | `omp:wrap-up` |
 
 See [docs/reference/memhub-prd-source-vocabulary-addendum.md](docs/reference/memhub-prd-source-vocabulary-addendum.md) for the full vocabulary (`user`, `agent:<id>`, `user+agent:<id>`, `git`, `observed`).
 
-Once `memhub serve` is registered with your host (Codex: `~/.codex/config.toml`; Antigravity: `agy mcp add memhub memhub serve`; a per-machine step — see README's "Register the MCP server"; `memhub doctor` reports current status), writes via MCP attribute automatically — the server reads `clientInfo.name` from `initialize` and tags writes with the bare host name (`codex` / `opencode` / `antigravity`) without you needing to pass anything.
+Once `memhub serve` is registered with your host (Codex: `~/.codex/config.toml`; Antigravity: `agy mcp add memhub memhub serve`; see README's "Register the MCP server"), MCP writes are attributed automatically from `initialize` `clientInfo.name`. OMP 19.1.1 sends `omp-coding-agent`; memhub normalizes it to `omp` and keeps the raw provenance. In OMP, reuse the repo's portable registration rather than adding a second server. `memhub doctor` reports configuration.
 
-## memhub routing (Codex / OpenCode / Antigravity)
+## memhub routing (Codex / OpenCode / Antigravity / Oh My Pi)
 memhub is this repo's project memory. When intent matches, use the memhub MCP tools — do
 not fall through to Grep/Read/manual scan:
 - past decisions / status / "is there a fact/task about X" → `recall`
@@ -129,7 +130,8 @@ Never Grep for code by intent before `locate`. Never read `PROJECT_LEDGER.md` be
 (it is the fallback). Never write facts/decisions directly — stage via `propose_fact` /
 `propose_decision`, durable on `memhub review accept`.
 (Carrier note: Claude Code gets these rules from the MCP `instructions` field; this block is
-the Codex/OpenCode/Antigravity fallback pending the Wave 4 delivery spike.)
+the Codex/OpenCode/Antigravity fallback pending the Wave 4 delivery spike, and the OMP
+fallback. OMP has no memhub session-start hook.)
 
 <!-- orchestrator:managed:start version=1 -->
 This file is partially managed by Orch (see `.orchestrator/config.toml`).

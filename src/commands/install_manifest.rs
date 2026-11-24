@@ -62,7 +62,7 @@ struct ManifestFile {
 /// string form is stable across runs on the same machine — no
 /// canonicalization is needed (and the target may not exist yet at
 /// decision time, so canonicalization would be unavailable anyway).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InstallManifest {
     files: BTreeMap<String, String>,
 }

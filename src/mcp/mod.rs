@@ -2544,6 +2544,7 @@ fn normalize_client_name(name: &str) -> String {
         // `cli`, so include it in the OpenCode actor bucket.
         "opencode" | "open-code" | "opencode-cli" | "cli" => "opencode".to_string(),
         "antigravity" | "antigravity-client" => "antigravity".to_string(),
+        "omp-coding-agent" => "omp".to_string(),
         other => {
             // An unmapped client still works (it buckets under its own
             // name); the warning surfaces the missing alias so it can be
@@ -2930,6 +2931,7 @@ mod tests {
         assert_eq!(normalize_client_name("OpenCode"), "opencode");
         assert_eq!(normalize_client_name("opencode-cli"), "opencode");
         assert_eq!(normalize_client_name("antigravity-client"), "antigravity");
+        assert_eq!(normalize_client_name("omp-coding-agent"), "omp");
         assert_eq!(normalize_client_name("CustomClient"), "customclient");
     }
 

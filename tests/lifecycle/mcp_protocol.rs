@@ -1912,6 +1912,41 @@ fn antigravity_proposals_keep_identity_and_wait_for_acceptance() {
     }
 }
 
+#[test]
+fn omp_mcp_proposal_has_native_actor_and_raw_provenance() {
+    let temp = tempdir().unwrap();
+    init::run(temp.path()).unwrap();
+    let initialize = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+        "protocolVersion":"2025-11-25", "capabilities":{},
+        "clientInfo":{"name":"omp-coding-agent","version":"19.1.1"}
+    }});
+    let initialized = json!({"jsonrpc":"2.0","method":"notifications/initialized"});
+    let fact = json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"propose_fact","arguments":{"key":"test-omp","value":"fixture only","rationale":"Keep it pending"}}});
+    let replies = replay(temp.path(), &[initialize, initialized, fact], &[1, 2]);
+    let body = structured(&replies[&2]);
+    assert_eq!(body["status"], "pending");
+    assert_eq!(body["actor"], "omp");
+    assert_eq!(body["actor_raw"], "omp-coding-agent");
+    let ctx = memhub::db::open_project(temp.path()).unwrap();
+    let facts: i64 = ctx
+        .conn
+        .query_row("SELECT COUNT(*) FROM facts", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(facts, 0);
+    let provenance: String = ctx
+        .conn
+        .query_row(
+            "SELECT provenance_json FROM pending_writes WHERE actor = 'omp' AND status = 'pending'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&provenance).unwrap()["client_name"],
+        "omp-coding-agent"
+    );
+}
+
 // Tiny helper to keep the spawn loop terminating on timeout. Avoid pulling
 // in the `wait_timeout` crate; do it with a manual poll loop.
 trait WaitTimeoutExt {

@@ -176,7 +176,7 @@ pub fn run(cwd: &Path, args: UpgradeArgs) -> Result<()> {
 
     // Windows-only self-replace gate. Best-effort sweep first so an
     // earlier run's abandoned shim never accumulates.
-    if cfg!(windows) && !args.staged {
+    if cfg!(windows) && !args.staged && !args.dry_run {
         sweep_stale_staging();
     }
     let in_conflict =
@@ -2230,6 +2230,8 @@ enum CopyKind {
     FlatMd,
     /// One dir per skill, used by Codex and OpenCode skills.
     DirPerSkill,
+    /// A single native SKILL.md per directory, confined to the active OMP agent.
+    OmpSkill,
 }
 
 /// Additively copy the repo's skill templates over the installed agent
@@ -2414,15 +2416,12 @@ pub fn sync_skills(source_repo: &Path, dry: bool) -> ResyncReport {
             }
         }
     }
-    orphans.sort();
-    orphans.dedup();
-
     // First-run notice (REQUIRED 1b): the first time memhub consults an
     // empty manifest and leaves at least one pre-existing file untouched,
     // flag it so the caller can explain the remedy — otherwise a
     // memhub-written-but-unprovable file stays frozen with nothing said.
     let protected_total: usize = agents.iter().map(|a| a.protected).sum();
-    let first_run_hint = manifest.is_empty() && protected_total > 0;
+    let mut first_run_hint = manifest.is_empty() && protected_total > 0;
 
     // Persist the refreshed ownership record. Best-effort and never fatal
     // (same posture as the registry write): a failure just means memhub
@@ -2436,11 +2435,170 @@ pub fn sync_skills(source_repo: &Path, dry: bool) -> ResyncReport {
         log::debug!("install manifest save skipped: {e}");
     }
 
+    let (omp_report, omp_first_run_hint) = sync_omp(
+        &home,
+        &skills_root,
+        super::omp::active_agent_dir(),
+        dry,
+        &mut orphans,
+    );
+    agents.push(omp_report);
+    first_run_hint |= omp_first_run_hint;
+    orphans.sort();
+    orphans.dedup();
+
     ResyncReport {
         agents,
         orphans,
         first_run_hint,
     }
+}
+
+fn sync_omp(
+    home: &Path,
+    skills_root: &Path,
+    agent_dir: std::io::Result<Option<PathBuf>>,
+    dry: bool,
+    orphans: &mut Vec<String>,
+) -> (SkillSync, bool) {
+    use super::omp;
+
+    let unresolved = |status, detail| SkillSync {
+        agent: "omp".to_string(),
+        target: String::new(),
+        status,
+        synced: 0,
+        protected: 0,
+        detail: Some(detail),
+    };
+    let agent_dir = match agent_dir {
+        Ok(Some(path)) => path,
+        Ok(None) => {
+            return (
+                unresolved(
+                    SkillSyncStatus::Skipped,
+                    "active OMP agent directory absent (not set up)".into(),
+                ),
+                false,
+            );
+        }
+        Err(e) => {
+            return (
+                unresolved(
+                    SkillSyncStatus::Warn,
+                    format!("cannot resolve active OMP agent directory: {e}"),
+                ),
+                false,
+            );
+        }
+    };
+    let target = agent_dir.join("skills");
+    // Keep ownership by resolved target, so neither orphan detection nor
+    // manifest refresh consults (or forgets ownership in) an inactive profile.
+    let manifest_path = home.join(db::GLOBAL_MEMHUB_DIRNAME).join(format!(
+        "install-manifest-omp-{}.json",
+        sha256_hex(target.as_os_str().as_encoded_bytes()),
+    ));
+    let manifest = InstallManifest::load_from(&manifest_path);
+    let outcome = sync_one(
+        "omp",
+        &[skills_root.join("omp")],
+        &target,
+        Some(&agent_dir),
+        CopyKind::OmpSkill,
+        dry,
+        &manifest,
+    );
+    let first_run_hint = manifest.is_empty() && outcome.report.protected > 0;
+    if outcome.enumerated {
+        let mut next = InstallManifest::default();
+        for (key, hash) in &outcome.shipped {
+            if let Some(hash) = hash {
+                next.record(key.clone(), hash.clone());
+            }
+        }
+        let mut candidates = manifest
+            .keys()
+            .map(|key| PathBuf::from(key.as_str()))
+            .collect::<Vec<_>>();
+        if !cfg!(feature = "metrics") {
+            candidates.push(target.join("metrics/SKILL.md"));
+        }
+        for path in candidates {
+            if let Ok(relative) = path.strip_prefix(&target)
+                && !outcome
+                    .shipped
+                    .iter()
+                    .any(|(key, _)| Path::new(key) == path)
+                && matches!(
+                    omp::direct_metadata(&agent_dir, &Path::new("skills").join(relative)),
+                    Ok(Some(_))
+                )
+            {
+                orphans.push(abbrev(&path));
+            }
+        }
+        if !dry
+            && next != manifest
+            && let Err(e) = next.save_to(&manifest_path)
+        {
+            log::debug!("OMP install manifest save skipped: {e}");
+        }
+    }
+    (outcome.report, first_run_hint)
+}
+
+#[cfg(test)]
+#[test]
+fn omp_resync_keeps_profile_ownership_and_customizations() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path();
+    let a = home.join("profiles/a/agent");
+    let b = home.join("profiles/b/agent");
+    let source = home.join("templates/skills");
+    for path in [
+        &a,
+        &b,
+        &source.join("omp/recall"),
+        &source.join("omp/metrics"),
+    ] {
+        std::fs::create_dir_all(path).unwrap();
+    }
+    let template = source.join("omp/recall/SKILL.md");
+    std::fs::write(&template, "shipped 1").unwrap();
+    std::fs::write(source.join("omp/metrics/SKILL.md"), "metrics").unwrap();
+    let run =
+        |agent: Option<PathBuf>, dry| sync_omp(home, &source, Ok(agent), dry, &mut Vec::new()).0;
+    assert_eq!(run(None, false).status, SkillSyncStatus::Skipped);
+    let a_skill = a.join("skills/recall/SKILL.md");
+    let b_skill = b.join("skills/recall/SKILL.md");
+    let preview = run(Some(a.clone()), true);
+    assert_eq!(preview.synced, 1 + usize::from(cfg!(feature = "metrics")));
+    assert!(!a.join("skills").exists());
+    assert!(!home.join(".memhub").exists());
+    assert_eq!(run(Some(a.clone()), false).synced, preview.synced);
+    assert!(!b.join("skills").exists());
+    assert_eq!(
+        a.join("skills/metrics/SKILL.md").exists(),
+        cfg!(feature = "metrics")
+    );
+    let updated = std::fs::metadata(&a_skill).unwrap().modified().unwrap();
+    run(Some(a.clone()), false);
+    assert_eq!(
+        std::fs::metadata(&a_skill).unwrap().modified().unwrap(),
+        updated
+    );
+    run(Some(b.clone()), false);
+    std::fs::write(&template, "shipped 2").unwrap();
+    assert_eq!(run(Some(a.clone()), false).protected, 0);
+    assert_eq!(std::fs::read_to_string(&a_skill).unwrap(), "shipped 2");
+    assert_eq!(std::fs::read_to_string(&b_skill).unwrap(), "shipped 1");
+    std::fs::write(&a_skill, "user customization").unwrap();
+    assert_eq!(run(Some(a), false).protected, 1);
+    assert_eq!(
+        std::fs::read_to_string(&a_skill).unwrap(),
+        "user customization"
+    );
 }
 
 /// True when `key` (a target path string) lives under any of `prefixes`.
@@ -2508,8 +2666,8 @@ fn sync_one(
         enumerated,
     };
 
-    // Antigravity shares ~/.gemini with Gemini CLI; its own marker gates
-    // creating a missing shared skill directory, including during dry-run.
+    // Antigravity's CLI marker and OMP's active agent directory gate
+    // creating missing skill directories, including during dry-run.
     if let Some(setup) = setup {
         match std::fs::metadata(setup) {
             Ok(metadata) if metadata.is_dir() => {}
@@ -2528,13 +2686,24 @@ fn sync_one(
                         SkillSyncStatus::Warn
                     },
                     Some(format!(
-                        "cannot inspect Antigravity setup at {}: {e}",
+                        "cannot inspect {agent} setup at {}: {e}",
                         setup.display()
                     )),
                     false,
                 );
             }
         }
+    }
+
+    if matches!(kind, CopyKind::OmpSkill)
+        && let Err(e) =
+            super::omp::direct_metadata(setup.expect("OMP agent dir"), Path::new("skills"))
+    {
+        return skip(
+            SkillSyncStatus::Warn,
+            Some(format!("cannot inspect {label}: {e}")),
+            false,
+        );
     }
 
     // Without a setup marker, a missing install dir is never created.
@@ -2641,6 +2810,29 @@ fn sync_one(
                     continue;
                 }
                 sync_unit_dir(&from, &target.join(&name), manifest, dry)
+            }
+            CopyKind::OmpSkill => {
+                if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+                    continue;
+                }
+                let relative = Path::new("skills").join(&name).join("SKILL.md");
+                let agent_dir = setup.expect("OMP agent dir");
+                let to = agent_dir.join(&relative);
+                match super::omp::direct_metadata(agent_dir, &relative) {
+                    Ok(None) => sync_unit_flat(&from.join("SKILL.md"), &to, manifest, dry),
+                    // Never update through a hard link to another profile.
+                    Ok(Some(meta))
+                        if meta.is_file()
+                            && crate::fs_identity::file_info(&to)
+                                .is_ok_and(|info| info.links == 1) =>
+                    {
+                        sync_unit_flat(&from.join("SKILL.md"), &to, manifest, dry)
+                    }
+                    Ok(Some(_)) | Err(_) => (
+                        UnitStatus::Protected,
+                        vec![(to.to_string_lossy().into_owned(), None)],
+                    ),
+                }
             }
         };
         shipped.extend(leaves);

@@ -145,6 +145,7 @@ fn agent_skill_template_sets_match() {
     let codex = codex_skill_names();
     let opencode = opencode_skill_names();
     let antigravity = dir_per_skill_names("templates/skills/antigravity");
+    let omp = dir_per_skill_names("templates/skills/omp");
 
     assert!(!claude.is_empty(), "no Claude skill templates discovered");
     assert!(!codex.is_empty(), "no Codex skill templates discovered");
@@ -161,6 +162,10 @@ fn agent_skill_template_sets_match() {
         OPENCODE_ONLY_SKILLS.iter().map(|s| s.to_string()).collect();
 
     let canonical = canonical_skill_set();
+    assert_eq!(
+        omp, canonical,
+        "OMP skill templates must match the canonical set"
+    );
     assert_eq!(
         antigravity, canonical,
         "Antigravity skill templates must match the canonical set"
@@ -1042,10 +1047,10 @@ fn claude_md_managed_block_parses() {
     );
 }
 
-/// Every skill template file across all four agents, as absolute paths:
+/// Every skill template file across all five agents, as absolute paths:
 /// `templates/skills/claude/*.md`, `templates/skills/codex/*/SKILL.md`,
 /// active and hibernated `templates/skills/opencode*/*/SKILL.md` roots,
-/// and `templates/skills/antigravity/*/SKILL.md`.
+/// and the Antigravity and OMP directory-per-skill roots.
 fn all_skill_template_files() -> Vec<PathBuf> {
     let mut files = Vec::new();
 
@@ -1062,6 +1067,7 @@ fn all_skill_template_files() -> Vec<PathBuf> {
         "templates/skills/opencode",
         "templates/skills/opencode-hibernated",
         "templates/skills/antigravity",
+        "templates/skills/omp",
     ] {
         let dir = repo_root().join(relative);
         for entry in fs::read_dir(&dir).unwrap_or_else(|_| panic!("read {relative}")) {
@@ -1092,6 +1098,7 @@ fn wrap_up_templates_render_with_actor_and_resume_without_replaying_writes() {
             "templates/skills/antigravity/wrap-up/SKILL.md",
             "antigravity:wrap-up",
         ),
+        ("templates/skills/omp/wrap-up/SKILL.md", "omp:wrap-up"),
     ] {
         let path = repo_root().join(relative);
         let content =
@@ -1113,6 +1120,43 @@ fn wrap_up_templates_render_with_actor_and_resume_without_replaying_writes() {
             "{} must resume after durable writes instead of replaying them",
             path.display()
         );
+    }
+}
+
+#[test]
+fn omp_wrappers_have_native_names_and_attribution() {
+    let root = repo_root().join("templates/skills/omp");
+    for name in canonical_skill_set() {
+        let path = root.join(&name).join("SKILL.md");
+        let text = fs::read_to_string(&path).unwrap();
+        assert_eq!(text.lines().nth(1), Some(format!("name: {name}").as_str()));
+        assert!(
+            text.lines()
+                .nth(2)
+                .and_then(|line| line.strip_prefix("description:"))
+                .is_some_and(|description| !description.trim().is_empty())
+        );
+        for line in text.lines().filter(|line| line.contains("--actor omp:")) {
+            assert!(
+                line.contains(&format!("--actor omp:{name}")),
+                "{path:?}: {line}"
+            );
+        }
+        for foreign in ["claude", "codex", "opencode", "antigravity"] {
+            assert!(!text.contains(&format!("--actor {foreign}:")));
+            assert!(!text.contains(&format!("--source user+agent:{foreign}")));
+        }
+    }
+    let wrap = fs::read_to_string(root.join("wrap-up/SKILL.md")).unwrap();
+    for requirement in [
+        "memhub wrapup-policy",
+        "wait for explicit approval",
+        "memhub review accept",
+        "--source user+agent:omp",
+        "unsupported for OMP",
+        "turn one",
+    ] {
+        assert!(wrap.contains(requirement), "missing {requirement}");
     }
 }
 

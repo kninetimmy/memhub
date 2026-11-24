@@ -74,6 +74,7 @@ Agent wrap-up flows MUST pass `--source` explicitly on CLI writes:
 - Claude Code `/wrap-up` (~/.claude/commands/wrap-up.md): `--source user+agent:claude-code`
 - Codex `/wrap-up` (~/.codex/skills/wrap-up/SKILL.md): `--source user+agent:codex`
 - OpenCode `/wrap-up` (~/.config/opencode/skills/wrap-up/SKILL.md): `--source user+agent:opencode`
+- Oh My Pi `/skill:wrap-up` (active OMP agent's `skills/wrap-up/SKILL.md`): `--source user+agent:omp`
 
 This applies to `memhub fact add` and (post-0008) `memhub decision add`
 when the write originates from an agent-mediated approval step in the

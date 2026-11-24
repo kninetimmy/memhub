@@ -1851,6 +1851,45 @@ when `~/.gemini/antigravity-cli` is a directory, warning even if the entire
 skill directory is missing. A machine with only Gemini CLI remains skipped.
 Registration is a configuration check, not a live connection test.
 
+#### Oh My Pi
+
+Before #477, doctor had no OMP checks and upgrade installed no OMP skills.
+Now doctor reports `mcp_registration_omp` and `installed_skills_omp`. Both
+skip when the active agent directory is absent. For OMP 19.1.1 the
+default is `~/.omp/agent`; `OMP_PROFILE` (ahead of legacy `PI_PROFILE`)
+selects `~/.omp/profiles/<name>/agent`. An empty value or `default` selects
+the default. `PI_CONFIG_DIR` changes the config directory under home;
+`PI_CODING_AGENT_DIR` overrides only the default agent directory. When
+using OMP's `--profile` in another process, export the same `OMP_PROFILE`
+for memhub. Pass effective directory overrides in the environment; memhub
+does not load OMP's dotenv files or launch OMP to discover its settings.
+
+From the project working directory, doctor checks `.omp/mcp.json` then
+`.omp/.mcp.json`, then the active agent's `mcp.json` and `.mcp.json`, then
+root `mcp.json` and `.mcp.json`. The first definition named `memhub` wins
+among those sources, including an explicitly disabled entry. Only the
+active agent's primary `mcp.json` supplies `enabledServers` and
+`disabledServers`, and the denylist wins. An unreadable or malformed file
+that contributes no entry is noted; inspection can still find a lower
+priority entry. Imported providers, project config filtering
+(`mcp.enableProjectConfig`), environment interpolation and runtime policy
+are not evaluated. The report is not proof of tool discovery or live
+connectivity, and it never exposes registration values, writes OMP
+configuration, or launches a process for the OMP checks. The existing
+memhub database-open maintenance policy is unchanged. Reuse the portable
+`.mcp.json` registration when present rather than adding a second server.
+
+Upgrade copies `templates/skills/omp/<name>/SKILL.md` only into the active
+agent's `skills/`, never creates the agent directory, and never scans
+other profiles. Its per-target manifest in `~/.memhub` preserves ownership
+across profile switches without consulting inactive paths. Each wrapper
+keeps native name/description and the same active-inventory and metrics
+gate as the other hosts. Custom files are protected; linked paths are
+not followed inside the selected OMP directory. The older four hosts
+keep their install paths, ownership records and diagnostics. Before #477
+Windows upgrade could still sweep stale staging files before a dry run;
+now only non-preview upgrade performs that sweep.
+
 Embedding fill (issue #382): after each instance's migrate and recall
 smoke, the pass embeds, for the active model, every row that has no
 current vector (none, or one whose text changed) — in each hybrid-mode
@@ -2535,9 +2574,15 @@ Skill writes carry a fixed actor and source per agent:
 - Codex: `actor=codex:wrap-up`, `source=user+agent:codex`
 - OpenCode: `actor=opencode:wrap-up`, `source=user+agent:opencode`
 - Antigravity CLI: `actor=antigravity:wrap-up`, `source=user+agent:antigravity`
+- Oh My Pi: `actor=omp:wrap-up`, `source=user+agent:omp`
 
-All four share one database, and every write is tagged, so you always know
-who surfaced what:
+The four original hosts still share one database with the same attribution.
+Before #477, OMP's `omp-coding-agent` handshake name fell through to the
+unmapped bucket. Now that name maps to `omp`, retaining the raw MCP name in
+proposal provenance. Other client buckets and the unknown-client fallback
+are unchanged. All five hosts share the same project database and review
+policy. Neither `propose_fact` nor `propose_decision` writes a durable row;
+that restriction holds for both tools for every host, not just OMP.
 
 ```text
 source                      Meaning
@@ -2547,10 +2592,12 @@ agent:codex                 Codex proposed it (still in pending_writes)
 agent:claude-code           Claude proposed it
 agent:opencode              OpenCode proposed it
 agent:antigravity           Antigravity proposed it
+agent:omp                   Oh My Pi proposed it
 user+agent:codex            Codex surfaced via /wrap-up, you approved
 user+agent:claude-code      Same, Claude-side
 user+agent:opencode         Same, OpenCode-side
 user+agent:antigravity      Same, Antigravity-side
+user+agent:omp              Same, Oh My Pi-side
 git                         Reserved for git ingestion
 observed                    Reserved for observed signals
 ```
