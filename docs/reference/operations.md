@@ -1851,6 +1851,23 @@ when `~/.gemini/antigravity-cli` is a directory, warning even if the entire
 skill directory is missing. A machine with only Gemini CLI remains skipped.
 Registration is a configuration check, not a live connection test.
 
+Prune reporting (issues #479 / #464): upgrade now reports read-only
+per-repo category totals from the same full scanner as `memhub prune scan`,
+including similarity checks when the repo enables the reranker. Text labels
+and each JSON `prune_scan` entry's `timing` distinguish `before_upgrade`
+(`--dry-run`, current observable state) from `after_upgrade` (verified
+repos, after all selected roots finish cleanup and migration). Before this
+change upgrade reported no prune counts. Dry-run does not migrate or predict
+cleanup, config rewrites or future file identities; before and after counts
+can differ, including when another selected root owns an ingested source.
+An unscannable repo is unavailable with an error, never a zero count or an
+ancestor repo's results. Partial backup or similarity warnings remain in the
+summary. Scan failures do not change upgrade success or stop healthy repos'
+reports. Summaries point to `/prune` for review and change no memory rows or
+files; ordinary upgrade migration and cleanup are unchanged.
+`--no-prune-scan` bypasses scanning in both modes, including relaunches, and
+leaves the JSON `prune_scan` array empty with no text counts.
+
 Embedding fill (issue #382): after each instance's migrate and recall
 smoke, the pass embeds, for the active model, every row that has no
 current vector (none, or one whose text changed) — in each hybrid-mode

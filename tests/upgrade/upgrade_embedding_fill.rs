@@ -138,13 +138,13 @@ fn finish(home: &Path, also: &[&Path], json: bool) -> String {
     ok(work.path(), home, &args)
 }
 
-/// Whether an upgrade instance label names `repo`. Upgrade labels a repo
-/// with the path the registry recorded, which is canonicalized: on Windows
-/// `\\?\C:\Users\runneradmin\...` for a tempdir spelled
-/// `C:\Users\RUNNER~1\...`, on macOS `/private/var/...` for `/var/...`.
-/// Only the tempdir's own (unique) last component is the same in every form.
+/// Resolve both spellings, including Windows short paths and macOS /var aliases;
+/// a missing or unreadable path must not match, even another unresolved path.
 fn names(label: &str, repo: &Path) -> bool {
-    Path::new(label).file_name() == repo.file_name()
+    match (Path::new(label).canonicalize(), repo.canonicalize()) {
+        (Ok(label), Ok(repo)) => label == repo,
+        _ => false,
+    }
 }
 
 /// The JSON instance row for `repo`, or for the `<global store>` when `None`.
@@ -164,23 +164,64 @@ fn row(body: &Value, repo: Option<&Path>) -> Value {
         .clone()
 }
 
-/// The EMBEDDED cell of the text table's row labelled `label` (taken from
-/// the JSON output, so a label holding spaces, like a repo path with one or
-/// `<global store>`, is matched whole). Columns: INSTANCE, SCHEMA (one
-/// token once at head), EMBEDDED, STATUS.
+/// Match the actual text row's path, not the JSON label's spelling. Read the
+/// trailing SCHEMA, EMBEDDED, STATUS cells (one token each once at head) from
+/// the right so spaces in INSTANCE paths and `<global store>` stay intact.
 fn embedded_cell(text: &str, label: &str) -> String {
-    let rest: Vec<&str> = text
-        .lines()
-        .find_map(|l| {
-            l.trim_start()
-                .strip_prefix(label)
-                .filter(|r| r.starts_with(' '))
-                .map(|r| r.split_whitespace().collect())
+    text.lines()
+        .find_map(|line| {
+            let (rest, _) = line.trim().rsplit_once(char::is_whitespace)?;
+            let (rest, embedded) = rest.trim_end().rsplit_once(char::is_whitespace)?;
+            let (actual_label, _) = rest.trim_end().rsplit_once(char::is_whitespace)?;
+            let actual_label = actual_label.trim_end();
+            let matches = if label == "<global store>" {
+                actual_label == label
+            } else {
+                names(actual_label, Path::new(label))
+            };
+            matches.then(|| embedded.to_string())
         })
-        .unwrap_or_else(|| panic!("no {label:?} line: {text}"));
-    rest.get(1)
-        .unwrap_or_else(|| panic!("short {label:?} line: {text}"))
-        .to_string()
+        .unwrap_or_else(|| panic!("no {label:?} line: {text}"))
+}
+
+#[test]
+fn upgrade_embedding_rows_match_path_aliases_without_confusing_same_named_repos() {
+    let root = tempdir().expect("alias fixture");
+    let repo = root.path().join("first/repo with spaces");
+    let other = root.path().join("second/repo with spaces");
+    let intermediate = root.path().join("first/intermediate");
+    for path in [&repo, &other, &intermediate] {
+        std::fs::create_dir_all(path).expect("fixture directory");
+    }
+    let alias = intermediate.join("../repo with spaces");
+    assert_ne!(alias, repo);
+    assert_eq!(
+        alias.canonicalize().expect("canonical alias"),
+        repo.canonicalize().expect("canonical repo")
+    );
+    let label = alias.to_str().expect("utf-8 alias");
+    let body = serde_json::json!({
+        "instances": [
+            {"label": other, "embedded": 99},
+            {"label": label, "embedded": 7},
+            {"label": "<global store>", "embedded": 1}
+        ]
+    });
+    let text = format!(
+        "  {} 0027_prune_dismissals 99 ready\n  {} 0027_prune_dismissals 7 ready\n  <global store> 0027_prune_dismissals 1 ready\n",
+        other.display(),
+        repo.display()
+    );
+    assert_eq!(embedded_cell(&text, label), "7");
+    assert_eq!(row(&body, Some(&repo))["embedded"], 7);
+    assert_eq!(row(&body, Some(&other))["embedded"], 99);
+    assert_eq!(row(&body, None)["embedded"], 1);
+    assert_eq!(embedded_cell(&text, "<global store>"), "1");
+    assert!(names(label, &repo));
+    assert!(!names(label, &other));
+    let missing = root.path().join("missing/repo with spaces");
+    assert!(!names(missing.to_str().expect("utf-8 missing"), &repo));
+    assert!(!names(missing.to_str().expect("utf-8 missing"), &missing));
 }
 
 #[test]
