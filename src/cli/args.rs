@@ -174,6 +174,9 @@ pub enum TopLevelCommand {
         /// The binary + DB migrate still run.
         #[arg(long)]
         no_hooks: bool,
+        /// Skip the read-only per-repo prune summary.
+        #[arg(long)]
+        no_prune_scan: bool,
         /// Internal: set on the re-exec'd freshly installed binary to
         /// run only the migrate + verify pass.
         #[arg(long, hide = true)]
