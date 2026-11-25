@@ -322,6 +322,71 @@ fn assert_scan(summary: &Value, scan: &Value, timing: &str) {
 }
 
 #[test]
+fn upgrade_prune_after_observes_final_machine_outcome_without_changing_it() {
+    for failed in [false, true] {
+        let f = Fixture::new();
+        let observer = f.repo("observer");
+        let other = f.repo("other");
+        if failed {
+            db(&other)
+                .execute(
+                    "INSERT INTO schema_migrations(version) VALUES ('9999_future')",
+                    [],
+                )
+                .unwrap();
+        }
+        let status_file = f.home.join(".memhub/last_upgrade.json");
+        fs::create_dir_all(status_file.parent().unwrap()).unwrap();
+        let prior = json!({
+            "ok": true, "state": "ok", "summary": "prior upgrade", "unix_ms": 0
+        })
+        .to_string();
+        fs::write(&status_file, &prior).unwrap();
+        f.ok(&observer, &["doc", "add", status_file.to_str().unwrap()]);
+        let before = body(&f.ok(&observer, &["prune", "scan", "--json"]))["prune_scan"].clone();
+        assert_eq!(before["counts"]["out_of_date_document"]["total"], 0);
+        let memory_before = memory(&observer);
+        let flags = [
+            "--json",
+            "--also",
+            observer.to_str().unwrap(),
+            "--also",
+            other.to_str().unwrap(),
+        ];
+        let preview = body(&f.upgrade_ok("--dry-run", &flags));
+        assert_scan(&entry(&preview, &observer), &before, "before_upgrade");
+        assert_eq!(fs::read_to_string(&status_file).unwrap(), prior);
+
+        let actual = f.upgrade("--finish", &flags);
+        let expected_code = if failed { 1 } else { 0 };
+        assert_eq!(actual.status.code(), Some(expected_code));
+        let stdout = String::from_utf8(actual.stdout).unwrap();
+        let status_bytes = fs::read(&status_file).unwrap();
+        let status: Value = serde_json::from_slice(&status_bytes).unwrap();
+        assert_eq!(status["ok"], !failed);
+        assert_eq!(status["state"], if failed { "failed" } else { "ok" });
+        let final_line = format!(
+            "memhub upgrade: {} — {}",
+            if failed { "FAILED" } else { "SUCCESS" },
+            status["summary"].as_str().unwrap()
+        );
+        assert_eq!(stdout.lines().last().unwrap(), final_line);
+        let verified = f.upgrade("--verify-last", &[]);
+        assert_eq!(verified.status.code(), Some(expected_code));
+        assert_eq!(
+            String::from_utf8(verified.stdout).unwrap().trim(),
+            final_line
+        );
+
+        let after = body(&f.ok(&observer, &["prune", "scan", "--json"]))["prune_scan"].clone();
+        assert_eq!(after["counts"]["out_of_date_document"]["total"], 1);
+        assert_scan(&entry(&body(&stdout), &observer), &after, "after_upgrade");
+        assert_eq!(fs::read(&status_file).unwrap(), status_bytes);
+        assert_eq!(memory(&observer), memory_before);
+    }
+}
+
+#[test]
 fn upgrade_prune_before_and_after_observe_another_selected_roots_cleanup() {
     let f = Fixture::new();
     let observer = f.repo("a-observer");

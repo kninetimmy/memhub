@@ -230,7 +230,16 @@ pub fn correction_sweep(start: &Path, source_type: &str, id: i64) -> Result<Repo
 
 fn scan_readonly(start: &Path, old: Option<(&str, i64)>) -> Result<Report> {
     let paths = db::discover_paths(start)?;
-    let config = scan_config(&paths)?;
+    scan_readonly_paths(&paths, old)
+}
+
+/// Upgrade has already checked these paths against its selected root.
+pub(super) fn scan_paths(paths: &ProjectPaths) -> Result<Report> {
+    scan_readonly_paths(paths, None)
+}
+
+fn scan_readonly_paths(paths: &ProjectPaths, old: Option<(&str, i64)>) -> Result<Report> {
+    let config = scan_config(paths)?;
     let mut conn = Connection::open_with_flags(&paths.db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let tx = conn.transaction()?;
     let schema = db::ledger_schema(&tx)?;
@@ -246,7 +255,7 @@ fn scan_readonly(start: &Path, old: Option<(&str, i64)>) -> Result<Report> {
             )));
         }
     };
-    scan_in(&tx, &paths, &config, has_dismissals, true, old)
+    scan_in(&tx, paths, &config, has_dismissals, true, old)
 }
 
 fn scan_config(paths: &ProjectPaths) -> Result<ProjectConfig> {
@@ -797,6 +806,35 @@ fn document_file(root: &Path, path: &Path) -> DocumentFile {
 mod tests {
     use super::DocumentFile;
     use serde_json::{json, to_value};
+
+    #[test]
+    fn scan_paths_does_not_rediscover_parent_after_selected_project_disappears() {
+        let temp = tempfile::tempdir().unwrap();
+        let (parent, _) = crate::db::init_project(temp.path()).unwrap();
+        parent
+            .conn
+            .execute(
+                "INSERT INTO facts(key,value,verified_at) VALUES ('parent','old','2000-01-01')",
+                [],
+            )
+            .unwrap();
+        let child = temp.path().join("child");
+        std::fs::create_dir(&child).unwrap();
+        let (selected, _) = crate::db::init_project(&child).unwrap();
+        drop(selected);
+        let paths = crate::db::discover_paths(&child).unwrap();
+        assert_eq!(paths.repo_root, child);
+        assert_eq!(super::scan_paths(&paths).unwrap().total, 0);
+
+        std::fs::rename(&paths.memhub_dir, child.join("parked-project")).unwrap();
+        assert!(super::scan_paths(&paths).is_err());
+        assert!(
+            !paths.memhub_dir.exists(),
+            "read-only scan recreated project"
+        );
+        // Ordinary CLI discovery still walks to the initialized ancestor.
+        assert_eq!(super::scan(&child).unwrap().total, 1);
+    }
 
     #[cfg(windows)]
     #[test]

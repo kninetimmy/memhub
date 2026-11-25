@@ -61,7 +61,7 @@ impl Summary {
                     root.display()
                 )));
             }
-            prune::scan(root)
+            prune::scan_paths(&paths)
         });
         match result {
             Ok(report) => {

@@ -1015,8 +1015,33 @@ fn finish_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
         hook::install_session_hooks(false)
     };
 
-    // Another selected root can own an ingested source: observe only once
-    // every root's cleanup, config changes and migration are complete.
+    let failed: Vec<&str> = reports
+        .iter()
+        .filter(|r| matches!(r.status, InstanceStatus::Error(_)))
+        .map(|r| r.label.as_str())
+        .collect();
+    let ok = failed.is_empty();
+    let summary = if ok {
+        format!("{} instance(s) at head", reports.len())
+    } else {
+        format!("{} instance(s) failed: {}", failed.len(), failed.join(", "))
+    };
+
+    // The invoking shell may only ever see the orchestrator's exit(0)
+    // (Windows staged relaunch can't propagate a real code), so the
+    // outcome must be legible without the exit status: a durable status
+    // file plus an unambiguous final line. Best-effort, never fatal.
+    write_last_upgrade(
+        if ok {
+            UpgradeReportState::Ok
+        } else {
+            UpgradeReportState::Failed
+        },
+        &summary,
+    );
+
+    // Another selected root or the machine outcome file can be an ingested
+    // source: observe after all upgrade writes, without rewriting the outcome.
     let prune_scans: Vec<_> = roots
         .iter()
         .zip(&reports)
@@ -1046,30 +1071,6 @@ fn finish_phase(cwd: &Path, args: &UpgradeArgs) -> Result<()> {
         args.json,
     );
 
-    let failed: Vec<&str> = reports
-        .iter()
-        .filter(|r| matches!(r.status, InstanceStatus::Error(_)))
-        .map(|r| r.label.as_str())
-        .collect();
-    let ok = failed.is_empty();
-    let summary = if ok {
-        format!("{} instance(s) at head", reports.len())
-    } else {
-        format!("{} instance(s) failed: {}", failed.len(), failed.join(", "))
-    };
-
-    // The invoking shell may only ever see the orchestrator's exit(0)
-    // (Windows staged relaunch can't propagate a real code), so the
-    // outcome must be legible without the exit status: a durable status
-    // file plus an unambiguous final line. Best-effort, never fatal.
-    write_last_upgrade(
-        if ok {
-            UpgradeReportState::Ok
-        } else {
-            UpgradeReportState::Failed
-        },
-        &summary,
-    );
     if ok {
         println!("memhub upgrade: SUCCESS — {summary}");
     } else {
