@@ -59,6 +59,20 @@ fn dismiss_in(ctx: &mut db::ProjectContext, id: &str, actor: &str) -> Result<()>
     if !has_dismissals {
         db::migrate_for_prune_dismissal(&tx, &ctx.paths)?;
     }
+    record(&tx, id, actor)?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub(super) fn is_dismissed(conn: &Connection, id: &str) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM prune_dismissals WHERE project_id = 1 AND identifier = ?1)",
+        [id],
+        |r| r.get(0),
+    )?)
+}
+
+pub(super) fn record(tx: &rusqlite::Transaction<'_>, id: &str, actor: &str) -> Result<()> {
     if tx.execute(
         "INSERT INTO prune_dismissals(identifier) VALUES (?1)
          ON CONFLICT(project_id, identifier) DO NOTHING",
@@ -66,7 +80,7 @@ fn dismiss_in(ctx: &mut db::ProjectContext, id: &str, actor: &str) -> Result<()>
     )? > 0
     {
         db::log_write(
-            &tx,
+            tx,
             actor,
             "prune_dismissals",
             Some(tx.last_insert_rowid()),
@@ -74,7 +88,6 @@ fn dismiss_in(ctx: &mut db::ProjectContext, id: &str, actor: &str) -> Result<()>
             &format!("prune dismiss {id}"),
         )?;
     }
-    tx.commit()?;
     Ok(())
 }
 

@@ -280,23 +280,30 @@ pub fn verify(start: &Path, ident: &str, actor: &str) -> Result<Option<(i64, Str
     let Some((id, key)) = resolve_fact(&tx, ident)? else {
         return Ok(None);
     };
+    verify_in_tx(&tx, id, ident, actor)?;
+    tx.commit()?;
+    Ok(Some((id, key)))
+}
 
+pub(super) fn verify_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    id: i64,
+    ident: &str,
+    actor: &str,
+) -> Result<()> {
     tx.execute(
         "UPDATE facts SET verified_at = CURRENT_TIMESTAMP WHERE id = ?1",
         params![id],
     )?;
 
     db::log_write(
-        &tx,
+        tx,
         actor,
         "facts",
         Some(id),
         "verify",
         &format!("fact verify: {ident}"),
-    )?;
-
-    tx.commit()?;
-    Ok(Some((id, key)))
+    )
 }
 
 pub fn list(start: &Path) -> Result<Vec<Fact>> {

@@ -50,6 +50,26 @@ pub fn propose_fact_scoped(
     actor_raw: &str,
     provenance_json: &str,
 ) -> Result<i64> {
+    let payload = fact_payload(key, value, rationale, kind, global)?;
+    insert_pending_write(
+        start,
+        "fact",
+        &payload.to_string(),
+        rationale,
+        actor,
+        actor_raw,
+        "mcp propose_fact",
+        provenance_json,
+    )
+}
+
+fn fact_payload(
+    key: &str,
+    value: &str,
+    rationale: &str,
+    kind: Option<&str>,
+    global: bool,
+) -> Result<serde_json::Value> {
     ensure_non_empty("fact key", key)?;
     ensure_non_empty("fact value", value)?;
     ensure_non_empty("fact rationale", rationale)?;
@@ -64,15 +84,29 @@ pub fn propose_fact_scoped(
         payload["target"] = json!("global");
     }
 
-    insert_pending_write(
-        start,
+    Ok(payload)
+}
+
+pub(super) fn propose_prune_fact_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    key: &str,
+    value: &str,
+    kind: Option<&str>,
+    host: &str,
+    actor: &str,
+    candidate: &str,
+) -> Result<i64> {
+    let rationale = format!("wrap-up prune replacement for candidate {candidate}");
+    let payload = fact_payload(key, value, &rationale, kind, false)?;
+    insert_pending_write_in_tx(
+        tx,
         "fact",
         &payload.to_string(),
-        rationale,
+        &rationale,
+        host,
         actor,
-        actor_raw,
-        "mcp propose_fact",
-        provenance_json,
+        (actor, "wrap-up prune propose fact"),
+        "{}",
     )
 }
 
@@ -200,7 +234,31 @@ fn insert_pending_write(
     ensure_json("pending write provenance", provenance_json)?;
     let mut ctx = db::open_project(start)?;
     let tx = ctx.conn.transaction()?;
+    let row_id = insert_pending_write_in_tx(
+        &tx,
+        kind,
+        payload_json,
+        rationale,
+        actor,
+        actor_raw,
+        (actor, reason),
+        provenance_json,
+    )?;
+    tx.commit()?;
+    Ok(row_id)
+}
 
+#[allow(clippy::too_many_arguments)]
+fn insert_pending_write_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    kind: &str,
+    payload_json: &str,
+    rationale: &str,
+    actor: &str,
+    actor_raw: &str,
+    audit: (&str, &str),
+    provenance_json: &str,
+) -> Result<i64> {
     tx.execute(
         "INSERT INTO pending_writes(
             project_id,
@@ -222,9 +280,14 @@ fn insert_pending_write(
     )?;
     let row_id = tx.last_insert_rowid();
 
-    db::log_write(&tx, actor, "pending_writes", Some(row_id), "insert", reason)?;
-
-    tx.commit()?;
+    db::log_write(
+        tx,
+        audit.0,
+        "pending_writes",
+        Some(row_id),
+        "insert",
+        audit.1,
+    )?;
     Ok(row_id)
 }
 

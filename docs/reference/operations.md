@@ -2174,10 +2174,13 @@ cross-machine sync push, any approved session transcript archive, and the
 normal closing report. Report the failure, resolve it, and resume the
 remaining approved work without replaying successful writes.
 
-The post-write steps and their gates are unchanged:
+Before, the post-write path began at Render. It still does for ordinary
+wrap-up. When explicitly requested, [prune review](#prune-review) runs
+first; the following steps keep their existing order and gates:
 
 1. Render and report the output and backup paths. If only render fails,
-   stop and resume at render after fixing it, without repeating the writes.
+   stop and resume at render after fixing it, without repeating either
+   the ordinary writes or any prune work.
 2. Check sync status. If enabled, check the verdict before pushing a
    snapshot; `drive-ahead` or `diverged` stops the push for `/catch-up`.
    The policy makes `sync commit` optional for baseline verification or
@@ -2263,6 +2266,50 @@ keeping an open task can reorder it. Blocked tasks remain outside the
 window, and `task show` still supplies full notes on demand.
 
 ## Prune review
+
+### During wrap-up (opt-in)
+
+Before, wrap-up went straight from successful ordinary writes to render, then
+sync if enabled. That is still the default. On Claude Code, Codex, OpenCode,
+and Antigravity, an explicit `--prune` or equivalent request adds one repo-local
+review after successful ordinary writes, even at minimal verbosity, and before
+render. The canonical `memhub wrapup-policy` text defines the review. Older
+binaries without it report the review as unavailable. The existing full scan
+can be slow: the display cap does not cap similarity work. A skipped, empty,
+failed, or interrupted scan can continue to ordinary render and sync without
+replaying ordinary writes.
+
+The agent shows one action and reason per returned candidate, with warnings
+and overflow. Paired findings show both sources, known dates, and the
+difference between retained wording and derived context; unknown order stays
+unknown. Approve a named subset or approve the displayed pairs with named
+exceptions. Unseen items and manual keep do not write. Offered task keep
+refreshes task age; offered doc or backup keep dismisses the finding. Task
+drop/done, doc archive/re-ingest, pair dismissal, and fact re-verification
+retain their existing effects. Fact retirement is manual only. An exact
+approved replacement stages a local fact proposal; you separately accept it
+through `memhub review accept` to change the fact. Backup deletion requires
+separately named and approved groups and supported storage.
+
+The agent passes one typed request at a time in a disposable JSON file in
+`.memhub/`, using its file tool; scan text, paths, and replacement text are
+not shell arguments. The CLI verifies the selected local project/database
+and current offered action; the skill, not the CLI, checks chat approval.
+Standing Orch approval does not cover prune. Row-only actions use the same
+transaction for the exact row check and write. Re-ingest uses validated
+bytes captured from the recorded source, not a second path read. An edit
+after capture or a file reappearing just after an archive check may need a
+new review. There is no filesystem-wide lock or rollback of earlier actions.
+
+At the first apply failure, the agent stops and reports completed actions,
+pending proposal IDs, the failure, and what did not run. If the result is
+uncertain, inspect the relevant row, audit log, proposal queue, or backup
+group before deciding what remains. Fresh review and approval can cover
+changed items, or you can explicitly finish without the rest. Once continuing,
+render once before sync. Retry a failed render at render, not at either write
+phase.
+
+### Standalone scan and manual actions
 
 `memhub prune scan` assembles a read-only review for the current repo.
 Use `--json` for `{"prune_scan": {"total": ..., "counts": ..., "items":
@@ -2530,7 +2577,9 @@ and [Transactional NTFS programming considerations](https://learn.microsoft.com/
 Microsoft has deprecated Transactional NTFS. Volumes that do not
 advertise transaction support are report-only.
 
-These restrictions apply only to `memhub prune backups`, not to all
+Before the wrap-up integration, these restrictions applied only to
+`memhub prune backups`. Now they apply to both routes to surplus backup
+deletion (that command and the `delete` action in wrap-up), not to all
 cleanup commands. `memhub gc` retains its existing Rust-project
 requirement, scope and `[gc] delete_stale_backups`/`--dry-run` behavior.
 

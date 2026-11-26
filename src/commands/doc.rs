@@ -111,6 +111,7 @@ fn ingest_in_tx(
     doc: &PreparedDoc,
     actor: &str,
     mode: crate::config::RetrievalMode,
+    selected: Option<i64>,
 ) -> Result<IngestResult> {
     let was_first_doc: bool = tx.query_row(
         "SELECT COUNT(*) FROM documents WHERE project_id = 1",
@@ -118,11 +119,17 @@ fn ingest_in_tx(
         |r| r.get::<_, i64>(0),
     )? == 0;
 
+    let (filter, key): (_, &dyn rusqlite::ToSql) = match &selected {
+        Some(id) => ("id", id),
+        None => ("path", &doc.path_str),
+    };
     let existing: Option<(i64, String, bool)> = tx
         .query_row(
-            "SELECT id, content_hash, archived_at IS NOT NULL
-             FROM documents WHERE project_id = 1 AND path = ?1",
-            params![doc.path_str],
+            &format!(
+                "SELECT id, content_hash, archived_at IS NOT NULL
+             FROM documents WHERE project_id = 1 AND {filter} = ?1"
+            ),
+            [key],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()?;
@@ -158,6 +165,11 @@ fn ingest_in_tx(
                 params![doc.resolved_title, doc.content_hash, doc.byte_len, id],
             )?;
             (id, IngestStatus::Updated)
+        }
+        None if selected.is_some() => {
+            return Err(crate::MemhubError::InvalidInput(
+                "reviewed document no longer exists".into(),
+            ));
         }
         None => {
             tx.execute(
@@ -198,6 +210,27 @@ fn ingest_in_tx(
     })
 }
 
+/// The caller validated the recorded path and exact row in this transaction.
+pub(super) fn reingest_in_tx(
+    tx: &Transaction<'_>,
+    id: i64,
+    path: String,
+    title: String,
+    content: String,
+    actor: &str,
+    mode: crate::config::RetrievalMode,
+) -> Result<()> {
+    let doc = PreparedDoc {
+        byte_len: content.len() as i64,
+        content_hash: sha256_hex(content.as_bytes()),
+        content,
+        path_str: path,
+        resolved_title: title,
+    };
+    ingest_in_tx(tx, &doc, actor, mode, Some(id))?;
+    Ok(())
+}
+
 /// Ingest (or re-ingest) a markdown file into this repo's store.
 /// Before archiving, unchanged content (same SHA-256) was a no-op and changed
 /// content replaced every chunk on any stored path. Unarchived paths still
@@ -208,7 +241,7 @@ pub fn add(start: &Path, file: &Path, title: Option<&str>, actor: &str) -> Resul
     let mut ctx = db::open_project(start)?;
     let mode = ctx.config.retrieval.mode;
     let tx = ctx.conn.transaction()?;
-    let r = ingest_in_tx(&tx, &doc, actor, mode)?;
+    let r = ingest_in_tx(&tx, &doc, actor, mode, None)?;
     tx.commit()?;
 
     let enabled_default_recall = r.was_first_doc && maybe_enable_default_doc_recall(&mut ctx)?;
@@ -245,7 +278,7 @@ pub fn add_global(
 
     let mut g = db::open_global()?;
     let tx = g.conn.transaction()?;
-    let r = ingest_in_tx(&tx, &doc, actor, mode)?;
+    let r = ingest_in_tx(&tx, &doc, actor, mode, None)?;
     tx.commit()?;
 
     Ok(DocAddOutcome {

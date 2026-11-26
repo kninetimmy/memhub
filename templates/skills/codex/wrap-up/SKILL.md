@@ -202,12 +202,18 @@ global, tell them to run `memhub doc add <path> --global` (or
 ## After the writes
 
 Once every approved write above succeeds, pick the policy text back up
-for Render and Cross-machine sync — run
+at Optional prune review, before Render and Cross-machine sync. Only an
+explicit request for prune in this wrap-up (including `--prune`) enters
+that phase; the ordinary approval and Orch grant above do not cover it.
+Use the policy's file-tool instructions with the fixed `--host codex`.
+If the returned policy has no Optional prune review section, report any
+requested prune review as unavailable on this binary and continue to
+Render. After finishing or skipping prune, run
 `memhub render --actor codex:wrap-up`, then the sync steps if this repo
 has sync enabled, exactly as it describes them. If render fails, stop
 before sync. When all approved DB writes already succeeded, resume at
 render after fixing the cause; do not repeat draft assembly or the
-durable writes. The policy also covers the closing reminder (audit
+durable or prune writes. The policy also covers the closing reminder (audit
 trail, rendered files aren't a commit, start a new session anytime) —
 including that **you never run `git commit`**, which holds regardless
 of verbosity level; that's the user's call.

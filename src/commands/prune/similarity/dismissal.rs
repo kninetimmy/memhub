@@ -26,25 +26,73 @@ pub(in crate::commands::prune) fn prepare(
 }
 
 impl Pair {
+    /// Re-score only the named pair, outside the writer transaction. The
+    /// scan's display order is not necessarily the model's input order.
+    pub(in crate::commands::prune) fn prepare_targeted(
+        conn: &Connection,
+        root: &Path,
+        category: Category,
+        first: (&'static str, i64),
+        second: (&'static str, i64),
+        id: &str,
+    ) -> Result<Option<Self>> {
+        let eligible = match category {
+            Category::DuplicateFacts => first.0 == "fact" && second.0 == "fact",
+            Category::UnlinkedDecisions => first.0 == "decision" && second.0 == "decision",
+            Category::CorrectionSweep => {
+                matches!(first.0, "fact" | "decision")
+                    && matches!(second.0, "fact" | "arch_section" | "doc_chunk" | "task")
+            }
+            _ => false,
+        };
+        if !eligible || first == second {
+            return Ok(None);
+        }
+        let (Some(a), Some(b)) = (load(conn, root, first)?, load(conn, root, second)?) else {
+            return Ok(None);
+        };
+        let mut found = None;
+        let pair = Self {
+            category,
+            a: first,
+            b: second,
+        };
+        if category == Category::CorrectionSweep {
+            if pair.is_current_rows(conn, id, &a, &b)?
+                && !matches(&a.match_text(), &[&b])?.is_empty()
+            {
+                found = Some(pair);
+            }
+        } else {
+            pairs(conn, &[a, b], category, Some(id), &mut |_, a, b| {
+                found = Some(Self {
+                    category,
+                    a: (a.excerpt.source_type, a.excerpt.source_id),
+                    b: (b.excerpt.source_type, b.excerpt.source_id),
+                });
+            })?;
+        }
+        Ok(found)
+    }
+
     pub(in crate::commands::prune) fn is_current(
         &self,
         conn: &Connection,
         root: &Path,
         id: &str,
     ) -> Result<bool> {
-        let load = |(kind, id)| match kind {
-            "fact" => facts(conn, Some(id)),
-            "decision" => decisions(conn, Some(id)),
-            _ => correction_targets(conn, root, Some((kind, id))),
-        };
         // Only these two rows, their parents and (for fact replacements) their
         // replacement chain contribute. No all-pair traversal or model work.
-        let Some(a) = load(self.a)?.pop() else {
+        let Some(a) = load(conn, root, self.a)? else {
             return Ok(false);
         };
-        let Some(b) = load(self.b)?.pop() else {
+        let Some(b) = load(conn, root, self.b)? else {
             return Ok(false);
         };
+        self.is_current_rows(conn, id, &a, &b)
+    }
+
+    fn is_current_rows(&self, conn: &Connection, id: &str, a: &Row, b: &Row) -> Result<bool> {
         if identifier(self.category, (&a.state, &b.state))? != id {
             return Ok(false);
         }
@@ -72,6 +120,15 @@ impl Pair {
         }
         Ok(a.active && b.active)
     }
+}
+
+fn load(conn: &Connection, root: &Path, (kind, id): (&str, i64)) -> Result<Option<Row>> {
+    let mut rows = match kind {
+        "fact" => facts(conn, Some(id)),
+        "decision" => decisions(conn, Some(id)),
+        _ => correction_targets(conn, root, Some((kind, id))),
+    }?;
+    Ok(rows.pop())
 }
 
 #[cfg(test)]

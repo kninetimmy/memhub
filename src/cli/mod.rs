@@ -1530,8 +1530,22 @@ pub fn run(cli: Cli) -> Result<()> {
             }
         },
         TopLevelCommand::Prune { command } => match command {
-            PruneCommand::Scan { json: as_json } => {
-                print_prune_report(&commands::prune::scan(&cwd)?, as_json, "prune_scan");
+            PruneCommand::Scan {
+                json: as_json,
+                for_wrap_up,
+            } => {
+                if for_wrap_up {
+                    println!(
+                        "{}",
+                        json!({ "prune_wrap_up": commands::prune::scan_for_wrap_up(&cwd)? })
+                    );
+                } else {
+                    print_prune_report(&commands::prune::scan(&cwd)?, as_json, "prune_scan");
+                }
+            }
+            PruneCommand::Apply { request, host } => {
+                let outcome = commands::prune::apply(&cwd, &request, host)?;
+                println!("{}", json!({ "prune_apply": outcome }));
             }
             PruneCommand::Dismiss { identifier, actor } => {
                 let actor = resolve_actor(actor.as_deref())?;

@@ -387,6 +387,29 @@ fn skill_resync_additive_idempotent_and_conservative() {
         opencode_commands_dir.join("recall.md").is_file(),
         "a known OpenCode command wrapper must land on disk"
     );
+    // Installed text and handoff ordering, not live agent behavior.
+    for (path, host) in installed_wrapper_paths(home.path(), "wrap-up")
+        .into_iter()
+        .zip(["claude", "codex", "opencode", "", "antigravity"])
+    {
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        if host.is_empty() {
+            assert!(text.contains("Use the memhub wrap-up skill. Arguments: $ARGUMENTS"));
+            assert!(text.contains("explicit `--prune`") && text.contains("before render and sync"));
+            continue;
+        }
+        let policy = text.find("memhub wrapup-policy").unwrap();
+        let ordinary = text.find("memhub fact verify <id>").unwrap();
+        let prune = text.find("Optional prune review").unwrap();
+        let render = text.find("memhub render --actor").unwrap();
+        assert!(
+            policy < ordinary && ordinary < prune && prune < render,
+            "{path:?}"
+        );
+        assert!(text[prune..render].contains(&format!("--host {host}")));
+        assert!(text[prune..render].contains("unavailable on this binary"));
+        assert!(text[render..].contains("durable or prune writes"));
+    }
     // viz has no template in any build, so no viz wrapper is ever installed.
     for (name, enabled) in [("metrics", cfg!(feature = "metrics")), ("viz", false)] {
         for path in installed_wrapper_paths(home.path(), name) {

@@ -43,15 +43,16 @@ pub(super) struct Group {
 }
 
 impl Group {
-    pub(super) fn item(self) -> Item {
+    pub(super) fn item(&self) -> Item {
         let stale = &self.files[RETAIN..];
         #[cfg(windows)]
         let unavailable = self
             .cleanup_blocker
+            .as_ref()
             .map(|e| format!("Backup cleanup unavailable: {e}"));
         #[cfg(not(windows))]
         let unavailable = Some(REPORT_ONLY.to_owned());
-        let id = self.id;
+        let id = self.id.clone();
         let mut actions = vec![Action::keep(&id)];
         let mut reason = format!("{} backup file(s) beyond the newest {RETAIN}.", stale.len());
         if let Some(unavailable) = unavailable {
@@ -74,6 +75,11 @@ impl Group {
             actions,
             excerpts: None,
         }
+    }
+
+    #[cfg(windows)]
+    pub(super) fn delete(self) -> Result<usize> {
+        windows::delete(self)
     }
 }
 
@@ -337,8 +343,12 @@ pub(super) fn delete(paths: &ProjectPaths, candidate: &str) -> Result<usize> {
             database.display()
         )));
     }
+    find_group(paths, candidate)?.delete()
+}
+
+pub(super) fn find_group(paths: &ProjectPaths, candidate: &str) -> Result<Group> {
     let (groups, warnings) = surplus(paths)?;
-    let group = groups
+    groups
         .into_iter()
         .find(|group| group.id == candidate)
         .ok_or_else(|| {
@@ -346,8 +356,7 @@ pub(super) fn delete(paths: &ProjectPaths, candidate: &str) -> Result<usize> {
             MemhubError::InvalidInput(format!(
                 "no current surplus backup candidate '{candidate}'; run `memhub prune scan` again{detail}"
             ))
-        })?;
-    windows::delete(group)
+        })
 }
 
 pub(super) fn warning(warnings: Vec<String>) -> Option<String> {

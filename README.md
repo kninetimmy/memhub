@@ -562,6 +562,16 @@ You: "/wrap-up"
 
 The `/wrap-up` gate is the whole point: the agent is good at surfacing knowledge, and you decide what's true.
 
+Ordinary wrap-up still goes from approved writes to render and, if enabled, sync.
+On Claude Code, Codex, OpenCode, or Antigravity, add `--prune` to the wrap-up
+invocation (or explicitly ask to include a prune review) to review repo-local
+cleanup between writes and render. The agent shows the evidence and one action
+per candidate. Prune requires its own approval, and a fact replacement is only
+staged for separate acceptance. The full scan can be slow; you can skip it
+without repeating ordinary writes. If an apply fails, the agent stops and shows
+what landed and what remains. See [prune review](docs/reference/operations.md#prune-review)
+for the action, storage, and recovery limits.
+
 You can also drive it from the terminal. Both flows write to the same database:
 
 ```bash

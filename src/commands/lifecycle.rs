@@ -63,6 +63,17 @@ pub fn set_doc_archive(
     let tx = ctx.conn.transaction()?;
     let id = super::doc::resolve_doc_id(&tx, ident)?
         .ok_or_else(|| MemhubError::InvalidInput(format!("no document matched '{ident}'")))?;
+    set_doc_archive_in_tx(&tx, id, reason, actor)?;
+    tx.commit()?;
+    Ok(id)
+}
+
+pub(super) fn set_doc_archive_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    id: i64,
+    reason: Option<&str>,
+    actor: &str,
+) -> Result<()> {
     let updated = tx.execute(
         "UPDATE documents
          SET archived_at = CASE WHEN ?2 IS NOT NULL THEN CURRENT_TIMESTAMP END,
@@ -84,9 +95,7 @@ pub fn set_doc_archive(
         Some(reason) => ("archive", reason),
         None => ("unarchive", "doc unarchive"),
     };
-    db::log_write(&tx, actor, "documents", Some(id), action, detail)?;
-    tx.commit()?;
-    Ok(id)
+    db::log_write(tx, actor, "documents", Some(id), action, detail)
 }
 
 /// A reason drops a live task; no reason refreshes its update time and saves it for undo.
@@ -94,6 +103,17 @@ pub fn drop_or_keep_task(start: &Path, id: i64, reason: Option<&str>, actor: &st
     check_reason(reason)?;
     let mut ctx = db::open_project(start)?;
     let tx = ctx.conn.transaction()?;
+    drop_or_keep_task_in_tx(&tx, id, reason, actor)?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub(super) fn drop_or_keep_task_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    id: i64,
+    reason: Option<&str>,
+    actor: &str,
+) -> Result<()> {
     let (sql, action, detail) = match reason {
         Some(reason) => (
             "UPDATE tasks SET status = 'dropped', dropped_reason = ?2,
@@ -126,9 +146,7 @@ pub fn drop_or_keep_task(start: &Path, id: i64, reason: Option<&str>, actor: &st
             None => format!("task {id} does not exist"),
         }));
     }
-    db::log_write(&tx, actor, "tasks", Some(id), action, detail)?;
-    tx.commit()?;
-    Ok(())
+    db::log_write(tx, actor, "tasks", Some(id), action, detail)
 }
 
 /// Restore the task exactly as it was when dropped, including its age.
