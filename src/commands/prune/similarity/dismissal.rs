@@ -15,7 +15,7 @@ pub(in crate::commands::prune) fn prepare(
     id: &str,
 ) -> Result<Option<Pair>> {
     let mut pair = None;
-    visit_matching(conn, root, None, Some(id), &mut |item, a, b| {
+    visit_matching(conn, root, None, Some(id), &[], &mut |item, a, b| {
         pair = Some(Pair {
             category: item.category,
             a: (a.excerpt.source_type, a.excerpt.source_id),
@@ -26,25 +26,78 @@ pub(in crate::commands::prune) fn prepare(
 }
 
 impl Pair {
+    /// Re-score only the named pair, outside the writer transaction. The
+    /// scan's display order is not necessarily the model's input order.
+    pub(in crate::commands::prune) fn prepare_targeted(
+        conn: &Connection,
+        root: &Path,
+        category: Category,
+        first: (&'static str, i64),
+        second: (&'static str, i64),
+        id: &str,
+        protected_files: &[FileIdentity],
+    ) -> Result<Option<Self>> {
+        let eligible = match category {
+            Category::DuplicateFacts => first.0 == "fact" && second.0 == "fact",
+            Category::UnlinkedDecisions => first.0 == "decision" && second.0 == "decision",
+            Category::CorrectionSweep => {
+                matches!(first.0, "fact" | "decision")
+                    && matches!(second.0, "fact" | "arch_section" | "doc_chunk" | "task")
+            }
+            _ => false,
+        };
+        if !eligible || first == second {
+            return Ok(None);
+        }
+        let (Some(a), Some(b)) = (
+            load(conn, root, first, protected_files)?,
+            load(conn, root, second, protected_files)?,
+        ) else {
+            return Ok(None);
+        };
+        let mut found = None;
+        let pair = Self {
+            category,
+            a: first,
+            b: second,
+        };
+        if category == Category::CorrectionSweep {
+            if pair.is_current_rows(conn, id, &a, &b)?
+                && !matches(&a.match_text(), &[&b])?.is_empty()
+            {
+                found = Some(pair);
+            }
+        } else {
+            pairs(conn, &[a, b], category, Some(id), &mut |_, a, b| {
+                found = Some(Self {
+                    category,
+                    a: (a.excerpt.source_type, a.excerpt.source_id),
+                    b: (b.excerpt.source_type, b.excerpt.source_id),
+                });
+            })?;
+        }
+        Ok(found)
+    }
+
     pub(in crate::commands::prune) fn is_current(
         &self,
         conn: &Connection,
         root: &Path,
         id: &str,
+        protected_files: &[FileIdentity],
     ) -> Result<bool> {
-        let load = |(kind, id)| match kind {
-            "fact" => facts(conn, Some(id)),
-            "decision" => decisions(conn, Some(id)),
-            _ => correction_targets(conn, root, Some((kind, id))),
-        };
         // Only these two rows, their parents and (for fact replacements) their
         // replacement chain contribute. No all-pair traversal or model work.
-        let Some(a) = load(self.a)?.pop() else {
+        let Some(a) = load(conn, root, self.a, protected_files)? else {
             return Ok(false);
         };
-        let Some(b) = load(self.b)?.pop() else {
+        let Some(b) = load(conn, root, self.b, protected_files)? else {
             return Ok(false);
         };
+        self.is_current_rows(conn, id, &a, &b)
+    }
+
+    fn is_current_rows(&self, conn: &Connection, id: &str, a: &Row, b: &Row) -> Result<bool> {
         if identifier(self.category, (&a.state, &b.state))? != id {
             return Ok(false);
         }
@@ -72,6 +125,20 @@ impl Pair {
         }
         Ok(a.active && b.active)
     }
+}
+
+fn load(
+    conn: &Connection,
+    root: &Path,
+    (kind, id): (&str, i64),
+    protected_files: &[FileIdentity],
+) -> Result<Option<Row>> {
+    let mut rows = match kind {
+        "fact" => facts(conn, Some(id)),
+        "decision" => decisions(conn, Some(id)),
+        _ => correction_targets(conn, root, Some((kind, id)), protected_files),
+    }?;
+    Ok(rows.pop())
 }
 
 #[cfg(test)]
@@ -115,12 +182,19 @@ mod tests {
             .execute("UPDATE facts SET value='new value' WHERE id=2", [])
             .unwrap();
         write.commit().unwrap();
-        assert!(pair.is_current(&snapshot, temp.path(), &duplicate).unwrap());
+        assert!(
+            pair.is_current(&snapshot, temp.path(), &duplicate, &[])
+                .unwrap()
+        );
         drop(snapshot);
         let commit = reader
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .unwrap();
-        assert!(!pair.is_current(&commit, temp.path(), &duplicate).unwrap());
+        assert!(
+            !pair
+                .is_current(&commit, temp.path(), &duplicate, &[])
+                .unwrap()
+        );
         commit
             .execute(
                 "UPDATE facts SET value=?1 WHERE id=2",
@@ -135,7 +209,10 @@ mod tests {
              DROP TABLE project_arch; DROP TABLE decisions; DROP TABLE tasks;",
             )
             .unwrap();
-        assert!(pair.is_current(&commit, temp.path(), &duplicate).unwrap());
+        assert!(
+            pair.is_current(&commit, temp.path(), &duplicate, &[])
+                .unwrap()
+        );
     }
 
     #[test]
@@ -162,7 +239,7 @@ mod tests {
         };
         let fact_id =
             identifier(Category::CorrectionSweep, (&source.state, &target.state)).unwrap();
-        let target = correction_targets(&conn, temp.path(), Some(("arch_section", 1)))
+        let target = correction_targets(&conn, temp.path(), Some(("arch_section", 1)), &[])
             .unwrap()
             .pop()
             .unwrap();
@@ -176,16 +253,32 @@ mod tests {
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .unwrap();
-        assert!(fact_pair.is_current(&tx, temp.path(), &fact_id).unwrap());
-        assert!(arch_pair.is_current(&tx, temp.path(), &arch_id).unwrap());
+        assert!(
+            fact_pair
+                .is_current(&tx, temp.path(), &fact_id, &[])
+                .unwrap()
+        );
+        assert!(
+            arch_pair
+                .is_current(&tx, temp.path(), &arch_id, &[])
+                .unwrap()
+        );
         tx.execute("UPDATE facts SET superseded_by=3 WHERE id=2", [])
             .unwrap();
-        assert!(!fact_pair.is_current(&tx, temp.path(), &fact_id).unwrap());
+        assert!(
+            !fact_pair
+                .is_current(&tx, temp.path(), &fact_id, &[])
+                .unwrap()
+        );
         tx.execute_batch(
             "INSERT INTO project_arch(id,body,actor,actor_raw,created_at)
              VALUES (2,'# v2','fixture','fixture','2025-01-02');",
         )
         .unwrap();
-        assert!(!arch_pair.is_current(&tx, temp.path(), &arch_id).unwrap());
+        assert!(
+            !arch_pair
+                .is_current(&tx, temp.path(), &arch_id, &[])
+                .unwrap()
+        );
     }
 }

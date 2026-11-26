@@ -10,8 +10,8 @@ use chrono::{DateTime, NaiveDate};
 use rusqlite::Connection;
 
 use super::{
-    Action, ArchitectureSource, Category, Item, PairExcerpts, SourceExcerpt, Subject,
-    document_file, identifier,
+    Action, ArchitectureSource, Category, DocumentFile, FileIdentity, Item, PairExcerpts,
+    SourceExcerpt, Subject, document_file, identifier,
 };
 use crate::Result;
 use crate::commands::review::ACCEPT_SIMILARITY_RERANK_THRESHOLD;
@@ -48,9 +48,12 @@ pub(super) fn visit(
     conn: &Connection,
     root: &Path,
     old: Option<(&str, i64)>,
+    protected_files: &[FileIdentity],
     visit: &mut impl FnMut(Item),
 ) -> Result<()> {
-    visit_matching(conn, root, old, None, &mut |item, _, _| visit(item))
+    visit_matching(conn, root, old, None, protected_files, &mut |item, _, _| {
+        visit(item)
+    })
 }
 
 fn visit_matching(
@@ -58,6 +61,7 @@ fn visit_matching(
     root: &Path,
     old: Option<(&str, i64)>,
     requested: Option<&str>,
+    protected_files: &[FileIdentity],
     visit: &mut impl FnMut(Item, &Row, &Row),
 ) -> Result<()> {
     let facts = facts(conn, None)?;
@@ -73,7 +77,7 @@ fn visit_matching(
         )?;
     }
     let mut targets: Vec<&Row> = facts.iter().filter(|row| row.active).collect();
-    let other_targets = correction_targets(conn, root, None)?;
+    let other_targets = correction_targets(conn, root, None, protected_files)?;
     targets.extend(&other_targets);
     // ponytail: exhaustive pair scoring; use a measured candidate index if
     // corpus size makes this manual scan too slow, not a silent candidate cap.
@@ -345,6 +349,7 @@ fn correction_targets(
     conn: &Connection,
     root: &Path,
     selected: Option<(&str, i64)>,
+    protected_files: &[FileIdentity],
 ) -> Result<Vec<Row>> {
     let mut out = Vec::new();
     if selected.is_none_or(|(kind, _)| kind == "arch_section") {
@@ -449,7 +454,10 @@ fn correction_targets(
             if let Subject::DocumentChunk { path, .. } = &row.subject {
                 let on_disk = files
                     .entry(path.clone())
-                    .or_insert_with(|| document_file(root, Path::new(path)));
+                    .or_insert_with(|| document_file(root, Path::new(path), protected_files));
+                if matches!(on_disk, DocumentFile::LiveDatabase) {
+                    continue;
+                }
                 row.state = serde_json::to_string(&(&row.state, &*on_disk))?;
             }
             out.push(row);

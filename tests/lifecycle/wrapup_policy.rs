@@ -116,6 +116,40 @@ fn each_configured_level_is_reflected_in_json_output() {
             instructions.contains(&format!("level: {level}")),
             "level {level}: {instructions}"
         );
+        let writes = instructions.find("## DB writes").unwrap();
+        let prune = instructions.find("## Optional prune review").unwrap();
+        let render = instructions.find("## Render").unwrap();
+        let sync = instructions.find("## Cross-machine sync push").unwrap();
+        assert!(writes < prune && prune < render && render < sync, "{level}");
+        let review = &instructions[prune..render];
+        for required in [
+            "only if the user explicitly asked",
+            "no scan and no extra approval",
+            "after every approved",
+            "requested review is unavailable",
+            "full scan can be slow",
+            "continue to Render without",
+            "warnings and overflow",
+            "An Orch grant or other",
+            "exact replacement text",
+            "the existing same-key guard can require the user to explicitly choose `--force`",
+            "separately naming and approving each exact group",
+            "file-writing tool, not the shell",
+            "not the user's chat approval",
+            "On the first apply failure, stop",
+            "Do not automatically retry",
+            "explicitly\nfinish without the remainder",
+        ] {
+            assert!(review.contains(required), "{level}: missing {required}");
+        }
+        let display = review
+            .find("group identifier, its\n`directory`, and every exact surplus path in `files`");
+        let approval = review.find("Ask for separate, explicit human approval");
+        assert!(
+            matches!((display, approval), (Some(d), Some(a)) if d < a),
+            "{level}"
+        );
+        assert!(instructions[render..sync].contains("do not rescan or replay prune"));
     }
 }
 

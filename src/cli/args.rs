@@ -903,6 +903,17 @@ pub enum PruneCommand {
     Scan {
         #[arg(long)]
         json: bool,
+        /// Include guarded apply data for an opt-in wrap-up review.
+        #[arg(long, requires = "json")]
+        for_wrap_up: bool,
+    },
+    /// Apply one reviewed wrap-up action from a local JSON request file.
+    Apply {
+        /// 32 lowercase hex digits in .memhub/prune-apply-<request>.json.
+        #[arg(long)]
+        request: String,
+        #[arg(long, value_enum)]
+        host: crate::commands::prune::ApplyHost,
     },
     /// Hide this candidate until its source state changes.
     Dismiss {

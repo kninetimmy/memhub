@@ -1,8 +1,10 @@
 //! Pull-based, repo-local cleanup review. Only explicit actions write.
 
+mod apply;
 mod backups;
 mod dismissal;
 mod similarity;
+pub use apply::{Host as ApplyHost, apply, scan_for_wrap_up};
 pub(super) use backups::RETAIN as BACKUPS_RETENTION_COUNT;
 pub use dismissal::dismiss;
 
@@ -13,7 +15,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OpenFlags};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::config::ProjectConfig;
 use crate::db::{self, ProjectPaths};
@@ -25,8 +27,10 @@ use crate::{MemhubError, Result};
 
 pub const CATEGORY_LIMIT: usize = 25;
 const IDLE_TASK_DAYS: i64 = 60;
+const DROP_REASON: &str = "prune review: idle task";
+const ARCHIVE_REASON: &str = "prune review: unavailable document";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Category {
     StaleFact,
@@ -255,7 +259,7 @@ fn scan_readonly_paths(paths: &ProjectPaths, old: Option<(&str, i64)>) -> Result
             )));
         }
     };
-    scan_in(&tx, paths, &config, has_dismissals, true, old)
+    scan_in(&tx, paths, &config, has_dismissals, true, old, &[])
 }
 
 fn scan_config(paths: &ProjectPaths) -> Result<ProjectConfig> {
@@ -280,7 +284,7 @@ fn scan_config(paths: &ProjectPaths) -> Result<ProjectConfig> {
 /// Status already has a maintained open; reuse it without another open.
 pub(super) fn scan_project(ctx: &db::ProjectContext) -> Result<Report> {
     let tx = ctx.conn.unchecked_transaction()?;
-    scan_in(&tx, &ctx.paths, &ctx.config, true, false, None)
+    scan_in(&tx, &ctx.paths, &ctx.config, true, false, None, &[])
 }
 
 fn scan_in(
@@ -290,6 +294,7 @@ fn scan_in(
     has_dismissals: bool,
     include_similarity: bool,
     old: Option<(&str, i64)>,
+    protected_files: &[FileIdentity],
 ) -> Result<Report> {
     let dismissed = if has_dismissals {
         conn.prepare("SELECT identifier FROM prune_dismissals WHERE project_id = 1")?
@@ -329,12 +334,12 @@ fn scan_in(
         }
     };
     let backup_warning = if old.is_none() {
-        visit_candidates(conn, paths, config, &mut visit)?
+        visit_candidates(conn, paths, config, protected_files, &mut visit)?
     } else {
         None
     };
     if include_similarity && config.retrieval.use_reranker {
-        similarity::visit(conn, &paths.repo_root, old, &mut visit)?;
+        similarity::visit(conn, &paths.repo_root, old, protected_files, &mut visit)?;
     }
     report.backup_warning = backup_warning;
     if include_similarity && !config.retrieval.use_reranker {
@@ -366,6 +371,7 @@ fn visit_candidates(
     conn: &Connection,
     paths: &ProjectPaths,
     config: &ProjectConfig,
+    protected_files: &[FileIdentity],
     mut visit: impl FnMut(Item),
 ) -> Result<Option<String>> {
     facts(
@@ -375,8 +381,15 @@ fn visit_candidates(
         &mut visit,
     )?;
     tasks(conn, None, &mut visit)?;
-    documents(conn, &paths.repo_root, None, &mut visit)?;
-    match backups::surplus(paths) {
+    visit_documents(
+        conn,
+        &paths.repo_root,
+        None,
+        false,
+        protected_files,
+        |item, _, _, _| visit(item),
+    )?;
+    match backups::surplus(paths, protected_files) {
         Ok((groups, warnings)) => {
             for group in groups {
                 visit(group.item());
@@ -527,16 +540,7 @@ fn tasks(conn: &Connection, selected: Option<i64>, visit: &mut dyn FnMut(Item)) 
             ),
             actions: vec![
                 Action::new("keep", ["task", "keep", &ident]),
-                Action::new(
-                    "drop",
-                    [
-                        "task",
-                        "drop",
-                        &ident,
-                        "--reason",
-                        "prune review: idle task",
-                    ],
-                ),
+                Action::new("drop", ["task", "drop", &ident, "--reason", DROP_REASON]),
                 Action::new("done", ["task", "done", &ident]),
             ],
             excerpts: None,
@@ -551,16 +555,29 @@ fn documents(
     selected: Option<i64>,
     visit: &mut dyn FnMut(Item),
 ) -> Result<()> {
-    let filter = if selected.is_some() {
-        "AND id = ?1"
-    } else {
-        ""
-    };
-    let mut stmt = conn.prepare(&format!(
+    visit_documents(conn, root, selected, false, &[], |item, _, _, _| {
+        visit(item)
+    })
+}
+
+fn document_query(selected: bool) -> String {
+    let filter = if selected { "AND id = ?1" } else { "" };
+    format!(
         "SELECT id, path, title, content_hash,
                 json_array(id, path, title, content_hash, byte_len, source, ingested_at)
          FROM documents WHERE project_id = 1 AND archived_at IS NULL {filter} ORDER BY id",
-    ))?;
+    )
+}
+
+fn visit_documents(
+    conn: &Connection,
+    root: &Path,
+    selected: Option<i64>,
+    capture_bytes: bool,
+    protected_files: &[FileIdentity],
+    mut visit: impl FnMut(Item, String, String, Option<String>),
+) -> Result<()> {
+    let mut stmt = conn.prepare(&document_query(selected.is_some()))?;
     let mut rows = stmt.query(rusqlite::params_from_iter(selected))?;
     while let Some(row) = rows.next()? {
         let row_id: i64 = row.get(0)?;
@@ -568,8 +585,10 @@ fn documents(
         let title: String = row.get(2)?;
         let ingested_hash: String = row.get(3)?;
         let state: String = row.get(4)?;
-        let on_disk = document_file(root, Path::new(&path));
+        let (on_disk, content) =
+            read_document_file(root, Path::new(&path), capture_bytes, protected_files);
         let (reason, action) = match &on_disk {
+            DocumentFile::LiveDatabase => continue,
             DocumentFile::Readable { hash, .. } if *hash == ingested_hash => continue,
             DocumentFile::Readable { .. } => {
                 let reason = "File content changed since ingest.";
@@ -592,22 +611,27 @@ fn documents(
                         "archive",
                         &row_id.to_string(),
                         "--reason",
-                        "prune review: unavailable document",
+                        ARCHIVE_REASON,
                     ],
                 )),
             ),
         };
         let category = Category::OutOfDateDocument;
-        let id = identifier(category, (state, on_disk))?;
+        let id = identifier(category, (&state, on_disk))?;
         let actions = action.into_iter().chain([Action::keep(&id)]).collect();
-        visit(Item {
-            id,
-            category,
-            subjects: vec![Subject::Document { id: row_id, path }],
-            reason,
-            actions,
-            excerpts: None,
-        });
+        visit(
+            Item {
+                id,
+                category,
+                subjects: vec![Subject::Document { id: row_id, path }],
+                reason,
+                actions,
+                excerpts: None,
+            },
+            state,
+            title,
+            content,
+        );
     }
     Ok(())
 }
@@ -702,9 +726,34 @@ enum DocumentFile {
         // Used when there is no content hash and identity from a read handle.
         #[serde(skip_serializing_if = "Option::is_none")] Option<FileIdentity>,
     ),
+    LiveDatabase,
 }
 
-fn document_file(root: &Path, path: &Path) -> DocumentFile {
+fn document_file(root: &Path, path: &Path, protected_files: &[FileIdentity]) -> DocumentFile {
+    read_document_file(root, path, false, protected_files).0
+}
+
+fn read_document_file(
+    root: &Path,
+    path: &Path,
+    capture: bool,
+    protected_files: &[FileIdentity],
+) -> (DocumentFile, Option<String>) {
+    let mut content = None;
+    let file = inspect_document_file(root, path, protected_files, |bytes| {
+        if capture {
+            content = Some(bytes);
+        }
+    });
+    (file, content)
+}
+
+fn inspect_document_file(
+    root: &Path,
+    path: &Path,
+    protected_files: &[FileIdentity],
+    capture: impl FnOnce(String),
+) -> DocumentFile {
     // Ingestion explicitly allows external files and records their canonical
     // path. That exact path is the boundary, not a new symlink target.
     let expected = if path.is_absolute() {
@@ -748,6 +797,11 @@ fn document_file(root: &Path, path: &Path) -> DocumentFile {
             );
         }
         if component == expected {
+            if !protected_files.is_empty()
+                && entry_identity(component, &meta).is_some_and(|id| protected_files.contains(&id))
+            {
+                return DocumentFile::LiveDatabase;
+            }
             let stamp = Some((meta.len(), modified));
             // Keep the existing exact-path check before reading an ordinary file.
             if !meta.is_file() || fs::canonicalize(&expected).ok().as_ref() != Some(&expected) {
@@ -777,19 +831,23 @@ fn document_file(root: &Path, path: &Path) -> DocumentFile {
                 Ok((identity, bytes, ingest_key))
             };
             return match read() {
-                Ok((identity, bytes, ingest_key)) if std::str::from_utf8(&bytes).is_ok() => {
-                    DocumentFile::Readable {
-                        hash: sha256_hex(&bytes),
-                        identity,
-                        ingest_key,
+                Ok((identity, bytes, ingest_key)) => match String::from_utf8(bytes) {
+                    Ok(text) => {
+                        let hash = sha256_hex(text.as_bytes());
+                        capture(text);
+                        DocumentFile::Readable {
+                            hash,
+                            identity,
+                            ingest_key,
+                        }
                     }
-                }
-                Ok((identity, bytes, _)) => DocumentFile::Unreadable(
-                    None,
-                    Some((sha256_hex(&bytes), identity)),
-                    stamp,
-                    None,
-                ),
+                    Err(err) => DocumentFile::Unreadable(
+                        None,
+                        Some((sha256_hex(err.as_bytes()), identity)),
+                        stamp,
+                        None,
+                    ),
+                },
                 Err(e) => DocumentFile::Unreadable(
                     e.raw_os_error(),
                     None,

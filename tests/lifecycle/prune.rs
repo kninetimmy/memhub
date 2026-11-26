@@ -130,6 +130,8 @@ mod similarity;
 #[cfg(windows)]
 #[path = "prune_storage.rs"]
 mod storage;
+#[path = "prune_wrapup.rs"]
+mod wrapup;
 
 fn items(scan: &Value) -> &[Value] {
     scan["items"].as_array().unwrap()

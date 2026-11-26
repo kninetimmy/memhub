@@ -144,7 +144,12 @@ pub(crate) fn read_task(row: &Row<'_>) -> rusqlite::Result<Task> {
 pub fn done(start: &Path, task_id: i64, actor: &str) -> Result<()> {
     let mut ctx = db::open_project(start)?;
     let tx = ctx.conn.transaction()?;
+    done_in_tx(&tx, task_id, actor)?;
+    tx.commit()?;
+    Ok(())
+}
 
+pub(super) fn done_in_tx(tx: &rusqlite::Transaction<'_>, task_id: i64, actor: &str) -> Result<()> {
     let updated = tx.execute(
         "UPDATE tasks
          SET status = 'done', updated_at = CURRENT_TIMESTAMP, dropped_reason = NULL,
@@ -165,8 +170,5 @@ pub fn done(start: &Path, task_id: i64, actor: &str) -> Result<()> {
         });
     }
 
-    db::log_write(&tx, actor, "tasks", Some(task_id), "update", "task done")?;
-
-    tx.commit()?;
-    Ok(())
+    db::log_write(tx, actor, "tasks", Some(task_id), "update", "task done")
 }

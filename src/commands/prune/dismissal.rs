@@ -59,6 +59,20 @@ fn dismiss_in(ctx: &mut db::ProjectContext, id: &str, actor: &str) -> Result<()>
     if !has_dismissals {
         db::migrate_for_prune_dismissal(&tx, &ctx.paths)?;
     }
+    record(&tx, id, actor)?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub(super) fn is_dismissed(conn: &Connection, id: &str) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM prune_dismissals WHERE project_id = 1 AND identifier = ?1)",
+        [id],
+        |r| r.get(0),
+    )?)
+}
+
+pub(super) fn record(tx: &rusqlite::Transaction<'_>, id: &str, actor: &str) -> Result<()> {
     if tx.execute(
         "INSERT INTO prune_dismissals(identifier) VALUES (?1)
          ON CONFLICT(project_id, identifier) DO NOTHING",
@@ -66,7 +80,7 @@ fn dismiss_in(ctx: &mut db::ProjectContext, id: &str, actor: &str) -> Result<()>
     )? > 0
     {
         db::log_write(
-            &tx,
+            tx,
             actor,
             "prune_dismissals",
             Some(tx.last_insert_rowid()),
@@ -74,7 +88,6 @@ fn dismiss_in(ctx: &mut db::ProjectContext, id: &str, actor: &str) -> Result<()>
             &format!("prune dismiss {id}"),
         )?;
     }
-    tx.commit()?;
     Ok(())
 }
 
@@ -124,7 +137,7 @@ fn prepare(
     {
         return Ok((Some(Candidate::Document(id)), None));
     }
-    let warning = match backups::surplus(paths) {
+    let warning = match backups::surplus(paths, &[]) {
         Ok((groups, warnings)) => {
             if let Some(group) = groups.into_iter().find(|g| g.id == id) {
                 return Ok((Some(Candidate::Backups(group.directory)), None));
@@ -162,8 +175,8 @@ impl Candidate {
             Self::Document(row) => find(id, |visit| {
                 documents(conn, &paths.repo_root, Some(*row), visit)
             }),
-            Self::Backups(dir) => return backups::group_is_current(paths, dir, id),
-            Self::Similarity(pair) => return pair.is_current(conn, &paths.repo_root, id),
+            Self::Backups(dir) => return backups::group_is_current(paths, dir, id, &[]),
+            Self::Similarity(pair) => return pair.is_current(conn, &paths.repo_root, id, &[]),
         }?;
         Ok(found.is_some())
     }
@@ -217,7 +230,7 @@ mod tests {
             .unwrap();
         ctx.config.retrieval.use_reranker = true;
         let mut id = None;
-        similarity::visit(&ctx.conn, &ctx.paths.repo_root, None, &mut |item| {
+        similarity::visit(&ctx.conn, &ctx.paths.repo_root, None, &[], &mut |item| {
             assert_eq!(item.category, Category::DuplicateFacts);
             id = Some(item.id);
         })
