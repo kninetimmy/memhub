@@ -115,6 +115,74 @@ fn report_contains_path(orphans: &[String], home: &Path, path: &Path) -> bool {
 }
 
 #[test]
+fn prune_entrypoints_install_and_doctor_detects_them_on_all_hosts() {
+    let _env_guard = crate::support::env_lock();
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let home = tempdir().expect("isolated home");
+    let project = tempdir().expect("isolated project");
+    unsafe {
+        std::env::set_var("HOME", home.path());
+        std::env::remove_var("USERPROFILE");
+    }
+    for target in [
+        ".claude/commands",
+        ".codex/skills",
+        ".config/opencode/skills",
+        ".config/opencode/commands",
+        ".gemini/antigravity-cli",
+        ".gemini/config/skills",
+    ] {
+        std::fs::create_dir_all(home.path().join(target)).unwrap();
+    }
+    let cli = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_memhub"))
+            .args(args)
+            .current_dir(project.path())
+            .env("HOME", home.path())
+            .env("USERPROFILE", home.path())
+            .env("MEMHUB_LOG", "off")
+            .output()
+            .expect("spawn memhub");
+        assert!(out.status.success(), "{args:?}: {out:?}");
+        out.stdout
+    };
+    cli(&["init"]);
+
+    let check_ids = [
+        "installed_skills_claude",
+        "installed_skills_codex",
+        "installed_skills_opencode",
+        "installed_commands_opencode",
+        "installed_skills_antigravity",
+    ];
+    for installed in [false, true] {
+        if installed {
+            sync_skills(source, false);
+            for path in installed_wrapper_paths(home.path(), "prune") {
+                assert!(path.is_file(), "missing {}", path.display());
+            }
+            let codex_policy = "prune/agents/openai.yaml";
+            assert_eq!(
+                std::fs::read(home.path().join(".codex/skills").join(codex_policy)).unwrap(),
+                std::fs::read(source.join("templates/skills/codex").join(codex_policy)).unwrap()
+            );
+        }
+        let json: serde_json::Value = serde_json::from_slice(&cli(&["doctor", "--json"])).unwrap();
+        let checks = json["doctor"]["checks"].as_array().unwrap();
+        for id in check_ids {
+            let check = checks.iter().find(|check| check["id"] == id).unwrap();
+            assert_eq!(check["status"], if installed { "ok" } else { "warn" });
+            if !installed {
+                assert!(
+                    check["message"].as_str().unwrap().contains("prune:"),
+                    "{check}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn antigravity_resync_requires_its_host_and_preserves_ownership() {
     let _env_guard = crate::support::env_lock();
     let repo = Path::new(env!("CARGO_MANIFEST_DIR"));

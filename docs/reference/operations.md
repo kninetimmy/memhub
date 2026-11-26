@@ -1823,7 +1823,8 @@ hook install (below; run by that re-exec'd binary) → per-instance
 `ready/migrated/skipped/ERROR` table plus a per-agent skills line and a
 per-file hooks line (`--json` carries `skills` and `hooks` arrays).
 `--dry-run` reports the plan (including would-sync skill counts and
-would-add hook entries) and changes nothing. Before issue #286 the flow
+would-add hook entries) without installing, migrating, or cleaning up.
+For SQLite reporting side effects, see below. Before issue #286 the flow
 wrote no agent-CLI config file at all; it now merges one hook entry into
 `~/.claude/settings.json` and `~/.codex/hooks.json` (MCP registration is
 still manual). `memhub doctor` reads agent-CLI config and reports whether
@@ -1863,8 +1864,18 @@ can differ, including when another selected root owns an ingested source.
 An unscannable repo is unavailable with an error, never a zero count or an
 ancestor repo's results. Partial backup or similarity warnings remain in the
 summary. Scan failures do not change upgrade success or stop healthy repos'
-reports. Summaries point to `/prune` for review and change no memory rows or
-files; ordinary upgrade migration and cleanup are unchanged.
+reports. Summaries point to `/prune` for review.
+
+**Before (PR #482 wording):** This reference described upgrade dry-run as
+changing nothing, upgrade prune reporting as changing no files, and the
+similarity scan as writing no file. **Now:** Prune reporting changes no
+memory rows, deletes no files, and takes no prune action. SQLite can still
+create or touch write-ahead log (`-wal`) and shared-memory (`-shm`) sidecars
+on a read-only open, including updating read marks. This applies to both
+upgrade reporting modes, the standalone scan and its `review stale` alias,
+and the read-only scan used by the correction sweep. It is separate from
+ordinary upgrade migration and cleanup, which are unchanged.
+
 `--no-prune-scan` bypasses scanning in both modes, including relaunches, and
 leaves the JSON `prune_scan` array empty with no text counts.
 
@@ -2264,6 +2275,18 @@ window, and `task show` still supplies full notes on demand.
 
 ## Prune review
 
+Before, the CLI scan and the upgrade summary surfaced candidates but no
+Memhub skill guided the review. Now memhub ships the `prune` skill for
+Claude Code, Codex, OpenCode, and Antigravity. Invoke `/prune` (`$prune` in
+Codex) in the intended repo when you want a guided cleanup review. Nothing
+invokes it at startup. The skill groups all returned findings by category,
+shows evidence and one proposed action per item, and reports warnings and
+overflow. You approve the displayed item/action pairs individually or as a
+batch with named exceptions. A standing grant cannot approve any item. Manual
+review/keep runs no command; a replacement needs your exact value and
+approval. The skill stops on the first command failure and renders only
+after all approved executable actions succeed.
+
 `memhub prune scan` assembles a read-only review for the current repo.
 Use `--json` for `{"prune_scan": {"total": ..., "counts": ..., "items":
 ...}}`. Each item names a category, affected row or files, a reason, a
@@ -2271,6 +2294,9 @@ stable identifier, and its available actions. An action's `command` is
 an argument array including `memhub`; run it as separate arguments, not
 through a shell. An action with `replace` needs the human's new value in
 place of that argument. No action is run by the scan.
+The upgrade summary reports counts only; use the CLI scan to see individual
+findings without acting on them. Both use the [read-only reporting
+boundary](#machine-wide-upgrade), including possible SQLite sidecar effects.
 Human output quotes commands for PowerShell on Windows (including Windows
 PowerShell 5.1) and for a POSIX shell elsewhere. Arguments containing
 control characters are displayed as exact argv rather than a shell line.
@@ -2426,9 +2452,9 @@ in each pair's identifier, including document-parent or architecture-source
 state where relevant. Document path/content state also participates, so a
 changed or redirected source invalidates its prior dismissal. All eligible
 pairs are scored during scans; the cap limits the display, not the search.
-This exhaustive manual review can take longer on
-large corpora, but loads no embedding model and writes no memory, index,
-query log or file. The four original categories retain their IDs.
+This exhaustive manual review can take longer on large corpora. The scan
+loads no embedding model and changes no memory rows, index, or query log.
+The four original categories retain their IDs.
 `memhub status` counts only those four categories, not similarity matches.
 Dismissal resolves model-free matches first, in a read snapshot. Only
 if none matches does it look for and score the requested similarity pair.

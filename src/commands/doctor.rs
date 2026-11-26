@@ -1134,6 +1134,7 @@ const ACTIVE_SKILL_NAMES: &[&str] = &[
     "locate",
     #[cfg(feature = "metrics")]
     "metrics",
+    "prune",
     "recall",
     "reindex",
     "upgrade",
@@ -1824,7 +1825,7 @@ mod tests {
 
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let expected: BTreeSet<_> = ACTIVE_SKILL_NAMES.iter().map(|s| s.to_string()).collect();
-        assert_eq!(expected.len(), 12 + usize::from(cfg!(feature = "metrics")));
+        assert_eq!(expected.len(), 13 + usize::from(cfg!(feature = "metrics")));
         assert!(!expected.contains("viz"));
         assert_eq!(expected.contains("metrics"), cfg!(feature = "metrics"));
         for (sources, nested) in [

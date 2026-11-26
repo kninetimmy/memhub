@@ -54,6 +54,10 @@
       "description": "Rebuild memhub embeddings",
       "template": "Use the memhub reindex skill. Arguments: $ARGUMENTS"
     },
+    "prune": {
+      "description": "Review repo memory cleanup candidates",
+      "template": "Use the memhub prune skill for this user-initiated review."
+    },
     "upgrade": {
       "description": "Upgrade memhub on this machine",
       "template": "Use the memhub upgrade skill. Arguments: $ARGUMENTS"
