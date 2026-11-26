@@ -71,7 +71,7 @@ Please install memhub for me, then turn on hybrid recall.
    make it available across your sessions).
 5. Copy the user-level skills so /wrap-up, /catch-up, /check-init,
    /init-project, /recall, /locate, /reindex, /eval-recall, /doc,
-   /global, /audit-md, and /upgrade all work as slash commands:
+   /global, /audit-md, /prune, and /upgrade all work as slash commands:
 
        POSIX shell (bash/zsh):
        mkdir -p ~/.claude/commands
@@ -174,7 +174,7 @@ Please install memhub for me, then turn on hybrid recall.
 
 5. Copy the user-level skills so /wrap-up, /catch-up, /check-init,
    /init-project, /recall, /locate, /reindex, /eval-recall, /doc,
-   /global, /audit-md, and /upgrade all work:
+   /global, /audit-md, /prune, and /upgrade all work:
 
        POSIX shell (bash/zsh):
        mkdir -p ~/.codex/skills
@@ -285,7 +285,7 @@ Please install memhub for me, then turn on hybrid recall.
    If that file already exists, merge only the `mcp.servers.memhub` block.
 5. Copy the user-level skills so /wrap-up, /catch-up, /check-init,
    /init-project, /recall, /locate, /reindex, /eval-recall, /doc,
-   /global, /audit-md, and /upgrade all work:
+   /global, /audit-md, /prune, and /upgrade all work:
 
        POSIX shell (bash/zsh):
        mkdir -p ~/.config/opencode/skills ~/.config/opencode/commands
@@ -378,7 +378,7 @@ Please install memhub for me.
 3. Register the MCP server with agy mcp add memhub memhub serve.
 4. Copy the user-level skills so /wrap-up, /catch-up, /check-init,
    /init-project, /recall, /locate, /reindex, /eval-recall, /doc,
-   /global, /audit-md, and /upgrade all work as slash commands:
+   /global, /audit-md, /prune, and /upgrade all work as slash commands:
 
        POSIX shell (bash/zsh):
        mkdir -p ~/.gemini/config/skills
@@ -711,6 +711,21 @@ Surfaces: `memhub code index|status|rm` and `memhub locate` (CLI) · `memhub.loc
 
 ---
 
+## Review cleanup candidates
+
+Use `/prune` in the repo you want to review when memory may be outdated or
+an upgrade summary flags candidates. In Codex, invoke the `prune` skill
+as `$prune`. The agent groups findings and proposes one action per item;
+it runs only the item/action pairs you explicitly approve. Nothing starts
+at session startup, and a standing grant cannot approve a prune item.
+
+To just inspect candidates, run the read-only `memhub prune scan` (add
+`--json` for structured output). The `memhub upgrade` summary reports
+per-repo counts, not actions; ordinary upgrade migration and cleanup are
+separate. See [prune review](docs/reference/operations.md#prune-review).
+
+---
+
 ## One machine, many projects
 
 memhub is per-repo, so every project gets its own isolated `.memhub/project.sqlite`. The one exception is opt-in [machine-global memory](#machine-global-memory), which never merges repo databases.
@@ -871,6 +886,7 @@ Sync state (the `[sync]` config and the per-machine baseline marker) is wiring, 
 | `memhub code index/status/rm` | Build / inspect / drop the local code index (`.memhub/code_index.sqlite`) |
 | `memhub global enable/disable/status` | Opt this repo into optional machine-global memory (`~/.memhub/global.sqlite`) |
 | `memhub review list/accept/reject` | Triage agent-proposed writes |
+| `memhub prune scan [--json]` | List repo cleanup candidates without acting on them |
 | `memhub render` | Emit local `PROJECT.md` (state, architecture section index, session note stubs; the index and stubs may be dropped to keep it within its size budget) and `PROJECT_LEDGER.md` from the DB |
 | `memhub index status/rebuild` | Embedding coverage; backfill for `fts → hybrid` migrations |
 | `memhub eval retrieval` | Run the Recall@K harness against `tests/retrieval_golden.json` |
@@ -895,7 +911,7 @@ memhub has two retrieval modes, and the install prompt asks you to pick one. Set
 
 - Reads `CLAUDE.md` at session start.
 - MCP server registered repo-scoped via the committed [`.mcp.json`](.mcp.json), so there is nothing to set up per machine in this repo.
-- User-level skills at `~/.claude/commands/`: `/wrap-up`, `/catch-up`, `/check-init`, `/init-project`, `/recall`, `/locate`, `/reindex`, `/eval-recall`, `/doc`, `/global`, `/audit-md`, `/upgrade`. The hibernated `/metrics` template is retained for feature builds but not installed by default.
+- User-level skills at `~/.claude/commands/`: `/wrap-up`, `/catch-up`, `/check-init`, `/init-project`, `/recall`, `/locate`, `/reindex`, `/eval-recall`, `/doc`, `/global`, `/audit-md`, `/prune`, `/upgrade`. The hibernated `/metrics` template is retained for feature builds but not installed by default.
 
 **Codex CLI**
 
