@@ -6,7 +6,9 @@ use rusqlite::{OptionalExtension, TransactionBehavior};
 
 use super::*;
 use crate::commands::{doc, fact, lifecycle, pending_write, task};
-use crate::fs_identity::file_identity;
+
+mod binding;
+use binding::Binding;
 
 const VERSION: u8 = 1;
 const MAX_REQUEST_BYTES: u64 = 1024 * 1024;
@@ -216,37 +218,8 @@ fn local_paths(start: &Path) -> Result<ProjectPaths> {
     Ok(ProjectPaths::for_repo_root(&fs::canonicalize(start)?))
 }
 
-fn binding(paths: &ProjectPaths) -> Result<String> {
-    let meta = fs::symlink_metadata(&paths.memhub_dir)?;
-    if !meta.is_dir()
-        || is_link_or_reparse_point(&meta)
-        || fs::canonicalize(&paths.memhub_dir)? != paths.memhub_dir
-    {
-        return Err(invalid(
-            "wrap-up prune needs a direct .memhub directory at the project root",
-        ));
-    }
-    let db_path = &paths.db_path;
-    let file = open_direct_file(db_path, &fs::symlink_metadata(db_path)?)?;
-    let database = file_info_from_handle(&file)?;
-    if database.links != 1 || fs::canonicalize(db_path)? != *db_path {
-        return Err(invalid(
-            "wrap-up prune needs a direct, unshared project.sqlite",
-        ));
-    }
-    Ok(sha256_hex(&serde_json::to_vec(&(
-        paths.repo_root.as_os_str().as_encoded_bytes(),
-        file_identity(&paths.memhub_dir)?,
-        database.identity,
-    ))?))
-}
-
-fn require_project(conn: &Connection, paths: &ProjectPaths, expected: &str) -> Result<()> {
-    if binding(paths)? != expected {
-        return Err(invalid(
-            "wrap-up prune project or database changed; scan again",
-        ));
-    }
+fn require_project(conn: &Connection, paths: &ProjectPaths, binding: &Binding) -> Result<()> {
+    binding.require_connection(conn, paths)?;
     if db::ledger_schema(conn)?.as_deref() != Some(db::latest_schema_version()) {
         return Err(invalid(
             "wrap-up prune needs a current local database schema",
@@ -266,20 +239,24 @@ fn require_project(conn: &Connection, paths: &ProjectPaths, expected: &str) -> R
 
 pub fn scan_for_wrap_up(start: &Path) -> Result<WrapUpReport> {
     let paths = local_paths(start)?;
-    let project = binding(&paths)?;
+    let binding = Binding::read(&paths)?;
     let config = scan_config(&paths)?;
     let mut conn = Connection::open_with_flags(
         &paths.db_path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
     let tx = conn.transaction()?;
-    require_project(&tx, &paths, &project)?;
-    let report = scan_in(&tx, &paths, &config, true, true, None)?;
-    if binding(&paths)? != project {
-        return Err(invalid(
-            "wrap-up prune project or database changed during scan; scan again",
-        ));
-    }
+    require_project(&tx, &paths, &binding)?;
+    let report = scan_in(
+        &tx,
+        &paths,
+        &config,
+        true,
+        true,
+        None,
+        binding.protected_file(),
+    )?;
+    binding.require_connection(&tx, &paths)?;
     let items = report
         .items
         .into_iter()
@@ -294,7 +271,7 @@ pub fn scan_for_wrap_up(start: &Path) -> Result<WrapUpReport> {
         .collect();
     Ok(WrapUpReport {
         version: VERSION,
-        project,
+        project: binding.fingerprint,
         total: report.total,
         counts: report.counts,
         items,
@@ -348,9 +325,9 @@ fn matches_offer(request: &Request, item: &Item) -> bool {
 
 pub fn apply(start: &Path, name: &str, host: Host) -> Result<Outcome> {
     let paths = local_paths(start)?;
-    let project = binding(&paths)?;
+    let binding = Binding::read(&paths)?;
     let request = read_request(&paths, name)?;
-    if request.project != project {
+    if request.project != binding.fingerprint {
         return Err(invalid(
             "prune request does not match this local project/database",
         ));
@@ -374,7 +351,7 @@ pub fn apply(start: &Path, name: &str, host: Host) -> Result<Outcome> {
     // Filesystem checks and pair scoring don't need the SQLite writer lock.
     {
         let snapshot = conn.transaction()?;
-        require_project(&snapshot, &paths, &request.project)?;
+        require_project(&snapshot, &paths, &binding)?;
         if dismissal::is_dismissed(&snapshot, id)? {
             return Err(stale());
         }
@@ -384,6 +361,7 @@ pub fn apply(start: &Path, name: &str, host: Host) -> Result<Outcome> {
                 &paths.repo_root,
                 Some(*id),
                 request.action == Effect::ReIngest,
+                binding.protected_file(),
                 |item, state, title, bytes| {
                     if matches_offer(&request, &item)
                         && let [Subject::Document { path, .. }] = item.subjects.as_slice()
@@ -407,10 +385,11 @@ pub fn apply(start: &Path, name: &str, host: Host) -> Result<Outcome> {
                     first.locator(),
                     second.locator(),
                     id,
+                    binding.protected_file(),
                 )?;
             }
             Target::Backups => {
-                let current = backups::find_group(&paths, id)?;
+                let current = backups::find_group(&paths, id, binding.protected_file())?;
                 if !matches_offer(&request, &current.item()) {
                     return Err(stale());
                 }
@@ -420,8 +399,9 @@ pub fn apply(start: &Path, name: &str, host: Host) -> Result<Outcome> {
         }
     }
 
+    binding.require_connection(&conn, &paths)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    require_project(&tx, &paths, &request.project)?;
+    require_project(&tx, &paths, &binding)?;
     if dismissal::is_dismissed(&tx, id)? {
         return Err(stale());
     }
@@ -509,10 +489,12 @@ pub fn apply(start: &Path, name: &str, host: Host) -> Result<Outcome> {
             }
         }
         Target::Pair { .. } => {
-            if !pair
-                .ok_or_else(stale)?
-                .is_current(&tx, &paths.repo_root, id)?
-            {
+            if !pair.ok_or_else(stale)?.is_current(
+                &tx,
+                &paths.repo_root,
+                id,
+                binding.protected_file(),
+            )? {
                 return Err(stale());
             }
             dismissal::record(&tx, id, actor)?;
@@ -521,7 +503,12 @@ pub fn apply(start: &Path, name: &str, host: Host) -> Result<Outcome> {
             let group = group.ok_or_else(stale)?;
             match request.action {
                 Effect::Keep => {
-                    if !backups::group_is_current(&paths, &group.directory, id)? {
+                    if !backups::group_is_current(
+                        &paths,
+                        &group.directory,
+                        id,
+                        binding.protected_file(),
+                    )? {
                         return Err(stale());
                     }
                     dismissal::record(&tx, id, actor)?;

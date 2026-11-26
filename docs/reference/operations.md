@@ -2288,13 +2288,22 @@ refreshes task age; offered doc or backup keep dismisses the finding. Task
 drop/done, doc archive/re-ingest, pair dismissal, and fact re-verification
 retain their existing effects. Fact retirement is manual only. An exact
 approved replacement stages a local fact proposal; you separately accept it
-through `memhub review accept` to change the fact. Backup deletion requires
-separately named and approved groups and supported storage.
+through `memhub review accept` to change the fact. The existing same-key
+guard can require you to explicitly choose `--force`. Before asking you to
+approve a backup deletion, the agent shows the group ID, its directory, and
+every surplus path to be deleted. Backup deletion requires separately named
+and approved groups and supported storage.
 
 The agent passes one typed request at a time in a disposable JSON file in
 `.memhub/`, using its file tool; scan text, paths, and replacement text are
 not shell arguments. The CLI verifies the selected local project/database
 and current offered action; the skill, not the CLI, checks chat approval.
+Windows compares the file identity of SQLite's open database handle with the
+reviewed file. On Unix, the guard checks the current path identity around
+SQLite's open-file move check without reopening the database. It requires the
+bundled Unix SQLite's POSIX locking mode, which tracks the open inode. These
+checks detect a replacement still visible to them; they do not lock the path
+against concurrent renames.
 Standing Orch approval does not cover prune. Row-only actions use the same
 transaction for the exact row check and write. Re-ingest uses validated
 bytes captured from the recorded source, not a second path read. An edit

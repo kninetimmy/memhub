@@ -33,16 +33,16 @@ pub(crate) fn file_identity(path: &Path) -> io::Result<FileIdentity> {
 
 #[cfg(unix)]
 pub(crate) fn file_info(path: &Path) -> io::Result<FileInfo> {
-    Ok(unix_file_info(&fs::metadata(path)?))
+    Ok(file_info_from_metadata(&fs::metadata(path)?))
 }
 
 #[cfg(unix)]
 pub(crate) fn file_info_from_handle(file: &fs::File) -> io::Result<FileInfo> {
-    Ok(unix_file_info(&file.metadata()?))
+    Ok(file_info_from_metadata(&file.metadata()?))
 }
 
 #[cfg(unix)]
-fn unix_file_info(metadata: &fs::Metadata) -> FileInfo {
+pub(crate) fn file_info_from_metadata(metadata: &fs::Metadata) -> FileInfo {
     use std::os::unix::fs::MetadataExt;
 
     FileInfo {
@@ -60,7 +60,7 @@ pub(crate) fn entry_identity(path: &Path, metadata: &fs::Metadata) -> Option<Fil
     #[cfg(unix)]
     {
         let _ = path;
-        let identity = unix_file_info(metadata).identity;
+        let identity = file_info_from_metadata(metadata).identity;
         (identity.second != 0).then_some(identity)
     }
     #[cfg(windows)]
@@ -109,7 +109,7 @@ pub(crate) fn open_direct_file(path: &Path, expected: &fs::Metadata) -> io::Resu
         return Err(io::Error::other("file resolved outside its checked path"));
     }
     #[cfg(unix)]
-    if unix_file_info(&actual).identity != unix_file_info(expected).identity {
+    if file_info_from_metadata(&actual).identity != file_info_from_metadata(expected).identity {
         return Err(io::Error::other("file identity changed before opening"));
     }
     Ok(file)
@@ -172,6 +172,14 @@ fn open_metadata(path: &Path, flags: u32) -> io::Result<fs::File> {
 
 #[cfg(windows)]
 pub(crate) fn file_info_from_handle(file: &fs::File) -> io::Result<FileInfo> {
+    use std::os::windows::io::AsHandle;
+    file_info_from_borrowed_handle(file.as_handle())
+}
+
+#[cfg(windows)]
+pub(crate) fn file_info_from_borrowed_handle(
+    file: std::os::windows::io::BorrowedHandle<'_>,
+) -> io::Result<FileInfo> {
     use std::os::windows::io::{AsRawHandle, RawHandle};
 
     #[repr(C)]

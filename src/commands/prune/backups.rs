@@ -131,7 +131,10 @@ fn display_path(path: &Path) -> String {
     path.display().to_string()
 }
 
-pub(super) fn surplus(paths: &ProjectPaths) -> Result<(Vec<Group>, Vec<String>)> {
+pub(super) fn surplus(
+    paths: &ProjectPaths,
+    protected_file: Option<&FileIdentity>,
+) -> Result<(Vec<Group>, Vec<String>)> {
     let root = fs::canonicalize(&paths.repo_root).map_err(|err| at_path(&paths.repo_root, err))?;
     let memhub = root.join(MEMHUB_DIR);
     require_directory(&memhub)?;
@@ -146,7 +149,7 @@ pub(super) fn surplus(paths: &ProjectPaths) -> Result<(Vec<Group>, Vec<String>)>
     let mut warnings = Vec::new();
     let mut dirs = vec![backups.clone()];
     while let Some(dir) = dirs.pop() {
-        match inspect_directory(&root, &backups, &dir, &mut dirs) {
+        match inspect_directory(&root, &backups, &dir, &mut dirs, protected_file) {
             Ok(Some(group)) => groups.push(group),
             Ok(None) => {}
             Err(err) => warnings.push(format!("'{}': {err}", display_path(&dir))),
@@ -159,7 +162,12 @@ pub(super) fn surplus(paths: &ProjectPaths) -> Result<(Vec<Group>, Vec<String>)>
 
 /// Recheck one previously discovered directory, without scanning siblings or
 /// following any replaced ancestor into a different directory.
-pub(super) fn group_is_current(paths: &ProjectPaths, dir: &Path, id: &str) -> Result<bool> {
+pub(super) fn group_is_current(
+    paths: &ProjectPaths,
+    dir: &Path,
+    id: &str,
+    protected_file: Option<&FileIdentity>,
+) -> Result<bool> {
     let root = fs::canonicalize(&paths.repo_root)?;
     let memhub = root.join(MEMHUB_DIR);
     let backups = memhub.join("backups");
@@ -180,7 +188,7 @@ pub(super) fn group_is_current(paths: &ProjectPaths, dir: &Path, id: &str) -> Re
         }
     }
     Ok(matches!(
-        inspect_directory(&root, &backups, dir, &mut Vec::new()),
+        inspect_directory(&root, &backups, dir, &mut Vec::new(), protected_file),
         Ok(Some(group)) if group.id == id
     ))
 }
@@ -190,6 +198,7 @@ fn inspect_directory(
     backups: &Path,
     dir: &Path,
     dirs: &mut Vec<PathBuf>,
+    protected_file: Option<&FileIdentity>,
 ) -> Result<Option<Group>> {
     require_directory(dir)?;
     let directory_identity = file_identity(dir).map_err(|err| at_path(dir, err))?;
@@ -233,7 +242,7 @@ fn inspect_directory(
     for (path, meta) in files {
         require_direct(&path)?;
         let info = file_info(&path).map_err(|err| at_path(&path, err))?;
-        if info.links == 1 {
+        if info.links == 1 && Some(&info.identity) != protected_file {
             let modified = meta.modified().map_err(|err| at_path(&path, err))?;
             eligible.push((path, info, modified, meta));
         }
@@ -343,11 +352,15 @@ pub(super) fn delete(paths: &ProjectPaths, candidate: &str) -> Result<usize> {
             database.display()
         )));
     }
-    find_group(paths, candidate)?.delete()
+    find_group(paths, candidate, None)?.delete()
 }
 
-pub(super) fn find_group(paths: &ProjectPaths, candidate: &str) -> Result<Group> {
-    let (groups, warnings) = surplus(paths)?;
+pub(super) fn find_group(
+    paths: &ProjectPaths,
+    candidate: &str,
+    protected_file: Option<&FileIdentity>,
+) -> Result<Group> {
+    let (groups, warnings) = surplus(paths, protected_file)?;
     groups
         .into_iter()
         .find(|group| group.id == candidate)

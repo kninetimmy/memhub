@@ -259,7 +259,7 @@ fn scan_readonly_paths(paths: &ProjectPaths, old: Option<(&str, i64)>) -> Result
             )));
         }
     };
-    scan_in(&tx, paths, &config, has_dismissals, true, old)
+    scan_in(&tx, paths, &config, has_dismissals, true, old, None)
 }
 
 fn scan_config(paths: &ProjectPaths) -> Result<ProjectConfig> {
@@ -284,7 +284,7 @@ fn scan_config(paths: &ProjectPaths) -> Result<ProjectConfig> {
 /// Status already has a maintained open; reuse it without another open.
 pub(super) fn scan_project(ctx: &db::ProjectContext) -> Result<Report> {
     let tx = ctx.conn.unchecked_transaction()?;
-    scan_in(&tx, &ctx.paths, &ctx.config, true, false, None)
+    scan_in(&tx, &ctx.paths, &ctx.config, true, false, None, None)
 }
 
 fn scan_in(
@@ -294,6 +294,7 @@ fn scan_in(
     has_dismissals: bool,
     include_similarity: bool,
     old: Option<(&str, i64)>,
+    protected_file: Option<&FileIdentity>,
 ) -> Result<Report> {
     let dismissed = if has_dismissals {
         conn.prepare("SELECT identifier FROM prune_dismissals WHERE project_id = 1")?
@@ -333,12 +334,12 @@ fn scan_in(
         }
     };
     let backup_warning = if old.is_none() {
-        visit_candidates(conn, paths, config, &mut visit)?
+        visit_candidates(conn, paths, config, protected_file, &mut visit)?
     } else {
         None
     };
     if include_similarity && config.retrieval.use_reranker {
-        similarity::visit(conn, &paths.repo_root, old, &mut visit)?;
+        similarity::visit(conn, &paths.repo_root, old, protected_file, &mut visit)?;
     }
     report.backup_warning = backup_warning;
     if include_similarity && !config.retrieval.use_reranker {
@@ -370,6 +371,7 @@ fn visit_candidates(
     conn: &Connection,
     paths: &ProjectPaths,
     config: &ProjectConfig,
+    protected_file: Option<&FileIdentity>,
     mut visit: impl FnMut(Item),
 ) -> Result<Option<String>> {
     facts(
@@ -379,8 +381,15 @@ fn visit_candidates(
         &mut visit,
     )?;
     tasks(conn, None, &mut visit)?;
-    documents(conn, &paths.repo_root, None, &mut visit)?;
-    match backups::surplus(paths) {
+    visit_documents(
+        conn,
+        &paths.repo_root,
+        None,
+        false,
+        protected_file,
+        |item, _, _, _| visit(item),
+    )?;
+    match backups::surplus(paths, protected_file) {
         Ok((groups, warnings)) => {
             for group in groups {
                 visit(group.item());
@@ -546,7 +555,9 @@ fn documents(
     selected: Option<i64>,
     visit: &mut dyn FnMut(Item),
 ) -> Result<()> {
-    visit_documents(conn, root, selected, false, |item, _, _, _| visit(item))
+    visit_documents(conn, root, selected, false, None, |item, _, _, _| {
+        visit(item)
+    })
 }
 
 fn document_query(selected: bool) -> String {
@@ -563,6 +574,7 @@ fn visit_documents(
     root: &Path,
     selected: Option<i64>,
     capture_bytes: bool,
+    protected_file: Option<&FileIdentity>,
     mut visit: impl FnMut(Item, String, String, Option<String>),
 ) -> Result<()> {
     let mut stmt = conn.prepare(&document_query(selected.is_some()))?;
@@ -573,8 +585,10 @@ fn visit_documents(
         let title: String = row.get(2)?;
         let ingested_hash: String = row.get(3)?;
         let state: String = row.get(4)?;
-        let (on_disk, content) = read_document_file(root, Path::new(&path), capture_bytes);
+        let (on_disk, content) =
+            read_document_file(root, Path::new(&path), capture_bytes, protected_file);
         let (reason, action) = match &on_disk {
+            DocumentFile::LiveDatabase => continue,
             DocumentFile::Readable { hash, .. } if *hash == ingested_hash => continue,
             DocumentFile::Readable { .. } => {
                 let reason = "File content changed since ingest.";
@@ -712,15 +726,21 @@ enum DocumentFile {
         // Used when there is no content hash and identity from a read handle.
         #[serde(skip_serializing_if = "Option::is_none")] Option<FileIdentity>,
     ),
+    LiveDatabase,
 }
 
-fn document_file(root: &Path, path: &Path) -> DocumentFile {
-    read_document_file(root, path, false).0
+fn document_file(root: &Path, path: &Path, protected_file: Option<&FileIdentity>) -> DocumentFile {
+    read_document_file(root, path, false, protected_file).0
 }
 
-fn read_document_file(root: &Path, path: &Path, capture: bool) -> (DocumentFile, Option<String>) {
+fn read_document_file(
+    root: &Path,
+    path: &Path,
+    capture: bool,
+    protected_file: Option<&FileIdentity>,
+) -> (DocumentFile, Option<String>) {
     let mut content = None;
-    let file = inspect_document_file(root, path, |bytes| {
+    let file = inspect_document_file(root, path, protected_file, |bytes| {
         if capture {
             content = Some(bytes);
         }
@@ -728,7 +748,12 @@ fn read_document_file(root: &Path, path: &Path, capture: bool) -> (DocumentFile,
     (file, content)
 }
 
-fn inspect_document_file(root: &Path, path: &Path, capture: impl FnOnce(String)) -> DocumentFile {
+fn inspect_document_file(
+    root: &Path,
+    path: &Path,
+    protected_file: Option<&FileIdentity>,
+    capture: impl FnOnce(String),
+) -> DocumentFile {
     // Ingestion explicitly allows external files and records their canonical
     // path. That exact path is the boundary, not a new symlink target.
     let expected = if path.is_absolute() {
@@ -772,6 +797,11 @@ fn inspect_document_file(root: &Path, path: &Path, capture: impl FnOnce(String))
             );
         }
         if component == expected {
+            if protected_file
+                .is_some_and(|id| entry_identity(component, &meta).as_ref() == Some(id))
+            {
+                return DocumentFile::LiveDatabase;
+            }
             let stamp = Some((meta.len(), modified));
             // Keep the existing exact-path check before reading an ordinary file.
             if !meta.is_file() || fs::canonicalize(&expected).ok().as_ref() != Some(&expected) {

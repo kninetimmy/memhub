@@ -132,6 +132,7 @@ fn each_configured_level_is_reflected_in_json_output() {
             "warnings and overflow",
             "An Orch grant or other",
             "exact replacement text",
+            "the existing same-key guard can require the user to explicitly choose `--force`",
             "separately naming and approving each exact group",
             "file-writing tool, not the shell",
             "not the user's chat approval",
@@ -141,6 +142,13 @@ fn each_configured_level_is_reflected_in_json_output() {
         ] {
             assert!(review.contains(required), "{level}: missing {required}");
         }
+        let display = review
+            .find("group identifier, its\n`directory`, and every exact surplus path in `files`");
+        let approval = review.find("Ask for separate, explicit human approval");
+        assert!(
+            matches!((display, approval), (Some(d), Some(a)) if d < a),
+            "{level}"
+        );
         assert!(instructions[render..sync].contains("do not rescan or replay prune"));
     }
 }

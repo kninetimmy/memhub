@@ -111,10 +111,40 @@ fn wrapup_apply_stages_exact_stock_shell_data_then_requires_separate_acceptance(
         .unwrap()
     };
     assert_eq!(durable().0, "old");
+    let plain_accept = f.run(&["review", "accept", &id.to_string()]);
+    assert!(!plain_accept.status.success(), "{plain_accept:?}");
+    assert!(String::from_utf8_lossy(&plain_accept.stderr).contains("--force"));
+    assert_eq!(durable().0, "old");
     f.ok(&["review", "accept", &id.to_string(), "--force"]);
     assert_eq!(
         durable(),
         (replacement.to_owned(), "user+agent:claude-code".to_owned())
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn wrapup_scan_does_not_read_the_live_db_as_a_document() {
+    let f = Fixture::new();
+    f.document("guide.md", Some(b"# Changed"), false);
+    let original = scan(&f);
+    let apply = request(
+        &original,
+        row_item(&original, "out_of_date_document", 1),
+        "re_ingest",
+    );
+    let path = fs::canonicalize(f.repo.join(".memhub/project.sqlite")).unwrap();
+    f.db()
+        .execute(
+            "UPDATE documents SET path=?1 WHERE id=1",
+            [path.to_str().unwrap()],
+        )
+        .unwrap();
+    assert!(items(&scan(&f)).is_empty());
+    refuse(&f, &apply, "missing, changed");
+    assert_eq!(
+        row_item(&f.scan(), "out_of_date_document", 1)["subjects"][0]["path"],
+        path.to_str().unwrap()
     );
 }
 
