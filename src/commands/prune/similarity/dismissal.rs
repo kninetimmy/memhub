@@ -15,7 +15,7 @@ pub(in crate::commands::prune) fn prepare(
     id: &str,
 ) -> Result<Option<Pair>> {
     let mut pair = None;
-    visit_matching(conn, root, None, Some(id), None, &mut |item, a, b| {
+    visit_matching(conn, root, None, Some(id), &[], &mut |item, a, b| {
         pair = Some(Pair {
             category: item.category,
             a: (a.excerpt.source_type, a.excerpt.source_id),
@@ -35,7 +35,7 @@ impl Pair {
         first: (&'static str, i64),
         second: (&'static str, i64),
         id: &str,
-        protected_file: Option<&FileIdentity>,
+        protected_files: &[FileIdentity],
     ) -> Result<Option<Self>> {
         let eligible = match category {
             Category::DuplicateFacts => first.0 == "fact" && second.0 == "fact",
@@ -50,8 +50,8 @@ impl Pair {
             return Ok(None);
         }
         let (Some(a), Some(b)) = (
-            load(conn, root, first, protected_file)?,
-            load(conn, root, second, protected_file)?,
+            load(conn, root, first, protected_files)?,
+            load(conn, root, second, protected_files)?,
         ) else {
             return Ok(None);
         };
@@ -84,14 +84,14 @@ impl Pair {
         conn: &Connection,
         root: &Path,
         id: &str,
-        protected_file: Option<&FileIdentity>,
+        protected_files: &[FileIdentity],
     ) -> Result<bool> {
         // Only these two rows, their parents and (for fact replacements) their
         // replacement chain contribute. No all-pair traversal or model work.
-        let Some(a) = load(conn, root, self.a, protected_file)? else {
+        let Some(a) = load(conn, root, self.a, protected_files)? else {
             return Ok(false);
         };
-        let Some(b) = load(conn, root, self.b, protected_file)? else {
+        let Some(b) = load(conn, root, self.b, protected_files)? else {
             return Ok(false);
         };
         self.is_current_rows(conn, id, &a, &b)
@@ -131,12 +131,12 @@ fn load(
     conn: &Connection,
     root: &Path,
     (kind, id): (&str, i64),
-    protected_file: Option<&FileIdentity>,
+    protected_files: &[FileIdentity],
 ) -> Result<Option<Row>> {
     let mut rows = match kind {
         "fact" => facts(conn, Some(id)),
         "decision" => decisions(conn, Some(id)),
-        _ => correction_targets(conn, root, Some((kind, id)), protected_file),
+        _ => correction_targets(conn, root, Some((kind, id)), protected_files),
     }?;
     Ok(rows.pop())
 }
@@ -183,7 +183,7 @@ mod tests {
             .unwrap();
         write.commit().unwrap();
         assert!(
-            pair.is_current(&snapshot, temp.path(), &duplicate, None)
+            pair.is_current(&snapshot, temp.path(), &duplicate, &[])
                 .unwrap()
         );
         drop(snapshot);
@@ -192,7 +192,7 @@ mod tests {
             .unwrap();
         assert!(
             !pair
-                .is_current(&commit, temp.path(), &duplicate, None)
+                .is_current(&commit, temp.path(), &duplicate, &[])
                 .unwrap()
         );
         commit
@@ -210,7 +210,7 @@ mod tests {
             )
             .unwrap();
         assert!(
-            pair.is_current(&commit, temp.path(), &duplicate, None)
+            pair.is_current(&commit, temp.path(), &duplicate, &[])
                 .unwrap()
         );
     }
@@ -239,7 +239,7 @@ mod tests {
         };
         let fact_id =
             identifier(Category::CorrectionSweep, (&source.state, &target.state)).unwrap();
-        let target = correction_targets(&conn, temp.path(), Some(("arch_section", 1)), None)
+        let target = correction_targets(&conn, temp.path(), Some(("arch_section", 1)), &[])
             .unwrap()
             .pop()
             .unwrap();
@@ -255,19 +255,19 @@ mod tests {
             .unwrap();
         assert!(
             fact_pair
-                .is_current(&tx, temp.path(), &fact_id, None)
+                .is_current(&tx, temp.path(), &fact_id, &[])
                 .unwrap()
         );
         assert!(
             arch_pair
-                .is_current(&tx, temp.path(), &arch_id, None)
+                .is_current(&tx, temp.path(), &arch_id, &[])
                 .unwrap()
         );
         tx.execute("UPDATE facts SET superseded_by=3 WHERE id=2", [])
             .unwrap();
         assert!(
             !fact_pair
-                .is_current(&tx, temp.path(), &fact_id, None)
+                .is_current(&tx, temp.path(), &fact_id, &[])
                 .unwrap()
         );
         tx.execute_batch(
@@ -277,7 +277,7 @@ mod tests {
         .unwrap();
         assert!(
             !arch_pair
-                .is_current(&tx, temp.path(), &arch_id, None)
+                .is_current(&tx, temp.path(), &arch_id, &[])
                 .unwrap()
         );
     }

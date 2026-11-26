@@ -254,7 +254,7 @@ pub fn scan_for_wrap_up(start: &Path) -> Result<WrapUpReport> {
         true,
         true,
         None,
-        binding.protected_file(),
+        &binding.protected_files(&paths)?,
     )?;
     binding.require_connection(&tx, &paths)?;
     let items = report
@@ -361,7 +361,7 @@ pub fn apply(start: &Path, name: &str, host: Host) -> Result<Outcome> {
                 &paths.repo_root,
                 Some(*id),
                 request.action == Effect::ReIngest,
-                binding.protected_file(),
+                &binding.protected_files(&paths)?,
                 |item, state, title, bytes| {
                     if matches_offer(&request, &item)
                         && let [Subject::Document { path, .. }] = item.subjects.as_slice()
@@ -385,11 +385,11 @@ pub fn apply(start: &Path, name: &str, host: Host) -> Result<Outcome> {
                     first.locator(),
                     second.locator(),
                     id,
-                    binding.protected_file(),
+                    &binding.protected_files(&paths)?,
                 )?;
             }
             Target::Backups => {
-                let current = backups::find_group(&paths, id, binding.protected_file())?;
+                let current = backups::find_group(&paths, id, &binding.protected_files(&paths)?)?;
                 if !matches_offer(&request, &current.item()) {
                     return Err(stale());
                 }
@@ -493,7 +493,7 @@ pub fn apply(start: &Path, name: &str, host: Host) -> Result<Outcome> {
                 &tx,
                 &paths.repo_root,
                 id,
-                binding.protected_file(),
+                &binding.protected_files(&paths)?,
             )? {
                 return Err(stale());
             }
@@ -507,7 +507,7 @@ pub fn apply(start: &Path, name: &str, host: Host) -> Result<Outcome> {
                         &paths,
                         &group.directory,
                         id,
-                        binding.protected_file(),
+                        &binding.protected_files(&paths)?,
                     )? {
                         return Err(stale());
                     }

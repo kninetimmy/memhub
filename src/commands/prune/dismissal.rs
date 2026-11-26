@@ -137,7 +137,7 @@ fn prepare(
     {
         return Ok((Some(Candidate::Document(id)), None));
     }
-    let warning = match backups::surplus(paths, None) {
+    let warning = match backups::surplus(paths, &[]) {
         Ok((groups, warnings)) => {
             if let Some(group) = groups.into_iter().find(|g| g.id == id) {
                 return Ok((Some(Candidate::Backups(group.directory)), None));
@@ -175,8 +175,8 @@ impl Candidate {
             Self::Document(row) => find(id, |visit| {
                 documents(conn, &paths.repo_root, Some(*row), visit)
             }),
-            Self::Backups(dir) => return backups::group_is_current(paths, dir, id, None),
-            Self::Similarity(pair) => return pair.is_current(conn, &paths.repo_root, id, None),
+            Self::Backups(dir) => return backups::group_is_current(paths, dir, id, &[]),
+            Self::Similarity(pair) => return pair.is_current(conn, &paths.repo_root, id, &[]),
         }?;
         Ok(found.is_some())
     }
@@ -230,7 +230,7 @@ mod tests {
             .unwrap();
         ctx.config.retrieval.use_reranker = true;
         let mut id = None;
-        similarity::visit(&ctx.conn, &ctx.paths.repo_root, None, None, &mut |item| {
+        similarity::visit(&ctx.conn, &ctx.paths.repo_root, None, &[], &mut |item| {
             assert_eq!(item.category, Category::DuplicateFacts);
             id = Some(item.id);
         })

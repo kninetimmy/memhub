@@ -52,10 +52,27 @@ impl Binding {
         })
     }
 
-    pub(super) fn protected_file(&self) -> Option<&FileIdentity> {
-        // A recorded document path (or a moved backup entry) must not cause
-        // a raw content read of the SQLite inode while it may hold locks.
-        cfg!(unix).then_some(&self.database.identity)
+    pub(super) fn protected_files(&self, paths: &ProjectPaths) -> Result<Vec<FileIdentity>> {
+        #[cfg(unix)]
+        {
+            // Resolve after SQLite has touched the DB in this transaction:
+            // the first WAL access can create -shm. Stat only; closing a raw
+            // descriptor for either inode can release SQLite's POSIX locks.
+            let mut protected = vec![self.database.identity.clone()];
+            let mut shm = paths.db_path.as_os_str().to_os_string();
+            shm.push("-shm");
+            match file_identity(std::path::Path::new(&shm)) {
+                Ok(identity) => protected.push(identity),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err.into()),
+            }
+            Ok(protected)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = paths;
+            Ok(Vec::new())
+        }
     }
 
     pub(super) fn require_connection(&self, conn: &Connection, paths: &ProjectPaths) -> Result<()> {
@@ -154,6 +171,9 @@ mod tests {
     use super::*;
     use rusqlite::OpenFlags;
 
+    #[cfg(unix)]
+    const CONTENDER: &str = "MEMHUB_TEST_PRUNE_BINDING_CONTENDER";
+
     fn fixture(root: &std::path::Path) -> ProjectPaths {
         let paths = ProjectPaths::for_repo_root(&fs::canonicalize(root).unwrap());
         fs::create_dir(&paths.memhub_dir).unwrap();
@@ -242,11 +262,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn checking_identity_keeps_the_reserved_lock_visible_to_a_separate_process() {
-        use std::process::Command;
         use std::time::Duration;
 
-        const CHILD: &str = "MEMHUB_TEST_PRUNE_BINDING_CONTENDER";
-        if std::env::var_os(CHILD).is_some() {
+        if std::env::var_os(CONTENDER).is_some() {
             let paths = ProjectPaths::for_repo_root(&std::env::current_dir().unwrap());
             let conn =
                 Connection::open_with_flags(&paths.db_path, OpenFlags::SQLITE_OPEN_READ_WRITE)
@@ -266,6 +284,15 @@ mod tests {
         let conn = Connection::open(&paths.db_path).unwrap();
         conn.execute_batch("BEGIN IMMEDIATE").unwrap();
         binding.require_connection(&conn, &paths).unwrap();
+        assert_other_writer_is_busy(&paths);
+        conn.execute_batch("INSERT INTO fixture VALUES (1); COMMIT")
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    fn assert_other_writer_is_busy(paths: &ProjectPaths) {
+        use std::process::Command;
+
         let child = Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -275,7 +302,7 @@ mod tests {
                 )
                 .trim_start_matches("memhub::"),
             ])
-            .env(CHILD, "1")
+            .env(CONTENDER, "1")
             .current_dir(&paths.repo_root)
             .output()
             .unwrap();
@@ -284,7 +311,99 @@ mod tests {
             String::from_utf8_lossy(&child.stdout).contains("1 passed"),
             "{child:?}"
         );
-        conn.execute_batch("INSERT INTO fixture VALUES (1); COMMIT")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn correction_document_sidecar_paths_keep_the_wal_writer_lock() {
+        use super::super::{
+            Category, DocumentFile, Target, document_file, require_project, scan_for_wrap_up,
+            similarity,
+        };
+        use rusqlite::{TransactionBehavior, params};
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        crate::commands::init::run(&root).unwrap();
+        let paths = ProjectPaths::for_repo_root(&root);
+        let binding = Binding::read(&paths).unwrap();
+        let shm = paths.db_path.with_extension("sqlite-shm");
+        assert!(!shm.exists(), "no live sidecar before first WAL use");
+        let mut conn = Connection::open(&paths.db_path).unwrap();
+        let mode: String = conn
+            .pragma_query_value(None, "journal_mode", |r| r.get(0))
             .unwrap();
+        assert_eq!(mode, "wal");
+        let claim = "We will run a Postgres server to hold project memory.";
+        let source = root.join("reviewed.md");
+        let body = format!("# Storage\n\n{claim}");
+        fs::write(&source, &body).unwrap();
+        conn.execute(
+            "INSERT INTO facts(id,key,value,retired_at) VALUES (1,'old',?1,CURRENT_TIMESTAMP)",
+            [claim],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO documents(id,path,title,content_hash,byte_len)
+             VALUES (1,?1,'Storage',?2,?3)",
+            params![
+                source.to_str().unwrap(),
+                sha256_hex(body.as_bytes()),
+                body.len()
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO doc_chunks(id,doc_id,ord,heading_path,body)
+             VALUES (1,1,0,'Storage',?1)",
+            [&body],
+        )
+        .unwrap();
+        let report = scan_for_wrap_up(&root).unwrap();
+        let reviewed = report
+            .items
+            .iter()
+            .find(|item| item.category == Category::CorrectionSweep)
+            .expect("ordinary document must produce a correction pair");
+        let Target::Pair {
+            category,
+            first,
+            second,
+        } = &reviewed.offer.target
+        else {
+            panic!("expected a pair offer");
+        };
+        let id = &reviewed.id;
+        let pair = similarity::Pair::prepare_targeted(
+            &conn,
+            &root,
+            *category,
+            first.locator(),
+            second.locator(),
+            id,
+            &binding.protected_files(&paths).unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        require_project(&tx, &paths, &binding).unwrap();
+        assert!(fs::metadata(&shm).unwrap().len() > 0);
+        let is_current =
+            |protected: &[FileIdentity]| pair.is_current(&tx, &root, id, protected).unwrap();
+        assert!(is_current(&binding.protected_files(&paths).unwrap()));
+
+        // Change only the file named by the recorded path, not the DB rows.
+        // A stale result alone is insufficient: reading -shm would also
+        // change the digest and could drop this process's WAL writer lock.
+        fs::remove_file(&source).unwrap();
+        fs::hard_link(&shm, &source).unwrap();
+        let protected = binding.protected_files(&paths).unwrap();
+        assert!(!is_current(&protected));
+        let direct = document_file(&root, &shm, &protected);
+        assert_other_writer_is_busy(&paths);
+        assert!(matches!(direct, DocumentFile::LiveDatabase));
+        tx.commit().unwrap();
     }
 }

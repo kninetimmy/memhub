@@ -48,10 +48,10 @@ pub(super) fn visit(
     conn: &Connection,
     root: &Path,
     old: Option<(&str, i64)>,
-    protected_file: Option<&FileIdentity>,
+    protected_files: &[FileIdentity],
     visit: &mut impl FnMut(Item),
 ) -> Result<()> {
-    visit_matching(conn, root, old, None, protected_file, &mut |item, _, _| {
+    visit_matching(conn, root, old, None, protected_files, &mut |item, _, _| {
         visit(item)
     })
 }
@@ -61,7 +61,7 @@ fn visit_matching(
     root: &Path,
     old: Option<(&str, i64)>,
     requested: Option<&str>,
-    protected_file: Option<&FileIdentity>,
+    protected_files: &[FileIdentity],
     visit: &mut impl FnMut(Item, &Row, &Row),
 ) -> Result<()> {
     let facts = facts(conn, None)?;
@@ -77,7 +77,7 @@ fn visit_matching(
         )?;
     }
     let mut targets: Vec<&Row> = facts.iter().filter(|row| row.active).collect();
-    let other_targets = correction_targets(conn, root, None, protected_file)?;
+    let other_targets = correction_targets(conn, root, None, protected_files)?;
     targets.extend(&other_targets);
     // ponytail: exhaustive pair scoring; use a measured candidate index if
     // corpus size makes this manual scan too slow, not a silent candidate cap.
@@ -349,7 +349,7 @@ fn correction_targets(
     conn: &Connection,
     root: &Path,
     selected: Option<(&str, i64)>,
-    protected_file: Option<&FileIdentity>,
+    protected_files: &[FileIdentity],
 ) -> Result<Vec<Row>> {
     let mut out = Vec::new();
     if selected.is_none_or(|(kind, _)| kind == "arch_section") {
@@ -454,7 +454,7 @@ fn correction_targets(
             if let Subject::DocumentChunk { path, .. } = &row.subject {
                 let on_disk = files
                     .entry(path.clone())
-                    .or_insert_with(|| document_file(root, Path::new(path), protected_file));
+                    .or_insert_with(|| document_file(root, Path::new(path), protected_files));
                 if matches!(on_disk, DocumentFile::LiveDatabase) {
                     continue;
                 }
