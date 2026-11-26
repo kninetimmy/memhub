@@ -51,7 +51,9 @@ The [v0.4.0 release](https://github.com/kninetimmy/memhub/releases/tag/v0.4.0) i
 cargo install --git https://github.com/kninetimmy/memhub.git --tag v0.4.0 --locked
 ```
 
-The prompts and manual clone commands below instead build current `main`, including post-release changes. For release-only setup, put v0.4.0's tagged source at `~/src/memhub` for the skill-copy steps and skip the prompts' source-update and binary-install steps.
+For release-only setup, clone tag `v0.4.0` into an unused sibling directory such as `~/src/memhub-v0.4.0`. In the instructions below, skip source-update and binary-install operations (host steps 1–2, or manual step 1), but keep version verification and the remaining setup. In skill-copy commands, substitute this sibling path for `~/src/memhub` (`$HOME\src\memhub-v0.4.0` in PowerShell).
+
+The prompts and manual clone commands below instead build current `main`, including post-release changes. Use a host prompt unchanged only if `~/src/memhub` is absent or already checked out on `main`; the prompts update existing checkouts without switching branches. The manual clone requires an unused `~/src/memhub` path. To use `main` later, leave the tagged sibling checkout intact and rerun the binary-install and skill-copy steps using a separate checkout on `main`.
 
 Each agent below has a copy-paste prompt that installs memhub end to end. Expand the one you use. To run the steps yourself, expand **Install by hand**.
 
